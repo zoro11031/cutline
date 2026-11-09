@@ -35,10 +35,10 @@ def _run(class_paths):
 CASES = (
     (winboat, "rdp_busy", lambda *a, **k: "",
      "rdp_busy can never report a held session",
-     ["tests.test_guards.TestRdpBusyFires"]),
+     ["tests.test_guards.TestRdpBusyFires", "tests.test_rdp_hidden.TestHiddenRdp"]),
     (winboat, "rdp_busy", lambda *a, **k: "pid 1 running x holds it",
      "rdp_busy reports every port as held",
-     ["tests.test_guards.TestRdpBusyFires"]),
+     ["tests.test_guards.TestRdpBusyFires", "tests.test_rdp_hidden.TestHiddenRdp"]),
     (winboat, "port_open", lambda *a, **k: True,
      "port_open calls every port open",
      ["tests.test_guards.TestPortOpenFires"]),

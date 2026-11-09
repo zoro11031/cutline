@@ -1025,3 +1025,114 @@ like independent confirmation of size.
 second path is only evidence if it does not share an assumption with the
 first. Ask what the two have in common before counting them as two, and
 treat exact agreement as a reason to look rather than a reason to relax.
+
+## 25. SVG viewport size does not set coordinate units (2026-11-08)
+
+Continuing the Linux cutting workflow, inspection found that `load_svg`
+interpreted bare coordinates as millimetres whenever both page dimensions
+were present and there was no viewBox. A path ending at (96, 96) therefore
+ended at (96 mm, 96 mm), rather than (25.4 mm, 25.4 mm).
+
+SVG's initial user coordinate system uses pixels regardless of physical
+viewport dimensions: https://www.w3.org/TR/SVG11/coords.html#InitialCoordinateSystem.
+The importer now retains its CSS-pixel scale in this case and reports it.
+Page dimensions remain physical dimensions; viewBox handling is unchanged.
+
+The regression test failed before the fix for all four viewport spellings
+(mm, cm, inches and px), then passed. The full offline suite passed: 307
+tests, zero tests asserting nothing. The generated eight-card dry run also
+passed all checks and eight liveness probes. This establishes software
+behaviour only; no cutter was connected and no hardware cut was attempted.
+
+## 26. Live Studio DXF import comparison (2026-11-08)
+
+WinBoat was reachable outside the sandbox. A sandbox-denied Docker socket
+had previously made status report the guest as stopped; that was not evidence
+of guest state. Studio 5.0.556.1 was launched through the existing guarded,
+600-second RDP helper. No print or cut was sent.
+
+Windows UI Automation exposed only unnamed panes (nine at the home screen,
+15 after import), not numerical controls. Screen capture did work. Opening
+our generated Letter landscape eight-card rounded DXF via Ctrl+O produced
+eight rounded cards in Studio. Ctrl+A showed a group measurement of
+10.356 by 7.175 inches. Linux reads the same file's bounds as
+255.778 by 177.2073 mm, approximately 10.070 by 6.977 inches. Studio's
+individual-object toolbar showed W 2.551 and H 3.562 inches, also larger
+than a 63 by 88 mm card. The group discrepancy is approximately 2.84%.
+
+This is an observed import discrepancy, not a diagnosed unit conversion.
+Import preferences, auto-sizing and document placement have not yet been
+isolated. Do not compensate in the writer on this evidence. The screenshot
+shows a square page/mat rather than the source Letter landscape page, so
+page metadata preservation is also unproved. Rounded corners are visible;
+precise arc fidelity cannot be inferred from the screenshot.
+
+Local evidence (not vendored): `guest-staging/dxf-probe/report.txt` and
+`screen.png`, and the source DXF in `guest-staging/studio-comparison/`.
+`tools/probe-studio-dxf.ps1` preserves the probe with parameterized guest
+paths; that generalized version has not yet been rerun. It must be launched
+through `winboat.run_script`, with its normal guard and timeout. It opens a
+new document and selects all; it does not save, print, or send a cut.
+The next differential experiment is to record Studio's DXF import
+preferences and repeat with a known 100 mm square, changing one preference
+at a time. Native `.studio3` decoding remains outstanding.
+
+## 27. Credential-pipe RDP sessions were invisible to the busy guard
+
+2026-11-08: before the next Studio experiment, an actual `xfreerdp3`
+process had an established loopback connection to WinBoat port 47301,
+but `status` reported the session free. Its argv contained only
+`/args-from:fd:3`, so the existing `/v:` search could never see it.
+This is a consequence of the credential protection in section 14.
+
+`rdp_busy` now checks established socket peers for real clients with
+opaque arguments, matching the exact process id and guest loopback port.
+If socket inspection cannot run, it refuses the launch. It never reads
+the credential pipe and never treats unknown ownership as our marker.
+`our_stale_sessions` remains restricted to explicitly marked clients;
+the unidentified live session was not killed or replaced.
+
+The connected-client regression failed before the fix. Seven offline tests
+cover connected/other-port/other-pid/wrapper cases, local-versus-peer port,
+inspection failure, and exclusion from reaping. The existing discrimination
+mutations now also exercise this test class. All 314 tests and the assertion
+audit pass; the generated job dry run passes. The Canon instance was told
+about the detector gap and is also holding off on VM launches.
+
+A 100 mm square DXF is staged locally for the next import comparison. Its
+Linux-decoded bounds are (20,177) to (120,277) mm on a 210 by 297 mm page.
+It has not yet been opened in Studio: the unidentified session currently
+holds the guest. The 2.84% observation in section 26 remains unresolved.
+
+## 28. Card Maker cutting guide alignment & Studio workflow integration (2026-11-09)
+
+The cutting workflow and presets were audited against the published Silhouette
+Card Maker cutting guide (https://alan-cha.github.io/silhouette-card-maker/tutorial/guide/).
+
+1. Presets and blade settings:
+   - Added `Card Maker reference (cardstock + laminate)`: force 33 (clamped
+     to Cameo 4 maximum; Cameo 5 Alpha accepts up to 40), speed 25, depth 7,
+     4 passes. Origin is `guide`.
+   - Exposed `Card Maker starting point` (force 25, speed 25, depth 7, 1 pass)
+     and retained `Cameo 4 starting point` as an alias for backwards compatibility.
+   - Updated tuning rules in documentation and GUI to reflect the guide's
+     priority: Passes -> Force -> Speed -> Depth. Added guide troubleshooting
+     notes (reduce force if laminate edges ripple; reduce speed if machine skips).
+
+2. Template card-skipping fix:
+   - Inspection of `template.write_svg` and `template.write_dxf` revealed that
+     both functions looped over `grid.cards` without consulting `skip`, meaning
+     slots intentionally left empty to prevent optical sensor mark collisions
+     still produced cut paths in exported SVG and DXF files.
+   - Both functions now accept `skip`, and `job.write_templates` passes
+     `job.skip`. Skipped cards are omitted from both exports, proven by unit tests.
+
+3. Silhouette Studio integration & operator guidance:
+   - Added `--via studio` to `cut-proxies cut` to build and verify the job,
+     stage the DXF in the WinBoat guest share, launch Studio via RDP RemoteApp,
+     and output an operator checklist covering page setup, registration marks,
+     bounding box dimensions for Ctrl+A verification, and blade settings.
+   - Updated `cut-proxies studio` to generate and stage the template when run
+     without a file argument, and added `--app-only` to launch Studio blank.
+   - Updated ProxyPress guidance to reflect the new 1-click "Set up for
+     Silhouette Cameo" button on the Cutting tab and the 3.2 mm MTG corner radius.

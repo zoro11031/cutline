@@ -530,13 +530,11 @@ def load_svg(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
         pre = (1, 0, 0, 1, -vx, -vy)
     else:
         sx = sy = _UNITS_MM["px"]
-        if w_mm and h_mm:
-            sx = sy = 1.0        # width/height already mm, no viewBox
-            note = f"no viewBox: coordinates taken as millimetres directly"
-        else:
-            w_mm = w_mm or 0.0
-            h_mm = h_mm or 0.0
-            note = f"no viewBox or size: units taken as CSS px at {CSS_DPI:g} dpi"
+        # Physical viewport dimensions do not redefine user units.
+        # https://www.w3.org/TR/SVG11/coords.html#InitialCoordinateSystem
+        w_mm = w_mm or 0.0
+        h_mm = h_mm or 0.0
+        note = f"no viewBox: units taken as CSS px at {CSS_DPI:g} dpi"
         pre = IDENTITY
 
     base = _matmul((sx, 0, 0, sy, 0, 0), pre)

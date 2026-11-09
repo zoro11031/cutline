@@ -270,11 +270,12 @@ def write_templates(job: Job, stem: str, folder=None,
     svg = folder / f"{stem}.svg"
     template.write_svg(svg, job.grid, job.paths, job.mode,
                        job.grid.card.radius_mm, job.marks, proof=False,
-                       note=f"preset {job.preset.name}")
+                       note=f"preset {job.preset.name}", skip=job.skip)
     out["svg"] = svg
 
     dxf = folder / f"{stem}.dxf"
-    template.write_dxf(dxf, job.grid, job.mode, job.grid.card.radius_mm)
+    template.write_dxf(dxf, job.grid, job.mode, job.grid.card.radius_mm,
+                       skip=job.skip)
     out["dxf"] = dxf
 
     if proof:
@@ -282,6 +283,6 @@ def write_templates(job: Job, stem: str, folder=None,
         template.write_svg(proof_svg, job.grid, job.paths, job.mode,
                            job.grid.card.radius_mm, job.marks, proof=True,
                            note="PROOF - do not cut; marks are printed, "
-                                "not cut")
+                                "not cut", skip=job.skip)
         out["proof"] = proof_svg
     return out

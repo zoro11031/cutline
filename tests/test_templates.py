@@ -61,6 +61,10 @@ class TestSvg(unittest.TestCase):
         expected = f"M {first.x + 3.0:.4f}".rstrip("0").rstrip(".")
         self.assertIn(expected.split()[1][:6], self.svg)
 
+    def test_skipped_cards_are_omitted_from_cut_paths(self):
+        svg_skip = template.write_svg(None, self.grid, self.paths, skip=(0,))
+        self.assertEqual(svg_skip.count("<path"), self.grid.count - 1)
+
     def test_it_writes_to_disk(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = pathlib.Path(tmp) / "t.svg"
@@ -119,6 +123,10 @@ class TestDxf(unittest.TestCase):
         cross = template.write_dxf(None, self.grid, template.CROSS)
         self.assertIn("LINE", cross)
         self.assertNotIn("POLYLINE", cross)
+
+    def test_skipped_cards_are_omitted_from_dxf(self):
+        dxf_skip = template.write_dxf(None, self.grid, skip=(0,))
+        self.assertEqual(dxf_skip.count("POLYLINE"), self.grid.count - 1)
 
 
 class TestJobBuilding(unittest.TestCase):
@@ -362,6 +370,18 @@ class TestPresets(unittest.TestCase):
         s = presets.get("Cameo 4 starting point").settings
         self.assertEqual((s["force"], s["speed"], s["depth"], s["passes"]),
                          (25, 25, 7, 1))
+        start = presets.get("Card Maker starting point").settings
+        self.assertEqual((start["force"], start["speed"], start["depth"], start["passes"]),
+                         (25, 25, 7, 1))
+
+    def test_card_maker_reference_preset_matches_guide(self):
+        from cut_proxies import presets
+        ref = presets.get("Card Maker reference (cardstock + laminate)")
+        self.assertEqual((ref.settings["force"], ref.settings["speed"],
+                          ref.settings["depth"], ref.settings["passes"]),
+                         (33, 25, 7, 4))
+        self.assertEqual(ref.origin, "guide")
+        self.assertEqual(presets.get("cardstock + laminate"), ref)
 
 
 if __name__ == "__main__":

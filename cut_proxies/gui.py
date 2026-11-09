@@ -340,8 +340,8 @@ class Window(Adw.ApplicationWindow):
         self.r_mode = _combo(
             "Cut mode", ["rounded", "square", "cross"],
             subtitle="cross cuts straight across for a corner punch")
-        self.r_radius = _spin("Corner radius", 0, 10, 3.0, 0.1, 1,
-                              subtitle="mm; 3 mm is the card standard")
+        self.r_radius = _spin("Corner radius", 0, 10, 3.2, 0.1, 1,
+                              subtitle="mm; 3.2 mm MTG standard, 3 mm for Kadomaru punches")
         g2.add(self.r_mode)
         g2.add(self.r_radius)
         page.add(g2)
@@ -472,9 +472,10 @@ class Window(Adw.ApplicationWindow):
 
         g2 = Adw.PreferencesGroup(
             title="Blade",
-            description="On stock this heavy, add passes rather than force. "
-                        "One very hard pass embosses the back of the card and "
-                        "drags it sideways.")
+            description="Tuning order: passes, then force, then speed, then "
+                        "depth. On heavy stock, multi-pass cuts cleaner. If "
+                        "laminate edges ripple, reduce force. If machine "
+                        "skips, reduce speed.")
         self.r_cutter = _combo(
             "Cutter", [d.name for d in graphtec.DEVICES],
             [d.name for d in graphtec.DEVICES].index("Silhouette Cameo 4"))
@@ -580,7 +581,7 @@ class Window(Adw.ApplicationWindow):
         self.r_test_force = Adw.EntryRow(title="Force values")
         self.r_test_force.set_text("25,29,33")
         self.r_test_passes = Adw.EntryRow(title="Pass counts")
-        self.r_test_passes.set_text("1,2,3")
+        self.r_test_passes.set_text("1,2,3,4")
         gtest.add(self.r_test_force)
         gtest.add(self.r_test_passes)
         test_row = Adw.ActionRow(
@@ -645,6 +646,15 @@ class Window(Adw.ApplicationWindow):
         prep_btn.connect("clicked", self.on_prepare_guest)
         prep.add_suffix(prep_btn)
         g.add(prep)
+
+        launch_row = Adw.ActionRow(
+            title="Launch Studio (blank)",
+            subtitle="Opens Silhouette Studio without opening a template")
+        launch_btn = Gtk.Button(label="Launch")
+        launch_btn.set_valign(Gtk.Align.CENTER)
+        launch_btn.connect("clicked", self.on_launch_blank_studio)
+        launch_row.add_suffix(launch_btn)
+        g.add(launch_row)
 
         open_row = Adw.ActionRow(
             title="Export and open in Studio",
@@ -797,6 +807,10 @@ class Window(Adw.ApplicationWindow):
         if blocked:
             self.banner.set_title(f"{len(blocked)} problem(s): {blocked[0]}")
             self.banner.set_revealed(True)
+        elif not self.r_register.get_active():
+            self.banner.set_title(
+                "Registration is OFF: blade will cut in sheet coordinates (for blank sheets only)")
+            self.banner.set_revealed(True)
         elif j.warnings:
             self.banner.set_title(j.warnings[0])
             self.banner.set_revealed(True)
@@ -808,9 +822,7 @@ class Window(Adw.ApplicationWindow):
         else:
             self.banner.set_revealed(False)
 
-        self.cut_button.set_sensitive(
-            not blocked and j.settings.passes > 0
-            and self.r_register.get_active())
+        self.cut_button.set_sensitive(not blocked and j.settings.passes > 0)
         self._building = False
 
     # ---- actions ------------------------------------------------------
@@ -1167,6 +1179,15 @@ class Window(Adw.ApplicationWindow):
         self.guest_row.set_subtitle("\n".join(info["steps"]))
         self.toast(f"Staged {info['script'].name}")
 
+    def on_launch_blank_studio(self, *_a):
+        try:
+            cmd = winboat.open_in_studio(None)
+        except Exception as exc:              # noqa: BLE001
+            self.toast(f"Could not launch Studio: {exc}")
+            return
+        self.toast("Opening Silhouette Studio in the guest")
+        self.guest_row.set_subtitle(" ".join(cmd))
+
     def on_open_studio(self, *_a):
         if self.job is None:
             self.toast("Nothing to open: fix the layout first.")
@@ -1175,13 +1196,25 @@ class Window(Adw.ApplicationWindow):
         stem = (f"{j.grid.sheet_name.lower()}-{j.grid.card.name}-"
                 f"{j.grid.cols}x{j.grid.rows}-{j.mode}")
         try:
-            written = job_mod.write_templates(j, stem, proof=False)
+            written = job_mod.write_templates(j, stem, folder=winboat.stage_dir(), proof=False)
             cmd = winboat.open_in_studio(written["dxf"])
         except Exception as exc:              # noqa: BLE001
             self.toast(f"Could not open Studio: {exc}")
             return
-        self.toast("Opening Silhouette Studio in the guest")
-        self.guest_row.set_subtitle(" ".join(cmd))
+        b = j.grid.bounds
+        self.toast(f"Staged {written['dxf'].name} & opening Studio")
+        guide_text = (
+            f"Command: {' '.join(cmd)}\n\n"
+            f"In Silhouette Studio:\n"
+            f"- Page Setup: {j.grid.sheet_name} {'Landscape' if not j.grid.portrait else 'Portrait'}\n"
+            f"- Reg Marks: Type 1, Inset {j.marks.inset_mm:g} mm, Length {j.marks.reg_length_mm:g} mm\n"
+            f"- Verify Size (Ctrl+A): {b.w:.2f} x {b.h:.2f} mm ({b.w / 25.4:.3f} x {b.h / 25.4:.3f} in)\n"
+            f"- If scaled in Basic Edition: lock aspect ratio and set Width to {b.w:.2f} mm ({b.w / 25.4:.3f} in)\n"
+            f"- Card size: {j.grid.card.width_mm:.1f} x {j.grid.card.height_mm:.1f} mm\n"
+            f"- Settings: Force {j.settings.force}, Speed {j.settings.speed}, Passes {j.settings.passes}, Depth {j.settings.depth or 7}\n"
+            f"- Sticky note hint: Cover bottom-left card during mark scan, remove before cutting"
+        )
+        self.guest_row.set_subtitle(guide_text)
 
 
 class Application(Adw.Application):

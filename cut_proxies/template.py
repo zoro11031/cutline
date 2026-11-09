@@ -214,13 +214,15 @@ def _svg_rounded_path(rect: Rect, radius: float) -> str:
 
 def write_svg(path, grid: Grid, paths, mode: str = ROUNDED,
               radius_mm: float | None = None, mk: Marks | None = None,
-              proof: bool = False, note: str = "") -> str:
+              proof: bool = False, note: str = "",
+              skip: "frozenset[int] | tuple[int, ...]" = ()) -> str:
     """Write the cut template as SVG.
 
     With `proof=True` the registration marks and a page outline are drawn as
     well, for holding against the printed sheet to check alignment by eye.
     **A proof must never be sent to the cutter**: Studio would try to cut the
     marks.  The cut file, `proof=False`, contains cut geometry only.
+    `skip` leaves those card indices uncut.
     """
     radius = grid.card.radius_mm if radius_mm is None else radius_mm
     W, H = grid.sheet_w_mm, grid.sheet_h_mm
@@ -272,7 +274,10 @@ def write_svg(path, grid: Grid, paths, mode: str = ROUNDED,
         # True arcs, not the flattened polyline, so the file stays small and
         # editable.  The flattened form is what the USB stream uses; both come
         # from the same rectangles and the same radius.
-        for rect in grid.cards:
+        skipped = frozenset(skip)
+        for i, rect in enumerate(grid.cards):
+            if i in skipped:
+                continue
             out.append(f'    <path d="'
                        f'{_svg_rounded_path(rect, radius if mode == ROUNDED else 0.0)}"/>')
     out.append('  </g>')
@@ -293,13 +298,15 @@ def _dxf_pair(code: int, value) -> str:
 
 
 def write_dxf(path, grid: Grid, mode: str = ROUNDED,
-              radius_mm: float | None = None) -> str:
+              radius_mm: float | None = None,
+              skip: "frozenset[int] | tuple[int, ...]" = ()) -> str:
     """Write the cut template as DXF in millimetres.
 
     Rounded cards become closed POLYLINE entities whose corner vertices carry
     a bulge, which is what Silhouette Studio joins smoothly.  Y is flipped,
     because DXF counts upward from a bottom-left origin while every other
     coordinate in this project counts down from the top-left.
+    `skip` leaves those card indices uncut.
     """
     radius = grid.card.radius_mm if radius_mm is None else radius_mm
     H = grid.sheet_h_mm
@@ -319,7 +326,10 @@ def write_dxf(path, grid: Grid, mode: str = ROUNDED,
                         + _dxf_pair(31, "0.0"))
     else:
         r = radius if mode == ROUNDED else 0.0
-        for rect in grid.cards:
+        skipped = frozenset(skip)
+        for i, rect in enumerate(grid.cards):
+            if i in skipped:
+                continue
             body.append(_dxf_polyline(rect, r, fy))
 
     out = []
