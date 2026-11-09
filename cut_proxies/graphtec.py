@@ -1,0 +1,548 @@
+"""The Graphtec / Silhouette command layer.
+
+Every command byte in this file was read out of
+`fablabnbg/inkscape-silhouette`, which recovered them from Silhouette Studio's
+own traffic, and each one carries the reference it came from.  Nothing here is
+inferred from a plausible-looking pattern: where the meaning of a command is
+not known, that is said, and where a value is a magic constant copied verbatim
+it is labelled as one.  The citations are to `silhouette/Graphtec.py` in that
+project unless stated otherwise.
+
+Two things about this protocol catch people out:
+
+1. **Coordinates are sent (y, x), not (x, y).**  `M` and `D` take the long
+   axis of the machine first.  See `move_mm_cmd` / `draw_mm_cmd` (Graphtec.py
+   ~1339).  Every conversion from sheet mm to machine units happens in this
+   module and nowhere else.
+
+2. **A registration scan moves the origin.**  Once the sensor has found the
+   marks the machine puts logical (0, 0) at the top-left mark, so cut
+   coordinates must be measured from the mark, not from the paper corner.
+   inkscape-silhouette does this by subtracting the mark origin from every
+   point (Graphtec.py ~1537); so do we, in `CutJob`.
+
+A cut is not a single blob of bytes - the registration scan has to be read
+back before the paths can be sent - so a job is built as an ordered list of
+`Step`s.  `stream()` flattens just the writes, which is what gets dumped and
+inspected; `plan()` keeps the reads, which is what actually gets run.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+
+# --------------------------------------------------------------------------
+# Framing (Graphtec.py 172-195)
+# --------------------------------------------------------------------------
+
+CMD_ETX = b"\x03"           # every command is terminated with this
+CMD_ESC = b"\x1b"
+ESC_EOT = b"\x04"           # escape: initialise the device
+ESC_ENQ = b"\x05"           # escape: return status
+ESC_NAK = b"\x15"           # escape: return tool setup (Cameo 4 and later)
+
+QUERY_FIRMWARE_VERSION = b"FG"
+
+RESP_READY = b"0"
+RESP_MOVING = b"1"
+RESP_UNLOADED = b"2"
+RESP_DECODING = {RESP_READY: "ready", RESP_MOVING: "moving",
+                 RESP_UNLOADED: "unloaded"}
+
+# The reply a successful registration scan sends back: four spaces, a zero and
+# an ETX (Graphtec.py ~1574).  Anything else means the marks were not found.
+RESP_REGMARK_OK = b"    0\x03"
+
+# 1 Silhouette unit = 1/20 mm = 0.05 mm (Graphtec.py 333-346).
+SU_PER_MM = 20.0
+
+
+def su(mm: float) -> int:
+    """Millimetres to Silhouette units, rounded as the reference does."""
+    return int(round(mm * SU_PER_MM))
+
+
+def su_to_mm(units: int) -> float:
+    return units / SU_PER_MM
+
+
+def frame(commands) -> bytes:
+    """ETX-terminate one command or a list of them (Graphtec.py 368-375)."""
+    if isinstance(commands, (str, bytes)):
+        commands = [commands]
+    out = b""
+    for c in commands:
+        out += (c.encode() if isinstance(c, str) else c) + CMD_ETX
+    return out
+
+
+# --------------------------------------------------------------------------
+# Devices (Graphtec.py 131-263)
+# --------------------------------------------------------------------------
+
+VENDOR_GRAPHTEC = 0x0B4D
+VENDOR_CAMEO5ALPHA = 0x3844
+
+
+@dataclasses.dataclass(frozen=True)
+class Device:
+    name: str
+    vendor_id: int
+    product_id: int
+    width_mm: float
+    length_mm: float
+    quad_regmarks: bool = False     # Cameo 5 Alpha's four-mark pattern
+    max_pressure: int = 33
+    max_speed: int = 10             # 30 on the Cameo 4 line, see below
+    two_tools: bool = False
+    cameo3_on: bool = False         # the newer command dialect
+
+    @property
+    def usb_id(self) -> str:
+        return f"{self.vendor_id:04x}:{self.product_id:04x}"
+
+
+def _d(name, pid, width, *, vendor=VENDOR_GRAPHTEC, quad=False,
+       max_pressure=33, max_speed=10, two_tools=False, cameo3_on=False):
+    return Device(name, vendor, pid, width, 3000.0, quad, max_pressure,
+                  max_speed, two_tools, cameo3_on)
+
+
+# Only the machines inkscape-silhouette has entries for.  `width_mm` is the
+# cuttable width, which is what limits how wide a sheet can be.
+DEVICES: tuple[Device, ...] = (
+    _d("Silhouette Portrait", 0x1123, 206.0),
+    _d("Silhouette Portrait 2", 0x1132, 203.0),
+    _d("Silhouette Portrait 3", 0x113A, 203.0, max_speed=30, cameo3_on=True),
+    _d("Silhouette Portrait 4", 0x113F, 216.0, max_speed=30, cameo3_on=True),
+    _d("Silhouette Cameo", 0x1121, 304.0),
+    _d("Silhouette Cameo 2", 0x112B, 304.0),
+    _d("Silhouette Cameo 3", 0x112F, 304.8, two_tools=True, cameo3_on=True),
+    _d("Silhouette Cameo 4", 0x1137, 304.8, max_speed=30, two_tools=True,
+       cameo3_on=True),
+    _d("Silhouette Cameo 4 Plus", 0x1138, 372.0, max_speed=30, two_tools=True,
+       cameo3_on=True),
+    _d("Silhouette Cameo 4 Pro", 0x1139, 600.0, max_speed=30, two_tools=True,
+       cameo3_on=True),
+    _d("Silhouette Cameo 5", 0x1140, 330.2, max_speed=30, two_tools=True,
+       cameo3_on=True),
+    _d("Silhouette Cameo 5 Plus", 0x1141, 372.0, max_speed=30, two_tools=True,
+       cameo3_on=True),
+    _d("Silhouette Cameo Pro MK-II", 0x1146, 609.0, quad=True, max_speed=30,
+       two_tools=True, cameo3_on=True),
+    _d("Silhouette Cameo 5 Alpha", 0x0001, 330.2, vendor=VENDOR_CAMEO5ALPHA,
+       quad=True, max_pressure=40, max_speed=30, two_tools=True,
+       cameo3_on=True),
+    _d("Silhouette Cameo 5 Alpha Plus", 0x0002, 372.0,
+       vendor=VENDOR_CAMEO5ALPHA, quad=True, max_pressure=40, max_speed=30,
+       two_tools=True, cameo3_on=True),
+)
+
+DEVICES_BY_ID = {(d.vendor_id, d.product_id): d for d in DEVICES}
+
+
+def device_for(vendor_id: int, product_id: int) -> Device | None:
+    return DEVICES_BY_ID.get((vendor_id, product_id))
+
+
+def device_by_name(name: str) -> Device:
+    want = name.lower().replace("_", " ").replace("-", " ")
+    for d in DEVICES:
+        if d.name.lower().replace("-", " ") == want:
+            return d
+    raise KeyError(f"unknown cutter {name!r}; known: "
+                   + ", ".join(d.name for d in DEVICES))
+
+
+# --------------------------------------------------------------------------
+# Commands
+# --------------------------------------------------------------------------
+
+@dataclasses.dataclass(frozen=True)
+class Tool:
+    """Per-tool-holder commands (Graphtec.py 378-415).
+
+    Holder 1 is the left/only holder; holder 2 exists on the Cameo 3 and
+    later.  On a two-tool machine the holder number is part of most commands,
+    which is why these are built here rather than written as literals.
+    """
+
+    holder: int = 1
+
+    def select(self) -> str:
+        return f"J{self.holder}"
+
+    def pressure(self, grams_index: int) -> str:
+        """Blade force, 1-33 (1-40 on the Cameo 5 Alpha).  Unitless index."""
+        return f"FX{grams_index},{self.holder}"
+
+    def speed(self, speed: int) -> str:
+        return f"!{speed},{self.holder}"
+
+    def depth(self, depth: int) -> str:
+        """AutoBlade depth, 0-10.  Holder 1 only."""
+        return f"TF{depth},{self.holder}"
+
+    def cutter_offset(self, x_mm: float, y_mm: float) -> str:
+        return f"FC{su(x_mm)},{su(y_mm)},{self.holder}"
+
+    def lift(self, on: bool) -> str:
+        """Lift the head at sharp angles rather than pivoting in the media."""
+        return f"FE{1 if on else 0},{self.holder}"
+
+    def sharpen_corners(self, start: int, end: int) -> tuple[str, str]:
+        return (f"FF{start},0,{self.holder}",
+                f"FF{start},{end},{self.holder}")
+
+
+def acceleration(level: int) -> str:
+    """TJa.  Graphtec.py 1335; the scale is not documented upstream."""
+    return f"TJ{level}"
+
+
+def blade_diameter(mm: float) -> str:
+    """FC without a holder: the circle the blade swings on a direction change.
+
+    robocut's note, quoted in Graphtec.py ~1246: 0 for a pen, 18 for cutting,
+    and a standard blade is 0.9 mm.  Values above ~46 are ignored by the
+    device.
+    """
+    return f"FC{su(mm)}"
+
+
+def move_mm(x_mm: float, y_mm: float) -> str:
+    """Pen-up move.  Note the (y, x) order (Graphtec.py 1339)."""
+    return f"M{su(y_mm)},{su(x_mm)}"
+
+
+def draw_mm(x_mm: float, y_mm: float) -> str:
+    """Pen-down move (Graphtec.py 1343)."""
+    return f"D{su(y_mm)},{su(x_mm)}"
+
+
+def upper_left_mm(x_mm: float, y_mm: float) -> str:
+    r"""Clip-area top-left.  The command really is a backslash
+    (Graphtec.py 1347)."""
+    return f"\\{su(y_mm)},{su(x_mm)}"
+
+
+def lower_right_mm(x_mm: float, y_mm: float) -> str:
+    """Clip-area bottom-right (Graphtec.py 1351)."""
+    return f"Z{su(y_mm)},{su(x_mm)}"
+
+
+def auto_regmark_search_mm(length_mm: float, width_mm: float, top_mm: float,
+                           left_mm: float) -> str:
+    """TB123: search for three marks (Graphtec.py 1355)."""
+    return (f"TB123,{su(length_mm)},{su(width_mm)},{su(top_mm)},"
+            f"{su(left_mm)}")
+
+
+def auto_quad_regmark_search_mm(length_mm: float, width_mm: float,
+                                top_mm: float, left_mm: float) -> str:
+    """TB124: search for four marks, Cameo 5 Alpha (Graphtec.py 1360)."""
+    return (f"TB124,{su(length_mm)},{su(width_mm)},{su(top_mm)},"
+            f"{su(left_mm)}")
+
+
+def manual_regmark_mm(length_mm: float, width_mm: float) -> str:
+    """TB23: the operator has already parked the head on the first mark."""
+    return f"TB23,{su(length_mm)},{su(width_mm)}"
+
+
+# The fixed preamble to any registration scan (Graphtec.py 1549-1555).
+# TB51 and TB53 are sent as the literal constants Silhouette Studio sends;
+# they are described upstream as the mark length and width, but in units that
+# were never pinned down, so they are passed through unchanged rather than
+# derived from our own mark geometry.  If a scan fails on marks that are
+# visibly correct, these two are the first thing to question.
+REGMARK_PREAMBLE = (
+    "TB50,0",       # 0 = portrait mode.  With registration it is always 0.
+    "TB99",         # undocumented upstream; always sent before a scan
+    "TB52,2",       # mark type: 0 = original/SD, 2 = Cameo/Portrait
+    "TB51,400",     # "length of regmarks", magic constant
+    "TB53,10",      # "width of regmarks", magic constant
+    "TB55,1",       # undocumented upstream
+)
+
+
+# --------------------------------------------------------------------------
+# Media (Graphtec.py ~80-120)
+# --------------------------------------------------------------------------
+
+@dataclasses.dataclass(frozen=True)
+class Media:
+    id: int
+    pressure: int
+    speed: int
+    depth: int
+    blade: str
+    name: str
+
+
+# Only the entries that matter for card: the stock here is heavier than
+# anything in the table, so these are a starting point, not an answer.
+MEDIA = (
+    Media(112, 10, 10, 1, "blue", "Cardstock, Plain"),
+    Media(122, 30, 10, 1, "yellow", "Cardstock 40-60 lbs (90g)"),
+    Media(123, 30, 10, 1, "yellow", "Cover 40-60 lbs (170g)"),
+    Media(127, 30, 10, 1, "red", "Index 90 lbs (165g)"),
+    Media(135, 20, 10, 1, "red", "Tag 100 lbs (275g)"),
+    Media(132, 5, 10, 1, "blue", "Print Paper Light Weight"),
+    Media(133, 25, 10, 1, "yellow", "Print Paper Medium Weight"),
+)
+MEDIA_BY_ID = {m.id: m for m in MEDIA}
+
+
+# --------------------------------------------------------------------------
+# A job
+# --------------------------------------------------------------------------
+
+@dataclasses.dataclass(frozen=True)
+class Step:
+    """One thing to do: write bytes, or read and check them."""
+
+    kind: str                   # "write" | "expect" | "status"
+    data: bytes = b""
+    expect: bytes = b""
+    timeout_ms: int = 10000
+    note: str = ""
+
+
+@dataclasses.dataclass
+class CutSettings:
+    """Blade settings for one pass.
+
+    `force` and `speed` are the machine's own unitless indices, the same
+    numbers Silhouette Studio shows.  There is no conversion to grams or
+    mm/s to be had: the mapping is not published and was not recovered.
+    """
+
+    force: int = 20
+    speed: int = 5
+    depth: int | None = None            # AutoBlade only
+    acceleration: int | None = None
+    blade_diameter_mm: float = 0.9
+    holder: int = 1
+    passes: int = 1
+    lift_head: bool = True
+    sharpen_corners: bool = False
+    media: int | None = None            # advisory; no command carries it
+
+    def clamped(self, device: Device) -> "CutSettings":
+        out = dataclasses.replace(self)
+        out.force = max(1, min(self.force, device.max_pressure))
+        out.speed = max(1, min(self.speed, device.max_speed))
+        if out.depth is not None:
+            out.depth = max(0, min(out.depth, 10))
+        out.passes = max(1, min(self.passes, 10))
+        return out
+
+    def warnings(self, device: Device) -> list[str]:
+        out = []
+        if self.force > device.max_pressure:
+            out.append(f"force {self.force} is above the {device.name} "
+                       f"maximum of {device.max_pressure}; it will be clamped")
+        if self.speed > device.max_speed:
+            out.append(f"speed {self.speed} is above the {device.name} "
+                       f"maximum of {device.max_speed}; it will be clamped")
+        if self.depth is not None and self.holder != 1:
+            out.append("AutoBlade depth only applies to tool holder 1; it "
+                       "will not be sent")
+        return out
+
+
+class CutJob:
+    """Builds the full step list for one registered cut.
+
+    The caller supplies paths in **sheet millimetres, top-left origin**.  This
+    class is the only place that knows about the mark origin shift, the (y, x)
+    order or Silhouette units.
+    """
+
+    def __init__(self, device: Device, settings: CutSettings,
+                 origin_mm: tuple[float, float] = (0.0, 0.0),
+                 reg_width_mm: float = 0.0, reg_length_mm: float = 0.0,
+                 registration: bool = True, auto_search: bool = True,
+                 search_mm: float = 10.0, quad: bool = False,
+                 offset_mm: tuple[float, float] = (0.0, 0.0)):
+        self.device = device
+        self.settings = settings.clamped(device)
+        self.origin_mm = origin_mm
+        # A standing correction applied to every cut coordinate, for the
+        # fixed error between where the sensor says the mark is and where
+        # the blade actually comes down.  It is a property of the machine,
+        # not of the sheet, so it is measured once and kept.
+        self.offset_mm = offset_mm
+        self.reg_width_mm = reg_width_mm
+        self.reg_length_mm = reg_length_mm
+        self.registration = registration
+        self.auto_search = auto_search
+        self.search_mm = search_mm
+        # A four-mark scan only exists on hardware that has it.
+        self.quad = quad and device.quad_regmarks
+
+    # ---- pieces ------------------------------------------------------
+    def _setup_commands(self, settings: CutSettings | None = None) -> list[str]:
+        s = (settings.clamped(self.device) if settings is not None
+             else self.settings)
+        dev = self.device
+        tool = Tool(s.holder)
+        cmds: list[str] = []
+        if dev.two_tools:
+            cmds.append(tool.select())
+
+        if dev.max_speed > 10:           # the Cameo 4 / 5 dialect
+            cmds.append(tool.pressure(s.force))
+            cmds.append(acceleration(s.acceleration
+                                     if s.acceleration is not None else 0))
+            cmds.append(tool.speed(s.speed))
+            cmds.append(tool.cutter_offset(0, 0.05))
+            cmds.append(tool.lift(s.lift_head))
+            if s.sharpen_corners:
+                cmds.extend(tool.sharpen_corners(1, 1))
+            else:
+                cmds.extend(tool.sharpen_corners(0, 0))
+            # Upstream sends the pressure twice, with an acceleration change
+            # between, and notes it does not know why.  Reproduced.
+            cmds.append(tool.pressure(s.force))
+            cmds.append(acceleration(s.acceleration
+                                     if s.acceleration is not None else 3))
+            cmds.append(tool.cutter_offset(s.blade_diameter_mm, 0.05))
+            if s.depth is not None and s.holder == 1:
+                cmds.append(tool.depth(s.depth))
+        else:
+            cmds.append(tool.speed(s.speed) if dev.cameo3_on
+                        else f"!{s.speed}")
+            cmds.append(tool.pressure(s.force))
+            cmds.append(blade_diameter(s.blade_diameter_mm))
+            cmds.append("FE0,0")
+        return cmds
+
+    def _regmark_steps(self) -> list[Step]:
+        if not self.registration:
+            return []
+        ox, oy = self.origin_mm
+        steps = [Step("write", frame(list(REGMARK_PREAMBLE)),
+                      note="registration preamble")]
+        if self.auto_search:
+            fn = (auto_quad_regmark_search_mm if self.quad
+                  else auto_regmark_search_mm)
+            cmd = fn(self.reg_length_mm, self.reg_width_mm,
+                     max(oy - self.search_mm, 0.0),
+                     max(ox - self.search_mm, 0.0))
+            steps.append(Step("write", frame(cmd),
+                              note=f"scan for marks: {cmd}"))
+        else:
+            cmd = manual_regmark_mm(self.reg_length_mm, self.reg_width_mm)
+            steps.append(Step("write", frame(cmd),
+                              note=f"manual registration: {cmd}"))
+        # Upstream allows 40 s; the head traverses the whole sheet looking.
+        steps.append(Step("expect", expect=RESP_REGMARK_OK, timeout_ms=40000,
+                          note="marks found"))
+        return steps
+
+    def _path_commands(self, paths, passes: int | None = None) -> list[str]:
+        """Paths to M/D commands, shifted into mark-relative coordinates.
+
+        Two shifts, in this order: subtract the registration origin, because
+        the machine measures from the top-left mark; then add the standing
+        calibration offset, because the blade does not come down exactly
+        where the sensor says.
+        """
+        ox, oy = self.origin_mm if self.registration else (0.0, 0.0)
+        dx, dy = self.offset_mm
+        ox, oy = ox - dx, oy - dy
+        cmds: list[str] = []
+        for _ in range(passes if passes is not None else self.settings.passes):
+            for p in paths:
+                pts = list(p.points)
+                if not pts:
+                    continue
+                cmds.append(move_mm(pts[0][0] - ox, pts[0][1] - oy))
+                for x, y in pts[1:]:
+                    cmds.append(draw_mm(x - ox, y - oy))
+                if getattr(p, "closed", False):
+                    cmds.append(draw_mm(pts[0][0] - ox, pts[0][1] - oy))
+        return cmds
+
+    def _trailer_commands(self, paths) -> list[str]:
+        """Park the head clear of the work so the sheet can be lifted out."""
+        ox, oy = self.origin_mm if self.registration else (0.0, 0.0)
+        oy -= self.offset_mm[1]
+        max_y = 0.0
+        for p in paths:
+            for _, y in p.points:
+                max_y = max(max_y, y - oy)
+        # "SO0" follows the move upstream; its meaning is not documented.
+        return [move_mm(0.0, max_y), "SO0"]
+
+    # ---- assembly ----------------------------------------------------
+    def plan(self, paths) -> list[Step]:
+        steps: list[Step] = []
+        steps.append(Step("write", CMD_ESC + ESC_EOT,
+                          note="initialise the device"))
+        steps.append(Step("write", frame(self._setup_commands()),
+                          note="blade settings"))
+        steps.extend(self._regmark_steps())
+        if not self.device.cameo3_on:
+            # The older dialect wants the cut window stated explicitly.
+            steps.append(Step("write", frame([
+                upper_left_mm(0, 0),
+                lower_right_mm(self.reg_width_mm, self.reg_length_mm),
+                "L0", "FE0,0", "FF0,0,0"]), note="cut window"))
+        steps.append(Step("write", frame(self._path_commands(paths)),
+                          note="cut paths"))
+        steps.append(Step("write", frame(self._trailer_commands(paths)),
+                          note="park the head"))
+        return steps
+
+    def plan_matrix(self, groups) -> list[Step]:
+        """One job that cuts each group of paths with its own settings.
+
+        `groups` is a sequence of `(CutSettings, paths)`. The machine is set
+        up once, registered once if asked, and then the force/speed/depth
+        block is re-sent before each group - which is what makes a
+        settings-finding test sheet possible in a single pass of the mat
+        rather than one job per combination.
+
+        Everything else is identical to `plan`, deliberately: a test sheet
+        that reached the blade by a different route would not be testing the
+        thing you are about to cut with.
+        """
+        steps: list[Step] = []
+        steps.append(Step("write", CMD_ESC + ESC_EOT,
+                          note="initialise the device"))
+        if groups:
+            steps.append(Step("write", frame(self._setup_commands(groups[0][0])),
+                              note="blade settings"))
+        steps.extend(self._regmark_steps())
+        if not self.device.cameo3_on:
+            steps.append(Step("write", frame([
+                upper_left_mm(0, 0),
+                lower_right_mm(self.reg_width_mm, self.reg_length_mm),
+                "L0", "FE0,0", "FF0,0,0"]), note="cut window"))
+        all_paths = []
+        for settings, paths in groups:
+            s = settings.clamped(self.device)
+            steps.append(Step("write", frame(self._setup_commands(s)),
+                              note=(f"force {s.force}, speed {s.speed}, "
+                                    f"{s.passes} pass(es)"
+                                    + (f", depth {s.depth}"
+                                       if s.depth is not None else ""))))
+            steps.append(Step("write",
+                              frame(self._path_commands(paths, s.passes)),
+                              note=f"{len(paths)} path(s)"))
+            all_paths.extend(paths)
+        steps.append(Step("write", frame(self._trailer_commands(all_paths)),
+                          note="park the head"))
+        return steps
+
+    def stream(self, paths) -> bytes:
+        """Just the bytes, in order, for dumping and for verification."""
+        return b"".join(s.data for s in self.plan(paths)
+                        if s.kind == "write")
+
+    def stream_matrix(self, groups) -> bytes:
+        return b"".join(s.data for s in self.plan_matrix(groups)
+                        if s.kind == "write")
