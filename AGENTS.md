@@ -102,10 +102,16 @@ error message.
 ## Checks before committing
 
 ```sh
-./run-tests.sh                 # 306 tests, fast and offline
+./run-tests.sh                 # 306 tests + the coverage audit
 cut-proxies cut --dry-run      # build and verify a real job end to end
 cut-proxies status             # cutter, transports, WinBoat guest
 ```
+
+**A test that asserts nothing passes unconditionally.** `run-tests.sh`
+ends with `tools/audit_tests.py`, which counts assertions per test and
+fails on any that made none — usually a loop that iterated zero times. It
+is a script, not a test, because as a test it discovers itself and
+recurses. `--self-test` proves it can still fail.
 
 **Every guard needs a test for both answers.** Refusing is not
 discriminating: a guard tested only where it should refuse is passed by a
