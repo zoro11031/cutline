@@ -53,7 +53,7 @@ software. `materials.py` reads it out of an installation the user already
 has; do not copy it into the repo to make a test unconditional.
 
 **The verification proves itself every run.** `verify.liveness_failures`
-corrupts each built stream eight ways and confirms the checks reject it,
+corrupts each built stream nine ways and confirms the checks reject it,
 before the job is allowed through. Each probe must be caught by the check it
 *names*, not merely rejected by something: two checks reading the same
 decoded stream can hide each other, and the position probe did exactly that

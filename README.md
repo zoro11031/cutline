@@ -299,3 +299,14 @@ still uses the full paper coordinates for registration. Choose the matching
 sheet or re-export; fitting artwork inside another sheet is insufficient.
 DXF drawing bounds and SVGs without declared dimensions do not establish a
 paper size, so select their sheet and registration settings explicitly.
+
+Canon Suite's shared spool builder also disables CUPS automatic page fitting.
+Older versions could retain the original PDF yet shrink its raster by about
+5%. For matching printed sheets and cuts, run the current Canon handoff
+checks and measure a physical print before cutting stock.
+
+SVG imports preserve both rounded-corner radii and the viewport's aspect
+ratio/alignment. Flatten nested SVG viewports and slice-clipped drawings
+before import; these are refused rather than cut with different visible
+geometry. Verification measures every cutting pass, including repeated
+passes through a partial-sheet SVG.

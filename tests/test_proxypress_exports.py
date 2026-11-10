@@ -34,6 +34,13 @@ class ProxyPressExports(unittest.TestCase):
                             rect = ET.fromstring(svg).find('{http://www.w3.org/2000/svg}rect')
                             self.assertAlmostEqual(float(rect.get('rx')), 3.168, places=3)
                             self.assertAlmostEqual(float(rect.get('ry')), 3.232, places=3)
+                            rx, ry = float(rect.get('rx')), float(rect.get('ry'))
+                            cx = float(rect.get('x')) + float(rect.get('width')) - rx
+                            cy = float(rect.get('y')) + ry
+                            corner = [(x,y) for x,y in art.paths[0].points if x > cx and y < cy]
+                            self.assertGreater(len(corner), 2)
+                            for x,y in corner:
+                                self.assertAlmostEqual(((x-cx)/rx)**2 + ((y-cy)/ry)**2, 1, places=5)
                         else:
                             self.assertEqual(case['arm'], reference.marks.length_mm)
                         for i, cut in enumerate(art.paths):

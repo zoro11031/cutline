@@ -466,16 +466,15 @@ def _shape_subpaths(el, tolerance):
         x, y, w, h = g("x"), g("y"), g("width"), g("height")
         rx = el.get("rx")
         ry = el.get("ry")
-        r = float(rx if rx is not None else (ry or 0) or 0)
-        if ry is not None and rx is None:
-            r = float(ry)
-        r = max(0.0, min(r, min(w, h) / 2))
-        if r <= 0:
+        raw_rx = float(rx if rx is not None else (ry or 0))
+        raw_ry = float(ry if ry is not None else raw_rx)
+        rx, ry = max(0.0, min(raw_rx, w / 2)), max(0.0, min(raw_ry, h / 2))
+        if rx <= 0 or ry <= 0:
             return [([(x, y), (x + w, y), (x + w, y + h), (x, y + h)], True)]
-        d = (f"M{x + r},{y} H{x + w - r} A{r},{r} 0 0 1 {x + w},{y + r} "
-             f"V{y + h - r} A{r},{r} 0 0 1 {x + w - r},{y + h} "
-             f"H{x + r} A{r},{r} 0 0 1 {x},{y + h - r} "
-             f"V{y + r} A{r},{r} 0 0 1 {x + r},{y} Z")
+        d = (f"M{x + rx},{y} H{x + w - rx} A{rx},{ry} 0 0 1 {x + w},{y + ry} "
+             f"V{y + h - ry} A{rx},{ry} 0 0 1 {x + w - rx},{y + h} "
+             f"H{x + rx} A{rx},{ry} 0 0 1 {x},{y + h - ry} "
+             f"V{y + ry} A{rx},{ry} 0 0 1 {x + rx},{y} Z")
         return parse_path_d(d, tolerance)
     if name == "line":
         return [([(g("x1"), g("y1")), (g("x2"), g("y2"))], False)]
@@ -542,7 +541,28 @@ def load_svg(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
         note = f"no viewBox: units taken as CSS px at {CSS_DPI:g} dpi"
         pre = IDENTITY
 
-    base = _matmul((sx, 0, 0, sy, 0, 0), pre)
+    tx = ty = 0.0
+    if vb_nums and len(vb_nums) == 4 and vb_nums[2] and vb_nums[3]:
+        # SVG 2 section 8.2: default xMidYMid meet, not a stretched viewBox.
+        # https://www.w3.org/TR/SVG/coords.html#ComputingAViewportsTransform
+        aspect = (root.get("preserveAspectRatio") or "xMidYMid meet").split()
+        if aspect and aspect[0] == "defer":
+            aspect = aspect[1:]
+        if aspect and aspect[0] == "none":
+            if len(aspect) > 1 and aspect[1:] not in (["meet"], ["slice"]):
+                raise ImportError_("invalid preserveAspectRatio")
+        else:
+            if (not aspect or not re.fullmatch(r"x(Min|Mid|Max)Y(Min|Mid|Max)", aspect[0])
+                    or len(aspect) > 2 or (len(aspect) == 2 and aspect[1] != "meet")):
+                raise ImportError_("unsupported preserveAspectRatio; use meet or none, and flatten clipped geometry")
+            align = re.fullmatch(r"x(Min|Mid|Max)Y(Min|Mid|Max)", aspect[0])
+            scale = min(sx, sy)
+            fraction = {"Min": 0.0, "Mid": 0.5, "Max": 1.0}
+            tx = (w_mm - vw * scale) * fraction[align[1]]
+            ty = (h_mm - vh * scale) * fraction[align[2]]
+            sx = sy = scale
+        note += f"; preserveAspectRatio {' '.join(aspect)}"
+    base = _matmul((sx, 0, 0, sy, tx, ty), pre)
     paths: list[CutPath] = []
     warnings: list[str] = []
     seen_unsupported: set[str] = set()
@@ -551,12 +571,19 @@ def load_svg(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
         mat = _matmul(mat, parse_transform(el.get("transform")))
         stroke = _inherited_stroke(el, stroke)
         name = _tag(el)
+        if name == "svg" and el is not root:
+            raise ImportError_("nested SVG viewports are unsupported; flatten the drawing before cutting")
         if name in UNSUPPORTED:
             seen_unsupported.add(name)
             return
         if el.get("display") == "none":
             return
-        for sub, closed in _shape_subpaths(el, tolerance / max(sx, 1e-9)):
+        # Largest singular value bounds error after every parent transform,
+        # including unequal scales and shear. Flatten in final millimetres.
+        a, b, c, d = mat[:4]
+        norm2 = a*a + b*b + c*c + d*d
+        stretch = math.sqrt((norm2 + math.sqrt(max(0.0, norm2*norm2 - 4*(a*d-b*c)**2))) / 2)
+        for sub, closed in _shape_subpaths(el, tolerance / max(stretch, 1e-9)):
             pts = tuple(apply(mat, x, y) for x, y in sub)
             if len(pts) > 1:
                 # The colour rides in the label so the whole pipeline can

@@ -1280,3 +1280,36 @@ sheet selection. All four console/CSP channels proved live. Rasterized PDF
 front-page registration and imported cut SVGs passed the cross-project test.
 This supersedes section 31's browser execution limitation. No print or cut
 was sent; digital geometry checks make no claim about physical output.
+
+## 33. SVG shape fidelity and every cutting pass (2026-11-10)
+
+**Method and failures.** Added tests for SVG imports with unequal corner
+radii, non-square viewports, and parent group scaling. The importer used rx
+for both corner axes, stretched every viewBox to its viewport regardless
+of preserveAspectRatio, and flattened curves before accounting for parent
+scales. A circle scaled by 20 had chord sag of 0.384 mm against the stated
+0.025 mm tolerance. Each regression test failed before its fix.
+
+**Fix.** Rectangles retain both radii. Viewports use SVG's default
+xMidYMid meet or the explicitly selected alignment; preserveAspectRatio=none
+retains deliberate stretching. Slice clipping and nested SVG viewports are
+refused because their visible geometry is not implemented. Curve flattening
+uses the largest stretch of the composed transform, so the error bound is
+in final millimetres, including nonuniform scaling and shear.
+
+Source: https://www.w3.org/TR/SVG/coords.html
+
+**Independent measurement.** Rendered the original SVG and a polygon built
+from imported points with rsvg-convert at 254 dpi. The viewport example
+matched exactly (pixel bounds 600,100 to 1100,600). The elliptical rectangle
+matched bounds and differed in raster coverage by 0.00431%, consistent with
+flattening the curve. No cutter was attached or commanded.
+
+**Later passes.** The stream verifier previously measured only the first
+pass's card bounds. It now measures every path against its corresponding
+card on every pass. Shift and size corruptions in the last pass are both
+caught. An in-memory mutation restoring first-pass-only verification makes
+both tests fail. Every job's liveness check now also shifts the final cut
+path; the probe selects an M followed by D so it cannot mistake a trailing
+pen-up parking move for a cut path. The first attempt at that probe did
+select the parking move and was correctly reported as ineffective.
