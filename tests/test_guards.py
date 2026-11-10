@@ -55,7 +55,8 @@ class TestMaskHintsFire(unittest.TestCase):
                                   "text"})
         self.assertIn(h["mark"], ("top-left", "top-right", "bottom-left",
                                   "bottom-right"))
-        self.assertIn("cover it", h["text"])
+        self.assertIn("mm", h["text"])
+        self.assertNotIn("cover", h["text"])
 
     def test_hints_come_back_closest_first(self):
         grid = geometry.scm_layout("Letter", "standard", False, 10.0)

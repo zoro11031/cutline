@@ -70,6 +70,21 @@ class Preset:
 
 BUILTIN: tuple[Preset, ...] = (
     Preset(
+        name="310 gsm black-core",
+        description="310 gsm black-core starting guess, based on Coverstock.",
+        origin="derived",
+        settings=dict(force=33, speed=1, depth=7, passes=2,
+                      blade_diameter_mm=0.9, lift_head=True,
+                      sharpen_corners=False, media=135, acceleration=1),
+        note="Best guess for 310 gsm black-core: start with Silhouette's "
+             "Coverstock values (force 33, speed 1, depth 7, two passes). "
+             "The vendor does not identify this setting as 310 gsm or "
+             "black-core; material stiffness, coating and blade condition "
+             "can change the result. Never cut. Test on an offcut; tune "
+             "passes first, then force, speed and depth. If two passes "
+             "do not separate cleanly, try a third before increasing depth.",
+    ),
+    Preset(
         name="330 gsm black-core",
         description="The stock this suite prints on. Coverstock plus a pass.",
         origin="derived",

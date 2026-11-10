@@ -1136,3 +1136,122 @@ Card Maker cutting guide (https://alan-cha.github.io/silhouette-card-maker/tutor
      without a file argument, and added `--app-only` to launch Studio blank.
    - Updated ProxyPress guidance to reflect the new 1-click "Set up for
      Silhouette Cameo" button on the Cutting tab and the 3.2 mm MTG corner radius.
+
+## 29. Reverse engineering baseline and native-file headers (2026-11-09)
+
+Executed the briefing's initial audit: all 317 offline tests pass, the
+assertion audit reports zero tests asserting nothing, and the generated
+eight-card dry run passes all checks and eight liveness probes. Host status
+reports no Silhouette USB cutter, no pyusb, and no usblp node. No hardware
+job was sent.
+
+Ran `tools/survey-studio-re.ps1` inside WinBoat through `winboat.run_script`,
+using its session guard, credential pipe and 600-second launch bound. The
+first sandboxed attempt could not see the Docker socket; an approved launch
+outside the sandbox succeeded. The report, rather than the launch return,
+confirms execution: `complete: true`, no reported errors, start
+`2026-11-09T12:55:07.3585406-08:00`, finish
+`2026-11-09T12:55:08.7929771-08:00` (guest timestamps).
+
+Observed executable: Studio file version **5.0.556.1**, product version
+`V5.0.556.001`, SHA-256
+`4871EDB71FB28B02593850006992277E69E058D0A385B0AC6402F63B9514A47B`.
+The briefing's 4.5.815 version is not the installed executable surveyed.
+The discovered share was `\\host.lan\Data`, mapping the host home directory;
+the guest staging path was derived using `winboat.guest_path`.
+
+The Studio installation contained **39 `.studio3` samples**, from 38,305
+to 2,530,095 bytes. Every recorded first-64-byte header begins with the
+13 ASCII bytes `silhouette05;`. Thus these files do not start with a normal
+ZIP or SQLite header. This says nothing yet about embedded containers,
+compression, obfuscation, field offsets, units or cut-setting semantics.
+No native parser or generator has been established. No additional samples
+were found in the scanned Public Documents and user Documents directories.
+
+Five known paths for tshark, dumpcap, USBPcapCMD and USBPcap.sys were absent;
+this is not an exhaustive installed-tool search. The guest USB inventory
+listed a root hub and an input device, with no Cameo. Differential USB
+capture remains outstanding.
+
+Local evidence: `guest-staging/re-inventory-2026-11-09/inventory.json`,
+SHA-256 `fc7c4d39db09e281636febefb5c100eaba6d61456513b2f6f782dc0fe146d5f9`.
+It contains sample paths, sizes, SHA-256 hashes and 64-byte headers, not
+copies of the proprietary documents. The survey does not launch Studio or
+change its documents. `docs/REVERSE_ENGINEERING.md` records the target audit
+and controlled experiments to run next. Existing `TF`, `J`, `FE`, `FF`
+and `FC` support must be distinguished from still-unproved AutoBlade
+mechanics, tool compatibility and Studio UI semantics.
+
+## 30. UI, send-path and current Proxy Press audit (2026-11-09)
+
+The program is now named **Silhouette Control Center**, with command
+`silhouette-control-center` (the `cut-proxies` entry point remains an alias),
+desktop/app/icon ID `org.printing.SilhouetteControlCenter`, and locally
+installed scalable plus 16–256 px raster icons. The live GUI audit confirms
+that GTK's icon theme resolves the new ID. The old desktop launcher was
+retired to a `.desktop.disabled` backup after the replacement was installed.
+
+The owner requested removal of the distinct Proxy Press pattern; sections 3
+and 12 describe historical assumptions, not current requirements. Current
+Proxy Press uses standard three/four marks, and its Cameo mode is eight-up
+landscape. Read `DEFAULTS`, the Cameo mode/apply handlers, `layout()` and
+`regArm()` from the local `../proxypress/proxy-press.html`, SHA-256
+`3d8b4d9d669581755f04a9af72038da537356c6fadc21b6050e6b70d3085892e`.
+Executed the actual layout/arm functions using Node, separately from the
+Python implementation. The MTG presets match card positions and arm lengths:
+7.25 mm on Letter, 8.75 mm on A4, with 3.2 mm corners and 0.625 mm bleed.
+
+The user's actual `Downloads/cut-lines.svg` contains eight closed rounded
+rectangles on an explicit 279.4 × 215.9 mm viewport with a matching viewBox,
+no marks, and no importer warnings. Its vertices match the Letter preset
+within 0.001 mm. The imported job verifies and catches all eight liveness
+probes. Independent rendering gives 1650 × 1275 px at 150 dpi. This is
+software/size evidence, not a sensor or cutting result.
+
+Audit regressions found that both send front ends discarded calibration
+while reconstructing their plans, and that the GUI unconditionally turned
+registration on. Jobs now retain the exact verified write/read steps and
+both front ends send those. Five actual-send/fake-transport regressions
+failed before the fix and pass afterward. GUI confirmation now retains the
+reviewed job and checks it again at confirmation; constant-allow/refuse
+mutations are part of the normal discrimination test.
+
+Other reproduced fixes include missing Gio imports in both Open buttons,
+imported shapes exporting as bounding rectangles, and radius overrides
+disappearing from export. The writer proof was independently rasterized to
+1275 × 1650 px for portrait Letter at 150 dpi. The GUI now displays uploaded
+PDF artwork at physical size under the paths, has a compact default summary
+and explicit Advanced details checkbox, fills an adjustable pane instead of
+a narrow preferences clamp, and offers persistent colorblind styling with
+blue/orange, dashed failures and OK/! text. Stale PDF results have a tested
+identity guard, including constant-accept/reject mutations.
+
+`310 gsm black-core` is an owner-requested **derived, never cut** starting
+guess: force 33, speed 1, depth 7, two passes, based on Coverstock values.
+It is not promoted to measured or attributed to the vendor for this stock.
+
+See `docs/UI_FUNCTIONALITY_AUDIT.md` for scope, reproduction evidence and
+remaining issues. In particular, test-cut matrices still lack the per-job
+proof, certain SVG/DXF constructs import incorrectly, and measured PDF
+problems do not yet block Cut. No hardware was used to validate these changes.
+
+## 31. Proxy Press per-sheet SVG handoff (2026-11-10)
+
+**Method.** Executed Proxy Press's actual layout, registration and cut SVG
+functions with Node, imported their output with the cutter's SVG importer,
+and built verified jobs with zero and nonzero blade-to-sensor offsets.
+Letter and A4 used 1, 8, 9 and 16 cards; a separate case exercised unequal
+printer X/Y scaling and translation. Local fixtures preserve these exports
+for standalone offline testing.
+
+**Result.** All tested default sheets, including partial final sheets, import
+and pass stream verification. Compensated SVG bounds match the transformed
+card positions. Proxy Press previously left rounded-corner radii unscaled;
+the export now scales both radius axes. The new test checks those axes.
+
+**Limits.** Node geometry checks do not exercise the browser, PDF renderer,
+printer or cutter. The browser harness could not establish a local session
+under the execution environment's socket restrictions. No hardware job was
+sent. PDF inspection cannot detect scaling introduced by a physical printer.
+Arbitrary asymmetric printer compensation transforms registration marks as
+well as art; nominal cutter mark controls do not fully express that transform.

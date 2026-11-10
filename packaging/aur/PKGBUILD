@@ -1,0 +1,31 @@
+# Upload the generated source tarball to the GitHub release and declare
+# the upstream license before publishing to the AUR.
+pkgname=silhouette-control-center
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Verified Silhouette Cameo card cut templates and cutting'
+provides=('cut-proxies')
+conflicts=('cut-proxies')
+arch=('any')
+url='https://github.com/zoro11031/silhouette-linux'
+license=('LicenseRef-Unknown')
+depends=('python>=3.10' 'python-gobject' 'python-cairo' 'gtk4>=4.10' 'libadwaita>=1.5' 'python-pillow' 'poppler')
+optdepends=('python-pyusb: USB cutter transport and registration readback'
+            'libusb: USB backend'
+            'freerdp: Silhouette Studio in an existing WinBoat guest'
+            'docker: inspect the existing WinBoat guest'
+            'python-rich: formatted terminal output')
+makedepends=('python')
+options=('!debug')
+source=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/$pkgname-$pkgver.tar.gz")
+sha256sums=('@SOURCE_SHA256@')
+
+check() {
+  cd "$pkgname-$pkgver"
+  python -c 'from cut_proxies.job import build; assert not build().blocked'
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  python packaging/install.py --destdir "$pkgdir"
+}

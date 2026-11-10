@@ -17,7 +17,7 @@ TEMPLATE_DIR = pathlib.Path(
                    pathlib.Path.home() / "Documents" / "cut-proxies"))
 
 # Where the sibling projects live, for cross-checking a sheet against the
-# grid that produced it.  Resolved the same way print-proxies resolves the
+# grid that produced it.  Resolved the same way the former print-proxies resolved the
 # Canon suite: an env var, then the usual checkout layout.
 SUITE_ROOT = pathlib.Path(
     os.environ.get("PRINTING_SUITE_HOME",
@@ -46,20 +46,9 @@ DEFAULT_PRESET = "330 gsm black-core"
 DEFAULT_MARK_INSET_MM = 10.0
 DEFAULT_MARK_THICKNESS_MM = 1.0
 
-# What Proxy Press's own Silhouette preset sets, so `--from-proxypress` lines
-# up with a sheet exported with it untouched.
-# Transcribed from its BUILTIN_PRESETS entry `b-cameo`, "Silhouette Cameo .
-# Letter landscape", plus DEFAULTS.cornerRadius. Do not round these: they are
-# what the sheet was laid out with.
-PROXYPRESS_SILHOUETTE_PRESET = ProxyPressSettings(
-    card_w_mm=63.0, card_h_mm=88.0, bleed_mm=1.5, gap_mm=3.0,
-    margin_mm=16.0, cols=0, rows=0, rotation="auto", corner_radius_mm=3.2)
-
-# What to type into Proxy Press so its sheet is the one this cuts.
-#
-# Its own b-cameo preset fits four cards, because a 16 mm margin keeps the
-# grid clear of the marks by brute force. These settings put eight on the
-# same paper and place every card within 0.07 mm of where Silhouette Card
+# Current Proxy Press Cameo setup, read from the local project's Cameo
+# mode/apply handlers on 2026-11-09. These settings put eight on the same
+# paper and place every card within 0.07 mm of where Silhouette Card
 # Maker would, which is inside the quantisation difference between SCM's
 # integer-pixel layout and Proxy Press's floats.
 #
@@ -70,8 +59,7 @@ PROXYPRESS_8UP = ProxyPressSettings(
     margin_mm=10.0, cols=4, rows=2, rotation="upright",
     corner_radius_mm=3.2)
 
-# The mark settings to go with it, which are Card Maker's, not Proxy
-# Press's defaults. See docs/FINDINGS.md section 3.
+# Current Proxy Press Cameo registration settings, using standard marks.
 PROXYPRESS_8UP_MARKS = {
     "silhouette": True,
     "regPattern": 3,
@@ -79,13 +67,6 @@ PROXYPRESS_8UP_MARKS = {
     "regLen": 0,          # auto: the longest arm that clears the cards
     "regThickness": 1,
 }
-
-# Proxy Press's mark geometry, which differs from Silhouette Card Maker's; see
-# docs/FINDINGS.md section 3.
-PROXYPRESS_MARK_INSET_MM = 10.0
-PROXYPRESS_MARK_LENGTH_MM = 20.0
-PROXYPRESS_MARK_THICKNESS_MM = 0.5
-
 
 def settings_path() -> pathlib.Path:
     return CONFIG_DIR / "settings.json"

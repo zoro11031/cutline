@@ -180,22 +180,15 @@ class TestProxyPressLayout(unittest.TestCase):
         g = geometry.proxypress_layout("Letter", False, s)
         self.assertEqual((g.cols, g.rows), (2, 2))
 
-    def test_the_shipped_cameo_preset_is_four_up(self):
-        """Proxy Press's own b-cameo preset, transcribed in config.py.
-
-        Its 16 mm margin keeps the cards clear of the marks by brute force,
-        and it costs half the sheet: four cards where the Card Maker layout
-        fits eight on the same paper. Recorded here so a change to either
-        side shows up as a test failure rather than as a surprise.
-        """
+    def test_the_current_cameo_setup_is_eight_up(self):
         from cut_proxies import config
         g = geometry.proxypress_layout(
-            "Letter", False, config.PROXYPRESS_SILHOUETTE_PRESET)
-        self.assertEqual((g.cols, g.rows), (2, 2))
+            "Letter", False, config.PROXYPRESS_8UP)
+        self.assertEqual((g.cols, g.rows), (4, 2))
         self.assertAlmostEqual(g.card.radius_mm, 3.2)
         scm = geometry.scm_layout("Letter", "standard", False, 10.0)
         self.assertEqual(scm.count, 8)
-        self.assertLess(g.count, scm.count)
+        self.assertEqual(g.count, scm.count)
 
     def test_the_two_engines_disagree_and_say_so(self):
         a = geometry.scm_layout("Letter", "standard", False, 10.0)

@@ -49,6 +49,10 @@ class Job:
     # answer is to cover them for the scan, which is what the Card Maker
     # guide tells you to do.
     mask_hints: list[dict] = dataclasses.field(default_factory=list)
+    # Preserve the exact write/read plan whose writes were verified. Front
+    # ends must not reconstruct a different plan from current widget state.
+    steps: tuple = ()
+    registration: bool = True
 
     # ---- reporting ---------------------------------------------------
     @property
@@ -81,7 +85,8 @@ class Job:
                      f"{self.grid.card.radius_mm:g} mm corners"),
             ("Marks", mk.describe()),
             ("Origin shift", f"cut coordinates are measured from "
-                             f"({mk.origin_mm[0]:g}, {mk.origin_mm[1]:g}) mm"),
+                             f"({mk.origin_mm[0]:g}, {mk.origin_mm[1]:g}) mm"
+             if self.registration else "registration off; sheet coordinates"),
             ("Preset", f"{self.preset.name} [{self.preset.origin}]"),
             ("Blade", f"force {self.settings.force}, speed "
                       f"{self.settings.speed}, {self.settings.passes} "
@@ -145,11 +150,7 @@ def build(sheet: str = config.DEFAULT_SHEET,
             length = float(marks_cfg["regLen"])
         thickness = (mark_thickness_mm if mark_thickness_mm is not None
                      else float(marks_cfg["regThickness"]))
-        # Proxy Press used to draw a fourth mark in the bottom-right, which
-        # belongs to neither Silhouette pattern; it now has a pattern
-        # setting and this workflow sets it to three. Pass
-        # `pattern="proxypress"` explicitly for a sheet exported before
-        # that change.
+        # Both layout engines use the same standard registration patterns.
     else:
         inset = (mark_inset_mm if mark_inset_mm is not None
                  else config.DEFAULT_MARK_INSET_MM)
@@ -180,6 +181,9 @@ def build(sheet: str = config.DEFAULT_SHEET,
         collisions = regmarks.collisions(grid, mk, bleed_mm=bleed_mm)
         off = regmarks.off_sheet(grid, mk)
     skip = tuple(sorted({i for i in skip if 0 <= i < grid.count}))
+    if radius_mm is not None and imported is None:
+        grid = dataclasses.replace(
+            grid, card=dataclasses.replace(grid.card, radius_mm=radius_mm))
     if imported is not None:
         paths = tuple(p for i, p in enumerate(imported.paths)
                       if i not in set(skip))
@@ -211,7 +215,8 @@ def build(sheet: str = config.DEFAULT_SHEET,
         reg_width_mm=mk.reg_width_mm, reg_length_mm=mk.reg_length_mm,
         registration=registration, auto_search=auto_search,
         quad=window["quad"], offset_mm=offset)
-    stream = job.stream(paths)
+    steps = tuple(job.plan(paths))
+    stream = b''.join(step.data for step in steps if step.kind == 'write')
 
     # 5. take it apart again
     ok, rows = verify.expectations_met(stream, grid, mk, cut, device, mode,
@@ -237,7 +242,7 @@ def build(sheet: str = config.DEFAULT_SHEET,
                preset=preset, mode=mode, stream=stream, rows=rows, ok=ok,
                collisions=collisions, off_sheet=off, warnings=warnings,
                skip=skip, mask_hints=hints, offset_mm=offset,
-               liveness_failures=liveness)
+               liveness_failures=liveness, steps=steps, registration=registration)
 
 
 def _grid_from_paths(imported, like: geometry.Grid) -> geometry.Grid:
@@ -275,7 +280,8 @@ def write_templates(job: Job, stem: str, folder=None,
 
     dxf = folder / f"{stem}.dxf"
     template.write_dxf(dxf, job.grid, job.mode, job.grid.card.radius_mm,
-                       skip=job.skip)
+                       skip=job.skip,
+                       paths=job.paths if job.grid.engine == 'imported' else None)
     out["dxf"] = dxf
 
     if proof:

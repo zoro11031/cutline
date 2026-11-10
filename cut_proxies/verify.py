@@ -1,6 +1,6 @@
 """Decode a built cut stream and check it against what was asked for.
 
-This is the same bargain `print-proxies` makes with the printer: the job is
+This is the same bargain Canon Suite makes with the printer: the job is
 assembled, then taken apart again and compared with the profile, and if any
 of it disagrees nothing is sent.  Card is expensive and a cut is destructive
 in a way a print is not - a print on the wrong settings is a wasted sheet, a

@@ -1,4 +1,4 @@
-"""cut-proxies on the command line.
+"""silhouette-control-center on the command line.
 
 Subcommands, in the order a sheet goes through them:
 
@@ -19,7 +19,7 @@ import argparse
 import pathlib
 import sys
 
-from . import (config, geometry, graphtec, job as job_mod, presets, regmarks,
+from . import (config, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
                template, transport, verify, winboat)
 
 try:
@@ -27,7 +27,7 @@ try:
     from rich.panel import Panel
     from rich.table import Table
     _console = Console(stderr=True, soft_wrap=True)
-except ImportError:                   # rich is optional, as in print-proxies
+except ImportError:                   # rich is optional
     _console = None
     Table = Panel = None
 
@@ -97,18 +97,17 @@ def show_checks(j):
         warn(w)
     if j.mask_hints:
         say()
-        say("Cover these for the registration scan, then uncover them before "
-            "the cut:", style="bold yellow")
+        say("Near registration marks (conservative proximity check):", style="bold yellow")
         for h in j.mask_hints:
             say(f"  - {h['text']}")
-        say("  A sticky note or a strip of masking tape is enough. The "
-            "sensor reads\n    a dark card edge as part of the mark and the "
-            "scan fails or lands wrong.", style="dim")
-        say("  Or leave the slot empty when printing and pass "
-            f"--skip {j.mask_hints[0]['index']}.", style="dim")
+        say(regmarks.MASK_GUIDANCE, style="dim")
+        say("Proximity alone does not mean every nearby card needs covering.", style="dim")
 
 
 def common_layout_args(p):
+    p.add_argument('--layout-preset', choices=tuple(layout_presets.BUILTIN),
+                   help='apply a complete printed-sheet layout; overrides layout '
+                        'options and leaves blade settings unchanged')
     p.add_argument("--sheet", default=config.DEFAULT_SHEET,
                    choices=sorted(geometry.SHEETS))
     p.add_argument("--card", default=config.DEFAULT_CARD,
@@ -180,7 +179,7 @@ def build_from_args(args) -> job_mod.Job:
             say(f"  only stroke {colour}", style="dim")
         for w in imported.warnings:
             warn(w)
-    return job_mod.build(
+    options = dict(
         imported=imported,
         sheet=args.sheet, card=args.card, portrait=args.portrait,
         engine=args.engine,
@@ -197,6 +196,10 @@ def build_from_args(args) -> job_mod.Job:
         auto_search=not getattr(args, "manual_registration", False),
         skip=tuple(getattr(args, "skip", []) or ()),
     )
+    selected = getattr(args, 'layout_preset', None)
+    if selected:
+        options.update(layout_presets.BUILTIN[selected].options())
+    return job_mod.build(**options)
 
 
 # --------------------------------------------------------------------------
@@ -240,7 +243,7 @@ def cmd_layouts(args):
     card_name = args.card
     say(f"\nWhat fits, for {card_name} cards:", style="bold")
     header = f"  {'sheet':9} {'inset':>6} {'orient':10} {'grid':>7} " \
-             f"{'cards':>5} {'max arm':>8}  {'mask':>5}"
+             f"{'cards':>5} {'max arm':>8}  {'near':>5}"
     say(header)
     say("  " + "-" * (len(header) - 2))
     clean = []
@@ -272,9 +275,9 @@ def cmd_layouts(args):
                     clean.append((g.count, inset, sheet_name, label, portrait))
     say("\n'max arm' is the longest registration-mark arm that still clears "
         "the cards.", style="dim")
-    say("'mask' is how many cards crowd a mark closely enough that the sensor "
-        "may read\nthe card instead. Cover those for the scan, or leave the "
-        "slot empty with --skip.", style="dim")
+    say("'near' counts cards within a conservative 5 mm of a mark zone; "
+        "it is not a required masking count.", style="dim")
+    say(regmarks.MASK_GUIDANCE, style="dim")
     say("\nA 3x3 nine-card sheet on Letter or A4 needs the 3.5 mm borderless "
         "inset; at the\nstandard 10 mm inset the marks take the room and you "
         "get eight.", style="dim")
@@ -295,7 +298,7 @@ def cmd_layouts(args):
         "which puts the\nmarks 3.5 mm from the paper edge with no room "
         "for feed drift. Eight is not a\ncompromise here - it is the "
         "layout.", style="dim")
-    say("\nProxy Press settings for it:  cut-proxies proxypress", style="dim")
+    say("\nProxy Press settings for it:  silhouette-control-center proxypress", style="dim")
     return 0
 
 
@@ -338,6 +341,8 @@ def cmd_proxypress(args):
     """The settings to type into Proxy Press so its sheet is the one we cut."""
     from . import importer  # noqa: F401  (keeps import cost off other paths)
     sheet_name = args.sheet
+    layout_slug = 'mtg-cameo-' + sheet_name.lower()
+    matched = layout_presets.BUILTIN[layout_slug].options()
     s = config.PROXYPRESS_8UP
     pp = geometry.proxypress_layout(sheet_name, portrait=False, settings=s)
     scm = geometry.scm_layout(sheet_name, "standard", False,
@@ -371,14 +376,14 @@ def cmd_proxypress(args):
         f"(0 = auto: longest that clears the cards)")
     say(f"      Mark line thickness  {m['regThickness']} mm")
     say(f"\n  Export at 100%. Do not use 'fit to page' - "
-        f"'cut-proxies check-sheet' will catch it,\n  but only after you "
+        f"'silhouette-control-center check-sheet' will catch it,\n  but only after you "
         f"have spent the card.", style="dim")
 
     say(f"\nThen cut with:", style="bold")
-    say(f"  cut-proxies template --sheet {sheet_name} --engine proxypress")
-    say(f"  cut-proxies check-sheet yoursheet.pdf --sheet {sheet_name} "
-        f"--engine proxypress")
-    say(f"  cut-proxies cut --sheet {sheet_name} --engine proxypress")
+    say(f"  silhouette-control-center template --layout-preset {layout_slug}")
+    say(f"  silhouette-control-center check-sheet yoursheet.pdf --layout-preset {layout_slug}")
+    say(f"  silhouette-control-center cut --layout-preset {layout_slug}")
+    say(f"  Proxy Press auto arm on {sheet_name}: {matched['mark_length_mm']:g} mm")
 
     say(f"\nThese place every card within {worst:.3f} mm of where "
         f"Silhouette Card Maker\nwould put it, which is the rounding "
@@ -386,19 +391,17 @@ def cmd_proxypress(args):
         f"floats.", style="dim")
 
     mk = regmarks.for_grid(pp, inset_mm=m["regInset"],
+                           length_mm=matched['mark_length_mm'],
                            thickness_mm=m["regThickness"],
-                           pattern=regmarks.PROXYPRESS)
+                           pattern=regmarks.THREE)
     hints = regmarks.mask_hints(pp, mk)
     if hints:
-        say(f"\n{len(hints)} card(s) will sit close to a mark and need "
-            f"covering for the scan:", style="bold yellow")
+        say(f"\n{len(hints)} card(s) sit near a mark (proximity advisory):", style="bold yellow")
         for h in hints:
             say(f"  - card {h['index'] + 1} "
                 f"(row {h['row']}, column {h['col']}), "
                 f"{h['gap_mm']:.2f} mm from the {h['mark']} mark")
-        say("  Unavoidable on an eight-up sheet: the marks and the grid "
-            "both want the\n  same corners. A sticky note each, removed "
-            "after the scan.", style="dim")
+        say(regmarks.MASK_GUIDANCE, style="dim")
     return 0
 
 
@@ -441,7 +444,7 @@ def cmd_import(args):
                 f"{max(xs) - min(xs):7.2f} x {max(ys) - min(ys):7.2f} mm  "
                 f"at ({min(xs):7.2f}, {min(ys):7.2f})"
                 f"{'  closed' if p.closed else ''}")
-    say("\nCut it with:  cut-proxies cut --from "
+    say("\nCut it with:  silhouette-control-center cut --from "
         f"{pathlib.Path(args.file).name} --dry-run", style="dim")
     return 0
 
@@ -465,6 +468,7 @@ def cmd_check_sheet(args):
     except sheet_mod.SheetError as exc:
         fail(str(exc))
 
+    say("PDF geometry only; measure the physical print separately.", style="dim")
     say(f"\nMeasured {path.name}, page {report.page}, at {report.dpi} dpi",
         style="bold")
     say(f"  page {report.page_w_mm:.1f} x {report.page_h_mm:.1f} mm "
@@ -581,12 +585,12 @@ def cmd_calibrate(args):
         say("""
 How to measure it, once per machine:
 
-  1. cut-proxies template --preset "Pen, no blade" ... and print the sheet.
+  1. silhouette-control-center template --preset "Pen, no blade" ... and print the sheet.
   2. Put a pen in the holder and cut it. The pen draws where the blade
      would have come down.
   3. Measure how far the drawn outline sits from the printed card edge.
      Right and down are positive.
-  4. cut-proxies calibrate --x <dx> --y <dy>
+  4. silhouette-control-center calibrate --x <dx> --y <dy>
 
 This corrects the fixed error between where the sensor says the marks are
 and where the tool actually lands. It is a property of the machine, so it is
@@ -758,11 +762,11 @@ def cmd_cut(args):
              f"({j.preset.origin}). Cut the plain-paper test first.")
 
     try:
-        t = transport.open_transport(args.transport)
+        t = transport.open_transport(args.transport, device=j.device)
     except transport.TransportError as exc:
         say(f"\n{exc}", style="bold red")
         fail("No way to reach the cutter. Use --dry-run, or go through "
-             "Silhouette Studio with 'cut-proxies studio'.")
+             "Silhouette Studio with 'silhouette-control-center studio'.")
 
     with t:
         if t.can_read:
@@ -780,8 +784,7 @@ def cmd_cut(args):
         say("\nRunning...", style="bold")
         try:
             sent = t.run(
-                _plan(j, registration=not args.no_registration,
-                      auto_search=not args.manual_registration),
+                _plan(j),
                 log=lambda m: say("  " + m))
         except transport.TransportError as exc:
             fail(f"{exc}\n\nIf the marks were not found: check that the "
@@ -792,20 +795,9 @@ def cmd_cut(args):
     return 0
 
 
-def _plan(j, registration=True, auto_search=True):
-    """Rebuild the step list, with its reads, for the job we verified.
-
-    `Job.stream` drops the read steps because verification only looks at
-    bytes; the reads have to come back before anything is actually run.
-    """
-    window = regmarks.scan_window(j.marks)
-    cj = graphtec.CutJob(
-        j.device, j.settings, origin_mm=j.marks.origin_mm,
-        reg_width_mm=j.marks.reg_width_mm,
-        reg_length_mm=j.marks.reg_length_mm,
-        registration=registration, auto_search=auto_search,
-        quad=window["quad"])
-    return cj.plan(j.paths)
+def _plan(j):
+    """The exact write/read plan built and verified for this job."""
+    return j.steps
 
 
 def _show_studio_operator_guide(j):
@@ -855,7 +847,7 @@ def cmd_studio(args):
     if args.release:
         ours = winboat.our_stale_sessions()
         if not ours:
-            say("No cut-proxies RDP sessions are running.", style="bold")
+            say("No silhouette-control-center RDP sessions are running.", style="bold")
             held = winboat.rdp_busy()
             if held:
                 say(f"\n{held}", style="yellow")
@@ -866,7 +858,7 @@ def cmd_studio(args):
         for pid, cmd in ours:
             say(f"  pid {pid}: {cmd[:110]}")
         if not args.yes and not ask_yes(
-                f"\nClose {len(ours)} cut-proxies session(s)?", "n"):
+                f"\nClose {len(ours)} silhouette-control-center session(s)?", "n"):
             say("Left alone.")
             return 0
         closed = winboat.release_our_sessions()
@@ -967,7 +959,7 @@ def cmd_gui(args):
 
 def main(argv=None):
     p = argparse.ArgumentParser(
-        prog="cut-proxies",
+        prog="silhouette-control-center",
         description="Silhouette Cameo cut templates and cutting for proxy "
                     "card sheets.")
     sub = p.add_subparsers(dest="command")
@@ -1006,10 +998,10 @@ def main(argv=None):
     im.set_defaults(func=cmd_import)
 
     cs = sub.add_parser("check-sheet",
-                        help="measure a printed PDF and check its "
+                        help="measure a PDF and check its "
                              "registration marks are where the template "
                              "expects")
-    cs.add_argument("file", help="the PDF that was printed")
+    cs.add_argument("file", help="PDF to inspect (does not measure physical printer output)")
     cs.add_argument("--page", type=int, default=1)
     cs.add_argument("--dpi", type=int, default=200)
     cs.add_argument("--tolerance", type=float, default=0.5, metavar="MM")
@@ -1097,7 +1089,7 @@ def main(argv=None):
     s.add_argument("--prepare", action="store_true",
                    help="stage the guest helper script and explain the steps")
     s.add_argument("--release", action="store_true",
-                   help="close stale cut-proxies RDP sessions. Never "
+                   help="close stale silhouette-control-center RDP sessions. Never "
                         "touches another tool's session.")
     s.add_argument("--run-helper", action="store_true",
                    help="stage the helper and run it in the guest over RDP")

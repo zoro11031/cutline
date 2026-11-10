@@ -82,7 +82,7 @@ class Imported:
         carries both cut lines and printed guides usable: cut the red,
         leave the black alone.
         """
-        want = normalise_colour(colour)
+        want = '' if colour == '(none)' else normalise_colour(colour)
         kept = tuple(p for p in self.paths
                      if (p.label.split("|", 1)[1] if "|" in p.label else "")
                      == want)

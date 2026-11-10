@@ -192,10 +192,10 @@ identify /tmp/t/proof.png     # must be 1275x1650 for Letter at 150 dpi
 - **No `pip` on this machine, and no `pyusb`.** Everything runs on the
   standard library; SVG and DXF are written by hand for that reason. Do not
   add a dependency to the template path.
-- **Proxy Press draws different marks** from Silhouette Card Maker — four of
-  them, thinner, longer. `docs/FINDINGS.md` section 3. The `proxypress`
-  pattern models what is actually on the paper; do not "correct" it to the
-  canonical three.
+- **Proxy Press uses the standard three/four registration patterns.** Its
+  owner requested removal of the obsolete separate `proxypress` pattern on
+  2026-11-09. Section 3 describes historical geometry, not a compatibility
+  requirement. Match its current local source when defining layout presets.
 - **The speed scale is unresolved.** Silhouette's own database never exceeds
   10; the Card Maker guide says 25 on a Cameo 5. Section 11. The presets
   follow the vendor. Do not "fix" one source to match the other — record the

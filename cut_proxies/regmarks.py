@@ -53,8 +53,7 @@ DEFAULT_THICKNESS_MM = 1.0
 # Patterns.
 THREE = "three"              # square top-left + L at two corners: every Cameo
 FOUR = "four"                # L at all four corners: Cameo 5 Alpha only
-PROXYPRESS = "proxypress"    # what Proxy Press actually prints; see FINDINGS
-PATTERNS = (THREE, FOUR, PROXYPRESS)
+PATTERNS = (THREE, FOUR)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -194,8 +193,6 @@ def marks(sheet_w_mm: float, sheet_h_mm: float,
     * THREE - a filled 5x5 square at the top-left, L marks at the bottom-left
       and the top-right, and **nothing at the bottom-right**.
     * FOUR - L marks at all four corners and no square (Cameo 5 Alpha).
-    * PROXYPRESS - the square plus L marks at all three remaining corners,
-      which is what Proxy Press prints today.
     """
     if pattern not in PATTERNS:
         raise ValueError(
@@ -213,9 +210,6 @@ def marks(sheet_w_mm: float, sheet_h_mm: float,
     if pattern == FOUR:
         return Marks(pattern, W, H, inset, length, thickness,
                      None, (tl, tr, bl, br))
-    if pattern == PROXYPRESS:
-        return Marks(pattern, W, H, inset, length, thickness,
-                     square, (tr, bl, br))
     return Marks(pattern, W, H, inset, length, thickness, square, (tr, bl))
 
 
@@ -317,19 +311,21 @@ def collisions(grid: Grid, mk: Marks, bleed_mm: float = 0.0,
 # its own layouts, the offending card clears the mark's corner zone by about
 # 1.3 mm. So the threshold below is a judgement call, set well above the
 # distance that is known to fail and below anything that would flag a layout
-# with real room. Treat a hint as "mask this card", never as "this is broken".
+# with real room. This measures proximity; it does not establish that every
+# nearby card needs covering. The documented workaround is bottom-left only.
 MASK_CLEARANCE_MM = 5.0
+MASK_GUIDANCE = ("Card Maker guide: cover the bottom-left card during the "
+                 "registration scan, then uncover it before cutting.")
 
 
 def mask_hints(grid: Grid, mk: Marks,
                clearance_mm: float = MASK_CLEARANCE_MM) -> list[dict]:
-    """Cards close enough to a mark that the sensor may read the card instead.
+    """Cards within the conservative proximity threshold of a mark zone.
 
     Returns one entry per offending card, nearest first, each with the card
     index, its row and column, which mark it crowds and by how much. The
-    caller should tell the operator to cover those cards for the scan and
-    uncover them before the cut — not refuse the job, because masking is a
-    perfectly good answer and the layout may be the one we want.
+    Proximity is not evidence that each card needs masking. Keep these
+    geometric measurements separate from the guide's bottom-left workaround.
     """
     zones = mk.corner_zones()
     corners = [(z, _zone_name(z, mk)) for z in zones]
@@ -350,8 +346,7 @@ def mask_hints(grid: Grid, mk: Marks,
                 "mark": best[1], "gap_mm": round(best[0], 2),
                 "text": (f"card {i + 1} (row {row + 1}, column {col + 1}) "
                          f"clears the {best[1]} mark by only "
-                         f"{best[0]:.2f} mm — cover it for the scan, then "
-                         f"uncover it before the cut starts"),
+                         f"{best[0]:.2f} mm"),
             })
     out.sort(key=lambda h: h["gap_mm"])
     return out

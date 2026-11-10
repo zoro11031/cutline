@@ -68,6 +68,22 @@ CASES = (
      ["tests.test_guards.TestOurStaleSessionsNeverSeesAnotherTool"]),
 )
 
+try:
+    from cut_proxies import gui
+except ImportError:
+    gui = None
+if gui is not None:
+    CASES += (
+        (gui, 'cut_refusal', lambda *a: '', 'GUI confirmation always allows',
+         ['tests.test_gui.TestCutConfirmationGuard']),
+        (gui, 'cut_refusal', lambda *a: 'blocked', 'GUI confirmation always refuses',
+         ['tests.test_gui.TestCutConfirmationGuard']),
+        (gui, 'sheet_request_current', lambda *a: True, 'PDF result guard always accepts',
+         ['tests.test_gui.TestSheetRequestGuard']),
+        (gui, 'sheet_request_current', lambda *a: False, 'PDF result guard always rejects',
+         ['tests.test_gui.TestSheetRequestGuard']),
+    )
+
 
 class TestGuardsDiscriminate(unittest.TestCase):
 

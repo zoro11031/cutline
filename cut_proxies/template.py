@@ -234,7 +234,7 @@ def write_svg(path, grid: Grid, paths, mode: str = ROUNDED,
         f'viewBox="0 0 {_n(W)} {_n(H)}">')
     # One user unit == one millimetre.  Anything that rewrites this header is
     # rescaling the template.
-    out.append(f'  <title>cut-proxies {grid.describe()}</title>')
+    out.append(f'  <title>Silhouette Control Center {grid.describe()}</title>')
     desc = [grid.describe(), f"mode {mode}", f"radius {radius:g} mm",
             f"1 user unit = 1 mm"]
     if mk is not None:
@@ -265,7 +265,15 @@ def write_svg(path, grid: Grid, paths, mode: str = ROUNDED,
             out.append('  </g>')
 
     out.append('  <g id="cut" fill="none" stroke="#ff0000" stroke-width="0.1">')
-    if mode == CROSS:
+    if grid.engine == 'imported':
+        for p in paths:
+            commands = ' '.join(
+                f"{'M' if i == 0 else 'L'} {_n(x)} {_n(y)}"
+                for i, (x, y) in enumerate(p.points))
+            if p.closed:
+                commands += ' Z'
+            out.append(f'    <path d="{commands}"/>')
+    elif mode == CROSS:
         for p in paths:
             (x1, y1), (x2, y2) = p.points[0], p.points[-1]
             out.append(f'    <line x1="{_n(x1)}" y1="{_n(y1)}" '
@@ -299,7 +307,8 @@ def _dxf_pair(code: int, value) -> str:
 
 def write_dxf(path, grid: Grid, mode: str = ROUNDED,
               radius_mm: float | None = None,
-              skip: "frozenset[int] | tuple[int, ...]" = ()) -> str:
+              skip: "frozenset[int] | tuple[int, ...]" = (),
+              paths=None) -> str:
     """Write the cut template as DXF in millimetres.
 
     Rounded cards become closed POLYLINE entities whose corner vertices carry
@@ -316,7 +325,18 @@ def write_dxf(path, grid: Grid, mode: str = ROUNDED,
 
     body: list[str] = []
 
-    if mode == CROSS:
+    if paths is not None:
+        for p in paths:
+            body.append(_dxf_pair(0, 'POLYLINE') + _dxf_pair(8, 'CUT')
+                        + _dxf_pair(66, 1) + _dxf_pair(70, int(p.closed))
+                        + _dxf_pair(10, '0.0') + _dxf_pair(20, '0.0')
+                        + _dxf_pair(30, '0.0'))
+            for x, y in p.points:
+                body.append(_dxf_pair(0, 'VERTEX') + _dxf_pair(8, 'CUT')
+                            + _dxf_pair(10, _n(x)) + _dxf_pair(20, _n(fy(y)))
+                            + _dxf_pair(30, '0.0'))
+            body.append(_dxf_pair(0, 'SEQEND') + _dxf_pair(8, 'CUT'))
+    elif mode == CROSS:
         for p in _cross_paths(grid):
             (x1, y1), (x2, y2) = p.points[0], p.points[-1]
             body.append(_dxf_pair(0, "LINE") + _dxf_pair(8, "CUT")
