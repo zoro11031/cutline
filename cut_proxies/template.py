@@ -214,13 +214,15 @@ def _svg_rounded_path(rect: Rect, radius: float) -> str:
 
 def write_svg(path, grid: Grid, paths, mode: str = ROUNDED,
               radius_mm: float | None = None, mk: Marks | None = None,
-              proof: bool = False, note: str = "") -> str:
+              proof: bool = False, note: str = "",
+              skip: "frozenset[int] | tuple[int, ...]" = ()) -> str:
     """Write the cut template as SVG.
 
     With `proof=True` the registration marks and a page outline are drawn as
     well, for holding against the printed sheet to check alignment by eye.
     **A proof must never be sent to the cutter**: Studio would try to cut the
     marks.  The cut file, `proof=False`, contains cut geometry only.
+    `skip` leaves those card indices uncut.
     """
     radius = grid.card.radius_mm if radius_mm is None else radius_mm
     W, H = grid.sheet_w_mm, grid.sheet_h_mm
@@ -232,7 +234,7 @@ def write_svg(path, grid: Grid, paths, mode: str = ROUNDED,
         f'viewBox="0 0 {_n(W)} {_n(H)}">')
     # One user unit == one millimetre.  Anything that rewrites this header is
     # rescaling the template.
-    out.append(f'  <title>cut-proxies {grid.describe()}</title>')
+    out.append(f'  <title>Silhouette Control Center {grid.describe()}</title>')
     desc = [grid.describe(), f"mode {mode}", f"radius {radius:g} mm",
             f"1 user unit = 1 mm"]
     if mk is not None:
@@ -263,7 +265,15 @@ def write_svg(path, grid: Grid, paths, mode: str = ROUNDED,
             out.append('  </g>')
 
     out.append('  <g id="cut" fill="none" stroke="#ff0000" stroke-width="0.1">')
-    if mode == CROSS:
+    if grid.engine == 'imported':
+        for p in paths:
+            commands = ' '.join(
+                f"{'M' if i == 0 else 'L'} {_n(x)} {_n(y)}"
+                for i, (x, y) in enumerate(p.points))
+            if p.closed:
+                commands += ' Z'
+            out.append(f'    <path d="{commands}"/>')
+    elif mode == CROSS:
         for p in paths:
             (x1, y1), (x2, y2) = p.points[0], p.points[-1]
             out.append(f'    <line x1="{_n(x1)}" y1="{_n(y1)}" '
@@ -272,7 +282,10 @@ def write_svg(path, grid: Grid, paths, mode: str = ROUNDED,
         # True arcs, not the flattened polyline, so the file stays small and
         # editable.  The flattened form is what the USB stream uses; both come
         # from the same rectangles and the same radius.
-        for rect in grid.cards:
+        skipped = frozenset(skip)
+        for i, rect in enumerate(grid.cards):
+            if i in skipped:
+                continue
             out.append(f'    <path d="'
                        f'{_svg_rounded_path(rect, radius if mode == ROUNDED else 0.0)}"/>')
     out.append('  </g>')
@@ -293,13 +306,16 @@ def _dxf_pair(code: int, value) -> str:
 
 
 def write_dxf(path, grid: Grid, mode: str = ROUNDED,
-              radius_mm: float | None = None) -> str:
+              radius_mm: float | None = None,
+              skip: "frozenset[int] | tuple[int, ...]" = (),
+              paths=None) -> str:
     """Write the cut template as DXF in millimetres.
 
     Rounded cards become closed POLYLINE entities whose corner vertices carry
     a bulge, which is what Silhouette Studio joins smoothly.  Y is flipped,
     because DXF counts upward from a bottom-left origin while every other
     coordinate in this project counts down from the top-left.
+    `skip` leaves those card indices uncut.
     """
     radius = grid.card.radius_mm if radius_mm is None else radius_mm
     H = grid.sheet_h_mm
@@ -309,7 +325,18 @@ def write_dxf(path, grid: Grid, mode: str = ROUNDED,
 
     body: list[str] = []
 
-    if mode == CROSS:
+    if paths is not None:
+        for p in paths:
+            body.append(_dxf_pair(0, 'POLYLINE') + _dxf_pair(8, 'CUT')
+                        + _dxf_pair(66, 1) + _dxf_pair(70, int(p.closed))
+                        + _dxf_pair(10, '0.0') + _dxf_pair(20, '0.0')
+                        + _dxf_pair(30, '0.0'))
+            for x, y in p.points:
+                body.append(_dxf_pair(0, 'VERTEX') + _dxf_pair(8, 'CUT')
+                            + _dxf_pair(10, _n(x)) + _dxf_pair(20, _n(fy(y)))
+                            + _dxf_pair(30, '0.0'))
+            body.append(_dxf_pair(0, 'SEQEND') + _dxf_pair(8, 'CUT'))
+    elif mode == CROSS:
         for p in _cross_paths(grid):
             (x1, y1), (x2, y2) = p.points[0], p.points[-1]
             body.append(_dxf_pair(0, "LINE") + _dxf_pair(8, "CUT")
@@ -319,7 +346,10 @@ def write_dxf(path, grid: Grid, mode: str = ROUNDED,
                         + _dxf_pair(31, "0.0"))
     else:
         r = radius if mode == ROUNDED else 0.0
-        for rect in grid.cards:
+        skipped = frozenset(skip)
+        for i, rect in enumerate(grid.cards):
+            if i in skipped:
+                continue
             body.append(_dxf_polyline(rect, r, fy))
 
     out = []

@@ -1,6 +1,6 @@
-"""cut-proxies: a GTK4 / libadwaita front end.
+"""Silhouette Control Center: a GTK4 / libadwaita front end.
 
-Four pages - Layout, Blade, Cut and Studio - around one live preview.
+Five pages - Layout, Sheet, Blade, Cut and Studio - around one live preview.
 
 The preview is not decoration.  A cut template is a set of coordinates that
 have to agree with ink already on a sheet, and the fastest way to catch a
@@ -24,20 +24,37 @@ placeholder icon from the compositor.
 from __future__ import annotations
 
 import math
+import io
 import pathlib
 import threading
 import traceback
+import cairo
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
-from . import (config, geometry, graphtec, job as job_mod, presets, regmarks,
+from . import (config, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
                template, transport, winboat)  # noqa: E402
 
-APP_ID = "org.printing.CutProxies"
+APP_ID = "org.printing.SilhouetteControlCenter"
+
+
+def cut_refusal(current, confirmed, sending):
+    """Recheck the job at confirmation, including changes while a dialog is open."""
+    if sending:
+        return 'A cut is already being sent.'
+    if confirmed is None or current is not confirmed:
+        return 'The job changed. Check and confirm the current job again.'
+    if confirmed.blocked:
+        return 'The job does not check out.'
+    return ''
+
+
+def sheet_request_current(current, returned):
+    return current is not None and returned is current
 
 
 # --------------------------------------------------------------------------
@@ -72,6 +89,22 @@ def _switch(title, active, subtitle=None):
     return row
 
 
+class ControlPage(Gtk.ScrolledWindow):
+    """Scrollable controls that fill their pane instead of a preferences clamp."""
+
+    def __init__(self):
+        super().__init__(hscrollbar_policy=Gtk.PolicyType.NEVER,
+                         vscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
+                         hexpand=True, vexpand=True)
+        self.controls = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
+        for side in ('top', 'bottom', 'start', 'end'):
+            getattr(self.controls, 'set_margin_' + side)(16)
+        self.set_child(self.controls)
+
+    def add(self, group):
+        self.controls.append(group)
+
+
 # --------------------------------------------------------------------------
 # the preview
 # --------------------------------------------------------------------------
@@ -83,6 +116,9 @@ class Preview(Gtk.DrawingArea):
         super().__init__()
         self.job = None
         self.sheet = None          # a sheet.SheetReport, when a PDF is loaded
+        self.pdf_surface = None
+        self.pdf_size_mm = None
+        self.colorblind = False
         self.set_draw_func(self._draw)
         self.set_content_width(360)
         self.set_content_height(460)
@@ -95,6 +131,16 @@ class Preview(Gtk.DrawingArea):
 
     def set_sheet(self, report):
         self.sheet = report
+        self.queue_draw()
+
+    def set_pdf(self, png=None, width_mm=None, height_mm=None):
+        self.pdf_surface = (cairo.ImageSurface.create_from_png(io.BytesIO(png))
+                            if png is not None else None)
+        self.pdf_size_mm = (width_mm, height_mm) if png is not None else None
+        self.queue_draw()
+
+    def set_colorblind(self, enabled):
+        self.colorblind = bool(enabled)
         self.queue_draw()
 
     def _draw(self, _area, cr, width, height):
@@ -116,8 +162,10 @@ class Preview(Gtk.DrawingArea):
 
         W, H = j.grid.sheet_w_mm, j.grid.sheet_h_mm
         pad = 16
-        scale = min((width - 2 * pad) / W, (height - 2 * pad) / H)
-        cr.translate((width - W * scale) / 2, (height - H * scale) / 2)
+        canvas_w, canvas_h = (max(W, self.pdf_size_mm[0]), max(H, self.pdf_size_mm[1])) \
+            if self.pdf_size_mm is not None else (W, H)
+        scale = min((width - 2 * pad) / canvas_w, (height - 2 * pad) / canvas_h)
+        cr.translate((width - canvas_w * scale) / 2, (height - canvas_h * scale) / 2)
         cr.scale(scale, scale)
         hair = 1.0 / scale
 
@@ -125,21 +173,30 @@ class Preview(Gtk.DrawingArea):
         cr.set_source_rgb(1, 1, 1)
         cr.rectangle(0, 0, W, H)
         cr.fill()
+        if self.pdf_surface is not None:
+            cr.save()
+            cr.scale(self.pdf_size_mm[0] / self.pdf_surface.get_width(),
+                     self.pdf_size_mm[1] / self.pdf_surface.get_height())
+            cr.set_source_surface(self.pdf_surface)
+            cr.paint()
+            cr.restore()
         cr.set_source_rgb(0.6, 0.6, 0.62)
         cr.set_line_width(hair)
         cr.rectangle(0, 0, W, H)
         cr.stroke()
 
         mk = j.marks
+        good_color = (0.0, 0.35, 0.75) if self.colorblind else (0.1, 0.55, 0.25)
+        bad_color = (0.85, 0.35, 0.0) if self.colorblind else (0.85, 0.2, 0.15)
 
         # exclusion zones, so a collision is visible rather than described
-        cr.set_source_rgba(0.9, 0.3, 0.2, 0.13)
+        cr.set_source_rgba(*bad_color, 0.13)
         for z in mk.corner_zones():
             cr.rectangle(z.x, z.y, z.w, z.h)
             cr.fill()
 
         # registration marks, at their printed size
-        cr.set_source_rgb(0, 0, 0)
+        cr.set_source_rgba(0, 0, 0, 0.0 if self.pdf_surface is not None else 1.0)
         if mk.square is not None:
             s = mk.square
             cr.rectangle(s.x, s.y, s.w, s.h)
@@ -152,12 +209,13 @@ class Preview(Gtk.DrawingArea):
                 cr.line_to(x2, y2)
                 cr.stroke()
 
-        # card faces; the ones that crowd a mark are called out in amber so
-        # the operator can see which to cover, and skipped slots are hollow.
+        # Amber marks proximity, not a requirement to mask every such card.
         crowded = {h["index"] for h in j.mask_hints}
         skipped = set(j.skip)
         for i, rect in enumerate(j.grid.cards):
             if i in skipped:
+                continue
+            if self.pdf_surface is not None:
                 continue
             if i in crowded:
                 cr.set_source_rgba(0.90, 0.64, 0.23, 0.38)
@@ -168,9 +226,9 @@ class Preview(Gtk.DrawingArea):
 
         # the cut paths, as flattened: this is what gets streamed
         bad = bool(j.blocked)
-        cr.set_source_rgb(0.85, 0.2, 0.15) if bad else \
-            cr.set_source_rgb(0.1, 0.55, 0.25)
+        cr.set_source_rgb(*(bad_color if bad else good_color))
         cr.set_line_width(max(hair, 0.25))
+        cr.set_dash([2.0, 1.0] if self.colorblind and bad else [])
         for p in j.paths:
             pts = p.points
             if not pts:
@@ -181,6 +239,7 @@ class Preview(Gtk.DrawingArea):
             if p.closed:
                 cr.close_path()
             cr.stroke()
+        cr.set_dash([])
 
         # where the marks actually are on a loaded PDF, against where the
         # template wants them. This is the whole alignment question, visible.
@@ -189,11 +248,26 @@ class Preview(Gtk.DrawingArea):
                 if fm.ink_box is not None:
                     b = fm.ink_box
                     good = fm.is_credible and (fm.error_mm or 0) <= 0.5
-                    cr.set_source_rgba(*((0.1, 0.7, 0.3, 0.9) if good
-                                         else (0.95, 0.25, 0.15, 0.95)))
+                    cr.set_source_rgba(*(good_color if good else bad_color), 0.95)
+                    cr.set_dash([1.5, 0.8] if self.colorblind and not good else [])
                     cr.set_line_width(max(hair, 0.4))
                     cr.rectangle(b.x, b.y, b.w, b.h)
                     cr.stroke()
+                    cr.set_dash([])
+                    if self.colorblind:
+                        # Shape and text duplicate color, including on a
+                        # grayscale display or a monochrome screenshot.
+                        label = 'OK' if good else '!'
+                        size = max(2.5, 11 * hair)
+                        cr.select_font_face('Sans')
+                        cr.set_font_size(size)
+                        extents = cr.text_extents(label)
+                        cr.set_source_rgba(1, 1, 1, 0.95)
+                        cr.rectangle(b.x, b.y - size - 1, extents.width + 1.5, size + 1)
+                        cr.fill()
+                        cr.set_source_rgb(*(good_color if good else bad_color))
+                        cr.move_to(b.x + 0.5, b.y - 1)
+                        cr.show_text(label)
                 if fm.measured is not None:
                     mx, my = fm.measured
                     cr.move_to(mx - 2, my)
@@ -220,13 +294,15 @@ class Preview(Gtk.DrawingArea):
 class Window(Adw.ApplicationWindow):
 
     def __init__(self, app):
-        super().__init__(application=app, title="Cut Proxies",
+        super().__init__(application=app, title="Silhouette Control Center",
                          default_width=1120, default_height=760)
         self.job = None
         self.sheet_report = None
         self.pdf_path = None
+        self._sheet_token = None
         self.imported = None
         self._building = False
+        self._sending = False
         self._suppress = True        # don't rebuild while constructing rows
 
         self.toasts = Adw.ToastOverlay()
@@ -251,8 +327,12 @@ class Window(Adw.ApplicationWindow):
         outer.add_top_bar(self.banner)
 
         # preview on the right, pages on the left
-        split = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
-        split.append(self.stack)
+        split = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL,
+                          wide_handle=True, position=520,
+                          resize_start_child=True, resize_end_child=True,
+                          shrink_start_child=False, shrink_end_child=False)
+        self.split = split
+        split.set_start_child(self.stack)
         self.stack.set_hexpand(True)
 
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -262,17 +342,52 @@ class Window(Adw.ApplicationWindow):
         right.set_margin_start(6)
         right.set_margin_end(12)
         self.preview = Preview()
+        self.colorblind_toggle = Gtk.CheckButton(label='Colorblind mode')
+        self.colorblind_toggle.set_tooltip_text('Blue/orange outlines, dashed failures and OK/! labels')
+        self.colorblind_toggle.connect('toggled', self.on_colorblind_changed)
+        self.colorblind_toggle.set_active(bool(config.load_settings().get('colorblind_mode', False)))
+        right.append(self.colorblind_toggle)
         frame = Gtk.Frame()
         frame.set_child(self.preview)
         right.append(frame)
+
+        summary = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        summary.add_css_class('card')
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        for side in ('top', 'bottom', 'start', 'end'):
+            getattr(inner, 'set_margin_' + side)(14)
+        status = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.summary_icon = Gtk.Image(icon_name='emblem-default-symbolic')
+        self.summary_title = Gtk.Label(label='Checking layout', xalign=0)
+        self.summary_title.add_css_class('heading')
+        status.append(self.summary_icon)
+        status.append(self.summary_title)
+        inner.append(status)
+        self.summary_layout = Gtk.Label(xalign=0, wrap=True)
+        self.summary_material = Gtk.Label(xalign=0, wrap=True)
+        self.summary_material.add_css_class('dim-label')
+        self.summary_note = Gtk.Label(xalign=0, wrap=True)
+        self.summary_note.add_css_class('dim-label')
+        inner.append(self.summary_layout)
+        inner.append(self.summary_material)
+        inner.append(self.summary_note)
+        summary.append(inner)
+        right.append(summary)
+
+        self.advanced_toggle = Gtk.CheckButton(label='Advanced details')
+        right.append(self.advanced_toggle)
         self.checks = Gtk.Label(xalign=0, wrap=True, selectable=True)
         self.checks.add_css_class("monospace")
         self.checks.add_css_class("dim-label")
         scroller = Gtk.ScrolledWindow(vexpand=False)
         scroller.set_size_request(-1, 190)
         scroller.set_child(self.checks)
+        self.advanced_panel = scroller
+        scroller.set_visible(False)
+        self.advanced_toggle.connect('toggled',
+            lambda toggle: self.advanced_panel.set_visible(toggle.get_active()))
         right.append(scroller)
-        split.append(right)
+        split.set_end_child(right)
 
         outer.set_content(split)
 
@@ -287,7 +402,16 @@ class Window(Adw.ApplicationWindow):
 
     # ---- pages -------------------------------------------------------
     def _page_layout(self):
-        page = Adw.PreferencesPage()
+        page = ControlPage()
+
+        group = Adw.PreferencesGroup(
+            title='Printed-sheet preset',
+            description='Matches the current Proxy Press Silhouette Cameo setup. Blade settings are separate.')
+        self.r_layout_preset = _combo(
+            'Layout preset', ['Custom'] + [p.name for p in layout_presets.BUILTIN.values()])
+        self.r_layout_preset.connect('notify::selected', self.on_layout_preset)
+        group.add(self.r_layout_preset)
+        page.add(group)
 
         gsrc = Adw.PreferencesGroup(
             title="What to cut",
@@ -340,8 +464,8 @@ class Window(Adw.ApplicationWindow):
         self.r_mode = _combo(
             "Cut mode", ["rounded", "square", "cross"],
             subtitle="cross cuts straight across for a corner punch")
-        self.r_radius = _spin("Corner radius", 0, 10, 3.0, 0.1, 1,
-                              subtitle="mm; 3 mm is the card standard")
+        self.r_radius = _spin("Corner radius", 0, 10, 3.2, 0.1, 1,
+                              subtitle="mm; 3.2 mm MTG standard, 3 mm for Kadomaru punches")
         g2.add(self.r_mode)
         g2.add(self.r_radius)
         page.add(g2)
@@ -352,7 +476,7 @@ class Window(Adw.ApplicationWindow):
                         "on the sheet exactly, or the sensor will not find "
                         "them.")
         self.r_pattern = _combo(
-            "Pattern", ["three", "four", "proxypress"],
+            "Pattern", list(regmarks.PATTERNS),
             subtitle="three = every Cameo; four = Cameo 5 Alpha only")
         self.r_inset = _spin("Inset from the paper edge", 2, 40, 10.0, 0.5, 1,
                              subtitle="mm; 10 standard, 3.5 borderless "
@@ -397,7 +521,7 @@ class Window(Adw.ApplicationWindow):
                                         "view-grid-symbolic")
 
     def _page_sheet(self):
-        page = Adw.PreferencesPage()
+        page = ControlPage()
         g = Adw.PreferencesGroup(
             title="The printed sheet",
             description="Measure where the registration marks actually are, "
@@ -420,6 +544,8 @@ class Window(Adw.ApplicationWindow):
                                            "accurate")
         g.add(self.r_sheet_page)
         g.add(self.r_sheet_dpi)
+        self.r_sheet_page.connect('notify::value', self.on_pdf_page_changed)
+        self.r_sheet_dpi.connect('notify::selected', self.on_pdf_page_changed)
 
         remeasure = Adw.ActionRow(
             title="Measure again",
@@ -454,7 +580,7 @@ class Window(Adw.ApplicationWindow):
                                         "document-print-symbolic")
 
     def _page_blade(self):
-        page = Adw.PreferencesPage()
+        page = ControlPage()
         names = sorted(presets.all_presets())
         default = (names.index(config.DEFAULT_PRESET)
                    if config.DEFAULT_PRESET in names else 0)
@@ -472,9 +598,10 @@ class Window(Adw.ApplicationWindow):
 
         g2 = Adw.PreferencesGroup(
             title="Blade",
-            description="On stock this heavy, add passes rather than force. "
-                        "One very hard pass embosses the back of the card and "
-                        "drags it sideways.")
+            description="Tuning order: passes, then force, then speed, then "
+                        "depth. On heavy stock, multi-pass cuts cleaner. If "
+                        "laminate edges ripple, reduce force. If machine "
+                        "skips, reduce speed.")
         self.r_cutter = _combo(
             "Cutter", [d.name for d in graphtec.DEVICES],
             [d.name for d in graphtec.DEVICES].index("Silhouette Cameo 4"))
@@ -520,7 +647,7 @@ class Window(Adw.ApplicationWindow):
         self.on_preset()
 
     def _page_cut(self):
-        page = Adw.PreferencesPage()
+        page = ControlPage()
         g = Adw.PreferencesGroup(
             title="Registration",
             description="The cutter finds the printed marks, then treats the "
@@ -580,7 +707,7 @@ class Window(Adw.ApplicationWindow):
         self.r_test_force = Adw.EntryRow(title="Force values")
         self.r_test_force.set_text("25,29,33")
         self.r_test_passes = Adw.EntryRow(title="Pass counts")
-        self.r_test_passes.set_text("1,2,3")
+        self.r_test_passes.set_text("1,2,3,4")
         gtest.add(self.r_test_force)
         gtest.add(self.r_test_passes)
         test_row = Adw.ActionRow(
@@ -622,7 +749,7 @@ class Window(Adw.ApplicationWindow):
                                         "media-playback-start-symbolic")
 
     def _page_studio(self):
-        page = Adw.PreferencesPage()
+        page = ControlPage()
         g = Adw.PreferencesGroup(
             title="Silhouette Studio in the WinBoat guest",
             description="The fallback when the direct USB path will not "
@@ -646,6 +773,15 @@ class Window(Adw.ApplicationWindow):
         prep.add_suffix(prep_btn)
         g.add(prep)
 
+        launch_row = Adw.ActionRow(
+            title="Launch Studio (blank)",
+            subtitle="Opens Silhouette Studio without opening a template")
+        launch_btn = Gtk.Button(label="Launch")
+        launch_btn.set_valign(Gtk.Align.CENTER)
+        launch_btn.connect("clicked", self.on_launch_blank_studio)
+        launch_row.add_suffix(launch_btn)
+        g.add(launch_row)
+
         open_row = Adw.ActionRow(
             title="Export and open in Studio",
             subtitle="Writes the template, stages it, and opens it as a "
@@ -660,6 +796,44 @@ class Window(Adw.ApplicationWindow):
                                         "computer-symbolic")
 
     # ---- reading the controls ----------------------------------------
+    def on_colorblind_changed(self, toggle):
+        self.preview.set_colorblind(toggle.get_active())
+        settings = config.load_settings()
+        settings['colorblind_mode'] = toggle.get_active()
+        try:
+            config.save_settings(settings)
+        except OSError as exc:
+            self.toast(f'Could not save colorblind preference: {exc}')
+
+    def on_layout_preset(self, *_a):
+        selected = self.r_layout_preset.get_selected()
+        if selected == 0:
+            return
+        profile = list(layout_presets.BUILTIN.values())[selected - 1]
+        options = profile.options()
+        was, self._suppress = self._suppress, True
+        self.imported = None
+        self.import_row.set_title('Generated layout')
+        self.import_row.set_subtitle('Using the sheet and card settings below')
+        self.r_colour.set_model(Gtk.StringList.new(['all colours']))
+        self.r_colour.set_selected(0)
+        self.r_engine.set_selected(1)
+        self.r_sheet.set_selected(sorted(geometry.SHEETS).index(options['sheet']))
+        self.r_card.set_selected(sorted(geometry.CARDS).index('standard'))
+        self.r_orient.set_selected(2)
+        self.r_mode.set_selected(0)
+        self.r_radius.set_value(options['radius_mm'])
+        self.r_pattern.set_selected(0)
+        self.r_inset.set_value(options['mark_inset_mm'])
+        self.r_length.set_value(options['mark_length_mm'])
+        self.r_thickness.set_value(options['mark_thickness_mm'])
+        self.r_bleed.set_value(options['bleed_mm'])
+        self.r_skip.set_text('')
+        self.r_register.set_active(True)
+        self.r_auto.set_active(True)
+        self._suppress = was
+        self.on_changed()
+
     def _text(self, row):
         model = row.get_model()
         return model.get_string(row.get_selected())
@@ -704,10 +878,7 @@ class Window(Adw.ApplicationWindow):
         choice = self._text(self.r_colour)
         if choice == "all colours":
             return self.imported
-        try:
-            return self.imported.only(choice)
-        except Exception:                         # noqa: BLE001
-            return self.imported
+        return self.imported.only(choice)
 
     def _skip_indices(self):
         """Parse the skip field, ignoring anything that is not a number."""
@@ -722,6 +893,12 @@ class Window(Adw.ApplicationWindow):
     def on_changed(self, *_a):
         if self._suppress:
             return
+        self._sheet_token = None
+        if self.sheet_report is not None:
+            self.sheet_report = None
+            self.preview.set_sheet(None)
+            self.adopt_btn.set_sensitive(False)
+            self.sheet_result.set_title('Layout changed — measure again')
         # Any change invalidates the checked job, so the Cut button has to go
         # back to insensitive before anything else happens.
         self.job = None
@@ -732,7 +909,8 @@ class Window(Adw.ApplicationWindow):
         p = presets.get(self._text(self.r_preset))
         flag = {"measured": "measured on a real cut",
                 "silhouette": "from Silhouette's published settings",
-                "recovered": "from the recovered media table"}.get(
+                "recovered": "from the recovered media table",
+                "guide": "from the Card Maker community guide; not measured here"}.get(
                     p.origin, "EXTRAPOLATED - never cut")
         self.preset_note.set_subtitle(f"{flag}\n\n{p.note}")
         was = self._suppress
@@ -748,13 +926,18 @@ class Window(Adw.ApplicationWindow):
         if self._suppress or self._building:
             return
         self._building = True
-        opts = self.options()
         try:
+            opts = self.options()
             j = job_mod.build(**opts)
         except geometry.LayoutImpossible as exc:
             self.job = None
             self.preview.set_job(None)
             self.checks.set_text("")
+            self.summary_icon.set_from_icon_name('dialog-error-symbolic')
+            self.summary_title.set_label('Layout needs attention')
+            self.summary_layout.set_label(str(exc))
+            self.summary_material.set_label('')
+            self.summary_note.set_label('Adjust the sheet or card layout to continue.')
             self.banner.set_title(str(exc))
             self.banner.set_revealed(True)
             self.cut_button.set_sensitive(False)
@@ -764,6 +947,11 @@ class Window(Adw.ApplicationWindow):
             self.job = None
             self.preview.set_job(None)
             self.checks.set_text(traceback.format_exc())
+            self.summary_icon.set_from_icon_name('dialog-error-symbolic')
+            self.summary_title.set_label('Could not check the layout')
+            self.summary_layout.set_label(str(exc))
+            self.summary_material.set_label('')
+            self.summary_note.set_label('Advanced details contains the diagnostic report.')
             self.banner.set_title(f"Could not build the job: {exc}")
             self.banner.set_revealed(True)
             self.cut_button.set_sensitive(False)
@@ -772,6 +960,21 @@ class Window(Adw.ApplicationWindow):
 
         self.job = j
         self.preview.set_job(j)
+        self.summary_icon.set_from_icon_name(
+            'dialog-error-symbolic' if j.blocked else 'emblem-default-symbolic')
+        self.summary_title.set_label('Layout needs attention' if j.blocked else 'Layout checked')
+        orientation = 'portrait' if j.grid.portrait else 'landscape'
+        self.summary_layout.set_label(
+            f'{len(j.paths)} cut shapes · {j.grid.sheet_name} {orientation}\n'
+            f'{j.grid.card.width_mm:g} × {j.grid.card.height_mm:g} mm · '
+            f'{j.grid.card.radius_mm:g} mm corners')
+        self.summary_material.set_label(
+            f'{j.preset.name} · {j.settings.passes} '
+            f'{"pass" if j.settings.passes == 1 else "passes"}')
+        self.summary_note.set_label(
+            j.blocked[0] if j.blocked else
+            ('Starting settings — test on an offcut first.'
+             if j.preset.origin == 'derived' else 'Geometry checks passed.'))
 
         lines = [f"{label}: {value}" for label, value in j.summary()]
         lines.append("")
@@ -785,32 +988,31 @@ class Window(Adw.ApplicationWindow):
             lines.append(f"[warn] {w}")
         if j.mask_hints:
             lines.append("")
-            lines.append("COVER FOR THE SCAN, UNCOVER BEFORE THE CUT:")
+            lines.append("NEAR REGISTRATION MARKS (conservative proximity check):")
             for h in j.mask_hints:
                 lines.append(f"  {h['text']}")
-            lines.append("  A sticky note is enough. The sensor can read a "
-                         "dark card edge")
-            lines.append("  as part of the mark and land the whole cut wrong.")
+            lines.append(regmarks.MASK_GUIDANCE)
+            lines.append("Proximity alone does not mean every nearby card needs covering.")
         self.checks.set_text("\n".join(lines))
 
         blocked = j.blocked
         if blocked:
             self.banner.set_title(f"{len(blocked)} problem(s): {blocked[0]}")
             self.banner.set_revealed(True)
+        elif not self.r_register.get_active():
+            self.banner.set_title(
+                "Registration is OFF: blade will cut in sheet coordinates (for blank sheets only)")
+            self.banner.set_revealed(True)
         elif j.warnings:
             self.banner.set_title(j.warnings[0])
             self.banner.set_revealed(True)
         elif j.mask_hints:
-            self.banner.set_title(
-                f"{len(j.mask_hints)} card(s) crowd a registration mark — "
-                f"cover them for the scan, uncover before the cut")
+            self.banner.set_title(regmarks.MASK_GUIDANCE)
             self.banner.set_revealed(True)
         else:
             self.banner.set_revealed(False)
 
-        self.cut_button.set_sensitive(
-            not blocked and j.settings.passes > 0
-            and self.r_register.get_active())
+        self.cut_button.set_sensitive(not blocked and not self._sending and j.settings.passes > 0)
         self._building = False
 
     # ---- actions ------------------------------------------------------
@@ -867,11 +1069,11 @@ class Window(Adw.ApplicationWindow):
             path = pathlib.Path(gfile.get_path())
             from . import importer
             try:
-                self.imported = importer.load(path)
+                artwork = importer.load(path)
             except Exception as exc:              # noqa: BLE001
-                self.imported = None
                 self.toast(f"Could not read {path.name}: {exc}")
                 return
+            self.imported = artwork
             self.import_row.set_title(path.name)
             lines = [self.imported.describe()] + self.imported.warnings
             self.import_row.set_subtitle("\n".join(lines))
@@ -914,11 +1116,19 @@ class Window(Adw.ApplicationWindow):
             except GLib.Error:
                 return
             self.pdf_path = pathlib.Path(gfile.get_path())
+            self.preview.set_pdf()
             self.sheet_row.set_title(self.pdf_path.name)
             self.sheet_row.set_subtitle(str(self.pdf_path.parent))
             self.measure_sheet()
 
         dialog.open(self, None, done)
+
+    def on_pdf_page_changed(self, *_a):
+        if self._suppress or self.pdf_path is None:
+            return
+        self._sheet_token = None
+        self.preview.set_pdf()
+        self.measure_sheet()
 
     def measure_sheet(self):
         path = getattr(self, "pdf_path", None)
@@ -931,30 +1141,43 @@ class Window(Adw.ApplicationWindow):
         grid = self.job.grid
         page = int(self.r_sheet_page.get_value())
         dpi = int(self._text(self.r_sheet_dpi))
+        token = self._sheet_token = object()
+        self.sheet_report = None
+        self.preview.set_sheet(None)
+        self.adopt_btn.set_sensitive(False)
 
         def work():
             from . import sheet as sheet_mod
             try:
-                report = sheet_mod.measure(path, marks, page=page, dpi=dpi)
+                image = sheet_mod.render(path, page=page, dpi=dpi, colour=True)
+                report = sheet_mod.measure(path, marks, page=page, dpi=dpi, image=image)
+                png = io.BytesIO()
+                image.save(png, format='PNG')
             except Exception as exc:              # noqa: BLE001
-                GLib.idle_add(self._sheet_failed, str(exc))
+                GLib.idle_add(self._sheet_failed, str(exc), token)
                 return
             problems = report.problems(grid.sheet_w_mm, grid.sheet_h_mm)
-            GLib.idle_add(self._sheet_done, report, problems)
+            GLib.idle_add(self._sheet_done, report, problems, png.getvalue(), token)
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _sheet_failed(self, message):
+    def _sheet_failed(self, message, token):
+        if not sheet_request_current(self._sheet_token, token):
+            return
         self.sheet_report = None
         self.preview.set_sheet(None)
+        self.preview.set_pdf()
         self.sheet_result.set_title("Could not measure")
         self.sheet_result.set_subtitle(message)
         self.adopt_btn.set_sensitive(False)
         self.rebuild()
 
-    def _sheet_done(self, report, problems):
+    def _sheet_done(self, report, problems, png, token):
+        if not sheet_request_current(self._sheet_token, token):
+            return
         self.sheet_report = report
         self.preview.set_sheet(report)
+        self.preview.set_pdf(png, report.page_w_mm, report.page_h_mm)
         lines = [m.describe() for m in report.marks]
         lines.append("")
         lines.append(report.diagnosis())
@@ -1081,8 +1304,9 @@ class Window(Adw.ApplicationWindow):
 
     def on_cut(self, *_a):
         j = self.job
-        if j is None or j.blocked:
-            self.toast("The job does not check out.")
+        refusal = cut_refusal(j, j, self._sending)
+        if refusal:
+            self.toast(refusal)
             return
         body = ("This moves the blade.\n\n"
                 f"{j.grid.describe()}\n"
@@ -1091,25 +1315,30 @@ class Window(Adw.ApplicationWindow):
         if j.preset.origin != "measured":
             body += ("This preset has never been cut. Run the plain-paper "
                      "test preset first.\n\n")
-        body += "The cutter will search for the printed marks first."
-        dialog = Adw.AlertDialog(heading="Register and cut?", body=body)
+        body += ("The cutter will search for the printed marks first."
+                 if j.registration else "Registration is off; this uses sheet coordinates.")
+        dialog = Adw.AlertDialog(heading="Send this cut?", body=body)
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("cut", "Cut")
         dialog.set_response_appearance("cut",
                                        Adw.ResponseAppearance.DESTRUCTIVE)
         dialog.set_default_response("cancel")
-        dialog.connect("response", self._cut_response)
+        dialog.connect("response", self._cut_response, j)
         dialog.present(self)
 
-    def _cut_response(self, _dialog, response):
+    def _cut_response(self, _dialog, response, j):
         if response != "cut":
             return
-        j = self.job
+        refusal = cut_refusal(self.job, j, self._sending)
+        if refusal:
+            self.toast(refusal)
+            return
+        self._sending = True
         self.cut_button.set_sensitive(False)
 
         def work():
             try:
-                with transport.open_transport("auto") as t:
+                with transport.open_transport("auto", device=j.device) as t:
                     if t.can_read:
                         state = t.status()
                         if state == "unloaded":
@@ -1118,22 +1347,19 @@ class Window(Adw.ApplicationWindow):
                         if state == "moving":
                             raise transport.TransportError(
                                 "the cutter is busy")
-                    window = regmarks.scan_window(j.marks)
-                    cj = graphtec.CutJob(
-                        j.device, j.settings, origin_mm=j.marks.origin_mm,
-                        reg_width_mm=j.marks.reg_width_mm,
-                        reg_length_mm=j.marks.reg_length_mm,
-                        registration=True, auto_search=self.r_auto.get_active(),
-                        quad=window["quad"])
-                    sent = t.run(cj.plan(j.paths))
+                    sent = t.run(j.steps)
                 GLib.idle_add(self.toast, f"Cut sent: {sent:,} bytes")
             except transport.TransportError as exc:
                 GLib.idle_add(self.toast, f"Not cut: {exc}")
             except Exception as exc:              # noqa: BLE001
                 GLib.idle_add(self.toast, f"Not cut: {exc}")
-            GLib.idle_add(self.rebuild)
+            GLib.idle_add(self._send_done)
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _send_done(self):
+        self._sending = False
+        self.rebuild()
 
     def on_check_guest(self, *_a):
         self.guest_row.set_subtitle("checking...")
@@ -1167,6 +1393,15 @@ class Window(Adw.ApplicationWindow):
         self.guest_row.set_subtitle("\n".join(info["steps"]))
         self.toast(f"Staged {info['script'].name}")
 
+    def on_launch_blank_studio(self, *_a):
+        try:
+            cmd = winboat.open_in_studio(None)
+        except Exception as exc:              # noqa: BLE001
+            self.toast(f"Could not launch Studio: {exc}")
+            return
+        self.toast("Opening Silhouette Studio in the guest")
+        self.guest_row.set_subtitle(" ".join(cmd))
+
     def on_open_studio(self, *_a):
         if self.job is None:
             self.toast("Nothing to open: fix the layout first.")
@@ -1175,19 +1410,32 @@ class Window(Adw.ApplicationWindow):
         stem = (f"{j.grid.sheet_name.lower()}-{j.grid.card.name}-"
                 f"{j.grid.cols}x{j.grid.rows}-{j.mode}")
         try:
-            written = job_mod.write_templates(j, stem, proof=False)
+            written = job_mod.write_templates(j, stem, folder=winboat.stage_dir(), proof=False)
             cmd = winboat.open_in_studio(written["dxf"])
         except Exception as exc:              # noqa: BLE001
             self.toast(f"Could not open Studio: {exc}")
             return
-        self.toast("Opening Silhouette Studio in the guest")
-        self.guest_row.set_subtitle(" ".join(cmd))
+        b = j.grid.bounds
+        self.toast(f"Staged {written['dxf'].name} & opening Studio")
+        guide_text = (
+            f"Command: {' '.join(cmd)}\n\n"
+            f"In Silhouette Studio:\n"
+            f"- Page Setup: {j.grid.sheet_name} {'Landscape' if not j.grid.portrait else 'Portrait'}\n"
+            f"- Reg Marks: Type 1, Inset {j.marks.inset_mm:g} mm, Length {j.marks.reg_length_mm:g} mm\n"
+            f"- Verify Size (Ctrl+A): {b.w:.2f} x {b.h:.2f} mm ({b.w / 25.4:.3f} x {b.h / 25.4:.3f} in)\n"
+            f"- If scaled in Basic Edition: lock aspect ratio and set Width to {b.w:.2f} mm ({b.w / 25.4:.3f} in)\n"
+            f"- Card size: {j.grid.card.width_mm:.1f} x {j.grid.card.height_mm:.1f} mm\n"
+            f"- Settings: Force {j.settings.force}, Speed {j.settings.speed}, Passes {j.settings.passes}, Depth {j.settings.depth or 7}\n"
+            f"- Sticky note hint: Cover bottom-left card during mark scan, remove before cutting"
+        )
+        self.guest_row.set_subtitle(guide_text)
 
 
 class Application(Adw.Application):
 
     def __init__(self):
         super().__init__(application_id=APP_ID)
+        Gtk.Window.set_default_icon_name(APP_ID)
 
     def do_activate(self):
         win = self.props.active_window or Window(self)

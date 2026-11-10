@@ -238,7 +238,7 @@ def page_size_mm(pdf) -> tuple[float, float, int]:
     return w * 25.4 / 72.0, h * 25.4 / 72.0, pages
 
 
-def render(pdf, page: int = 1, dpi: int = DEFAULT_DPI):
+def render(pdf, page: int = 1, dpi: int = DEFAULT_DPI, colour: bool = False):
     """Rasterise one page to a PIL image at a known dpi."""
     try:
         from PIL import Image
@@ -248,8 +248,8 @@ def render(pdf, page: int = 1, dpi: int = DEFAULT_DPI):
     with tempfile.TemporaryDirectory(prefix="cut-proxies-sheet.") as tmp:
         stem = pathlib.Path(tmp) / "page"
         out = subprocess.run(
-            ["pdftoppm", "-r", str(dpi), "-f", str(page), "-l", str(page),
-             "-gray", "-png", str(pdf), str(stem)],
+            ["pdftoppm", "-r", str(dpi), "-f", str(page), "-l", str(page)]
+            + ([] if colour else ['-gray']) + ["-png", str(pdf), str(stem)],
             capture_output=True, check=False)
         if out.returncode != 0:
             raise SheetError(
@@ -259,7 +259,7 @@ def render(pdf, page: int = 1, dpi: int = DEFAULT_DPI):
         if not pngs:
             raise SheetError(f"pdftoppm produced nothing for page {page}")
         with Image.open(pngs[0]) as im:
-            return im.convert("L").copy()
+            return im.convert("RGB" if colour else "L").copy()
 
 
 # --------------------------------------------------------------------------
@@ -353,12 +353,12 @@ def best_blob(blobs: list[Rect], size_mm: float,
 
 
 def measure(pdf, mk: Marks, page: int = 1, dpi: int = DEFAULT_DPI,
-            search_mm: float = SEARCH_MM) -> SheetReport:
+            search_mm: float = SEARCH_MM, image=None) -> SheetReport:
     """Find each expected mark on the page and say where it actually is."""
     page_w, page_h, pages = page_size_mm(pdf)
     if page < 1 or page > pages:
         raise SheetError(f"page {page} is outside the PDF's 1..{pages}")
-    image = render(pdf, page, dpi)
+    image = render(pdf, page, dpi) if image is None else image.convert('L')
 
     found: list[FoundMark] = []
 

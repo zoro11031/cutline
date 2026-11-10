@@ -21,7 +21,7 @@ cheap: nine sub-suites of a few tests each.
 import io
 import unittest
 
-from cut_proxies import regmarks, winboat
+from cut_proxies import job, regmarks, winboat
 
 
 def _run(class_paths):
@@ -33,12 +33,20 @@ def _run(class_paths):
 
 # (module, attribute, stub, description, the classes that must object)
 CASES = (
+    (job, "imported_page_errors", lambda *a: [],
+     "SVG page guard always allows", ["tests.test_imported_page.ImportedPage"]),
+    (job, "imported_page_errors", lambda *a: ["SVG page mismatch"],
+     "SVG page guard always refuses", ["tests.test_imported_page.ImportedPage"]),
+    (job, "imported_mode_errors", lambda *a: [],
+     "Imported mode guard always allows", ["tests.test_imported_page.ImportedPage"]),
+    (job, "imported_mode_errors", lambda *a: ["cross mode unsupported"],
+     "Imported mode guard always refuses", ["tests.test_imported_page.ImportedPage"]),
     (winboat, "rdp_busy", lambda *a, **k: "",
      "rdp_busy can never report a held session",
-     ["tests.test_guards.TestRdpBusyFires"]),
+     ["tests.test_guards.TestRdpBusyFires", "tests.test_rdp_hidden.TestHiddenRdp"]),
     (winboat, "rdp_busy", lambda *a, **k: "pid 1 running x holds it",
      "rdp_busy reports every port as held",
-     ["tests.test_guards.TestRdpBusyFires"]),
+     ["tests.test_guards.TestRdpBusyFires", "tests.test_rdp_hidden.TestHiddenRdp"]),
     (winboat, "port_open", lambda *a, **k: True,
      "port_open calls every port open",
      ["tests.test_guards.TestPortOpenFires"]),
@@ -67,6 +75,22 @@ CASES = (
      "our_stale_sessions claims a foreign session is ours",
      ["tests.test_guards.TestOurStaleSessionsNeverSeesAnotherTool"]),
 )
+
+try:
+    from cut_proxies import gui
+except ImportError:
+    gui = None
+if gui is not None:
+    CASES += (
+        (gui, 'cut_refusal', lambda *a: '', 'GUI confirmation always allows',
+         ['tests.test_gui.TestCutConfirmationGuard']),
+        (gui, 'cut_refusal', lambda *a: 'blocked', 'GUI confirmation always refuses',
+         ['tests.test_gui.TestCutConfirmationGuard']),
+        (gui, 'sheet_request_current', lambda *a: True, 'PDF result guard always accepts',
+         ['tests.test_gui.TestSheetRequestGuard']),
+        (gui, 'sheet_request_current', lambda *a: False, 'PDF result guard always rejects',
+         ['tests.test_gui.TestSheetRequestGuard']),
+    )
 
 
 class TestGuardsDiscriminate(unittest.TestCase):

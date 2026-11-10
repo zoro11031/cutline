@@ -53,7 +53,7 @@ software. `materials.py` reads it out of an installation the user already
 has; do not copy it into the repo to make a test unconditional.
 
 **The verification proves itself every run.** `verify.liveness_failures`
-corrupts each built stream eight ways and confirms the checks reject it,
+corrupts each built stream nine ways and confirms the checks reject it,
 before the job is allowed through. Each probe must be caught by the check it
 *names*, not merely rejected by something: two checks reading the same
 decoded stream can hide each other, and the position probe did exactly that
@@ -192,10 +192,10 @@ identify /tmp/t/proof.png     # must be 1275x1650 for Letter at 150 dpi
 - **No `pip` on this machine, and no `pyusb`.** Everything runs on the
   standard library; SVG and DXF are written by hand for that reason. Do not
   add a dependency to the template path.
-- **Proxy Press draws different marks** from Silhouette Card Maker — four of
-  them, thinner, longer. `docs/FINDINGS.md` section 3. The `proxypress`
-  pattern models what is actually on the paper; do not "correct" it to the
-  canonical three.
+- **Proxy Press uses the standard three/four registration patterns.** Its
+  owner requested removal of the obsolete separate `proxypress` pattern on
+  2026-11-09. Section 3 describes historical geometry, not a compatibility
+  requirement. Match its current local source when defining layout presets.
 - **The speed scale is unresolved.** Silhouette's own database never exceeds
   10; the Card Maker guide says 25 on a Cameo 5. Section 11. The presets
   follow the vendor. Do not "fix" one source to match the other — record the

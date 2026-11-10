@@ -42,12 +42,10 @@ class TestMarkPlacement(unittest.TestCase):
         self.assertIsNone(mk.square)
         self.assertEqual(len(mk.ells), 4)
 
-    def test_proxypress_pattern_is_a_square_plus_three_ells(self):
-        # What Proxy Press actually prints: the canonical square, but an extra
-        # fourth mark at the bottom-right. See docs/FINDINGS.md section 3.
-        mk = regmarks.marks(279.4, 215.9, pattern=regmarks.PROXYPRESS)
-        self.assertIsNotNone(mk.square)
-        self.assertEqual(len(mk.ells), 3)
+    def test_only_standard_patterns_are_offered(self):
+        self.assertEqual(regmarks.PATTERNS, ('three', 'four'))
+        with self.assertRaisesRegex(ValueError, 'unknown pattern'):
+            regmarks.marks(279.4, 215.9, pattern='proxypress')
 
     def test_arms_run_inward_and_are_shortened_by_half_the_line_width(self):
         tr = next(e for e in self.mk.ells if e.corner_x > 100)
@@ -170,7 +168,7 @@ class TestClearance(unittest.TestCase):
                 b = regmarks.for_grid(
                     geometry.proxypress_layout(sheet, False,
                                                config.PROXYPRESS_8UP),
-                    inset_mm=10.0, pattern=regmarks.PROXYPRESS)
+                    inset_mm=10.0, pattern=regmarks.THREE)
                 self.assertAlmostEqual(a.length_mm, b.length_mm, places=2)
 
     def test_an_over_long_arm_is_reported_as_a_collision(self):

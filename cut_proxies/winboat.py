@@ -411,6 +411,29 @@ def rdp_busy(port: int | None = None) -> str:
         pid, _, cmd = line.partition(" ")
         if not pid.isdigit() or int(pid) == mine:
             continue
+        # Credential-pipe arguments hide /v and our marker from pgrep.
+        # Identify the connected peer through the kernel socket listing,
+        # without reading the pipe or assuming this client belongs to us.
+        if _is_rdp_client(cmd) and "/args-from:" in cmd:
+            try:
+                sockets = subprocess.run(
+                    ["ss", "-tnpH", "state", "established"],
+                    capture_output=True, text=True, check=False)
+            except OSError:
+                return f"pid {pid} has hidden RDP arguments; cannot inspect its connection"
+            if sockets.returncode:
+                return f"pid {pid} has hidden RDP arguments; cannot inspect its connection"
+            for socket_line in sockets.stdout.splitlines():
+                # The peer endpoint is the last column before users:;
+                # checking the local endpoint could mistake a server socket
+                # for a connection to this guest.
+                endpoints = socket_line.partition("users:")[0].split()
+                peer = endpoints[-1] if endpoints else ""
+                if (peer in (f"127.0.0.1:{port}", f"[::1]:{port}")
+                        and f"pid={pid}," in socket_line):
+                    return (f"pid {pid} (ownership unknown; hidden arguments) "
+                            "already holds the guest's RDP session")
+            continue
         # Only the actual client process, not a shell that mentions it.
         if f":{port}" in cmd and "/v:" in cmd:
             if _is_rdp_client(cmd):
@@ -540,8 +563,8 @@ RDP_FLAGS = ["/d:.", "/sec:nla", "/cert:ignore", "/log-level:ERROR",
              f"/wm-class:{RDP_MARKER}"]
 
 
-def open_in_studio(template, dry_run: bool = False) -> list[str]:
-    """Open a staged template in Silhouette Studio in the guest.
+def open_in_studio(template=None, dry_run: bool = False) -> list[str]:
+    """Open a staged template in Silhouette Studio in the guest, or launch Studio blank.
 
     Returns the command that was run (with the password replaced), so a caller
     can show it without leaking the credential.
@@ -558,11 +581,14 @@ def open_in_studio(template, dry_run: bool = False) -> list[str]:
             f"again."
             + (f" (Cleared {len(reaped)} stale session(s) of our own first.)"
                if reaped else ""))
-    host_path, win_path = stage(template)[0]
+    if template is not None:
+        host_path, win_path = stage(template)[0]
+        app_arg = f"/app:program:{g.studio_path},cmd:\"{win_path}\""
+    else:
+        app_arg = f"/app:program:{g.studio_path}"
     user, password = _credentials()
     return _run_freerdp(
-        [f"/v:127.0.0.1:{g.rdp_port}"] + RDP_FLAGS
-        + [f"/app:program:{g.studio_path},cmd:\"{win_path}\""],
+        [f"/v:127.0.0.1:{g.rdp_port}"] + RDP_FLAGS + [app_arg],
         user, password, dry_run, timeout_s=INTERACTIVE_TIMEOUT_S)
 
 

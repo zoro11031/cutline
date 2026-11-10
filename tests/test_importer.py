@@ -80,6 +80,16 @@ class TestTransforms(unittest.TestCase):
 class TestSvgUnits(unittest.TestCase):
     """The failure that cuts a sheet of almost-cards."""
 
+    def test_no_viewbox_keeps_pixel_coordinates_with_physical_page_size(self):
+        for size in ('100mm', '10cm', '4in', '400px'):
+            with self.subTest(size=size):
+                im = load_text(f'<svg width="{size}" height="{size}">'
+                               '<path d="M 0 0 L 96 96"/></svg>')
+                self.assertAlmostEqual(im.paths[0].points[-1][0], 25.4)
+                self.assertAlmostEqual(im.paths[0].points[-1][1], 25.4)
+                self.assertAlmostEqual(im.width_mm, importer.length_mm(size))
+                self.assertIn('96 dpi', im.scale_note)
+
     def test_viewbox_maps_to_the_declared_size(self):
         im = load_text(svg('<rect x="0" y="0" width="50" height="50"/>',
                            w="200mm", h="200mm", viewbox="0 0 100 100"))

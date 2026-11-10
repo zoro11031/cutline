@@ -1025,3 +1025,336 @@ like independent confirmation of size.
 second path is only evidence if it does not share an assumption with the
 first. Ask what the two have in common before counting them as two, and
 treat exact agreement as a reason to look rather than a reason to relax.
+
+## 25. SVG viewport size does not set coordinate units (2026-11-08)
+
+Continuing the Linux cutting workflow, inspection found that `load_svg`
+interpreted bare coordinates as millimetres whenever both page dimensions
+were present and there was no viewBox. A path ending at (96, 96) therefore
+ended at (96 mm, 96 mm), rather than (25.4 mm, 25.4 mm).
+
+SVG's initial user coordinate system uses pixels regardless of physical
+viewport dimensions: https://www.w3.org/TR/SVG11/coords.html#InitialCoordinateSystem.
+The importer now retains its CSS-pixel scale in this case and reports it.
+Page dimensions remain physical dimensions; viewBox handling is unchanged.
+
+The regression test failed before the fix for all four viewport spellings
+(mm, cm, inches and px), then passed. The full offline suite passed: 307
+tests, zero tests asserting nothing. The generated eight-card dry run also
+passed all checks and eight liveness probes. This establishes software
+behaviour only; no cutter was connected and no hardware cut was attempted.
+
+## 26. Live Studio DXF import comparison (2026-11-08)
+
+WinBoat was reachable outside the sandbox. A sandbox-denied Docker socket
+had previously made status report the guest as stopped; that was not evidence
+of guest state. Studio 5.0.556.1 was launched through the existing guarded,
+600-second RDP helper. No print or cut was sent.
+
+Windows UI Automation exposed only unnamed panes (nine at the home screen,
+15 after import), not numerical controls. Screen capture did work. Opening
+our generated Letter landscape eight-card rounded DXF via Ctrl+O produced
+eight rounded cards in Studio. Ctrl+A showed a group measurement of
+10.356 by 7.175 inches. Linux reads the same file's bounds as
+255.778 by 177.2073 mm, approximately 10.070 by 6.977 inches. Studio's
+individual-object toolbar showed W 2.551 and H 3.562 inches, also larger
+than a 63 by 88 mm card. The group discrepancy is approximately 2.84%.
+
+This is an observed import discrepancy, not a diagnosed unit conversion.
+Import preferences, auto-sizing and document placement have not yet been
+isolated. Do not compensate in the writer on this evidence. The screenshot
+shows a square page/mat rather than the source Letter landscape page, so
+page metadata preservation is also unproved. Rounded corners are visible;
+precise arc fidelity cannot be inferred from the screenshot.
+
+Local evidence (not vendored): `guest-staging/dxf-probe/report.txt` and
+`screen.png`, and the source DXF in `guest-staging/studio-comparison/`.
+`tools/probe-studio-dxf.ps1` preserves the probe with parameterized guest
+paths; that generalized version has not yet been rerun. It must be launched
+through `winboat.run_script`, with its normal guard and timeout. It opens a
+new document and selects all; it does not save, print, or send a cut.
+The next differential experiment is to record Studio's DXF import
+preferences and repeat with a known 100 mm square, changing one preference
+at a time. Native `.studio3` decoding remains outstanding.
+
+## 27. Credential-pipe RDP sessions were invisible to the busy guard
+
+2026-11-08: before the next Studio experiment, an actual `xfreerdp3`
+process had an established loopback connection to WinBoat port 47301,
+but `status` reported the session free. Its argv contained only
+`/args-from:fd:3`, so the existing `/v:` search could never see it.
+This is a consequence of the credential protection in section 14.
+
+`rdp_busy` now checks established socket peers for real clients with
+opaque arguments, matching the exact process id and guest loopback port.
+If socket inspection cannot run, it refuses the launch. It never reads
+the credential pipe and never treats unknown ownership as our marker.
+`our_stale_sessions` remains restricted to explicitly marked clients;
+the unidentified live session was not killed or replaced.
+
+The connected-client regression failed before the fix. Seven offline tests
+cover connected/other-port/other-pid/wrapper cases, local-versus-peer port,
+inspection failure, and exclusion from reaping. The existing discrimination
+mutations now also exercise this test class. All 314 tests and the assertion
+audit pass; the generated job dry run passes. The Canon instance was told
+about the detector gap and is also holding off on VM launches.
+
+A 100 mm square DXF is staged locally for the next import comparison. Its
+Linux-decoded bounds are (20,177) to (120,277) mm on a 210 by 297 mm page.
+It has not yet been opened in Studio: the unidentified session currently
+holds the guest. The 2.84% observation in section 26 remains unresolved.
+
+## 28. Card Maker cutting guide alignment & Studio workflow integration (2026-11-09)
+
+The cutting workflow and presets were audited against the published Silhouette
+Card Maker cutting guide (https://alan-cha.github.io/silhouette-card-maker/tutorial/guide/).
+
+1. Presets and blade settings:
+   - Added `Card Maker reference (cardstock + laminate)`: force 33 (clamped
+     to Cameo 4 maximum; Cameo 5 Alpha accepts up to 40), speed 25, depth 7,
+     4 passes. Origin is `guide`.
+   - Exposed `Card Maker starting point` (force 25, speed 25, depth 7, 1 pass)
+     and retained `Cameo 4 starting point` as an alias for backwards compatibility.
+   - Updated tuning rules in documentation and GUI to reflect the guide's
+     priority: Passes -> Force -> Speed -> Depth. Added guide troubleshooting
+     notes (reduce force if laminate edges ripple; reduce speed if machine skips).
+
+2. Template card-skipping fix:
+   - Inspection of `template.write_svg` and `template.write_dxf` revealed that
+     both functions looped over `grid.cards` without consulting `skip`, meaning
+     slots intentionally left empty to prevent optical sensor mark collisions
+     still produced cut paths in exported SVG and DXF files.
+   - Both functions now accept `skip`, and `job.write_templates` passes
+     `job.skip`. Skipped cards are omitted from both exports, proven by unit tests.
+
+3. Silhouette Studio integration & operator guidance:
+   - Added `--via studio` to `cut-proxies cut` to build and verify the job,
+     stage the DXF in the WinBoat guest share, launch Studio via RDP RemoteApp,
+     and output an operator checklist covering page setup, registration marks,
+     bounding box dimensions for Ctrl+A verification, and blade settings.
+   - Updated `cut-proxies studio` to generate and stage the template when run
+     without a file argument, and added `--app-only` to launch Studio blank.
+   - Updated ProxyPress guidance to reflect the new 1-click "Set up for
+     Silhouette Cameo" button on the Cutting tab and the 3.2 mm MTG corner radius.
+
+## 29. Reverse engineering baseline and native-file headers (2026-11-09)
+
+Executed the briefing's initial audit: all 317 offline tests pass, the
+assertion audit reports zero tests asserting nothing, and the generated
+eight-card dry run passes all checks and eight liveness probes. Host status
+reports no Silhouette USB cutter, no pyusb, and no usblp node. No hardware
+job was sent.
+
+Ran `tools/survey-studio-re.ps1` inside WinBoat through `winboat.run_script`,
+using its session guard, credential pipe and 600-second launch bound. The
+first sandboxed attempt could not see the Docker socket; an approved launch
+outside the sandbox succeeded. The report, rather than the launch return,
+confirms execution: `complete: true`, no reported errors, start
+`2026-11-09T12:55:07.3585406-08:00`, finish
+`2026-11-09T12:55:08.7929771-08:00` (guest timestamps).
+
+Observed executable: Studio file version **5.0.556.1**, product version
+`V5.0.556.001`, SHA-256
+`4871EDB71FB28B02593850006992277E69E058D0A385B0AC6402F63B9514A47B`.
+The briefing's 4.5.815 version is not the installed executable surveyed.
+The discovered share was `\\host.lan\Data`, mapping the host home directory;
+the guest staging path was derived using `winboat.guest_path`.
+
+The Studio installation contained **39 `.studio3` samples**, from 38,305
+to 2,530,095 bytes. Every recorded first-64-byte header begins with the
+13 ASCII bytes `silhouette05;`. Thus these files do not start with a normal
+ZIP or SQLite header. This says nothing yet about embedded containers,
+compression, obfuscation, field offsets, units or cut-setting semantics.
+No native parser or generator has been established. No additional samples
+were found in the scanned Public Documents and user Documents directories.
+
+Five known paths for tshark, dumpcap, USBPcapCMD and USBPcap.sys were absent;
+this is not an exhaustive installed-tool search. The guest USB inventory
+listed a root hub and an input device, with no Cameo. Differential USB
+capture remains outstanding.
+
+Local evidence: `guest-staging/re-inventory-2026-11-09/inventory.json`,
+SHA-256 `fc7c4d39db09e281636febefb5c100eaba6d61456513b2f6f782dc0fe146d5f9`.
+It contains sample paths, sizes, SHA-256 hashes and 64-byte headers, not
+copies of the proprietary documents. The survey does not launch Studio or
+change its documents. `docs/REVERSE_ENGINEERING.md` records the target audit
+and controlled experiments to run next. Existing `TF`, `J`, `FE`, `FF`
+and `FC` support must be distinguished from still-unproved AutoBlade
+mechanics, tool compatibility and Studio UI semantics.
+
+## 30. UI, send-path and current Proxy Press audit (2026-11-09)
+
+The program is now named **Silhouette Control Center**, with command
+`silhouette-control-center` (the `cut-proxies` entry point remains an alias),
+desktop/app/icon ID `org.printing.SilhouetteControlCenter`, and locally
+installed scalable plus 16–256 px raster icons. The live GUI audit confirms
+that GTK's icon theme resolves the new ID. The old desktop launcher was
+retired to a `.desktop.disabled` backup after the replacement was installed.
+
+The owner requested removal of the distinct Proxy Press pattern; sections 3
+and 12 describe historical assumptions, not current requirements. Current
+Proxy Press uses standard three/four marks, and its Cameo mode is eight-up
+landscape. Read `DEFAULTS`, the Cameo mode/apply handlers, `layout()` and
+`regArm()` from the local `../proxypress/proxy-press.html`, SHA-256
+`3d8b4d9d669581755f04a9af72038da537356c6fadc21b6050e6b70d3085892e`.
+Executed the actual layout/arm functions using Node, separately from the
+Python implementation. The MTG presets match card positions and arm lengths:
+7.25 mm on Letter, 8.75 mm on A4, with 3.2 mm corners and 0.625 mm bleed.
+
+The user's actual `Downloads/cut-lines.svg` contains eight closed rounded
+rectangles on an explicit 279.4 × 215.9 mm viewport with a matching viewBox,
+no marks, and no importer warnings. Its vertices match the Letter preset
+within 0.001 mm. The imported job verifies and catches all eight liveness
+probes. Independent rendering gives 1650 × 1275 px at 150 dpi. This is
+software/size evidence, not a sensor or cutting result.
+
+Audit regressions found that both send front ends discarded calibration
+while reconstructing their plans, and that the GUI unconditionally turned
+registration on. Jobs now retain the exact verified write/read steps and
+both front ends send those. Five actual-send/fake-transport regressions
+failed before the fix and pass afterward. GUI confirmation now retains the
+reviewed job and checks it again at confirmation; constant-allow/refuse
+mutations are part of the normal discrimination test.
+
+Other reproduced fixes include missing Gio imports in both Open buttons,
+imported shapes exporting as bounding rectangles, and radius overrides
+disappearing from export. The writer proof was independently rasterized to
+1275 × 1650 px for portrait Letter at 150 dpi. The GUI now displays uploaded
+PDF artwork at physical size under the paths, has a compact default summary
+and explicit Advanced details checkbox, fills an adjustable pane instead of
+a narrow preferences clamp, and offers persistent colorblind styling with
+blue/orange, dashed failures and OK/! text. Stale PDF results have a tested
+identity guard, including constant-accept/reject mutations.
+
+`310 gsm black-core` is an owner-requested **derived, never cut** starting
+guess: force 33, speed 1, depth 7, two passes, based on Coverstock values.
+It is not promoted to measured or attributed to the vendor for this stock.
+
+See `docs/UI_FUNCTIONALITY_AUDIT.md` for scope, reproduction evidence and
+remaining issues. In particular, test-cut matrices still lack the per-job
+proof, certain SVG/DXF constructs import incorrectly, and measured PDF
+problems do not yet block Cut. No hardware was used to validate these changes.
+
+## 31. Proxy Press per-sheet SVG handoff (2026-11-10)
+
+**Method.** Executed Proxy Press's actual layout, registration and cut SVG
+functions with Node, imported their output with the cutter's SVG importer,
+and built verified jobs with zero and nonzero blade-to-sensor offsets.
+Letter and A4 used 1, 8, 9 and 16 cards; a separate case exercised unequal
+printer X/Y scaling and translation. Local fixtures preserve these exports
+for standalone offline testing.
+
+**Result.** All tested default sheets, including partial final sheets, import
+and pass stream verification. Compensated SVG bounds match the transformed
+card positions. Proxy Press previously left rounded-corner radii unscaled;
+the export now scales both radius axes. The new test checks those axes.
+
+**Limits.** Node geometry checks do not exercise the browser, PDF renderer,
+printer or cutter. The browser harness could not establish a local session
+under the execution environment's socket restrictions. No hardware job was
+sent. PDF inspection cannot detect scaling introduced by a physical printer.
+Arbitrary asymmetric printer compensation transforms registration marks as
+well as art; nominal cutter mark controls do not fully express that transform.
+
+## 32. Declared SVG page and registration must agree (2026-11-10)
+
+**Method.** Loaded a one-card Letter SVG from Proxy Press, selected A4 in
+the job builder, and retained the printed 7.25 mm mark arm. The paths fit
+and the old verifier passed, despite using A4 registration coordinates.
+Added an explicit SVG viewport field distinct from artwork bounds. For
+registered jobs the shared builder now blocks mismatches over 0.1 mm in
+either axis. SVGs without declared dimensions and DXFs keep their previous
+behavior; their extents do not establish a physical page.
+
+**Result.** Matching Letter and A4 exports pass; wrong size and orientation
+are blocked, including partial sheets. CLI tests confirm refusal before
+transport opens. The discrimination suite forces the guard to always allow
+and always refuse and requires its tests to catch both mutations. Nonzero
+blade-to-sensor offsets still pass the existing export tests.
+
+**Browser validation.** The initial probe fixture was classified as a
+placeholder and triggered art lookup. It now stores generated local artwork
+as an upload and removes it afterward. The corrected browser probe passed
+for Letter/A4 with 1, 8, 9 and 16 cards, including duplex PDF exports and
+sheet selection. All four console/CSP channels proved live. Rasterized PDF
+front-page registration and imported cut SVGs passed the cross-project test.
+This supersedes section 31's browser execution limitation. No print or cut
+was sent; digital geometry checks make no claim about physical output.
+
+## 33. SVG shape fidelity and every cutting pass (2026-11-10)
+
+**Method and failures.** Added tests for SVG imports with unequal corner
+radii, non-square viewports, and parent group scaling. The importer used rx
+for both corner axes, stretched every viewBox to its viewport regardless
+of preserveAspectRatio, and flattened curves before accounting for parent
+scales. A circle scaled by 20 had chord sag of 0.384 mm against the stated
+0.025 mm tolerance. Each regression test failed before its fix.
+
+**Fix.** Rectangles retain both radii. Viewports use SVG's default
+xMidYMid meet or the explicitly selected alignment; preserveAspectRatio=none
+retains deliberate stretching. Slice clipping and nested SVG viewports are
+refused because their visible geometry is not implemented. Curve flattening
+uses the largest stretch of the composed transform, so the error bound is
+in final millimetres, including nonuniform scaling and shear.
+
+Source: https://www.w3.org/TR/SVG/coords.html
+
+**Independent measurement.** Rendered the original SVG and a polygon built
+from imported points with rsvg-convert at 254 dpi. The viewport example
+matched exactly (pixel bounds 600,100 to 1100,600). The elliptical rectangle
+matched bounds and differed in raster coverage by 0.00431%, consistent with
+flattening the curve. No cutter was attached or commanded.
+
+**Later passes.** The stream verifier previously measured only the first
+pass's card bounds. It now measures every path against its corresponding
+card on every pass. Shift and size corruptions in the last pass are both
+caught. An in-memory mutation restoring first-pass-only verification makes
+both tests fail. Every job's liveness check now also shifts the final cut
+path; the probe selects an M followed by D so it cannot mistake a trailing
+pen-up parking move for a cut path. The first attempt at that probe did
+select the parking move and was correctly reported as ineffective.
+
+## 34. Config and imported mode safety (2026-11-10)
+
+**Settings and calibration offset validation.** Inspection of `config.py`
+revealed two crash vectors:
+1. `load_settings` returned whatever root value `json.loads` parsed. Valid
+   JSON lists, strings, numbers, or `null` resulted in `AttributeError` on
+   subsequent `.get()` calls in CLI and GUI initialization.
+2. `cut_offset` assumed `cut_offset_mm` was an indexable sequence of length
+   at least 2, and converted values with `float()` without checking finiteness.
+   A dict structure caused `KeyError`, while `NaN` or `Infinity` propagated
+   into cutter command coordinates where `round(val * 20)` raised unhandled
+   exceptions.
+
+`load_settings` now validates that the parsed JSON root is a dictionary,
+falling back to `{}` otherwise. `cut_offset` verifies list/tuple structure,
+length >= 2, and `math.isfinite()` on both coordinates, defaulting safely to
+`(0.0, 0.0)`. `save_cut_offset` strictly validates that input coordinates are
+finite numbers before saving. A new test file `tests/test_config.py` covers
+these edge cases.
+
+**Imported geometry and mode='cross'.** The `cross` cut mode generates straight
+lines across tiled grid rows and columns for corner punch trimming. When
+artwork is imported via `--from`, the imported SVG/DXF supplies explicit cut
+paths. Previously, `mode='cross'` was ignored during path planning for imported
+files, but passed to `verify.expectations_met`, where path count was checked
+against `(2 * cols + 2 * rows) * passes`. This caused stream verification and
+liveness checks to fail with confusing path count mismatches.
+
+A dedicated guard `job.imported_mode_errors` now explicitly reports that
+`mode='cross'` cannot be used with imported artwork. Stream verification for
+imported artwork evaluates the imported card geometries and closed loops.
+`tests/test_imported_page.py` asserts refusal of `mode='cross'`,
+`tests/test_guards.py` asserts that the job refusal fires, and
+`tests/test_discrimination.py` verifies that the guard discriminates in both
+directions.
+
+**Test discrimination resilience.** In interactive environments, testing
+unblocked fallback behavior in CLI tests previously reached `ask_yes`, which
+prompted `input()` on `stdin`. `tests/test_imported_page.py` now patches
+`ask_yes` alongside `open_transport`, allowing automated discrimination runs
+to proceed without blocking.
+
+All 366 offline tests pass, with zero tests asserting nothing. Dry run and
+status checks verified cleanly. No hardware was connected or commanded.

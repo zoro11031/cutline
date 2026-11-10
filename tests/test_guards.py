@@ -16,6 +16,7 @@ can be reached on demand instead of only when something is genuinely broken.
 """
 
 import unittest
+from unittest import mock
 
 from cut_proxies import (geometry, graphtec, job as job_mod, regmarks,
                          template, transport, winboat)
@@ -54,7 +55,8 @@ class TestMaskHintsFire(unittest.TestCase):
                                   "text"})
         self.assertIn(h["mark"], ("top-left", "top-right", "bottom-left",
                                   "bottom-right"))
-        self.assertIn("cover it", h["text"])
+        self.assertIn("mm", h["text"])
+        self.assertNotIn("cover", h["text"])
 
     def test_hints_come_back_closest_first(self):
         grid = geometry.scm_layout("Letter", "standard", False, 10.0)
@@ -85,20 +87,24 @@ class TestMaskHintsFire(unittest.TestCase):
 class TestPortOpenFires(unittest.TestCase):
 
     def test_a_closed_port_is_reported_closed(self):
-        # Port 1 on loopback: privileged, and nothing listens there.
-        self.assertFalse(winboat.port_open(1, timeout=0.5))
+        # A refused connection is deterministic, even in a sandbox that
+        # forbids creating local sockets altogether.
+        with mock.patch("socket.create_connection",
+                        side_effect=ConnectionRefusedError):
+            self.assertFalse(winboat.port_open(1, timeout=0.5))
 
     def test_an_open_port_is_reported_open(self):
-        import socket
-        with socket.socket() as s:
-            s.bind(("127.0.0.1", 0))
-            s.listen(1)
-            self.assertTrue(winboat.port_open(s.getsockname()[1],
-                                              timeout=1.0))
+        connection = mock.MagicMock()
+        with mock.patch("socket.create_connection", return_value=connection) as connect:
+            self.assertTrue(winboat.port_open(12345, timeout=1.0))
+        connect.assert_called_once_with(("127.0.0.1", 12345), 1.0)
 
     def test_it_does_not_raise_on_a_nonsense_host(self):
-        self.assertFalse(
-            winboat.port_open(9, host="203.0.113.1", timeout=0.3))
+        with mock.patch("socket.create_connection",
+                        side_effect=OSError("no route")) as connect:
+            self.assertFalse(
+                winboat.port_open(9, host="203.0.113.1", timeout=0.3))
+        connect.assert_called_once_with(("203.0.113.1", 9), 0.3)
 
 
 class TestWhyNotReadyFires(unittest.TestCase):
@@ -555,6 +561,14 @@ class TestJobRefusalFires(unittest.TestCase):
         j = job_mod.build(sheet="Legal", portrait=True,
                           preset_name="Plain paper test")
         self.assertEqual(j.blocked, [])
+
+    def test_imported_cross_mode_blocks(self):
+        from cut_proxies import importer
+        art = importer.Imported(
+            paths=(template.CutPath(((20, 20), (83, 20), (83, 108), (20, 108)), True),),
+            width_mm=63.0, height_mm=88.0, source='test', scale_note='1:1')
+        j = job_mod.build(preset_name="Plain paper test", imported=art, mode="cross")
+        self.assertTrue(any("mode='cross'" in e for e in j.blocked), j.blocked)
 
 
 if __name__ == "__main__":

@@ -70,6 +70,21 @@ class Preset:
 
 BUILTIN: tuple[Preset, ...] = (
     Preset(
+        name="310 gsm black-core",
+        description="310 gsm black-core starting guess, based on Coverstock.",
+        origin="derived",
+        settings=dict(force=33, speed=1, depth=7, passes=2,
+                      blade_diameter_mm=0.9, lift_head=True,
+                      sharpen_corners=False, media=135, acceleration=1),
+        note="Best guess for 310 gsm black-core: start with Silhouette's "
+             "Coverstock values (force 33, speed 1, depth 7, two passes). "
+             "The vendor does not identify this setting as 310 gsm or "
+             "black-core; material stiffness, coating and blade condition "
+             "can change the result. Never cut. Test on an offcut; tune "
+             "passes first, then force, speed and depth. If two passes "
+             "do not separate cleanly, try a third before increasing depth.",
+    ),
+    Preset(
         name="330 gsm black-core",
         description="The stock this suite prints on. Coverstock plus a pass.",
         origin="derived",
@@ -120,6 +135,38 @@ BUILTIN: tuple[Preset, ...] = (
         note="Verbatim from condition.csv. Here so the distance between "
              "'cardstock' as Silhouette means it and the stock this suite "
              "actually prints on is visible rather than assumed.",
+    ),
+    Preset(
+        name="Card Maker reference (cardstock + laminate)",
+        description="Alan Cha's tested reference settings for Cameo with "
+                    "AutoBlade on cardstock + laminate.",
+        origin="guide",
+        settings=dict(force=33, speed=25, depth=7, passes=4,
+                      blade_diameter_mm=0.9, lift_head=True, media=135,
+                      acceleration=3),
+        note="From Alan Cha's Silhouette Card Maker cutting guide "
+             "(https://alan-cha.github.io/silhouette-card-maker/tutorial/guide/): "
+             "tested reference settings on a Cameo with AutoBlade on recommended "
+             "110 lb / 300 gsm cardstock and laminate. The guide's reference is force "
+             "35 (clamped here to 33, the Cameo 4 hardware ceiling; Cameo 5 Alpha "
+             "accepts up to 40), speed 25, depth 7, and 4 passes. Prioritize tuning: "
+             "passes (1-4), then force, then speed, then depth. If laminate edges "
+             "ripple, ease off force. If the machine skips steps, reduce speed.",
+    ),
+    Preset(
+        name="Card Maker starting point",
+        description="The Card Maker guide's starting point for determining "
+                    "settings on a test sheet.",
+        origin="guide",
+        settings=dict(force=25, speed=25, depth=7, passes=1,
+                      blade_diameter_mm=0.9, lift_head=True, media=135,
+                      acceleration=3),
+        note="The Silhouette Card Maker cutting guide's starting point for finding "
+             "your cut settings: force 25, speed 25, depth 7, 1 pass. Cut a test sheet, "
+             "and WITHOUT ejecting the mat lift a corner and check the cut; repeat "
+             "the job as many times as necessary to determine the required pass count. "
+             "Speed 25 is from the community guide; Silhouette's own condition.csv "
+             "never exceeds 10.",
     ),
     Preset(
         name="Cameo 4 starting point",
@@ -218,12 +265,25 @@ def all_presets() -> dict[str, Preset]:
     return out
 
 
+ALIASES = {
+    "card maker reference": "Card Maker reference (cardstock + laminate)",
+    "card maker": "Card Maker reference (cardstock + laminate)",
+    "cardstock + laminate": "Card Maker reference (cardstock + laminate)",
+    "cardstock and laminate": "Card Maker reference (cardstock + laminate)",
+    "scm reference": "Card Maker reference (cardstock + laminate)",
+    "scm starting point": "Card Maker starting point",
+    "starting point": "Card Maker starting point",
+}
+
+
 def get(name: str) -> Preset:
     presets = all_presets()
     if name in presets:
         return presets[name]
     # Be forgiving about case and spacing, since these get typed.
     want = name.lower().strip()
+    if want in ALIASES and ALIASES[want] in presets:
+        return presets[ALIASES[want]]
     for key, value in presets.items():
         if key.lower() == want:
             return value

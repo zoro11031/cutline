@@ -1,6 +1,6 @@
 """Decode a built cut stream and check it against what was asked for.
 
-This is the same bargain `print-proxies` makes with the printer: the job is
+This is the same bargain Canon Suite makes with the printer: the job is
 assembled, then taken apart again and compared with the profile, and if any
 of it disagrees nothing is sent.  Card is expensive and a cut is destructive
 in a way a print is not - a print on the wrong settings is a wasted sheet, a
@@ -165,7 +165,7 @@ def _corrupt_force(stream: bytes) -> bytes | None:
     return None
 
 
-def _corrupt_position(stream: bytes) -> bytes | None:
+def _corrupt_position(stream: bytes, last: bool = False) -> bytes | None:
     """Move one whole card 1 mm, keeping its shape.
 
     The obvious version of this probe - shift the first `M` and nothing else
@@ -180,9 +180,11 @@ def _corrupt_position(stream: bytes) -> bytes | None:
     and nothing else's business.
     """
     head, cmds = _split(stream)
-    start = next((i for i, c in enumerate(cmds) if c.startswith(b"M")), None)
-    if start is None:
+    starts = [i for i, c in enumerate(cmds) if c.startswith(b"M")
+              and i + 1 < len(cmds) and cmds[i + 1].startswith(b"D")]
+    if not starts:
         return None
+    start = starts[-1] if last else starts[0]
     shift = graphtec.su(1.0)
     i = start
     moved = False
@@ -300,7 +302,12 @@ def _corrupt_scan_window(stream: bytes) -> bytes | None:
 # object. A probe may trip others too - some checks are genuinely entangled,
 # and a cut pushed off the sheet is also in the wrong place - but the named
 # one has to be among them, or it is still unproven.
+def _corrupt_last_position(stream: bytes) -> bytes | None:
+    return _corrupt_position(stream, last=True)
+
+
 PROBES = (
+    ("card position error", _corrupt_last_position),
     ("blade force", _corrupt_force),
     ("speed", _corrupt_speed),
     ("card position error", _corrupt_position),
@@ -510,8 +517,11 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
         oy -= offset_mm[1]
         worst_size = 0.0
         worst_pos = 0.0
-        boxes = d.path_bboxes()[:len(cards)]
-        for rect, box in zip(cards, boxes):
+        boxes = d.path_bboxes()
+        for index, box in enumerate(boxes):
+            if not cards:
+                break
+            rect = cards[index % len(cards)]
             worst_size = max(worst_size,
                              abs(box.w - rect.w), abs(box.h - rect.h))
             worst_pos = max(worst_pos,

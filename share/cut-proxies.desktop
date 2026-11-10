@@ -1,12 +1,12 @@
 [Desktop Entry]
 Type=Application
-Name=Cut Proxies
+Name=Silhouette Control Center
 GenericName=Card Cut Templates
 Comment=Silhouette Cameo cut templates and cutting for proxy card sheets
-Exec=cut-proxies gui
-Icon=org.printing.CutProxies
+Exec=silhouette-control-center gui
+Icon=org.printing.SilhouetteControlCenter
 Terminal=false
 Categories=Graphics;
 Keywords=silhouette;cameo;cut;cutter;proxy;card;template;registration;
 StartupNotify=true
-StartupWMClass=org.printing.CutProxies
+StartupWMClass=org.printing.SilhouetteControlCenter

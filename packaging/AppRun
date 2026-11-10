@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+APPDIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+export PYTHONHOME="$APPDIR/usr"
+export PYTHONNOUSERSITE=1
+export PYTHONDONTWRITEBYTECODE=1
+unset PYTHONPATH
+export GI_TYPELIB_PATH="$APPDIR/usr/lib/girepository-1.0"
+export XDG_DATA_DIRS="$APPDIR/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+export GSETTINGS_SCHEMA_DIR="$APPDIR/usr/share/glib-2.0/schemas"
+export GIO_EXTRA_MODULES="$APPDIR/usr/lib/gio/modules"
+# Software rendering avoids depending on a matching bundled GPU driver.
+export GSK_RENDERER="${GSK_RENDERER:-cairo}"
+export PATH="$APPDIR/usr/bin:$PATH"
+# Use the bundled loader as well as its matching libc. Do not export
+# LD_LIBRARY_PATH: host tools (Docker/FreeRDP) must use their own libraries.
+exec "$APPDIR/usr/lib/ld-linux-x86-64.so.2" \
+  --library-path "$APPDIR/usr/lib" "$APPDIR/usr/bin/python3" \
+  "$APPDIR/usr/lib/cut-proxies/launcher.py" "$@"

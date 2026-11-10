@@ -49,6 +49,10 @@ class Job:
     # answer is to cover them for the scan, which is what the Card Maker
     # guide tells you to do.
     mask_hints: list[dict] = dataclasses.field(default_factory=list)
+    # Preserve the exact write/read plan whose writes were verified. Front
+    # ends must not reconstruct a different plan from current widget state.
+    steps: tuple = ()
+    registration: bool = True
 
     # ---- reporting ---------------------------------------------------
     @property
@@ -81,7 +85,8 @@ class Job:
                      f"{self.grid.card.radius_mm:g} mm corners"),
             ("Marks", mk.describe()),
             ("Origin shift", f"cut coordinates are measured from "
-                             f"({mk.origin_mm[0]:g}, {mk.origin_mm[1]:g}) mm"),
+                             f"({mk.origin_mm[0]:g}, {mk.origin_mm[1]:g}) mm"
+             if self.registration else "registration off; sheet coordinates"),
             ("Preset", f"{self.preset.name} [{self.preset.origin}]"),
             ("Blade", f"force {self.settings.force}, speed "
                       f"{self.settings.speed}, {self.settings.passes} "
@@ -145,11 +150,7 @@ def build(sheet: str = config.DEFAULT_SHEET,
             length = float(marks_cfg["regLen"])
         thickness = (mark_thickness_mm if mark_thickness_mm is not None
                      else float(marks_cfg["regThickness"]))
-        # Proxy Press used to draw a fourth mark in the bottom-right, which
-        # belongs to neither Silhouette pattern; it now has a pattern
-        # setting and this workflow sets it to three. Pass
-        # `pattern="proxypress"` explicitly for a sheet exported before
-        # that change.
+        # Both layout engines use the same standard registration patterns.
     else:
         inset = (mark_inset_mm if mark_inset_mm is not None
                  else config.DEFAULT_MARK_INSET_MM)
@@ -179,7 +180,13 @@ def build(sheet: str = config.DEFAULT_SHEET,
             if engine == "scm" else mk
         collisions = regmarks.collisions(grid, mk, bleed_mm=bleed_mm)
         off = regmarks.off_sheet(grid, mk)
+        off += imported_mode_errors(imported, mode)
+        if registration:
+            off += imported_page_errors(imported, grid)
     skip = tuple(sorted({i for i in skip if 0 <= i < grid.count}))
+    if radius_mm is not None and imported is None:
+        grid = dataclasses.replace(
+            grid, card=dataclasses.replace(grid.card, radius_mm=radius_mm))
     if imported is not None:
         paths = tuple(p for i, p in enumerate(imported.paths)
                       if i not in set(skip))
@@ -211,17 +218,19 @@ def build(sheet: str = config.DEFAULT_SHEET,
         reg_width_mm=mk.reg_width_mm, reg_length_mm=mk.reg_length_mm,
         registration=registration, auto_search=auto_search,
         quad=window["quad"], offset_mm=offset)
-    stream = job.stream(paths)
+    steps = tuple(job.plan(paths))
+    stream = b''.join(step.data for step in steps if step.kind == 'write')
 
     # 5. take it apart again
-    ok, rows = verify.expectations_met(stream, grid, mk, cut, device, mode,
+    verify_mode = mode if imported is None else "rounded"
+    ok, rows = verify.expectations_met(stream, grid, mk, cut, device, verify_mode,
                                        cards=cut_cards, offset_mm=offset,
                                        registration=registration)
     # ...and prove, in this same run, that those checks would have noticed if
     # the stream were wrong. A verifier that always says yes prints exactly
     # the table above.
     liveness = verify.liveness_failures(
-        stream, grid, mk, cut, device, mode, cards=cut_cards,
+        stream, grid, mk, cut, device, verify_mode, cards=cut_cards,
         offset_mm=offset, registration=registration)
 
     if grid.sheet_w_mm > device.width_mm:
@@ -237,7 +246,28 @@ def build(sheet: str = config.DEFAULT_SHEET,
                preset=preset, mode=mode, stream=stream, rows=rows, ok=ok,
                collisions=collisions, off_sheet=off, warnings=warnings,
                skip=skip, mask_hints=hints, offset_mm=offset,
-               liveness_failures=liveness)
+               liveness_failures=liveness, steps=steps, registration=registration)
+
+
+def imported_mode_errors(imported, mode: str) -> list[str]:
+    """Imported artwork defines explicit cut paths; cross-cuts cannot tile it."""
+    if imported is not None and mode == "cross":
+        return ["mode='cross' cannot be used with imported artwork; "
+                "imported files define their own cut paths"]
+    return []
+
+
+def imported_page_errors(imported, grid) -> list[str]:
+    """Registered paths and marks must share the declared page coordinates."""
+    if imported.page_size_mm is None:
+        return []
+    w, h = imported.page_size_mm
+    if abs(w - grid.sheet_w_mm) <= 0.1 and abs(h - grid.sheet_h_mm) <= 0.1:
+        return []
+    return [f"SVG page is {w:g} x {h:g} mm; selected sheet is "
+            f"{grid.sheet_w_mm:g} x {grid.sheet_h_mm:g} mm. "
+            "Select the matching sheet size and orientation, or export again "
+            "for the selected sheet."]
 
 
 def _grid_from_paths(imported, like: geometry.Grid) -> geometry.Grid:
@@ -270,11 +300,13 @@ def write_templates(job: Job, stem: str, folder=None,
     svg = folder / f"{stem}.svg"
     template.write_svg(svg, job.grid, job.paths, job.mode,
                        job.grid.card.radius_mm, job.marks, proof=False,
-                       note=f"preset {job.preset.name}")
+                       note=f"preset {job.preset.name}", skip=job.skip)
     out["svg"] = svg
 
     dxf = folder / f"{stem}.dxf"
-    template.write_dxf(dxf, job.grid, job.mode, job.grid.card.radius_mm)
+    template.write_dxf(dxf, job.grid, job.mode, job.grid.card.radius_mm,
+                       skip=job.skip,
+                       paths=job.paths if job.grid.engine == 'imported' else None)
     out["dxf"] = dxf
 
     if proof:
@@ -282,6 +314,6 @@ def write_templates(job: Job, stem: str, folder=None,
         template.write_svg(proof_svg, job.grid, job.paths, job.mode,
                            job.grid.card.radius_mm, job.marks, proof=True,
                            note="PROOF - do not cut; marks are printed, "
-                                "not cut")
+                                "not cut", skip=job.skip)
         out["proof"] = proof_svg
     return out

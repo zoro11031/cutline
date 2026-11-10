@@ -1,4 +1,4 @@
-"""cut-proxies on the command line.
+"""silhouette-control-center on the command line.
 
 Subcommands, in the order a sheet goes through them:
 
@@ -19,7 +19,7 @@ import argparse
 import pathlib
 import sys
 
-from . import (config, geometry, graphtec, job as job_mod, presets, regmarks,
+from . import (config, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
                template, transport, verify, winboat)
 
 try:
@@ -27,7 +27,7 @@ try:
     from rich.panel import Panel
     from rich.table import Table
     _console = Console(stderr=True, soft_wrap=True)
-except ImportError:                   # rich is optional, as in print-proxies
+except ImportError:                   # rich is optional
     _console = None
     Table = Panel = None
 
@@ -97,18 +97,17 @@ def show_checks(j):
         warn(w)
     if j.mask_hints:
         say()
-        say("Cover these for the registration scan, then uncover them before "
-            "the cut:", style="bold yellow")
+        say("Near registration marks (conservative proximity check):", style="bold yellow")
         for h in j.mask_hints:
             say(f"  - {h['text']}")
-        say("  A sticky note or a strip of masking tape is enough. The "
-            "sensor reads\n    a dark card edge as part of the mark and the "
-            "scan fails or lands wrong.", style="dim")
-        say("  Or leave the slot empty when printing and pass "
-            f"--skip {j.mask_hints[0]['index']}.", style="dim")
+        say(regmarks.MASK_GUIDANCE, style="dim")
+        say("Proximity alone does not mean every nearby card needs covering.", style="dim")
 
 
 def common_layout_args(p):
+    p.add_argument('--layout-preset', choices=tuple(layout_presets.BUILTIN),
+                   help='apply a complete printed-sheet layout; overrides layout '
+                        'options and leaves blade settings unchanged')
     p.add_argument("--sheet", default=config.DEFAULT_SHEET,
                    choices=sorted(geometry.SHEETS))
     p.add_argument("--card", default=config.DEFAULT_CARD,
@@ -180,7 +179,7 @@ def build_from_args(args) -> job_mod.Job:
             say(f"  only stroke {colour}", style="dim")
         for w in imported.warnings:
             warn(w)
-    return job_mod.build(
+    options = dict(
         imported=imported,
         sheet=args.sheet, card=args.card, portrait=args.portrait,
         engine=args.engine,
@@ -197,6 +196,10 @@ def build_from_args(args) -> job_mod.Job:
         auto_search=not getattr(args, "manual_registration", False),
         skip=tuple(getattr(args, "skip", []) or ()),
     )
+    selected = getattr(args, 'layout_preset', None)
+    if selected:
+        options.update(layout_presets.BUILTIN[selected].options())
+    return job_mod.build(**options)
 
 
 # --------------------------------------------------------------------------
@@ -240,7 +243,7 @@ def cmd_layouts(args):
     card_name = args.card
     say(f"\nWhat fits, for {card_name} cards:", style="bold")
     header = f"  {'sheet':9} {'inset':>6} {'orient':10} {'grid':>7} " \
-             f"{'cards':>5} {'max arm':>8}  {'mask':>5}"
+             f"{'cards':>5} {'max arm':>8}  {'near':>5}"
     say(header)
     say("  " + "-" * (len(header) - 2))
     clean = []
@@ -272,9 +275,9 @@ def cmd_layouts(args):
                     clean.append((g.count, inset, sheet_name, label, portrait))
     say("\n'max arm' is the longest registration-mark arm that still clears "
         "the cards.", style="dim")
-    say("'mask' is how many cards crowd a mark closely enough that the sensor "
-        "may read\nthe card instead. Cover those for the scan, or leave the "
-        "slot empty with --skip.", style="dim")
+    say("'near' counts cards within a conservative 5 mm of a mark zone; "
+        "it is not a required masking count.", style="dim")
+    say(regmarks.MASK_GUIDANCE, style="dim")
     say("\nA 3x3 nine-card sheet on Letter or A4 needs the 3.5 mm borderless "
         "inset; at the\nstandard 10 mm inset the marks take the room and you "
         "get eight.", style="dim")
@@ -295,7 +298,7 @@ def cmd_layouts(args):
         "which puts the\nmarks 3.5 mm from the paper edge with no room "
         "for feed drift. Eight is not a\ncompromise here - it is the "
         "layout.", style="dim")
-    say("\nProxy Press settings for it:  cut-proxies proxypress", style="dim")
+    say("\nProxy Press settings for it:  silhouette-control-center proxypress", style="dim")
     return 0
 
 
@@ -320,13 +323,13 @@ def cmd_presets(args):
         p = all_p[name]
         s = p.settings
         flag = {"measured": "measured", "silhouette": "published",
-                "recovered": "recovered"}.get(p.origin, "NOT CUT")
-        say(f"  {name:32} force {s.get('force', '?'):>3}  "
+                "recovered": "recovered", "guide": "guide"}.get(p.origin, "NOT CUT")
+        say(f"  {name:42} force {s.get('force', '?'):>3}  "
             f"speed {s.get('speed', '?'):>2}  "
             f"{s.get('passes', 1)} pass(es)   [{flag}]")
-    say("\n[NOT CUT] means the numbers are extrapolated and no sheet has been "
-        "cut on them.\nRun 'cut --dry-run' first, then the plain paper test "
-        "preset, then card.", style="dim")
+    say("\n[NOT CUT] means the numbers are extrapolated; [guide] means from "
+        "the Card Maker guide.\nRun 'cut --dry-run' first, then the plain "
+        "paper test preset, then card.", style="dim")
     return 0
 
 
@@ -338,6 +341,8 @@ def cmd_proxypress(args):
     """The settings to type into Proxy Press so its sheet is the one we cut."""
     from . import importer  # noqa: F401  (keeps import cost off other paths)
     sheet_name = args.sheet
+    layout_slug = 'mtg-cameo-' + sheet_name.lower()
+    matched = layout_presets.BUILTIN[layout_slug].options()
     s = config.PROXYPRESS_8UP
     pp = geometry.proxypress_layout(sheet_name, portrait=False, settings=s)
     scm = geometry.scm_layout(sheet_name, "standard", False,
@@ -360,23 +365,25 @@ def cmd_proxypress(args):
     say(f"    Columns              {s.cols}")
     say(f"    Rows                 {s.rows}")
     say(f"    Corner radius        {s.corner_radius_mm:g} mm")
-    say("\n  Layout -> Silhouette Cameo")
+    say("\n  Cutting -> Silhouette Cameo")
+    say("    One-click setup: Click 'Set up for Silhouette Cameo' on the Cutting tab")
+    say("    Or set manually under Layout and Cutting:")
     m = config.PROXYPRESS_8UP_MARKS
-    say(f"    Registration marks   on")
-    say(f"    Mark pattern         {m['regPattern']} marks")
-    say(f"    Mark inset           {m['regInset']} mm")
-    say(f"    Mark arm length      {m['regLen']} "
-        f"(0 = longest that clears the cards)")
-    say(f"    Mark line thickness  {m['regThickness']} mm")
-    say(f"\n  Export at 100%. Do not use 'fit to page' - "
-        f"'cut-proxies check-sheet' will catch it,\n  but only after you "
-        f"have spent the card.", style="dim")
+    say(f"      Registration marks   on")
+    say(f"      Mark pattern         {m['regPattern']} marks")
+    say(f"      Mark inset           {m['regInset']} mm")
+    say(f"      Mark arm length      {m['regLen']} "
+        f"(0 = auto: longest that clears the cards)")
+    say(f"      Mark line thickness  {m['regThickness']} mm")
+    say("\n  Export and print at 100%. PDF checks measure digital geometry; "
+        "measure a printed ruler and test alignment with a pen to check "
+        "physical output.", style="dim")
 
     say(f"\nThen cut with:", style="bold")
-    say(f"  cut-proxies template --sheet {sheet_name} --engine proxypress")
-    say(f"  cut-proxies check-sheet yoursheet.pdf --sheet {sheet_name} "
-        f"--engine proxypress")
-    say(f"  cut-proxies cut --sheet {sheet_name} --engine proxypress")
+    say(f"  silhouette-control-center template --layout-preset {layout_slug}")
+    say(f"  silhouette-control-center check-sheet yoursheet.pdf --layout-preset {layout_slug}")
+    say(f"  silhouette-control-center cut --layout-preset {layout_slug}")
+    say(f"  Proxy Press auto arm on {sheet_name}: {matched['mark_length_mm']:g} mm")
 
     say(f"\nThese place every card within {worst:.3f} mm of where "
         f"Silhouette Card Maker\nwould put it, which is the rounding "
@@ -384,19 +391,17 @@ def cmd_proxypress(args):
         f"floats.", style="dim")
 
     mk = regmarks.for_grid(pp, inset_mm=m["regInset"],
+                           length_mm=matched['mark_length_mm'],
                            thickness_mm=m["regThickness"],
-                           pattern=regmarks.PROXYPRESS)
+                           pattern=regmarks.THREE)
     hints = regmarks.mask_hints(pp, mk)
     if hints:
-        say(f"\n{len(hints)} card(s) will sit close to a mark and need "
-            f"covering for the scan:", style="bold yellow")
+        say(f"\n{len(hints)} card(s) sit near a mark (proximity advisory):", style="bold yellow")
         for h in hints:
             say(f"  - card {h['index'] + 1} "
                 f"(row {h['row']}, column {h['col']}), "
                 f"{h['gap_mm']:.2f} mm from the {h['mark']} mark")
-        say("  Unavoidable on an eight-up sheet: the marks and the grid "
-            "both want the\n  same corners. A sticky note each, removed "
-            "after the scan.", style="dim")
+        say(regmarks.MASK_GUIDANCE, style="dim")
     return 0
 
 
@@ -439,7 +444,7 @@ def cmd_import(args):
                 f"{max(xs) - min(xs):7.2f} x {max(ys) - min(ys):7.2f} mm  "
                 f"at ({min(xs):7.2f}, {min(ys):7.2f})"
                 f"{'  closed' if p.closed else ''}")
-    say("\nCut it with:  cut-proxies cut --from "
+    say("\nCut it with:  silhouette-control-center cut --from "
         f"{pathlib.Path(args.file).name} --dry-run", style="dim")
     return 0
 
@@ -463,6 +468,7 @@ def cmd_check_sheet(args):
     except sheet_mod.SheetError as exc:
         fail(str(exc))
 
+    say("PDF geometry only; measure the physical print separately.", style="dim")
     say(f"\nMeasured {path.name}, page {report.page}, at {report.dpi} dpi",
         style="bold")
     say(f"  page {report.page_w_mm:.1f} x {report.page_h_mm:.1f} mm "
@@ -579,12 +585,12 @@ def cmd_calibrate(args):
         say("""
 How to measure it, once per machine:
 
-  1. cut-proxies template --preset "Pen, no blade" ... and print the sheet.
+  1. silhouette-control-center template --preset "Pen, no blade" ... and print the sheet.
   2. Put a pen in the holder and cut it. The pen draws where the blade
      would have come down.
   3. Measure how far the drawn outline sits from the printed card edge.
      Right and down are positive.
-  4. cut-proxies calibrate --x <dx> --y <dy>
+  4. silhouette-control-center calibrate --x <dx> --y <dy>
 
 This corrects the fixed error between where the sensor says the marks are
 and where the tool actually lands. It is a property of the machine, so it is
@@ -728,6 +734,25 @@ def cmd_cut(args):
         say(f"\nStream written to {path} ({len(j.stream):,} bytes).",
             style="bold green")
 
+    if getattr(args, "via", "cutter") == "studio":
+        from . import job as job_mod
+        stem = (f"{j.grid.sheet_name.lower()}-{j.grid.card.name}-"
+                f"{j.grid.cols}x{j.grid.rows}-"
+                f"{'portrait' if j.grid.portrait else 'landscape'}-{j.mode}")
+        stage_dir = winboat.stage_dir()
+        written = job_mod.write_templates(j, stem, folder=stage_dir, proof=False)
+        dxf_path = written["dxf"]
+        say(f"\nDXF template generated and staged: {dxf_path.name}", style="bold green")
+        try:
+            cmd = winboat.open_in_studio(dxf_path, dry_run=args.dry_run)
+        except RuntimeError as exc:
+            fail(str(exc))
+        say("\n" + (" ".join(cmd)), style="dim")
+        say("\nSilhouette Studio is opening in the guest with that template."
+            if not args.dry_run else "\nDry run: not launched.", style="bold")
+        _show_studio_operator_guide(j)
+        return 0
+
     if args.dry_run:
         say("\nDry run: everything checks out, nothing sent.", style="bold")
         return 0
@@ -737,11 +762,11 @@ def cmd_cut(args):
              f"({j.preset.origin}). Cut the plain-paper test first.")
 
     try:
-        t = transport.open_transport(args.transport)
+        t = transport.open_transport(args.transport, device=j.device)
     except transport.TransportError as exc:
         say(f"\n{exc}", style="bold red")
         fail("No way to reach the cutter. Use --dry-run, or go through "
-             "Silhouette Studio with 'cut-proxies studio'.")
+             "Silhouette Studio with 'silhouette-control-center studio'.")
 
     with t:
         if t.can_read:
@@ -759,8 +784,7 @@ def cmd_cut(args):
         say("\nRunning...", style="bold")
         try:
             sent = t.run(
-                _plan(j, registration=not args.no_registration,
-                      auto_search=not args.manual_registration),
+                _plan(j),
                 log=lambda m: say("  " + m))
         except transport.TransportError as exc:
             fail(f"{exc}\n\nIf the marks were not found: check that the "
@@ -771,20 +795,48 @@ def cmd_cut(args):
     return 0
 
 
-def _plan(j, registration=True, auto_search=True):
-    """Rebuild the step list, with its reads, for the job we verified.
+def _plan(j):
+    """The exact write/read plan built and verified for this job."""
+    return j.steps
 
-    `Job.stream` drops the read steps because verification only looks at
-    bytes; the reads have to come back before anything is actually run.
-    """
-    window = regmarks.scan_window(j.marks)
-    cj = graphtec.CutJob(
-        j.device, j.settings, origin_mm=j.marks.origin_mm,
-        reg_width_mm=j.marks.reg_width_mm,
-        reg_length_mm=j.marks.reg_length_mm,
-        registration=registration, auto_search=auto_search,
-        quad=window["quad"])
-    return cj.plan(j.paths)
+
+def _show_studio_operator_guide(j):
+    w_mm, h_mm = j.grid.sheet_w_mm, j.grid.sheet_h_mm
+    w_in, h_in = w_mm / 25.4, h_mm / 25.4
+    bounds = j.grid.bounds
+    bw_mm, bh_mm = bounds.w, bounds.h
+    bw_in, bh_in = bw_mm / 25.4, bh_mm / 25.4
+    cw_mm, ch_mm = j.grid.card.width_mm, j.grid.card.height_mm
+    cw_in, ch_in = cw_mm / 25.4, ch_mm / 25.4
+    orient = "Landscape" if not j.grid.portrait else "Portrait"
+
+    say("\n=======================================================", style="bold cyan")
+    say("  Silhouette Studio Operator Guide (aligned with Card Maker)", style="bold cyan")
+    say("=======================================================", style="bold cyan")
+    say("1. Page Setup Panel (top-right icon):")
+    say(f"   - Page Size:        {j.grid.sheet_name} ({w_mm:.1f} x {h_mm:.1f} mm / {w_in:.2f} x {h_in:.2f} in)")
+    say(f"   - Orientation:      {orient}")
+    say(f"   - Cutting Mat:      12 x 12 in (or Cameo mat)")
+    say("2. Registration Marks (Page Setup -> 3rd tab):")
+    say(f"   - Registration:     Type 1 (Cameo, Portrait, Curio)")
+    say(f"   - Inset:            {j.marks.inset_mm:g} mm ({j.marks.inset_mm / 25.4:.3f} in)")
+    say(f"   - Length:           {j.marks.reg_length_mm:g} mm ({j.marks.reg_length_mm / 25.4:.3f} in)")
+    say(f"   - Thickness:        {j.marks.thickness_mm:g} mm")
+    say("3. Verify Template Sizing (Transform Panel / Ctrl+A):")
+    say(f"   - Group bounds:     {bw_mm:.2f} x {bh_mm:.2f} mm ({bw_in:.3f} x {bh_in:.3f} in)")
+    say(f"   - Single card:      {cw_mm:.1f} x {ch_mm:.1f} mm ({cw_in:.3f} x {ch_in:.3f} in)")
+    say("   - Note: If DXF imported scaled (e.g. 72/70 factor in Studio Basic Edition):")
+    say(f"     Select All (Ctrl+A) -> Transform panel -> Lock Aspect Ratio -> set Width to {bw_mm:.2f} mm ({bw_in:.3f} in).")
+    say("4. Blade & Cut Settings (Send tab):")
+    p = j.preset
+    s = j.settings
+    say(f"   - Material Preset:  {p.name}")
+    say(f"   - Settings:         Force {s.force}  |  Speed {s.speed}  |  Passes {s.passes}  |  Depth {s.depth or 7}")
+    say("   - Guide hint:       Cover the bottom-left card with a Post-It note during the mark scan,")
+    say("                       then remove it before cutting to prevent sensor confusion.")
+    say("   - Tuning priority:  Passes -> Force -> Speed -> Depth.")
+    say("                       If laminated edges ripple, ease off Force. If machine skips, reduce Speed.")
+    say("=======================================================\n", style="bold cyan")
 
 
 # --------------------------------------------------------------------------
@@ -795,7 +847,7 @@ def cmd_studio(args):
     if args.release:
         ours = winboat.our_stale_sessions()
         if not ours:
-            say("No cut-proxies RDP sessions are running.", style="bold")
+            say("No silhouette-control-center RDP sessions are running.", style="bold")
             held = winboat.rdp_busy()
             if held:
                 say(f"\n{held}", style="yellow")
@@ -806,7 +858,7 @@ def cmd_studio(args):
         for pid, cmd in ours:
             say(f"  pid {pid}: {cmd[:110]}")
         if not args.yes and not ask_yes(
-                f"\nClose {len(ours)} cut-proxies session(s)?", "n"):
+                f"\nClose {len(ours)} silhouette-control-center session(s)?", "n"):
             say("Left alone.")
             return 0
         closed = winboat.release_our_sessions()
@@ -834,21 +886,61 @@ def cmd_studio(args):
             say(f"  {step}")
         return 0
 
-    if not args.file:
-        fail("Give a template to open, or --prepare to set the guest up.")
-    path = pathlib.Path(args.file).expanduser()
-    if not path.is_file():
-        fail(f"No such file: {path}")
+    if getattr(args, "app_only", False):
+        try:
+            cmd = winboat.open_in_studio(None, dry_run=args.dry_run)
+        except RuntimeError as exc:
+            fail(str(exc))
+        say("\n" + (" ".join(cmd)), style="dim")
+        say("\nSilhouette Studio is launching in the guest (blank workspace)."
+            if not args.dry_run else "\nDry run: not launched.", style="bold")
+        return 0
+
+    if getattr(args, "file", None):
+        path = pathlib.Path(args.file).expanduser()
+        if not path.is_file():
+            fail(f"No such file: {path}")
+        try:
+            cmd = winboat.open_in_studio(path, dry_run=args.dry_run)
+        except RuntimeError as exc:
+            fail(str(exc))
+        say("\n" + (" ".join(cmd)), style="dim")
+        say(f"\nSilhouette Studio is opening in the guest with {path.name}."
+            if not args.dry_run else "\nDry run: not launched.", style="bold")
+        say("\nIn Studio: set the page to the same size and orientation, turn on "
+            "registration\nmarks with the same inset, and check the template "
+            "imported at 100%.", style="dim")
+        return 0
+
+    # No file: generate and stage DXF for the requested layout
     try:
-        cmd = winboat.open_in_studio(path, dry_run=args.dry_run)
+        j = build_from_args(args)
+    except geometry.LayoutImpossible as exc:
+        fail(str(exc))
+    show_summary(j)
+    show_checks(j)
+    if j.blocked:
+        say()
+        for reason in j.blocked:
+            say(f"  {reason}", style="bold red")
+        fail("The job does not check out. Nothing was sent.")
+
+    from . import job as job_mod
+    stem = (f"{j.grid.sheet_name.lower()}-{j.grid.card.name}-"
+            f"{j.grid.cols}x{j.grid.rows}-"
+            f"{'portrait' if j.grid.portrait else 'landscape'}-{j.mode}")
+    stage_dir = winboat.stage_dir()
+    written = job_mod.write_templates(j, stem, folder=stage_dir, proof=False)
+    dxf_path = written["dxf"]
+    say(f"\nDXF template generated and staged: {dxf_path.name}", style="bold green")
+    try:
+        cmd = winboat.open_in_studio(dxf_path, dry_run=args.dry_run)
     except RuntimeError as exc:
         fail(str(exc))
     say("\n" + (" ".join(cmd)), style="dim")
     say("\nSilhouette Studio is opening in the guest with that template."
         if not args.dry_run else "\nDry run: not launched.", style="bold")
-    say("\nIn Studio: set the page to the same size and orientation, turn on "
-        "registration\nmarks with the same inset, and check the template "
-        "imported at 100%.", style="dim")
+    _show_studio_operator_guide(j)
     return 0
 
 
@@ -867,7 +959,7 @@ def cmd_gui(args):
 
 def main(argv=None):
     p = argparse.ArgumentParser(
-        prog="cut-proxies",
+        prog="silhouette-control-center",
         description="Silhouette Cameo cut templates and cutting for proxy "
                     "card sheets.")
     sub = p.add_subparsers(dest="command")
@@ -906,10 +998,10 @@ def main(argv=None):
     im.set_defaults(func=cmd_import)
 
     cs = sub.add_parser("check-sheet",
-                        help="measure a printed PDF and check its "
+                        help="measure a PDF and check its "
                              "registration marks are where the template "
                              "expects")
-    cs.add_argument("file", help="the PDF that was printed")
+    cs.add_argument("file", help="PDF to inspect (does not measure physical printer output)")
     cs.add_argument("--page", type=int, default=1)
     cs.add_argument("--dpi", type=int, default=200)
     cs.add_argument("--tolerance", type=float, default=0.5, metavar="MM")
@@ -969,6 +1061,9 @@ def main(argv=None):
     c = sub.add_parser("cut", help="register and cut")
     common_layout_args(c)
     common_cut_args(c)
+    c.add_argument("--via", default="cutter", choices=("cutter", "studio"),
+                   help="cutter = cut via USB directly; studio = stage DXF "
+                        "and open in Silhouette Studio in WinBoat guest")
     c.add_argument("--transport", default="auto",
                    choices=("auto", "pyusb", "usblp"))
     c.add_argument("--dry-run", action="store_true",
@@ -985,11 +1080,16 @@ def main(argv=None):
 
     s = sub.add_parser("studio", help="open a template in Silhouette Studio "
                                       "in the WinBoat guest")
-    s.add_argument("file", nargs="?")
+    s.add_argument("file", nargs="?",
+                   help="specific DXF/SVG file to open (optional)")
+    common_layout_args(s)
+    common_cut_args(s)
+    s.add_argument("--app-only", action="store_true",
+                   help="launch Silhouette Studio with a blank workspace")
     s.add_argument("--prepare", action="store_true",
                    help="stage the guest helper script and explain the steps")
     s.add_argument("--release", action="store_true",
-                   help="close stale cut-proxies RDP sessions. Never "
+                   help="close stale silhouette-control-center RDP sessions. Never "
                         "touches another tool's session.")
     s.add_argument("--run-helper", action="store_true",
                    help="stage the helper and run it in the guest over RDP")

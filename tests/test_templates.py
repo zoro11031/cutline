@@ -10,9 +10,32 @@ import tempfile
 import unittest
 import pathlib
 
-from cut_proxies import (geometry, graphtec, job as job_mod, regmarks,
+from cut_proxies import (geometry, graphtec, importer, job as job_mod, regmarks,
                          template, verify)
 from cut_proxies.graphtec import CutSettings
+
+
+class TestExportUsesCheckedGeometry(unittest.TestCase):
+    def test_imported_triangle_is_not_exported_as_its_bounding_rectangle(self):
+        original = template.CutPath(((50, 50), (80, 50), (50, 80)), True, 'triangle')
+        art = importer.Imported((original,), 279.4, 215.9, 'synthetic', 'mm')
+        checked = job_mod.build(imported=art, offset_mm=(0, 0))
+        self.assertFalse(checked.blocked)
+        with tempfile.TemporaryDirectory() as temp:
+            files = job_mod.write_templates(checked, 'triangle', folder=temp)
+            for kind in ('svg', 'dxf'):
+                loaded = importer.load(files[kind])
+                self.assertEqual(len(loaded.paths), 1)
+                self.assertEqual(set(loaded.paths[0].points), set(original.points))
+
+    def test_explicit_radius_is_preserved_in_exports(self):
+        checked = job_mod.build(radius_mm=8, offset_mm=(0, 0))
+        self.assertFalse(checked.blocked)
+        with tempfile.TemporaryDirectory() as temp:
+            files = job_mod.write_templates(checked, 'radius', folder=temp)
+            svg = files['svg'].read_text()
+            self.assertIn('A 8 8', svg)
+            self.assertEqual(checked.grid.card.radius_mm, 8)
 
 
 class TestSvg(unittest.TestCase):
@@ -60,6 +83,10 @@ class TestSvg(unittest.TestCase):
         first = self.grid.cards[0]
         expected = f"M {first.x + 3.0:.4f}".rstrip("0").rstrip(".")
         self.assertIn(expected.split()[1][:6], self.svg)
+
+    def test_skipped_cards_are_omitted_from_cut_paths(self):
+        svg_skip = template.write_svg(None, self.grid, self.paths, skip=(0,))
+        self.assertEqual(svg_skip.count("<path"), self.grid.count - 1)
 
     def test_it_writes_to_disk(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -120,6 +147,10 @@ class TestDxf(unittest.TestCase):
         self.assertIn("LINE", cross)
         self.assertNotIn("POLYLINE", cross)
 
+    def test_skipped_cards_are_omitted_from_dxf(self):
+        dxf_skip = template.write_dxf(None, self.grid, skip=(0,))
+        self.assertEqual(dxf_skip.count("POLYLINE"), self.grid.count - 1)
+
 
 class TestJobBuilding(unittest.TestCase):
 
@@ -165,13 +196,9 @@ class TestJobBuilding(unittest.TestCase):
         self.assertAlmostEqual(j.marks.thickness_mm, 1.0)
         self.assertAlmostEqual(j.marks.inset_mm, 10.0)
 
-    def test_an_older_proxypress_sheet_can_still_be_described(self):
-        # A sheet exported before the pattern setting existed.
-        j = job_mod.build(engine="proxypress", preset_name="Plain paper test",
-                          pattern=regmarks.PROXYPRESS,
-                          mark_thickness_mm=0.5)
-        self.assertEqual(j.marks.pattern, regmarks.PROXYPRESS)
-        self.assertAlmostEqual(j.marks.thickness_mm, 0.5)
+    def test_proxypress_has_no_separate_legacy_pattern(self):
+        with self.assertRaisesRegex(ValueError, 'unknown pattern'):
+            job_mod.build(engine="proxypress", pattern='proxypress')
 
     def test_both_engines_put_the_cards_in_the_same_place(self):
         """The seamless bit: a sheet from Proxy Press and a template from
@@ -362,6 +389,18 @@ class TestPresets(unittest.TestCase):
         s = presets.get("Cameo 4 starting point").settings
         self.assertEqual((s["force"], s["speed"], s["depth"], s["passes"]),
                          (25, 25, 7, 1))
+        start = presets.get("Card Maker starting point").settings
+        self.assertEqual((start["force"], start["speed"], start["depth"], start["passes"]),
+                         (25, 25, 7, 1))
+
+    def test_card_maker_reference_preset_matches_guide(self):
+        from cut_proxies import presets
+        ref = presets.get("Card Maker reference (cardstock + laminate)")
+        self.assertEqual((ref.settings["force"], ref.settings["speed"],
+                          ref.settings["depth"], ref.settings["passes"]),
+                         (33, 25, 7, 4))
+        self.assertEqual(ref.origin, "guide")
+        self.assertEqual(presets.get("cardstock + laminate"), ref)
 
 
 if __name__ == "__main__":
