@@ -375,9 +375,9 @@ def cmd_proxypress(args):
     say(f"      Mark arm length      {m['regLen']} "
         f"(0 = auto: longest that clears the cards)")
     say(f"      Mark line thickness  {m['regThickness']} mm")
-    say(f"\n  Export at 100%. Do not use 'fit to page' - "
-        f"'silhouette-control-center check-sheet' will catch it,\n  but only after you "
-        f"have spent the card.", style="dim")
+    say("\n  Export and print at 100%. PDF checks measure digital geometry; "
+        "measure a printed ruler and test alignment with a pen to check "
+        "physical output.", style="dim")
 
     say(f"\nThen cut with:", style="bold")
     say(f"  silhouette-control-center template --layout-preset {layout_slug}")

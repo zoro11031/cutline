@@ -1255,3 +1255,28 @@ under the execution environment's socket restrictions. No hardware job was
 sent. PDF inspection cannot detect scaling introduced by a physical printer.
 Arbitrary asymmetric printer compensation transforms registration marks as
 well as art; nominal cutter mark controls do not fully express that transform.
+
+## 32. Declared SVG page and registration must agree (2026-11-10)
+
+**Method.** Loaded a one-card Letter SVG from Proxy Press, selected A4 in
+the job builder, and retained the printed 7.25 mm mark arm. The paths fit
+and the old verifier passed, despite using A4 registration coordinates.
+Added an explicit SVG viewport field distinct from artwork bounds. For
+registered jobs the shared builder now blocks mismatches over 0.1 mm in
+either axis. SVGs without declared dimensions and DXFs keep their previous
+behavior; their extents do not establish a physical page.
+
+**Result.** Matching Letter and A4 exports pass; wrong size and orientation
+are blocked, including partial sheets. CLI tests confirm refusal before
+transport opens. The discrimination suite forces the guard to always allow
+and always refuse and requires its tests to catch both mutations. Nonzero
+blade-to-sensor offsets still pass the existing export tests.
+
+**Browser validation.** The initial probe fixture was classified as a
+placeholder and triggered art lookup. It now stores generated local artwork
+as an upload and removes it afterward. The corrected browser probe passed
+for Letter/A4 with 1, 8, 9 and 16 cards, including duplex PDF exports and
+sheet selection. All four console/CSP channels proved live. Rasterized PDF
+front-page registration and imported cut SVGs passed the cross-project test.
+This supersedes section 31's browser execution limitation. No print or cut
+was sent; digital geometry checks make no claim about physical output.

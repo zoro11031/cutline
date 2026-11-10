@@ -67,6 +67,9 @@ class Imported:
     scale_note: str
     warnings: list[str] = dataclasses.field(default_factory=list)
 
+    # Explicit SVG viewport; DXF extents are artwork bounds, not a page.
+    page_size_mm: tuple[float, float] | None = None
+
     def colours(self) -> dict[str, int]:
         """Stroke colours present, and how many paths each has."""
         out: dict[str, int] = {}
@@ -515,6 +518,8 @@ def load_svg(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
     w_mm = length_mm(root.get("width"))
     h_mm = length_mm(root.get("height"))
 
+    page_size = (w_mm, h_mm) if w_mm and h_mm else None
+
     # Decide what one user unit is worth, and be able to say why.
     if vb_nums and len(vb_nums) == 4 and vb_nums[2] and vb_nums[3]:
         vx, vy, vw, vh = vb_nums
@@ -576,7 +581,7 @@ def load_svg(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
         raise ImportError_("no cuttable geometry found in this SVG")
 
     return Imported(tuple(paths), w_mm or 0.0, h_mm or 0.0, str(path), note,
-                    warnings)
+                    warnings, page_size_mm=page_size)
 
 
 # --------------------------------------------------------------------------

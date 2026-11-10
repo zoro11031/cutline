@@ -21,7 +21,7 @@ cheap: nine sub-suites of a few tests each.
 import io
 import unittest
 
-from cut_proxies import regmarks, winboat
+from cut_proxies import job, regmarks, winboat
 
 
 def _run(class_paths):
@@ -33,6 +33,10 @@ def _run(class_paths):
 
 # (module, attribute, stub, description, the classes that must object)
 CASES = (
+    (job, "imported_page_errors", lambda *a: [],
+     "SVG page guard always allows", ["tests.test_imported_page.ImportedPage"]),
+    (job, "imported_page_errors", lambda *a: ["SVG page mismatch"],
+     "SVG page guard always refuses", ["tests.test_imported_page.ImportedPage"]),
     (winboat, "rdp_busy", lambda *a, **k: "",
      "rdp_busy can never report a held session",
      ["tests.test_guards.TestRdpBusyFires", "tests.test_rdp_hidden.TestHiddenRdp"]),

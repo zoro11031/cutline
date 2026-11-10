@@ -180,6 +180,8 @@ def build(sheet: str = config.DEFAULT_SHEET,
             if engine == "scm" else mk
         collisions = regmarks.collisions(grid, mk, bleed_mm=bleed_mm)
         off = regmarks.off_sheet(grid, mk)
+        if registration:
+            off += imported_page_errors(imported, grid)
     skip = tuple(sorted({i for i in skip if 0 <= i < grid.count}))
     if radius_mm is not None and imported is None:
         grid = dataclasses.replace(
@@ -243,6 +245,19 @@ def build(sheet: str = config.DEFAULT_SHEET,
                collisions=collisions, off_sheet=off, warnings=warnings,
                skip=skip, mask_hints=hints, offset_mm=offset,
                liveness_failures=liveness, steps=steps, registration=registration)
+
+
+def imported_page_errors(imported, grid) -> list[str]:
+    """Registered paths and marks must share the declared page coordinates."""
+    if imported.page_size_mm is None:
+        return []
+    w, h = imported.page_size_mm
+    if abs(w - grid.sheet_w_mm) <= 0.1 and abs(h - grid.sheet_h_mm) <= 0.1:
+        return []
+    return [f"SVG page is {w:g} x {h:g} mm; selected sheet is "
+            f"{grid.sheet_w_mm:g} x {grid.sheet_h_mm:g} mm. "
+            "Select the matching sheet size and orientation, or export again "
+            "for the selected sheet."]
 
 
 def _grid_from_paths(imported, like: geometry.Grid) -> geometry.Grid:

@@ -292,3 +292,10 @@ Pass `/tmp/proxypress-browser.json` through `PROXYPRESS_INTEROP_JSON` to the
 same cutter test to raster-check front-page registration marks as well.
 Browser artifacts contain each exported PDF as base64 and the sheet SVGs.
 A successful geometry-only check does not establish browser or PDF behavior.
+
+For registered cuts, an SVG with declared page dimensions must match the
+selected sheet size and orientation within 0.1 mm. A one-card final sheet
+still uses the full paper coordinates for registration. Choose the matching
+sheet or re-export; fitting artwork inside another sheet is insufficient.
+DXF drawing bounds and SVGs without declared dimensions do not establish a
+paper size, so select their sheet and registration settings explicitly.
