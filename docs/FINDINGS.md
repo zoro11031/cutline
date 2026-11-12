@@ -1358,3 +1358,137 @@ to proceed without blocking.
 
 All 366 offline tests pass, with zero tests asserting nothing. Dry run and
 status checks verified cleanly. No hardware was connected or commanded.
+
+## 35. The `.studio3` container, far enough to rewrite one (2026-11-15)
+
+**Why.** Silhouette Studio's free **Basic** edition refuses SVG outright — it
+answers *"The file type you are attempting to access is not supported"* —
+because SVG import is a Designer Edition feature. DXF opens in Basic, but a
+DXF carries only geometry; the page size and the registration-mark setup still
+have to be typed in. A `.studio3` carries all of it, which is why Silhouette
+Card Maker ships 98 of them rather than vector files. Section 15 left the
+format outstanding; this is as far as it has been taken.
+
+**Method.** Differential reading of 32 Card Maker templates, across six papers
+and every card size they publish. No Studio involved.
+
+**What the container is.** Plain, uncompressed and unencrypted:
+
+```
+0x000..0x400   magic `silhouette05;`, then a table of 64-bit fields
+0x400..        document preamble: page setup, mat, registration marks
+               (a second `silhouette05;` marks the start)
+               card outlines
+tail           layer/extension metadata, then a PNG thumbnail
+```
+
+Strings are length-prefixed (`uint32` LE) and object types appear as literal
+names — `Polygon`, `Default Layer`, `rounded`, `cameo5`.
+
+**What was identified.**
+
+* **Page size** is two `float32` millimetre values at 0x47D and 0x481, long
+  side first. Card Maker lays its templates out with the long edge horizontal,
+  which the card grid confirms: a legal template's cards run out to x = 337.8
+  mm, and only the 355.6 mm side can hold that.
+* **Registration marks** are in the preamble as plain millimetres. Every
+  template, on every paper, uses **inset 10 mm and arm length 20 mm**. Card
+  Maker's `assets/layouts.json` gives thickness 1 mm, with length clamped to
+  5–20 and thickness to 0.5–1.0.
+* **Card outlines** are twelve `float32` pairs — four corners of three points
+  each, a rounded rectangle with the arc's middle point at the 45° position.
+* The 64-bit field at **0x10 is a byte offset**, sitting exactly 1041 bytes
+  before the PNG thumbnail in all seven templates first sampled.
+
+**What was not identified.** The fields at 0x20, 0x38 and 0x40 vary with
+content and are *not* linear in the card count: within one paper, 4 cards
+gives 1708, 10 gives 4098 and 21 gives 8381, which no constant per-card step
+fits. Two templates with the same card count and different card sizes share a
+value, so they do not depend on geometry either. Nothing here explains them.
+
+**Three things that will mislead anyone reading this format.**
+
+1. **Records are not uniformly framed.** The literal `Polygon` tag appears on
+   some card records and not others, and the first card's outline sits *before*
+   the first tag in the file. Anchoring on the tag finds all but one card and
+   then reads the tail metadata as geometry.
+2. **The gap between consecutive points is not constant across templates.** It
+   follows `[A, B, A, A, B, A, …]`, but A and B differ per file. They are
+   recovered per outline instead of assumed.
+3. **The two stored copies wind in opposite directions.** Most templates hold
+   each outline twice: once in page coordinates and once with Y negated and
+   shifted by a fraction of a millimetre (about +0.004, +0.027 mm). Negating Y
+   reverses the winding, so the second copy runs the other way round. Some
+   templates store only one copy. Rewriting a point without preserving its
+   outline's winding leaves each point's bezier handles attached to the wrong
+   corner.
+
+**What `cut_proxies/studio3.py` does, and the safety model.** It rewrites card
+coordinates **in place**. The file's length never changes, nothing moves, and
+so every undecoded field stays correct because it still describes the same
+bytes. The cost is that the card count cannot change — growing the card list
+would move the tail and invalidate at least the 0x10 offset. A template is
+therefore chosen whose count already matches the sheet.
+
+The scan validates rather than trusts: twelve float pairs that do not close
+into a rounded rectangle are rejected, not rewritten. `tests/test_studio3.py`
+checks a rewrite touches no byte outside the recorded coordinate slots, and
+mutating the writer to skip a second copy or to scribble one byte elsewhere
+fails the suite.
+
+**Not verified against Silhouette Studio.** There is no Studio on this
+machine. The geometry is checked and the container's invariants are checked;
+what Studio does on opening the result is not known. That is the open item.
+
+**On the undecoded fields, and why they are written down as undecoded.** The
+Canon side of this project settled the convention for exactly this situation:
+*"Do not add a setting on the strength of a plausible guess. If you cannot
+show the bytes, say so in the note."* A container that may not change length
+because of counters nobody has decoded is the same class of claim as a density
+band nobody has measured — the honest form is the bytes that were read, plus a
+plain statement of what was not. The numbers above for 0x20, 0x38 and 0x40 are
+the measurements; the absence of a formula for them is the finding, not a gap
+to be filled in with a guess later. Anyone who works one out should replace
+this paragraph with the bytes that show it.
+
+Cross-checked against Proxy Press: its browser-side writer produces files that
+this module parses back to the same card geometry its SVG export draws, on
+Letter and A4 in both orientations.
+
+## 36. Registration arms were a third of their proper length (2026-11-15)
+
+Proxy Press drew a 7.25 mm arm on a letter landscape sheet. Silhouette's own
+default is 20 mm, and section 35 shows every Card Maker cutting template uses
+20 mm. The marks looked visibly stubby next to the same marks from a template,
+which is how it was noticed.
+
+**Cause.** The auto-length formula took the *smaller* of the two axis
+clearances between the mark corner and the card grid. An arm lies **along** a
+page edge, so only the clearance perpendicular to it can bring it into the
+cards. On a centred landscape grid the horizontal clearance is 1.2 mm and the
+vertical is 8.7 mm; the arms are clear of the cards either way, but the
+formula capped the arm at the smaller figure less a safety margin.
+
+**This side was pinned, not re-derived.** `config.PROXYPRESS_8UP_MARKS["regLen"]`
+is now 20 rather than auto. What matters here is not what arm length this code
+would choose but what Proxy Press actually *prints*: the Graphtec mark search
+is told the arm length, and searching for a mark that was never printed is a
+failed registration.
+
+**A stricter rule was left alone, deliberately.** `regmarks.corner_zones`
+models a mark as a `length × length` square and `collisions` refuses any card
+that enters one. At the real 20 mm arm, that rule rejects **Card Maker's own
+published layouts** — `letter-standard` puts a card at (11.85, 108.54) mm,
+which is 10.7 mm inside the bottom-left zone, and Card Maker ships it anyway.
+Its guide says to cover that card with a sticky note during the registration
+scan rather than to move it, and Proxy Press's interface says the same.
+
+Loosening `collisions` to the ink's actual footprint was tried and reverted.
+It is a one-line change that makes seven tests fail, and those tests encode a
+deliberate sensor-proximity rule that no cutter here can check. Proximity is a
+masking question, which `mask_hints` already answers — `cut --dry-run` reports
+the three crowded cards and the guide's workaround, and does not block. The
+refusal stays as it is until something can measure it.
+
+`tests/test_studio3.py` records the evidence as a test, because the tempting
+"fix" is to loosen the check.
