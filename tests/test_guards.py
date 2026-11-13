@@ -562,6 +562,14 @@ class TestJobRefusalFires(unittest.TestCase):
                           preset_name="Plain paper test")
         self.assertEqual(j.blocked, [])
 
+    def test_imported_cross_mode_blocks(self):
+        from cut_proxies import importer
+        art = importer.Imported(
+            paths=(template.CutPath(((20, 20), (83, 20), (83, 108), (20, 108)), True),),
+            width_mm=63.0, height_mm=88.0, source='test', scale_note='1:1')
+        j = job_mod.build(preset_name="Plain paper test", imported=art, mode="cross")
+        self.assertTrue(any("mode='cross'" in e for e in j.blocked), j.blocked)
+
 
 if __name__ == "__main__":
     unittest.main()

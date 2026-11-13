@@ -47,10 +47,18 @@ class ImportedPage(unittest.TestCase):
         paths = job.write_templates(built, 'sheet', self.tmp.name, proof=False)
         self.assertIsNone(importer.load(paths['dxf']).page_size_mm)
 
+    def test_cross_mode_is_refused_for_imported(self):
+        built = job.build(**dict(self.options, mode='cross'), imported=self.art)
+        self.assertTrue(any("mode='cross'" in e for e in built.blocked), built.blocked)
+        normal = job.build(**dict(self.options, mode='rounded'), imported=self.art)
+        self.assertFalse(any("mode='cross'" in e for e in normal.blocked), normal.blocked)
+
     def test_cli_refuses_before_opening_transport(self):
         from unittest.mock import patch
         from cut_proxies import cli
-        with patch.object(cli.transport, 'open_transport') as transport, patch.object(cli, 'say'):
+        with patch.object(cli.transport, 'open_transport') as transport, \
+             patch.object(cli, 'say'), \
+             patch.object(cli, 'ask_yes', return_value=False):
             with self.assertRaises(SystemExit):
                 cli.main(['cut', '--from', str(Path(self.tmp.name) / 'sheet.svg'),
                           '--sheet', 'A4', '--landscape', '--mark-length', '7.25'])

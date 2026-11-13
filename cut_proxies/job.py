@@ -180,6 +180,7 @@ def build(sheet: str = config.DEFAULT_SHEET,
             if engine == "scm" else mk
         collisions = regmarks.collisions(grid, mk, bleed_mm=bleed_mm)
         off = regmarks.off_sheet(grid, mk)
+        off += imported_mode_errors(imported, mode)
         if registration:
             off += imported_page_errors(imported, grid)
     skip = tuple(sorted({i for i in skip if 0 <= i < grid.count}))
@@ -221,14 +222,15 @@ def build(sheet: str = config.DEFAULT_SHEET,
     stream = b''.join(step.data for step in steps if step.kind == 'write')
 
     # 5. take it apart again
-    ok, rows = verify.expectations_met(stream, grid, mk, cut, device, mode,
+    verify_mode = mode if imported is None else "rounded"
+    ok, rows = verify.expectations_met(stream, grid, mk, cut, device, verify_mode,
                                        cards=cut_cards, offset_mm=offset,
                                        registration=registration)
     # ...and prove, in this same run, that those checks would have noticed if
     # the stream were wrong. A verifier that always says yes prints exactly
     # the table above.
     liveness = verify.liveness_failures(
-        stream, grid, mk, cut, device, mode, cards=cut_cards,
+        stream, grid, mk, cut, device, verify_mode, cards=cut_cards,
         offset_mm=offset, registration=registration)
 
     if grid.sheet_w_mm > device.width_mm:
@@ -245,6 +247,14 @@ def build(sheet: str = config.DEFAULT_SHEET,
                collisions=collisions, off_sheet=off, warnings=warnings,
                skip=skip, mask_hints=hints, offset_mm=offset,
                liveness_failures=liveness, steps=steps, registration=registration)
+
+
+def imported_mode_errors(imported, mode: str) -> list[str]:
+    """Imported artwork defines explicit cut paths; cross-cuts cannot tile it."""
+    if imported is not None and mode == "cross":
+        return ["mode='cross' cannot be used with imported artwork; "
+                "imported files define their own cut paths"]
+    return []
 
 
 def imported_page_errors(imported, grid) -> list[str]:

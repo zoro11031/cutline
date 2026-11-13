@@ -1313,3 +1313,48 @@ both tests fail. Every job's liveness check now also shifts the final cut
 path; the probe selects an M followed by D so it cannot mistake a trailing
 pen-up parking move for a cut path. The first attempt at that probe did
 select the parking move and was correctly reported as ineffective.
+
+## 34. Config and imported mode safety (2026-11-10)
+
+**Settings and calibration offset validation.** Inspection of `config.py`
+revealed two crash vectors:
+1. `load_settings` returned whatever root value `json.loads` parsed. Valid
+   JSON lists, strings, numbers, or `null` resulted in `AttributeError` on
+   subsequent `.get()` calls in CLI and GUI initialization.
+2. `cut_offset` assumed `cut_offset_mm` was an indexable sequence of length
+   at least 2, and converted values with `float()` without checking finiteness.
+   A dict structure caused `KeyError`, while `NaN` or `Infinity` propagated
+   into cutter command coordinates where `round(val * 20)` raised unhandled
+   exceptions.
+
+`load_settings` now validates that the parsed JSON root is a dictionary,
+falling back to `{}` otherwise. `cut_offset` verifies list/tuple structure,
+length >= 2, and `math.isfinite()` on both coordinates, defaulting safely to
+`(0.0, 0.0)`. `save_cut_offset` strictly validates that input coordinates are
+finite numbers before saving. A new test file `tests/test_config.py` covers
+these edge cases.
+
+**Imported geometry and mode='cross'.** The `cross` cut mode generates straight
+lines across tiled grid rows and columns for corner punch trimming. When
+artwork is imported via `--from`, the imported SVG/DXF supplies explicit cut
+paths. Previously, `mode='cross'` was ignored during path planning for imported
+files, but passed to `verify.expectations_met`, where path count was checked
+against `(2 * cols + 2 * rows) * passes`. This caused stream verification and
+liveness checks to fail with confusing path count mismatches.
+
+A dedicated guard `job.imported_mode_errors` now explicitly reports that
+`mode='cross'` cannot be used with imported artwork. Stream verification for
+imported artwork evaluates the imported card geometries and closed loops.
+`tests/test_imported_page.py` asserts refusal of `mode='cross'`,
+`tests/test_guards.py` asserts that the job refusal fires, and
+`tests/test_discrimination.py` verifies that the guard discriminates in both
+directions.
+
+**Test discrimination resilience.** In interactive environments, testing
+unblocked fallback behavior in CLI tests previously reached `ask_yes`, which
+prompted `input()` on `stdin`. `tests/test_imported_page.py` now patches
+`ask_yes` alongside `open_transport`, allowing automated discrimination runs
+to proceed without blocking.
+
+All 366 offline tests pass, with zero tests asserting nothing. Dry run and
+status checks verified cleanly. No hardware was connected or commanded.

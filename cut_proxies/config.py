@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import pathlib
 
@@ -77,7 +78,8 @@ def load_settings() -> dict:
     if not path.is_file():
         return {}
     try:
-        return json.loads(path.read_text())
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
 
@@ -94,16 +96,27 @@ def save_settings(data: dict) -> pathlib.Path:
 # the cut right, positive y moves it down - the same sense as every other
 # coordinate in this project.
 def cut_offset() -> tuple[float, float]:
-    s = load_settings().get("cut_offset_mm") or [0.0, 0.0]
+    s = load_settings().get("cut_offset_mm")
+    if not isinstance(s, (list, tuple)) or len(s) < 2:
+        return 0.0, 0.0
     try:
-        return float(s[0]), float(s[1])
+        x, y = float(s[0]), float(s[1])
+        if not (math.isfinite(x) and math.isfinite(y)):
+            return 0.0, 0.0
+        return x, y
     except (TypeError, ValueError, IndexError):
         return 0.0, 0.0
 
 
 def save_cut_offset(dx: float, dy: float) -> pathlib.Path:
+    try:
+        x, y = float(dx), float(dy)
+    except (TypeError, ValueError):
+        raise ValueError(f"cut_offset must be numbers, got ({dx!r}, {dy!r})") from None
+    if not (math.isfinite(x) and math.isfinite(y)):
+        raise ValueError(f"cut_offset must be finite numbers, got ({dx!r}, {dy!r})")
     data = load_settings()
-    data["cut_offset_mm"] = [round(float(dx), 3), round(float(dy), 3)]
+    data["cut_offset_mm"] = [round(x, 3), round(y, 3)]
     return save_settings(data)
 
 
