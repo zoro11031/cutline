@@ -51,7 +51,9 @@ RESP_DECODING = {RESP_READY: "ready", RESP_MOVING: "moving",
 
 # The reply a successful registration scan sends back: four spaces, a zero and
 # an ETX (Graphtec.py ~1574).  Anything else means the marks were not found.
+# In particular, '    1\x03' is the failure reply when the sensor cannot find marks.
 RESP_REGMARK_OK = b"    0\x03"
+RESP_REGMARK_FAIL = b"    1\x03"
 
 # 1 Silhouette unit = 1/20 mm = 0.05 mm (Graphtec.py 333-346).
 SU_PER_MM = 20.0

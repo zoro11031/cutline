@@ -236,7 +236,8 @@ BUILTIN_BY_NAME = {p.name: p for p in BUILTIN}
 
 
 def user_dir() -> pathlib.Path:
-    return pathlib.Path.home() / ".config" / "cut-proxies" / "presets"
+    from . import config
+    return config.CONFIG_DIR / "presets"
 
 
 def bundled_dir() -> pathlib.Path:

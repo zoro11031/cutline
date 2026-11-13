@@ -457,6 +457,7 @@ class TestTransportRunFires(unittest.TestCase):
         with self.assertRaises(transport.TransportError) as ctx:
             t.run(self._steps())
         self.assertIn("marks found", str(ctx.exception))
+        self.assertIn("could not detect marks", str(ctx.exception))
         self.assertEqual(len(t.written), 1)
 
     def test_silence_stops_before_the_cut_too(self):
@@ -533,10 +534,10 @@ class TestOpenTransportFires(unittest.TestCase):
             transport.open_transport("file")
 
     def test_no_cutter_produces_a_message_naming_every_route_tried(self):
-        # There is no Silhouette on this bus, so this is the real path.
-        if transport.find_devices():
-            self.skipTest("a cutter is attached; this asserts its absence")
-        with self.assertRaises(transport.NotFound) as ctx:
+        with mock.patch.object(transport, "PyUsbTransport",
+                               side_effect=transport.NotFound("no cutter")), \
+             mock.patch.object(transport, "find_devices", return_value=[]), \
+             self.assertRaises(transport.NotFound) as ctx:
             transport.open_transport("auto")
         said = str(ctx.exception)
         self.assertIn("pyusb", said)

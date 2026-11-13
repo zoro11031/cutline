@@ -26,8 +26,10 @@ from __future__ import annotations
 import math
 import io
 import pathlib
+import tempfile
 import threading
 import traceback
+import zipfile
 import cairo
 
 import gi
@@ -36,7 +38,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
-from . import (config, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
+from . import (bundle, config, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
                template, transport, winboat)  # noqa: E402
 
 APP_ID = "org.printing.SilhouetteControlCenter"
@@ -143,6 +145,11 @@ class Preview(Gtk.DrawingArea):
         self.colorblind = bool(enabled)
         self.queue_draw()
 
+    @staticmethod
+    def viewport(width, height, sheet_width, sheet_height):
+        scale = min((width - 32) / sheet_width, (height - 32) / sheet_height)
+        return (width - sheet_width * scale) / 2, (height - sheet_height * scale) / 2, scale
+
     def _draw(self, _area, cr, width, height):
         dark = Adw.StyleManager.get_default().get_dark()
         bg = (0.13, 0.13, 0.14) if dark else (0.95, 0.95, 0.96)
@@ -150,7 +157,7 @@ class Preview(Gtk.DrawingArea):
         cr.paint()
 
         j = self.job
-        if j is None:
+        if j is None and self.pdf_size_mm is None:
             cr.set_source_rgb(0.5, 0.5, 0.52)
             cr.select_font_face("Sans")
             cr.set_font_size(13)
@@ -160,12 +167,13 @@ class Preview(Gtk.DrawingArea):
             cr.show_text(msg)
             return
 
-        W, H = j.grid.sheet_w_mm, j.grid.sheet_h_mm
-        pad = 16
+        W, H = (j.grid.sheet_w_mm, j.grid.sheet_h_mm) if j else self.pdf_size_mm
         canvas_w, canvas_h = (max(W, self.pdf_size_mm[0]), max(H, self.pdf_size_mm[1])) \
             if self.pdf_size_mm is not None else (W, H)
-        scale = min((width - 2 * pad) / canvas_w, (height - 2 * pad) / canvas_h)
-        cr.translate((width - canvas_w * scale) / 2, (height - canvas_h * scale) / 2)
+        x, y, scale = self.viewport(width, height, canvas_w, canvas_h)
+        if scale <= 0:
+            return
+        cr.translate(x, y)
         cr.scale(scale, scale)
         hair = 1.0 / scale
 
@@ -184,6 +192,8 @@ class Preview(Gtk.DrawingArea):
         cr.set_line_width(hair)
         cr.rectangle(0, 0, W, H)
         cr.stroke()
+        if j is None:
+            return
 
         mk = j.marks
         good_color = (0.0, 0.35, 0.75) if self.colorblind else (0.1, 0.55, 0.25)
@@ -299,8 +309,13 @@ class Window(Adw.ApplicationWindow):
         self.job = None
         self.sheet_report = None
         self.pdf_path = None
+        self.pdf_bundle = None
+        self.bundle_checked = False
         self._sheet_token = None
         self.imported = None
+        self.template_shapes = ()
+        self.design = None
+        self._close_confirmed = False
         self._building = False
         self._sending = False
         self._suppress = True        # don't rebuild while constructing rows
@@ -309,7 +324,10 @@ class Window(Adw.ApplicationWindow):
         self.set_content(self.toasts)
 
         outer = Adw.ToolbarView()
-        self.toasts.set_child(outer)
+        self.workspaces = Gtk.Stack(hhomogeneous=False, vhomogeneous=False)
+        self.workspaces.add_named(outer, 'tools')
+        self.toasts.set_child(self.workspaces)
+        self.connect('close-request', self.confirm_window_close)
 
         header = Adw.HeaderBar()
         self.stack = Adw.ViewStack()
@@ -322,6 +340,9 @@ class Window(Adw.ApplicationWindow):
         self.build_button.add_css_class("suggested-action")
         self.build_button.connect("clicked", lambda *_: self.rebuild())
         header.pack_start(self.build_button)
+        self.design_button = Gtk.Button(label='Design')
+        self.design_button.connect('clicked', self.on_edit_template)
+        header.pack_start(self.design_button)
 
         self.banner = Adw.Banner(revealed=False)
         outer.add_top_bar(self.banner)
@@ -415,9 +436,7 @@ class Window(Adw.ApplicationWindow):
 
         gsrc = Adw.PreferencesGroup(
             title="What to cut",
-            description="Either a layout generated here, or the paths in an "
-                        "SVG or DXF you already have — a Card Maker "
-                        "template, an Inkscape sheet, anything.")
+            description="Use a generated layout or open an Inkscape SVG or DXF cut file.")
         self.import_row = Adw.ActionRow(
             title="Generated layout",
             subtitle="Using the sheet and card settings below")
@@ -531,7 +550,7 @@ class Window(Adw.ApplicationWindow):
         self.sheet_row = Adw.ActionRow(title="No PDF loaded",
                                        subtitle="Pick the sheet you printed")
         self.sheet_row.set_subtitle_lines(0)
-        pick = Gtk.Button(label="Open PDF...")
+        pick = Gtk.Button(label="Open PDF or ZIP...")
         pick.set_valign(Gtk.Align.CENTER)
         pick.connect("clicked", self.on_pick_pdf)
         self.sheet_row.add_suffix(pick)
@@ -544,7 +563,7 @@ class Window(Adw.ApplicationWindow):
                                            "accurate")
         g.add(self.r_sheet_page)
         g.add(self.r_sheet_dpi)
-        self.r_sheet_page.connect('notify::value', self.on_pdf_page_changed)
+        self.r_sheet_page.connect('notify::value', self.on_sheet_number_changed)
         self.r_sheet_dpi.connect('notify::selected', self.on_pdf_page_changed)
 
         remeasure = Adw.ActionRow(
@@ -672,6 +691,14 @@ class Window(Adw.ApplicationWindow):
         refresh.set_valign(Gtk.Align.CENTER)
         refresh.connect("clicked", self.on_refresh_status)
         self.status_row.add_suffix(refresh)
+        self.r_connection = _combo("Connection", ["USB", "Bluetooth LE"])
+        self.r_bluetooth = _combo("Bluetooth cutter", ["Select a cutter"])
+        self._bluetooth_devices = []
+        scan = Gtk.Button(label="Find Bluetooth cutters")
+        scan.connect("clicked", self._scan_bluetooth)
+        self.r_bluetooth.add_suffix(scan)
+        g2.add(self.r_connection)
+        g2.add(self.r_bluetooth)
         g2.add(self.status_row)
         page.add(g2)
 
@@ -783,14 +810,19 @@ class Window(Adw.ApplicationWindow):
         g.add(launch_row)
 
         open_row = Adw.ActionRow(
-            title="Export and open in Studio",
-            subtitle="Writes the template, stages it, and opens it as a "
-                     "RemoteApp")
+            title="Open current sheet in Studio",
+            subtitle="Uses the paired Studio file from a ProxyPress ZIP, or a DXF.")
         open_btn = Gtk.Button(label="Open")
         open_btn.set_valign(Gtk.Align.CENTER)
         open_btn.connect("clicked", self.on_open_studio)
         open_row.add_suffix(open_btn)
         g.add(open_row)
+        pick_row = Adw.ActionRow(title='Open a Studio file',
+                                 subtitle='Select a .studio3 file, including one extracted from a ProxyPress ZIP.')
+        pick_btn = Gtk.Button(label='Choose file…', valign=Gtk.Align.CENTER)
+        pick_btn.connect('clicked', self.on_pick_studio_file)
+        pick_row.add_suffix(pick_btn)
+        g.add(pick_row)
         page.add(g)
         self.stack.add_titled_with_icon(page, "studio", "Studio",
                                         "computer-symbolic")
@@ -810,9 +842,11 @@ class Window(Adw.ApplicationWindow):
         if selected == 0:
             return
         profile = list(layout_presets.BUILTIN.values())[selected - 1]
+        self.clear_bundle()
         options = profile.options()
         was, self._suppress = self._suppress, True
         self.imported = None
+        self.template_shapes = ()
         self.import_row.set_title('Generated layout')
         self.import_row.set_subtitle('Using the sheet and card settings below')
         self.r_colour.set_model(Gtk.StringList.new(['all colours']))
@@ -845,7 +879,7 @@ class Window(Adw.ApplicationWindow):
         engine = "scm" if self._text(self.r_engine) == "Silhouette Card Maker" \
             else "proxypress"
         length = self.r_length.get_value()
-        return dict(
+        options = dict(
             sheet=self._text(self.r_sheet),
             card=self._text(self.r_card),
             portrait=portrait,
@@ -870,6 +904,10 @@ class Window(Adw.ApplicationWindow):
             offset_mm=(self.r_cal_x.get_value(), self.r_cal_y.get_value()),
             imported=self._selected_artwork(),
         )
+        if self.pdf_bundle:
+            options.update(self.pdf_bundle.layout, engine='scm', mode=template.ROUNDED,
+                           bleed_mm=0, registration=True, skip=(), imported=self.imported)
+        return options
 
     def _selected_artwork(self):
         """The imported drawing, narrowed to one line colour if chosen."""
@@ -894,6 +932,7 @@ class Window(Adw.ApplicationWindow):
         if self._suppress:
             return
         self._sheet_token = None
+        self.bundle_checked = False
         if self.sheet_report is not None:
             self.sheet_report = None
             self.preview.set_sheet(None)
@@ -904,6 +943,8 @@ class Window(Adw.ApplicationWindow):
         self.job = None
         self.cut_button.set_sensitive(False)
         self.rebuild()
+        if self.pdf_bundle:
+            self.measure_sheet()
 
     def on_preset(self, *_a):
         p = presets.get(self._text(self.r_preset))
@@ -924,6 +965,18 @@ class Window(Adw.ApplicationWindow):
 
     def rebuild(self):
         if self._suppress or self._building:
+            return
+        if self.pdf_bundle and self.imported is None:
+            self.job = None
+            self.preview.set_job(None)
+            self.summary_icon.set_from_icon_name('document-open-symbolic')
+            self.summary_title.set_label('Studio template')
+            self.summary_layout.set_label('Use Studio → Open current sheet in Studio.')
+            self.summary_material.set_label('')
+            self.summary_note.set_label('A newer ProxyPress ZIP includes SVG paths for direct cutting.')
+            self.checks.set_text('')
+            self.cut_button.set_sensitive(False)
+            self.banner.set_revealed(False)
             return
         self._building = True
         try:
@@ -999,7 +1052,7 @@ class Window(Adw.ApplicationWindow):
         if blocked:
             self.banner.set_title(f"{len(blocked)} problem(s): {blocked[0]}")
             self.banner.set_revealed(True)
-        elif not self.r_register.get_active():
+        elif not j.registration:
             self.banner.set_title(
                 "Registration is OFF: blade will cut in sheet coordinates (for blank sheets only)")
             self.banner.set_revealed(True)
@@ -1012,7 +1065,8 @@ class Window(Adw.ApplicationWindow):
         else:
             self.banner.set_revealed(False)
 
-        self.cut_button.set_sensitive(not blocked and not self._sending and j.settings.passes > 0)
+        self.cut_button.set_sensitive(not blocked and not self._sending and j.settings.passes > 0
+                                      and (not self.pdf_bundle or self.bundle_checked))
         self._building = False
 
     # ---- actions ------------------------------------------------------
@@ -1073,24 +1127,110 @@ class Window(Adw.ApplicationWindow):
             except Exception as exc:              # noqa: BLE001
                 self.toast(f"Could not read {path.name}: {exc}")
                 return
-            self.imported = artwork
-            self.import_row.set_title(path.name)
-            lines = [self.imported.describe()] + self.imported.warnings
-            self.import_row.set_subtitle("\n".join(lines))
-            cols = list(self.imported.colours())
-            was, self._suppress = self._suppress, True
-            self.r_colour.set_model(
-                Gtk.StringList.new(["all colours"] + cols))
-            self.r_colour.set_selected(0)
-            self._suppress = was
-            self.on_changed()
+            self.clear_bundle()
+            self.template_shapes = ()
+            self.set_artwork(artwork, path.name)
 
         dialog.open(self, None, done)
 
-    def on_clear_artwork(self, *_a):
-        if self.imported is None:
+    def on_edit_template(self, *_args):
+        if self.pdf_bundle:
+            self.toast('Clear the matched job before editing its paths.')
             return
+        if self._sending:
+            self.toast('Wait for the current job to finish before opening Design.')
+            return
+        if self.design is not None:
+            self.workspaces.set_visible_child(self.design.view)
+            return
+        if self.job is None:
+            self.toast('Select a sheet before opening Design.')
+            return
+        from .editor import DesignWorkspace
+        from .editor_model import Project, Registration, editable_import, shapes_from_paths
+
+        try:
+            shapes = self.template_shapes or (editable_import(self.imported)[0]
+                                             if self.imported else shapes_from_paths(self.job.paths))
+        except ValueError as error:
+            self.toast(str(error))
+            return
+        grid = self.job.grid
+        registration = Registration.from_marks(self.job.marks) if self.job.registration else None
+        project = Project(grid.sheet_w_mm, grid.sheet_h_mm, shapes, registration)
+        design = DesignWorkspace(self, project, self.close_design, self.review_design)
+        self.workspaces.add_named(design.view, 'design')
+        self.design = design
+        self.workspaces.set_visible_child(design.view)
+
+    def close_design(self, *_args):
+        def discard():
+            self.workspaces.set_visible_child_name('tools')
+            self.workspaces.remove(self.design.view)
+            self.design = None
+
+        self.design.confirm_discard(discard)
+
+    def confirm_window_close(self, *_args):
+        if self._close_confirmed or self.design is None or not self.design.dirty:
+            return False
+
+        def discard():
+            self._close_confirmed = True
+            self.close()
+
+        self.design.confirm_discard(discard)
+        return True
+
+    def review_design(self, project, action):
+        page = (project.width, project.height)
+        matching = next(((sheet, portrait) for sheet in geometry.SHEETS.values()
+                         for portrait in (True, False) if sheet.size(portrait) == page), None)
+        if matching is None:
+            self.design.status.set_text('Choose a supported paper size to review cut paths.')
+            return
+        artwork = project.artwork(action)
+        if any(path.length_mm() <= 0 for path in artwork.paths):
+            self.design.status.set_text('Resize any paths with no length before reviewing.')
+            return
+        sheet, portrait = matching
+        self.template_shapes = project.shapes
+        self._suppress = True
+        try:
+            self.r_layout_preset.set_selected(0)
+            self.r_sheet.set_selected(sorted(geometry.SHEETS).index(sheet.name))
+            self.r_orient.set_selected(1 if portrait else 2)
+            self.r_mode.set_selected(0)
+            self.r_skip.set_text('')
+            self.r_register.set_active(project.registration is not None)
+            if (marks := project.registration) is not None:
+                self.r_pattern.set_selected(regmarks.PATTERNS.index(marks.pattern))
+                self.r_inset.set_value(marks.inset_mm)
+                self.r_length.set_value(marks.length_mm)
+                self.r_thickness.set_value(marks.thickness_mm)
+        finally:
+            self._suppress = False
+        self.set_artwork(artwork, f'Design · {action}')
+        self.stack.set_visible_child_name('cut')
+        self.workspaces.set_visible_child_name('tools')
+
+    def set_artwork(self, artwork, name):
+        self.imported = artwork
+        self.import_row.set_title(name)
+        lines = [artwork.describe(), *artwork.warnings] if artwork else ['Cut template for Silhouette Studio']
+        self.import_row.set_subtitle("\n".join(lines))
+        was, self._suppress = self._suppress, True
+        self.r_colour.set_model(Gtk.StringList.new(["all colours", *(artwork.colours() if artwork else ())]))
+        self.r_colour.set_selected(0)
+        self._suppress = was
+        self.on_changed()
+
+    def on_clear_artwork(self, *_a):
+        if self.imported is None and self.pdf_bundle is None:
+            return
+        self.clear_bundle()
         self.imported = None
+        self.template_shapes = ()
         was, self._suppress = self._suppress, True
         self.r_colour.set_model(Gtk.StringList.new(["all colours"]))
         self.r_colour.set_selected(0)
@@ -1101,21 +1241,96 @@ class Window(Adw.ApplicationWindow):
         self.on_changed()
 
     # ---- the printed sheet -------------------------------------------
+    def lock_bundle_layout(self, locked):
+        for widget in (self.r_layout_preset, self.r_sheet, self.r_orient, self.r_engine,
+                       self.r_card, self.r_pattern, self.r_inset, self.r_length,
+                       self.r_thickness, self.r_bleed, self.r_register, self.r_mode,
+                       self.r_radius, self.r_skip, self.r_colour):
+            widget.set_sensitive(not locked)
+
+    def clear_bundle(self):
+        if not self.pdf_bundle:
+            return
+        self.pdf_bundle = None
+        self.lock_bundle_layout(False)
+        self.bundle_checked = False
+        self.pdf_path = None
+        self._sheet_token = None
+        self.sheet_report = None
+        self.preview.set_sheet(None)
+        self.preview.set_pdf()
+        self.sheet_row.set_title('No PDF loaded')
+        self.sheet_row.set_subtitle('Pick the sheet you printed')
+        self.sheet_result.set_title('Not measured')
+        self.sheet_result.set_subtitle('')
+        self.r_sheet_page.set_title('Page')
+        self.r_sheet_page.set_subtitle('which page of the PDF to measure')
+        self.r_sheet_page.get_adjustment().set_upper(99)
+        self.adopt_btn.set_sensitive(False)
+
+    def select_bundle_sheet(self):
+        row = self.pdf_bundle.rows[int(self.r_sheet_page.get_value())-1]
+        try:
+            artwork = self.pdf_bundle.artwork(row) if 'svg' in row else None
+        except bundle.BundleError as exc:
+            self.on_clear_artwork()
+            self.toast(str(exc))
+            return
+        self.sheet_row.set_subtitle(f'Sheet {row["sheet"]} · PDF front page {row["frontPage"]}')
+        self.preview.set_pdf()
+        self.set_artwork(artwork, row.get('svg') or row['cutFile'])
+
     def on_pick_pdf(self, *_a):
         dialog = Gtk.FileDialog(title="Open the printed sheet")
         filt = Gtk.FileFilter()
-        filt.set_name("PDF")
-        filt.add_mime_type("application/pdf")
+        filt.set_name('PDF and ZIP files (*.pdf, *.zip)')
+        for suffix in ('pdf', 'zip'):
+            filt.add_suffix(suffix)
+        all_files = Gtk.FileFilter()
+        all_files.set_name('All files')
+        all_files.add_pattern('*')
         filters = Gio.ListStore.new(Gtk.FileFilter)
         filters.append(filt)
+        filters.append(all_files)
         dialog.set_filters(filters)
+        dialog.set_default_filter(filt)
 
         def done(d, result):
             try:
                 gfile = d.open_finish(result)
             except GLib.Error:
                 return
-            self.pdf_path = pathlib.Path(gfile.get_path())
+            filename = gfile.get_path()
+            if filename is None:
+                self.toast('Choose a local PDF or ProxyPress ZIP.')
+                return
+            path = pathlib.Path(filename)
+            if path.suffix.lower() == '.zip' or zipfile.is_zipfile(path):
+                try:
+                    matched = bundle.load(path)
+                    row = matched.rows[0]
+                    artwork = matched.artwork(row) if 'svg' in row else None
+                except bundle.BundleError as exc:
+                    self.toast(str(exc))
+                    return
+                self.clear_bundle()
+                self.pdf_bundle = matched
+                self.lock_bundle_layout(True)
+                self.pdf_path = path
+                self.preview.set_pdf()
+                self.sheet_row.set_title(path.name)
+                self._suppress = True
+                self.r_sheet_page.set_title('Sheet in ZIP')
+                self.r_sheet_page.set_subtitle('which matched sheet to check and cut')
+                self.r_sheet_page.get_adjustment().set_upper(len(matched.rows))
+                self.r_sheet_page.set_value(1)
+                self._suppress = False
+                self.sheet_row.set_subtitle(f'Sheet {row["sheet"]} · PDF front page {row["frontPage"]}')
+                self.set_artwork(artwork, row.get('svg') or row['cutFile'])
+                return
+            if self.pdf_bundle:
+                self.on_clear_artwork()
+            self.pdf_path = path
             self.preview.set_pdf()
             self.sheet_row.set_title(self.pdf_path.name)
             self.sheet_row.set_subtitle(str(self.pdf_path.parent))
@@ -1130,16 +1345,26 @@ class Window(Adw.ApplicationWindow):
         self.preview.set_pdf()
         self.measure_sheet()
 
+    def on_sheet_number_changed(self, *_a):
+        if self.pdf_bundle and not self._suppress:
+            self.select_bundle_sheet()
+        else:
+            self.on_pdf_page_changed()
+
     def measure_sheet(self):
         path = getattr(self, "pdf_path", None)
-        if path is None or self.job is None:
+        matched = self.pdf_bundle
+        if path is None or (self.job is None and not matched):
             self.toast("Load a PDF and fix the layout first.")
             return
         self.sheet_result.set_title("Measuring...")
         self.sheet_result.set_subtitle("")
-        marks = self.job.marks
-        grid = self.job.grid
+        marks = matched.marks() if matched else self.job.marks
         page = int(self.r_sheet_page.get_value())
+        if matched:
+            row = matched.rows[page-1]
+            self.bundle_checked = False
+            self.cut_button.set_sensitive(False)
         dpi = int(self._text(self.r_sheet_dpi))
         token = self._sheet_token = object()
         self.sheet_report = None
@@ -1149,14 +1374,17 @@ class Window(Adw.ApplicationWindow):
         def work():
             from . import sheet as sheet_mod
             try:
-                image = sheet_mod.render(path, page=page, dpi=dpi, colour=True)
-                report = sheet_mod.measure(path, marks, page=page, dpi=dpi, image=image)
+                if matched:
+                    report, image = matched.measure(row, marks, dpi)
+                else:
+                    image = sheet_mod.render(path, page=page, dpi=dpi, colour=True)
+                    report = sheet_mod.measure(path, marks, page=page, dpi=dpi, image=image)
                 png = io.BytesIO()
                 image.save(png, format='PNG')
             except Exception as exc:              # noqa: BLE001
                 GLib.idle_add(self._sheet_failed, str(exc), token)
                 return
-            problems = report.problems(grid.sheet_w_mm, grid.sheet_h_mm)
+            problems = report.problems(marks.sheet_w_mm, marks.sheet_h_mm)
             GLib.idle_add(self._sheet_done, report, problems, png.getvalue(), token)
 
         threading.Thread(target=work, daemon=True).start()
@@ -1176,6 +1404,7 @@ class Window(Adw.ApplicationWindow):
         if not sheet_request_current(self._sheet_token, token):
             return
         self.sheet_report = report
+        self.bundle_checked = bool(self.pdf_bundle) and not problems
         self.preview.set_sheet(report)
         self.preview.set_pdf(png, report.page_w_mm, report.page_h_mm)
         lines = [m.describe() for m in report.marks]
@@ -1189,7 +1418,7 @@ class Window(Adw.ApplicationWindow):
         self.sheet_result.set_subtitle("\n".join(lines))
         # Only a uniform displacement can be fixed with an offset.
         self.adopt_btn.set_sensitive(
-            bool(report.found) and "correctable" in report.diagnosis())
+            self.pdf_bundle is None and bool(report.found) and "correctable" in report.diagnosis())
         self.rebuild()
 
     def on_adopt_offset(self, *_a):
@@ -1241,6 +1470,9 @@ class Window(Adw.ApplicationWindow):
         self.rebuild()
 
     def on_test_cut(self, *_a):
+        if self._connection()[0] == "ble":
+            self.toast("Select USB for the settings test.")
+            return
         from . import testcut
         device = graphtec.device_by_name(self._text(self.r_cutter))
         base = presets.get(self._text(self.r_preset)).cut_settings()
@@ -1278,14 +1510,58 @@ class Window(Adw.ApplicationWindow):
                     sent = tr.run(ts.steps)
                 GLib.idle_add(self.toast, f"Test cut sent: {sent:,} bytes")
             except Exception as exc:              # noqa: BLE001
-                GLib.idle_add(self.toast, f"Not cut: {exc}")
+                GLib.idle_add(self.toast, f"Send failed: {exc}")
 
         threading.Thread(target=work, daemon=True).start()
 
-    def on_refresh_status(self, *_a):
-        self.status_row.set_subtitle("checking...")
+    def _scan_bluetooth(self, button):
+        from . import ble
+
+        def update(devices, error):
+            button.set_sensitive(True)
+            if error:
+                self.toast(error)
+                return
+            self._bluetooth_devices = devices
+            self.r_bluetooth.set_model(Gtk.StringList.new(
+                ["Select a cutter"] + [f"{name} ({address})"
+                                       for address, name in devices]))
+            self.r_bluetooth.set_selected(0)
+            if not devices:
+                self.toast("No Cameo 4 found over Bluetooth LE.")
 
         def work():
+            try:
+                GLib.idle_add(update, ble.discover(), None)
+            except transport.TransportError as exc:
+                GLib.idle_add(update, [], str(exc))
+
+        button.set_sensitive(False)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _connection(self):
+        if self.r_connection.get_selected() == 0:
+            return "auto", None
+        index = self.r_bluetooth.get_selected() - 1
+        if 0 <= index < len(self._bluetooth_devices):
+            return "ble", self._bluetooth_devices[index][0]
+        return "ble", None
+
+    def on_refresh_status(self, *_a):
+        if self._sending:
+            return
+        self.status_row.set_subtitle("checking...")
+        mode, address = self._connection()
+
+        def work():
+            if mode == "ble":
+                try:
+                    with transport.open_transport(mode, bluetooth_id=address) as cutter:
+                        text = f"{cutter.device.name} ({address}): {cutter.status()}"
+                except transport.TransportError as exc:
+                    text = str(exc)
+                GLib.idle_add(self.status_row.set_subtitle, text)
+                return
             found = transport.find_devices()
             if not found:
                 text = ("no Silhouette cutter on the USB bus; "
@@ -1303,10 +1579,17 @@ class Window(Adw.ApplicationWindow):
         threading.Thread(target=work, daemon=True).start()
 
     def on_cut(self, *_a):
+        if self.pdf_bundle and not self.bundle_checked:
+            self.toast('Check the matched PDF before cutting this sheet.')
+            return
         j = self.job
         refusal = cut_refusal(j, j, self._sending)
         if refusal:
             self.toast(refusal)
+            return
+        connection = self._connection()
+        if connection[0] == "ble" and not connection[1]:
+            self.toast("Select a Cameo 4 Bluetooth cutter first.")
             return
         body = ("This moves the blade.\n\n"
                 f"{j.grid.describe()}\n"
@@ -1323,11 +1606,16 @@ class Window(Adw.ApplicationWindow):
         dialog.set_response_appearance("cut",
                                        Adw.ResponseAppearance.DESTRUCTIVE)
         dialog.set_default_response("cancel")
-        dialog.connect("response", self._cut_response, j)
+        if connection[1]:
+            dialog.set_body(f"{body}\n\nBluetooth target: {j.device.name} ({connection[1]})")
+        dialog.connect("response", self._cut_response, j, connection)
         dialog.present(self)
 
-    def _cut_response(self, _dialog, response, j):
+    def _cut_response(self, _dialog, response, j, connection=("auto", None)):
         if response != "cut":
+            return
+        if self.pdf_bundle and not self.bundle_checked:
+            self.toast('Check the matched PDF before cutting this sheet.')
             return
         refusal = cut_refusal(self.job, j, self._sending)
         if refusal:
@@ -1338,21 +1626,25 @@ class Window(Adw.ApplicationWindow):
 
         def work():
             try:
-                with transport.open_transport("auto", device=j.device) as t:
+                mode, address = connection
+                options = {"bluetooth_id": address} if mode == "ble" else {}
+                with transport.open_transport(mode, device=j.device, **options) as t:
                     if t.can_read:
                         state = t.status()
                         if state == "unloaded":
                             raise transport.TransportError(
                                 "the cutter says no media is loaded")
+                        if mode == "ble" and state != "ready":
+                            raise transport.TransportError(f"Bluetooth cutter is not ready ({state})")
                         if state == "moving":
                             raise transport.TransportError(
                                 "the cutter is busy")
                     sent = t.run(j.steps)
                 GLib.idle_add(self.toast, f"Cut sent: {sent:,} bytes")
             except transport.TransportError as exc:
-                GLib.idle_add(self.toast, f"Not cut: {exc}")
+                GLib.idle_add(self.toast, f"Send failed: {exc}")
             except Exception as exc:              # noqa: BLE001
-                GLib.idle_add(self.toast, f"Not cut: {exc}")
+                GLib.idle_add(self.toast, f"Send failed: {exc}")
             GLib.idle_add(self._send_done)
 
         threading.Thread(target=work, daemon=True).start()
@@ -1403,6 +1695,14 @@ class Window(Adw.ApplicationWindow):
         self.guest_row.set_subtitle(" ".join(cmd))
 
     def on_open_studio(self, *_a):
+        if self.pdf_bundle:
+            row = self.pdf_bundle.rows[int(self.r_sheet_page.get_value())-1]
+            try:
+                with tempfile.TemporaryDirectory() as folder:
+                    self.launch_studio_file(self.pdf_bundle.studio_file(row, folder))
+            except (OSError, bundle.BundleError) as exc:
+                self.toast(f'Could not open Studio: {exc}')
+            return
         if self.job is None:
             self.toast("Nothing to open: fix the layout first.")
             return
@@ -1429,6 +1729,40 @@ class Window(Adw.ApplicationWindow):
             f"- Sticky note hint: Cover bottom-left card during mark scan, remove before cutting"
         )
         self.guest_row.set_subtitle(guide_text)
+
+    def on_pick_studio_file(self, *_a):
+        chooser = Gtk.FileDialog(title='Open a Silhouette Studio file')
+        studio_filter = Gtk.FileFilter()
+        studio_filter.set_name('Silhouette Studio files')
+        for pattern in ('*.studio3', '*.STUDIO3', '*.studio', '*.STUDIO'):
+            studio_filter.add_pattern(pattern)
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(studio_filter)
+        chooser.set_filters(filters)
+
+        def opened(dialog, result):
+            try:
+                path = dialog.open_finish(result).get_path()
+            except GLib.Error:
+                return
+            if path is None:
+                self.toast('Choose a local Studio file.')
+                return
+            self.launch_studio_file(pathlib.Path(path))
+
+        chooser.open(self, None, opened)
+
+    def launch_studio_file(self, path):
+        try:
+            winboat.open_in_studio(path)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.toast(f'Could not open Studio: {exc}')
+            return
+        self.toast(f'Opening {path.name} in Silhouette Studio')
+        if path.suffix.lower() == '.dxf':
+            self.guest_row.set_subtitle('Set the page and registration marks from Read me.txt in the ZIP.')
+        else:
+            self.guest_row.set_subtitle(f'{path.name} · Opens with the page and marks stored in the file.')
 
 
 class Application(Adw.Application):

@@ -80,6 +80,7 @@ proxies, on Linux, without the VM:
 | Test cut to dial in blade settings | `testcut` — every combination in one pass |
 | Machine calibration | `calibrate` |
 | Open an SVG or DXF and cut it | `cut --from`, `import` |
+| Use an Inkscape Silhouette design | [Inkscape Print & Cut workflow](docs/SETUP.md#inkscape-silhouette-print--cut) |
 | Cut by line colour | `--color` |
 | — | `check-sheet`: measure where the marks actually printed |
 
@@ -91,6 +92,18 @@ use a pen alignment test before cutting valuable stock.
 that also carries the registration marks so it can be held against the printed
 sheet. **The proof is for looking at, not for cutting** — Studio would try to
 cut the marks.
+
+## Design workspace
+
+Open **Design** from the header to edit the current card layout or start with
+**New**. The canvas supports drag placement, millimetre coordinates, rotation,
+mirroring, a 5 mm grid, and undo and redo. SVG and DXF imports show their source
+scale before placement. Open v1 template projects on their saved page and
+save current projects as `.scc-template` v2.
+
+Assign each object **Cut**, **Score**, or **None**, then choose the action next
+to **Review paths**. Control Center checks that action in the existing Cut
+view. The blade and material controls there apply to the selected action.
 
 ## The sheet
 
@@ -109,6 +122,28 @@ does not mean each highlighted card needs covering.
 
 ## Working with Proxy Press
 
+For a current ProxyPress export, open **Sheet → Open PDF or ZIP** and choose
+the matched ZIP. Select a sheet inside the ZIP to load its cut paths and
+check the matching PDF front page. Its page size, orientation and mark
+settings come from the export. The Linux cutter uses the physical SVG
+coordinates, including the printer correction already applied by ProxyPress.
+Blade and cutter calibration are set locally.
+
+```sh
+silhouette-control-center check-sheet cards-print-and-cut.zip --bundle-sheet 2
+silhouette-control-center cut --from cards-print-and-cut.zip --bundle-sheet 2 --dry-run
+```
+
+`--bundle-sheet` is optional for a one-sheet ZIP. It refers to the sheet
+number in ProxyPress. In a duplex export, sheet 2 normally uses PDF front
+page 3. An export of sheet 2 alone uses PDF front page 1.
+
+**Studio → Open current sheet in Studio** opens the Studio file or DXF paired
+with the selected sheet in the ZIP. **Choose file…** in the Studio tab opens
+a standalone `.studio3` file. Earlier ProxyPress ZIPs with Studio files can
+be checked in **Sheet** and opened in **Studio**. For direct cutting, use a
+current ZIP that includes the physical cut SVG.
+
 Choose **Letter · MTG Cameo** or **A4 · MTG Cameo** in the window's
 Layout preset selector, or use:
 
@@ -120,7 +155,7 @@ silhouette-control-center cut --layout-preset mtg-cameo-letter --dry-run
 These match the current Proxy Press Cameo setup: upright 63 × 88 mm MTG
 cards, 4 × 2 landscape, 0.625 mm bleed, no gap, 10 mm margin, 3.2 mm corners,
 and standard three-mark registration at a 10 mm inset with 1 mm lines.
-Proxy Press's auto arm is 7.25 mm on Letter and 8.75 mm on A4. Blade/material
+The nominal auto arm is 8.0264 mm on Letter and 9.398 mm on A4. Blade/material
 settings remain separate. Both applications use the same standard patterns;
 there is no separate Proxy Press registration pattern.
 
@@ -219,12 +254,11 @@ guest.
 
 ## Caveats
 
-**No cutter has ever been attached to this machine** — a Cameo 4 is on order.
-The geometry is verified
-against a published reference and the stream is decoded and measured, but
-"the bytes are right" and "the machine did the right thing" are different
-claims and only the first is being made. [docs/FINDINGS.md](docs/FINDINGS.md)
-keeps them apart, section by section, including the null results.
+A Cameo 4 running firmware V1.05 answered USB status and firmware queries.
+Bluetooth LE discovery also found the cutter. See [docs/FINDINGS.md](docs/FINDINGS.md)
+for the current hardware results and [docs/SETUP.md](docs/SETUP.md) for
+Bluetooth setup. Physical registration and cut accuracy require a measured
+proof sheet.
 
 Silhouette Studio is installed in the WinBoat guest and is detected
 automatically. `silhouette-control-center studio --run-helper` runs a read-only survey
@@ -247,7 +281,7 @@ Press. For example, for an uncalibrated Letter Cameo layout:
 
 ```sh
 canon-print print cards.pdf --sheet Letter --scaling none --duplex None --pages 1 --dry-run
-silhouette-control-center cut --from cut-lines.svg --sheet Letter --landscape --pattern three --mark-inset 10 --mark-length 7.25 --mark-thickness 1 --dry-run
+silhouette-control-center cut --from cut-lines.svg --sheet Letter --landscape --pattern three --mark-inset 10 --mark-length 8.0264 --mark-thickness 1 --dry-run
 ```
 
 Choose your Canon stock profile explicitly when it differs from the default.
@@ -257,12 +291,10 @@ using Proxy Press's instructions and print its matching back page.
 
 Named MTG Cameo presets match Proxy Press's default geometry. Customized
 layouts need the exported SVG and matching registration settings. Proxy
-Press bakes printer scale and placement compensation into PDF and SVG;
-the cutter's calibration is a separate blade-to-sensor translation. Do not
-apply printer compensation a second time. Non-default printer compensation
-also transforms the PDF marks: compare the PDF and cut overlay and perform
-a physical pen test; nominal mark settings alone do not describe arbitrary
-asymmetric calibration.
+Press bakes printer scale and placement compensation into the PDF artwork
+and SVG paths and keeps the PDF registration anchors fixed. Auto can shorten
+the arms when the corrected trim comes closer to a mark. The cutter's
+calibration is a separate blade-to-sensor translation.
 
 `check-sheet` verifies the selected PDF page, not the physical sheet or the
 printer's output. Spool verification proves encoded settings, and cutter
@@ -292,6 +324,15 @@ Pass `/tmp/proxypress-browser.json` through `PROXYPRESS_INTEROP_JSON` to the
 same cutter test to raster-check front-page registration marks as well.
 Browser artifacts contain each exported PDF as base64 and the sheet SVGs.
 A successful geometry-only check does not establish browser or PDF behavior.
+
+To exercise the versioned ZIP handoff, including the actual PDF checker and
+cut-stream verification, generate fresh bundles using ProxyPress's test
+exporter:
+
+```sh
+node proxypress/tools/cameo-bundle-check.js /tmp/proxypress-bundles
+(cd cut-proxies && PROXYPRESS_BUNDLE_DIR=/tmp/proxypress-bundles python3 -m unittest tests.test_proxypress_bundle -v)
+```
 
 For registered cuts, an SVG with declared page dimensions must match the
 selected sheet size and orientation within 0.1 mm. A one-card final sheet

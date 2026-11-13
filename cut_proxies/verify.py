@@ -319,6 +319,30 @@ PROBES = (
 )
 
 
+def _corrupt_imported_vertex(stream: bytes) -> bytes | None:
+    """Change a vertex in the final pass of an imported design."""
+    head, cmds = _split(stream)
+    for index in range(len(cmds) - 1, -1, -1):
+        command = cmds[index]
+        if command.startswith(b"D"):
+            y, _, x = command[1:].partition(b",")
+            cmds[index] = b"D%d,%s" % (int(y) + graphtec.su(1), x)
+            return _rejoin(head, cmds)
+    return None
+
+
+IMPORTED_PROBES = (
+    ("imported path geometry", _corrupt_imported_vertex),
+    ("cuts inside the sheet", _corrupt_outside),
+)
+
+
+def applicable_probes(rows):
+    labels = {row.label for row in rows}
+    return [(label, corrupt) for label, corrupt in PROBES + IMPORTED_PROBES
+            if label in labels]
+
+
 def liveness_failures(stream: bytes, *args, **kwargs) -> list[str]:
     """Break the stream on purpose and confirm the checks reject it.
 
@@ -366,11 +390,7 @@ def liveness_failures(stream: bytes, *args, **kwargs) -> list[str]:
     # Which checks this run actually performs. An unregistered job has no
     # scan window and no in-bounds check, so a probe aimed at one of those
     # has nothing to prove and is absent rather than missed.
-    present = {r.label for r in base_rows}
-
-    for label, corrupt in PROBES:
-        if label not in present:
-            continue
+    for label, corrupt in applicable_probes(base_rows):
         if label in already_failing:
             missed.append(
                 f"{label}: this check was already failing on the "
@@ -433,7 +453,7 @@ class Row:
 def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
                      mode: str = "rounded", cards=None,
                      offset_mm: tuple[float, float] = (0.0, 0.0),
-                     registration: bool = True
+                     registration: bool = True, expected_paths=None
                      ) -> tuple[bool, list[Row]]:
     """Check a stream against the grid, marks and blade settings.
 
@@ -496,7 +516,28 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
 
     # Geometry: the check that actually protects the stock.
     passes = max(1, s.passes)
-    if mode == "cross":
+    if expected_paths is not None:
+        ox, oy = mk.origin_mm if mk is not None and registration else (0.0, 0.0)
+        ox, oy = ox - offset_mm[0], oy - offset_mm[1]
+        expected = []
+        for path in expected_paths:
+            points = [(graphtec.su(x - ox), graphtec.su(y - oy))
+                      for x, y in path.points]
+            if path.closed:
+                points.append(points[0])
+            expected.append(points)
+        got = [[(graphtec.su(x), graphtec.su(y)) for x, y in path] for path in d.paths]
+        wanted = expected * passes
+        row("cut paths", len(wanted), len(got), len(wanted) == len(got))
+        matches = wanted == got
+        row("imported path geometry", "all vertices in order on every pass",
+            "matches" if matches else "path coordinates differ", matches)
+        if not registration:
+            inside = all(-0.05 <= x <= grid.sheet_w_mm + 0.05
+                         and -0.05 <= y <= grid.sheet_h_mm + 0.05
+                         for path in d.paths for x, y in path)
+            row("cuts inside the sheet", "inside", "inside" if inside else "outside", inside)
+    elif mode == "cross":
         want_paths = (2 * grid.cols + 2 * grid.rows) * passes
         row("cut paths", want_paths, len(d.paths),
             len(d.paths) == want_paths)

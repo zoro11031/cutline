@@ -1,4 +1,6 @@
-"""GUI handlers exercised without a display, USB or guest connection."""
+"""GUI handlers and a display-backed Design button smoke test."""
+import os
+from pathlib import Path
 import unittest
 import types
 from unittest import mock
@@ -8,6 +10,85 @@ try:
     from cut_proxies import gui
 except ImportError:
     gui = None
+
+
+@unittest.skipUnless(gui is not None, 'GTK and PyGObject are required')
+class TestDesignWorkspace(unittest.TestCase):
+    def make_window(self):
+        from gi.repository import Gdk
+
+        if not gui.Gtk.init_check() or Gdk.Display.get_default() is None:
+            self.skipTest('a display is required to create GTK widgets')
+        gui.Adw.init()
+        app = gui.Adw.Application(application_id='org.printing.DesignSmokeTest',
+                                  flags=gui.Gio.ApplicationFlags.NON_UNIQUE)
+        self.assertTrue(app.register(None))
+        win = gui.Window(app)
+        self.addCleanup(win.destroy)
+        return win
+
+    def test_design_button_opens_reviews_and_reopens_the_workspace(self):
+        win = self.make_window()
+        win.design_button.emit('clicked')
+        self.assertIsNotNone(win.design)
+        design = win.design
+        self.assertIs(win.workspaces.get_visible_child(), design.view)
+        self.assertTrue(design.project.shapes)
+        design.review.emit('clicked')
+        self.assertEqual(win.stack.get_visible_child_name(), 'cut')
+        self.assertIsNotNone(win.job)
+        win.design_button.emit('clicked')
+        self.assertIs(win.workspaces.get_visible_child(), design.view)
+        win.close_design()
+        self.assertEqual(win.workspaces.get_visible_child_name(), 'tools')
+        self.assertIsNone(win.design)
+
+    @unittest.skipUnless(os.environ.get('PROXYPRESS_BUNDLE_DIR'), 'generate a ProxyPress bundle first')
+    def test_selecting_a_real_zip_opens_its_paths_and_its_paired_studio_file(self):
+        win = self.make_window()
+        source = Path(os.environ['PROXYPRESS_BUNDLE_DIR']) / 'letter-landscape-8.zip'
+        launched = []
+
+        def launch(path):
+            launched.append((path.name, path.read_bytes()[:13]))
+
+        with mock.patch.object(gui.Gtk, 'FileDialog') as chooser, \
+             mock.patch.object(win, 'measure_sheet') as measure, \
+             mock.patch.object(gui.winboat, 'open_in_studio', side_effect=launch):
+            win.on_pick_pdf()
+            dialog = chooser.return_value
+            callback = dialog.open.call_args.args[2]
+            dialog.open_finish.return_value = gui.Gio.File.new_for_path(str(source))
+            callback(dialog, mock.Mock())
+            measure.assert_called_once()
+            self.assertEqual(win.pdf_path, source)
+            self.assertEqual(len(win.imported.paths), 8)
+            self.assertFalse(win.job.blocked)
+            win.on_open_studio()
+        self.assertEqual(launched, [('sheet-1.studio3', b'silhouette05;')])
+
+    @unittest.skipUnless(os.environ.get('PROXYPRESS_LEGACY_BUNDLE'), 'supply a legacy print-and-cut ZIP first')
+    def test_selecting_legacy_zip_keeps_direct_cut_disabled_and_opens_studio_file(self):
+        win = self.make_window()
+        source = Path(os.environ['PROXYPRESS_LEGACY_BUNDLE'])
+        launched = []
+
+        def launch(path):
+            launched.append(path.read_bytes()[:13])
+
+        with mock.patch.object(gui.Gtk, 'FileDialog') as chooser, \
+             mock.patch.object(win, 'measure_sheet') as measure, \
+             mock.patch.object(gui.winboat, 'open_in_studio', side_effect=launch):
+            win.on_pick_pdf()
+            dialog = chooser.return_value
+            dialog.open_finish.return_value = gui.Gio.File.new_for_path(str(source))
+            dialog.open.call_args.args[2](dialog, mock.Mock())
+            measure.assert_called_once()
+            self.assertEqual(win.pdf_path, source)
+            self.assertIsNone(win.job)
+            self.assertFalse(win.cut_button.get_sensitive())
+            win.on_open_studio()
+        self.assertEqual(launched, [b'silhouette05;'])
 
 
 @unittest.skipUnless(gui is not None, 'PyGObject is not installed')
@@ -27,12 +108,37 @@ class TestOpenDialogs(unittest.TestCase):
             gui.Window.on_pick_pdf(window)
         dialog.return_value.open.assert_called_once()
         filters = dialog.return_value.set_filters.call_args.args[0]
-        self.assertEqual(filters.get_n_items(), 1)
-        self.assertEqual(filters.get_item(0).get_name(), 'PDF')
+        self.assertEqual(filters.get_n_items(), 2)
+        filt = filters.get_item(0)
+        self.assertEqual(filt.get_name(), 'PDF and ZIP files (*.pdf, *.zip)')
+        self.assertEqual(filters.get_item(1).get_name(), 'All files')
+        dialog.return_value.set_default_filter.assert_called_once_with(filt)
+        for name, mime, accepted in (
+                ('Job.ZiP','application/octet-stream',True),
+                ('Job.pdf','application/octet-stream',True),
+                ('archive.zip','application/zip',True),
+                ('vector.svg','image/svg+xml',False)):
+            with self.subTest(name=name, mime=mime):
+                entry = gui.Gio.FileInfo()
+                entry.set_display_name(name)
+                entry.set_content_type(mime)
+                self.assertEqual(filt.match(entry), accepted)
+
+    def test_studio_file_picker_passes_the_native_file_to_the_launcher(self):
+        window = mock.Mock()
+        with mock.patch.object(gui.Gtk, 'FileDialog') as chooser:
+            gui.Window.on_pick_studio_file(window)
+        dialog = chooser.return_value
+        filters = dialog.set_filters.call_args.args[0]
+        self.assertEqual(filters.get_item(0).get_name(), 'Silhouette Studio files')
+        callback = dialog.open.call_args.args[2]
+        dialog.open_finish.return_value = gui.Gio.File.new_for_path('/tmp/sheet-2.studio3')
+        callback(dialog, mock.Mock())
+        window.launch_studio_file.assert_called_once_with(Path('/tmp/sheet-2.studio3'))
 
     def test_a_failed_import_keeps_the_previous_artwork_and_job(self):
         previous = object()
-        window = types.SimpleNamespace(imported=previous, toast=mock.Mock())
+        window = types.SimpleNamespace(imported=previous, toast=mock.Mock(), clear_bundle=mock.Mock())
         with mock.patch.object(gui.Gtk, 'FileDialog') as dialog, \
              mock.patch('cut_proxies.importer.load', side_effect=ValueError('bad file')):
             gui.Window.on_open_artwork(window)
@@ -82,7 +188,7 @@ class TestCutConfirmationGuard(unittest.TestCase):
 @unittest.skipUnless(gui is not None, 'PyGObject is not installed')
 class TestSheetRequestGuard(unittest.TestCase):
     def make_window(self, token):
-        return types.SimpleNamespace(_sheet_token=token, preview=mock.Mock(),
+        return types.SimpleNamespace(_sheet_token=token, pdf_bundle=None, preview=mock.Mock(),
             sheet_result=mock.Mock(), adopt_btn=mock.Mock(), rebuild=mock.Mock())
 
     def test_current_result_updates_artwork_and_measurement(self):

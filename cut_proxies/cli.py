@@ -83,8 +83,9 @@ def show_checks(j):
         style = None if r.ok else "bold red"
         say(f"  [{mark}] {r.label:26} {r.got}", style=style)
     live = not j.liveness_failures
+    probe_count = len(verify.applicable_probes(j.rows))
     say(f"  [{'ok  ' if live else 'FAIL'}] {'checks proven live':26} "
-        f"{len(verify.PROBES) - len(j.liveness_failures)}/{len(verify.PROBES)}"
+        f"{max(0, probe_count - len(j.liveness_failures))}/{probe_count}"
         f" probes caught",
         style=None if live else "bold red")
     for m in j.liveness_failures:
@@ -104,7 +105,7 @@ def show_checks(j):
         say("Proximity alone does not mean every nearby card needs covering.", style="dim")
 
 
-def common_layout_args(p):
+def common_layout_args(p, bundles=False):
     p.add_argument('--layout-preset', choices=tuple(layout_presets.BUILTIN),
                    help='apply a complete printed-sheet layout; overrides layout '
                         'options and leaves blade settings unchanged')
@@ -136,8 +137,8 @@ def common_layout_args(p):
     p.add_argument("--bleed", type=float, default=0.0, metavar="MM",
                    help="bleed around each card, for the collision check")
     p.add_argument("--from", dest="source", metavar="FILE",
-                   help="cut the paths in this SVG or DXF instead of a "
-                        "generated grid")
+                   help="use paths from " + ("an SVG, DXF or matched ProxyPress ZIP"
+                                             if bundles else "an SVG or DXF"))
     p.add_argument("--color", "--colour", dest="colour", metavar="COLOUR",
                    help="cut only the paths with this stroke colour, the "
                         "way Studio selects by line colour (e.g. red, "
@@ -158,10 +159,10 @@ def common_cut_args(p):
     p.add_argument("--passes", type=int, default=None)
 
 
-def build_from_args(args) -> job_mod.Job:
-    imported = None
+def build_from_args(args, matched=None, bundle_row=None) -> job_mod.Job:
+    imported = matched.artwork(bundle_row) if matched else None
     source = getattr(args, "source", None)
-    if source:
+    if source and matched is None:
         from . import importer
         try:
             imported = importer.load(source)
@@ -199,6 +200,8 @@ def build_from_args(args) -> job_mod.Job:
     selected = getattr(args, 'layout_preset', None)
     if selected:
         options.update(layout_presets.BUILTIN[selected].options())
+    if matched:
+        options.update(matched.layout, engine='scm', mode=template.ROUNDED, bleed_mm=0)
     return job_mod.build(**options)
 
 
@@ -373,7 +376,7 @@ def cmd_proxypress(args):
     say(f"      Mark pattern         {m['regPattern']} marks")
     say(f"      Mark inset           {m['regInset']} mm")
     say(f"      Mark arm length      {m['regLen']} "
-        f"(0 = auto: longest that clears the cards)")
+        f"(0 = auto: Card Maker arm shortened for clearance when needed)")
     say(f"      Mark line thickness  {m['regThickness']} mm")
     say("\n  Export and print at 100%. PDF checks measure digital geometry; "
         "measure a printed ruler and test alignment with a pen to check "
@@ -454,38 +457,41 @@ def cmd_import(args):
 # --------------------------------------------------------------------------
 
 def cmd_check_sheet(args):
-    from . import sheet as sheet_mod
+    from . import bundle, sheet as sheet_mod
     path = pathlib.Path(args.file).expanduser()
     if not path.is_file():
         fail(f"No such file: {path}")
+    matched = None
     try:
-        j = build_from_args(args)
-    except geometry.LayoutImpossible as exc:
-        fail(str(exc))
-    try:
-        report = sheet_mod.measure(path, j.marks, page=args.page,
-                                   dpi=args.dpi)
-    except sheet_mod.SheetError as exc:
+        if path.suffix.lower() == '.zip':
+            matched = bundle.load(path)
+            row = matched.row(args.bundle_sheet)
+            marks = matched.marks()
+            report, _ = matched.measure(row, marks, args.dpi)
+        else:
+            j = build_from_args(args)
+            marks = j.marks
+            report = sheet_mod.measure(path, marks, page=args.page, dpi=args.dpi)
+    except (geometry.LayoutImpossible, sheet_mod.SheetError, bundle.BundleError) as exc:
         fail(str(exc))
 
     say("PDF geometry only; measure the physical print separately.", style="dim")
-    say(f"\nMeasured {path.name}, page {report.page}, at {report.dpi} dpi",
+    say(f"\nMeasured {pathlib.Path(report.pdf).name}, page {report.page}, at {report.dpi} dpi",
         style="bold")
     say(f"  page {report.page_w_mm:.1f} x {report.page_h_mm:.1f} mm "
-        f"(template expects {j.grid.sheet_w_mm:.1f} x "
-        f"{j.grid.sheet_h_mm:.1f})")
+        f"(template expects {marks.sheet_w_mm:.1f} x "
+        f"{marks.sheet_h_mm:.1f})")
     say()
     for m in report.marks:
         ok = m.is_credible and (m.error_mm or 0) <= args.tolerance
         say(f"  [{'ok  ' if ok else 'FAIL'}] {m.describe()}",
             style=None if ok else "bold red")
 
-    problems = report.problems(j.grid.sheet_w_mm, j.grid.sheet_h_mm,
+    problems = report.problems(marks.sheet_w_mm, marks.sheet_h_mm,
                                args.tolerance)
     say(f"\n  {report.diagnosis()}", style="bold")
     if not problems:
-        say("\nThis sheet matches the template. The cutter should find its "
-            "marks.", style="bold green")
+        say("\nThe PDF registration marks match the template.", style="bold green")
         return 0
     say()
     for pr in problems:
@@ -656,6 +662,22 @@ def cmd_materials(args):
 # --------------------------------------------------------------------------
 
 def cmd_status(args):
+    if args.transport == "ble":
+        from . import ble
+        try:
+            if args.bluetooth_id:
+                with transport.open_transport("ble", bluetooth_id=args.bluetooth_id) as cutter:
+                    say(f"{cutter.device.name}: {cutter.status()}")
+            else:
+                devices = ble.discover()
+                for address, name in devices:
+                    say(f"{address}  {name}")
+                if not devices:
+                    say("No Cameo 4 found over Bluetooth LE.")
+        except transport.TransportError as exc:
+            fail(str(exc))
+        return 0
+
     say("\nCutter", style="bold")
     found = transport.find_devices()
     if found:
@@ -715,9 +737,22 @@ def cmd_status(args):
 # --------------------------------------------------------------------------
 
 def cmd_cut(args):
+    from . import bundle, sheet as sheet_mod
     try:
-        j = build_from_args(args)
-    except geometry.LayoutImpossible as exc:
+        if args.source and pathlib.Path(args.source).suffix.lower() == '.zip':
+            if args.no_registration:
+                fail('A matched ProxyPress ZIP requires registration.')
+            matched = bundle.load(args.source)
+            row = matched.row(args.bundle_sheet)
+            j = build_from_args(args, matched, row)
+            report, _ = matched.measure(row, j.marks, sheet_mod.DEFAULT_DPI)
+            problems = report.problems(j.grid.sheet_w_mm, j.grid.sheet_h_mm)
+            if problems:
+                fail('PDF registration check failed. Nothing was sent.\n' + '\n'.join(problems))
+            say(f"Matched sheet {row['sheet']} with PDF front page {row['frontPage']}.")
+        else:
+            j = build_from_args(args)
+    except (geometry.LayoutImpossible, bundle.BundleError) as exc:
         fail(str(exc))
     show_summary(j)
     show_checks(j)
@@ -762,19 +797,27 @@ def cmd_cut(args):
              f"({j.preset.origin}). Cut the plain-paper test first.")
 
     try:
-        t = transport.open_transport(args.transport, device=j.device)
+        t = transport.open_transport(args.transport, device=j.device,
+                                     bluetooth_id=args.bluetooth_id)
     except transport.TransportError as exc:
         say(f"\n{exc}", style="bold red")
         fail("No way to reach the cutter. Use --dry-run, or go through "
              "Silhouette Studio with 'silhouette-control-center studio'.")
 
     with t:
+        if args.transport == "ble":
+            say(f"\nBluetooth target: {j.device.name} ({args.bluetooth_id})")
         if t.can_read:
-            state = t.status()
+            try:
+                state = t.status()
+            except transport.TransportError as exc:
+                fail(str(exc))
             say(f"\nCutter reports: {state}")
             if state == "unloaded":
                 fail("The cutter says no media is loaded. Load the mat and "
                      "the sheet first.")
+            elif state != "ready" and args.transport == "ble":
+                fail(f"The Bluetooth cutter is not ready ({state}).")
             elif state == "moving":
                 fail("The cutter is busy.")
         if not args.yes and not ask_yes(
@@ -907,9 +950,12 @@ def cmd_studio(args):
         say("\n" + (" ".join(cmd)), style="dim")
         say(f"\nSilhouette Studio is opening in the guest with {path.name}."
             if not args.dry_run else "\nDry run: not launched.", style="bold")
-        say("\nIn Studio: set the page to the same size and orientation, turn on "
-            "registration\nmarks with the same inset, and check the template "
-            "imported at 100%.", style="dim")
+        if path.suffix.lower() in ('.studio', '.studio3'):
+            say("\nStudio opens the page and registration settings stored in the file.", style="dim")
+        else:
+            say("\nIn Studio: set the page to the same size and orientation, turn on "
+                "registration\nmarks with the same inset, and check the template "
+                "imported at 100%.", style="dim")
         return 0
 
     # No file: generate and stage DXF for the requested layout
@@ -1001,8 +1047,9 @@ def main(argv=None):
                         help="measure a PDF and check its "
                              "registration marks are where the template "
                              "expects")
-    cs.add_argument("file", help="PDF to inspect (does not measure physical printer output)")
-    cs.add_argument("--page", type=int, default=1)
+    cs.add_argument("file", help="PDF or matched ProxyPress ZIP to inspect")
+    cs.add_argument("--bundle-sheet", type=int, help="sheet number in a ProxyPress ZIP")
+    cs.add_argument("--page", type=int, default=1, help="page number for standalone PDFs")
     cs.add_argument("--dpi", type=int, default=200)
     cs.add_argument("--tolerance", type=float, default=0.5, metavar="MM")
     common_layout_args(cs)
@@ -1056,18 +1103,22 @@ def main(argv=None):
     ma.set_defaults(func=cmd_materials)
 
     st = sub.add_parser("status", help="cutter, transports, WinBoat guest")
+    st.add_argument("--transport", choices=("auto", "ble"), default="auto")
+    st.add_argument("--bluetooth-id", metavar="ADDRESS")
     st.set_defaults(func=cmd_status)
 
     c = sub.add_parser("cut", help="register and cut")
-    common_layout_args(c)
+    common_layout_args(c, bundles=True)
     common_cut_args(c)
     c.add_argument("--via", default="cutter", choices=("cutter", "studio"),
                    help="cutter = cut via USB directly; studio = stage DXF "
                         "and open in Silhouette Studio in WinBoat guest")
     c.add_argument("--transport", default="auto",
-                   choices=("auto", "pyusb", "usblp"))
+                   choices=("auto", "pyusb", "usblp", "ble"))
+    c.add_argument("--bluetooth-id", metavar="ADDRESS")
     c.add_argument("--dry-run", action="store_true",
                    help="build and check the job, send nothing")
+    c.add_argument("--bundle-sheet", type=int, help="sheet number in a ProxyPress ZIP")
     c.add_argument("--dump", metavar="PATH",
                    help="also write the raw stream to a file")
     c.add_argument("--manual-registration", action="store_true",
@@ -1081,7 +1132,7 @@ def main(argv=None):
     s = sub.add_parser("studio", help="open a template in Silhouette Studio "
                                       "in the WinBoat guest")
     s.add_argument("file", nargs="?",
-                   help="specific DXF/SVG file to open (optional)")
+                   help="specific Studio, DXF or SVG file to open (optional)")
     common_layout_args(s)
     common_cut_args(s)
     s.add_argument("--app-only", action="store_true",

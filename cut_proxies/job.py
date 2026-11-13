@@ -178,11 +178,22 @@ def build(sheet: str = config.DEFAULT_SHEET,
         mk = regmarks.for_grid(grid, inset_mm=inset, length_mm=length,
                                thickness_mm=thickness, pattern=pattern) \
             if engine == "scm" else mk
+        inkscape_marks = imported.inkscape_marks if registration else None
+        if inkscape_marks:
+            mk = regmarks.marks(grid.sheet_w_mm, grid.sheet_h_mm,
+                                inkscape_marks.inset_mm, inkscape_marks.length_mm,
+                                pattern=inkscape_marks.pattern)
+            # The plugin prints thinner strokes than the SCM presets.
+            thickness = inkscape_marks.thickness_mm
+            mk = dataclasses.replace(mk, thickness_mm=thickness,
+                                     ells=tuple(dataclasses.replace(ell, thickness=thickness)
+                                                for ell in mk.ells))
         collisions = regmarks.collisions(grid, mk, bleed_mm=bleed_mm)
         off = regmarks.off_sheet(grid, mk)
         off += imported_mode_errors(imported, mode)
         if registration:
             off += imported_page_errors(imported, grid)
+            off += inkscape_registration_errors(imported, device)
     skip = tuple(sorted({i for i in skip if 0 <= i < grid.count}))
     if radius_mm is not None and imported is None:
         grid = dataclasses.replace(
@@ -223,21 +234,22 @@ def build(sheet: str = config.DEFAULT_SHEET,
 
     # 5. take it apart again
     verify_mode = mode if imported is None else "rounded"
+    check_options = dict(cards=cut_cards, offset_mm=offset, registration=registration)
+    if imported is not None:
+        check_options["expected_paths"] = paths
     ok, rows = verify.expectations_met(stream, grid, mk, cut, device, verify_mode,
-                                       cards=cut_cards, offset_mm=offset,
-                                       registration=registration)
+                                       **check_options)
     # ...and prove, in this same run, that those checks would have noticed if
     # the stream were wrong. A verifier that always says yes prints exactly
     # the table above.
     liveness = verify.liveness_failures(
-        stream, grid, mk, cut, device, verify_mode, cards=cut_cards,
-        offset_mm=offset, registration=registration)
+        stream, grid, mk, cut, device, verify_mode, **check_options)
 
     if grid.sheet_w_mm > device.width_mm:
         warnings.append(
             f"The sheet is {grid.sheet_w_mm:g} mm wide but the "
             f"{device.name} can only cut {device.width_mm:g} mm.")
-    if mk.length_mm > grid.max_mark_length_mm and engine == "scm":
+    if imported is None and mk.length_mm > grid.max_mark_length_mm and engine == "scm":
         warnings.append(
             f"Mark arms are {mk.length_mm:g} mm but this layout only has "
             f"{grid.max_mark_length_mm:g} mm of clearance.")
@@ -254,6 +266,15 @@ def imported_mode_errors(imported, mode: str) -> list[str]:
     if imported is not None and mode == "cross":
         return ["mode='cross' cannot be used with imported artwork; "
                 "imported files define their own cut paths"]
+    return []
+
+
+def inkscape_registration_errors(imported, device) -> list[str]:
+    if imported.inkscape_mark_error:
+        return [imported.inkscape_mark_error]
+    marks = imported.inkscape_marks
+    if marks and marks.pattern == regmarks.FOUR and not device.quad_regmarks:
+        return ["This cutter requires the Inkscape plugin's standard three-mark pattern."]
     return []
 
 

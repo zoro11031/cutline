@@ -21,7 +21,7 @@ cheap: nine sub-suites of a few tests each.
 import io
 import unittest
 
-from cut_proxies import job, regmarks, winboat
+from cut_proxies import job, regmarks, verify, winboat
 
 
 def _run(class_paths):
@@ -32,7 +32,26 @@ def _run(class_paths):
 
 
 # (module, attribute, stub, description, the classes that must object)
+def _force_verification_row(label, allowed):
+    original = verify.expectations_met
+
+    def force(*args, **kwargs):
+        _, rows = original(*args, **kwargs)
+        for row in rows:
+            if row.label == label:
+                row.ok = allowed
+        return all(row.ok for row in rows), rows
+
+    return force
+
+
 CASES = (
+    (job, "inkscape_registration_errors", lambda *a: [],
+     "Inkscape registration always allows",
+     ["tests.test_inkscape_import.TestInkscapeImport"]),
+    (job, "inkscape_registration_errors", lambda *a: ["blocked"],
+     "Inkscape registration always refuses",
+     ["tests.test_inkscape_import.TestInkscapeImport"]),
     (job, "imported_page_errors", lambda *a: [],
      "SVG page guard always allows", ["tests.test_imported_page.ImportedPage"]),
     (job, "imported_page_errors", lambda *a: ["SVG page mismatch"],
@@ -74,6 +93,14 @@ CASES = (
     (winboat, "our_stale_sessions", lambda *a, **k: [(999, "foreign")],
      "our_stale_sessions claims a foreign session is ours",
      ["tests.test_guards.TestOurStaleSessionsNeverSeesAnotherTool"]),
+)
+
+CASES += tuple(
+    (verify, "expectations_met", _force_verification_row(label, allowed),
+     f"{label} always {'allows' if allowed else 'refuses'}",
+     ["tests.test_imported_paths.TestImportedPaths"])
+    for label in ("imported path geometry", "cuts inside the sheet")
+    for allowed in (True, False)
 )
 
 try:

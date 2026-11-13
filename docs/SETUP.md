@@ -67,6 +67,24 @@ A registration scan has to **read** the cutter's reply, and that is the one
 thing the `/dev/usb/lp*` path cannot be relied on for. For a registered cut,
 use `pyusb`.
 
+## Cameo 4 over Bluetooth LE
+
+On Arch or CachyOS, install `python-bleak` and start the BlueZ Bluetooth
+service. Enable Bluetooth on the Cameo 4. In the desktop Cut tab, choose
+**Bluetooth LE**, find cutters, select the Cameo 4, and refresh its status.
+On the CLI:
+
+```sh
+cut-proxies status --transport ble
+cut-proxies status --transport ble --bluetooth-id AA:BB:CC:DD:EE:FF
+cut-proxies cut --transport ble --bluetooth-id AA:BB:CC:DD:EE:FF \
+  --layout-preset mtg-cameo-letter --preset 'Plain paper test' --dry-run
+```
+
+Use the address reported by discovery. Once the matching proof is printed
+at 100% and the cutter reports ready, remove `--dry-run` for the supervised
+proof. The settings-matrix test uses USB.
+
 ## Printing the sheet
 
 The marks `cut-proxies` expects have to be on the paper. Two routes:
@@ -287,3 +305,57 @@ is needed and is never printed. Override it with `CUT_PROXIES_GUEST_USER` and
 | `CUT_PROXIES_GUEST_SHARE` | what Windows calls the share (default `\\host.lan\Data`) |
 | `CUT_PROXIES_GUEST_USER` / `..._PASSWORD` | guest login, instead of reading the compose file |
 | `PRINTING_SUITE_HOME` | where the sibling projects live |
+
+## Inkscape Silhouette Print & Cut
+
+1. In Inkscape, put the printed artwork in a layer called **Print** and the
+   cut geometry in **Cut**. Convert cut text to paths, unlink clones and
+   flatten clips. Run **Extensions → Render → Silhouette Regmarks** with
+   the standard three-mark pattern for Cameo 4 and the same inset on every
+   edge. Save each page as its own Inkscape SVG and print it at 100%.
+2. In the desktop app, open that SVG under **Layout → What to cut**, select
+   the matching paper and orientation, and review the cut preview. The
+   importer excludes groups labelled Print, CuttingMat and Regmarks using
+   the extension's naming convention. It derives the registration origin
+   and window from the marker shapes on the page. Cut by stroke colour
+   when several cut colours are present.
+3. Choose the **Plain paper test** preset for the first proof. With a
+   matching sheet on the mat, use **Cut** to check cutter status and confirm
+   the job. For a Letter landscape sheet, the equivalent CLI flow is:
+
+   ```sh
+   cut-proxies import design.svg --verbose
+   cut-proxies cut --from design.svg --sheet Letter --landscape \
+     --preset 'Plain paper test' --dry-run
+   cut-proxies cut --from design.svg --sheet Letter --landscape \
+     --preset 'Plain paper test' --transport pyusb
+   ```
+
+The registration import checks the plugin's original 5 mm square and 20 mm
+L-mark geometry in page coordinates. A mismatched page, asymmetric marks, or
+four marks on a Cameo 4 block the registered job. For an unprinted blank
+sheet, turn off registration and review the sheet-coordinate paths.
+
+The plugin's command transcript is useful for offline protocol comparison.
+For a cut job, hand off the SVG so the suite can rebuild and verify its
+own command stream. [Inkscape Silhouette user guide](https://github.com/fablabnbg/inkscape-silhouette/blob/main/USERGUIDE.md)
+
+Open paths in an SVG or DXF can be sent alongside closed outlines. Use
+unfilled open paths for line work such as scoring or pen strokes. Select
+the appropriate tool preset before confirming. The job preview and
+verifier preserve each path's endpoint and check its vertices on every
+pass.
+
+## Create a cut template in the desktop app
+
+Choose the paper and orientation in **Layout**, then open **Template editor**
+under **What to cut**. Add rectangles, rounded rectangles, ellipses, or lines.
+Drag shapes on the sheet or enter their dimensions and position in
+millimetres. Use a signed horizontal or vertical change to draw a line
+toward the left or top.
+
+**Save project** keeps the shapes editable in a `.scc-template` file.
+To reopen it, select the same paper and orientation and use **Open project**
+inside the editor. **Use template** loads the geometry into the regular
+checked job. From there, use **Export** for SVG, DXF and the print proof, or
+choose your tool and send the checked job from **Cut**.

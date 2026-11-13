@@ -19,11 +19,8 @@ Three transports, in the order they are tried:
     `--dry-run` uses, and what makes the whole pipeline testable with no
     hardware attached at all.
 
-None of the USB paths have been exercised against a cutter from this machine:
-there is no Silhouette on this bus (see `docs/FINDINGS.md`).  The byte stream
-is built from a verified source and checked by `verify.py`, but "the stream is
-correct" and "the cutter did the right thing" are different claims and only
-the first one is being made here.
+USB status and firmware queries have been exercised on a Cameo 4.
+See docs/FINDINGS.md for the hardware results.
 """
 
 from __future__ import annotations
@@ -76,6 +73,10 @@ class Transport:
             elif step.kind == "expect":
                 got = self.read(timeout_ms=step.timeout_ms)
                 if got != step.expect:
+                    if step.expect == graphtec.RESP_REGMARK_OK and got.strip() == b"1\x03":
+                        raise TransportError(
+                            f"{step.note or 'marks found'}: cutter could not detect marks "
+                            f"({got!r}). Cover crowded cards (e.g. bottom-left) and check alignment.")
                     raise TransportError(
                         f"{step.note or 'expected reply'}: wanted "
                         f"{step.expect!r}, got {got!r}")
@@ -195,16 +196,19 @@ class UsbLpTransport(Transport):
     name = "usblp"
     can_read = True
 
-    def __init__(self, path: str | None = None):
-        candidates = [path] if path else [
-            f"/dev/usb/lp{i}" for i in range(4)]
-        for cand in candidates:
-            if cand and os.path.exists(cand):
+    def __init__(self, path: str | None = None, device=None):
+        candidates = [(known, node) for known, node in find_devices()
+                      if node.startswith("/dev/usb/lp")
+                      and (path is None or path == node)
+                      and (device is None or device == known)]
+        for known, cand in candidates:
+            if os.path.exists(cand):
                 try:
                     self._fd = os.open(cand, os.O_RDWR | os.O_NONBLOCK)
                 except OSError:
                     continue
                 self.path = cand
+                self.device = known
                 return
         raise NotFound(
             "No writable /dev/usb/lp* device. Either the cutter is not "
@@ -318,7 +322,8 @@ def find_devices() -> list[tuple[graphtec.Device, str]]:
 
 
 def open_transport(prefer: str = "auto", dump_to=None,
-                   device: graphtec.Device | None = None) -> Transport:
+                   device: graphtec.Device | None = None,
+                   bluetooth_id: str | None = None) -> Transport:
     """Open the best available transport.
 
     `prefer` is "auto", "pyusb", "usblp" or "file".  "auto" takes pyusb when
@@ -328,6 +333,9 @@ def open_transport(prefer: str = "auto", dump_to=None,
         if dump_to is None:
             raise TransportError("the file transport needs a path to write to")
         return FileTransport(dump_to, device)
+    if prefer == "ble":
+        from .ble import BleTransport
+        return BleTransport(bluetooth_id, device)
     errors = []
     order = {"auto": ("pyusb", "usblp"),
              "pyusb": ("pyusb",), "usblp": ("usblp",)}.get(prefer)
@@ -336,7 +344,7 @@ def open_transport(prefer: str = "auto", dump_to=None,
     for kind in order:
         try:
             return PyUsbTransport(device) if kind == "pyusb" \
-                else UsbLpTransport()
+                else UsbLpTransport(device=device)
         except TransportError as exc:
             errors.append(f"{kind}: {exc}")
     raise NotFound("No usable transport to the cutter.\n  "

@@ -21,6 +21,7 @@ import subprocess
 import tempfile
 import pathlib
 import unittest
+from unittest.mock import patch
 
 from cut_proxies import geometry, regmarks, sheet
 from cut_proxies.geometry import Rect
@@ -46,6 +47,21 @@ def fill(img, rect: Rect):
 
 @unittest.skipUnless(HAVE_PIL, "Pillow is not installed")
 class TestInkBlobs(unittest.TestCase):
+
+    def test_card_maker_stroked_and_proxypress_filled_squares_share_an_anchor(self):
+        mk = regmarks.marks(60, 60)
+        for stroke in (False, True):
+            for shift in (0, 1):
+                with self.subTest(stroke=stroke, shift=shift):
+                    image = blank()
+                    box = Rect(10+shift, 10+shift, 5, 5)
+                    fill(image, box.grown(0.5) if stroke else box)
+                    with patch.object(sheet, 'page_size_mm', return_value=(60, 60, 1)):
+                        report = sheet.measure('fixture', mk, image=image)
+                    detected = report.marks[0]
+                    self.assertTrue(detected.is_credible)
+                    for offset in detected.delta_mm:
+                        self.assertAlmostEqual(offset, shift, delta=0.15)
 
     def test_one_patch_is_one_blob(self):
         img = blank()
