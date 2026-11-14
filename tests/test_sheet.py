@@ -219,6 +219,24 @@ class TestEndToEnd(unittest.TestCase):
         self.assertEqual(r.found, [])
         self.assertIn("no registration marks", r.diagnosis())
 
+    def test_a_same_size_solid_patch_is_not_a_top_right_l(self):
+        out = self.dir / "replaced-top-right.pdf"
+        self.assertTrue(_render_pdf(self.proof, out))
+        image = sheet.render(out, dpi=DPI)
+        from PIL import ImageDraw
+        ell = self.mk.ells[0]
+        px = DPI / 25.4
+        x, y = ell.corner_x, ell.corner_y
+        half = ell.thickness / 2
+        draw = ImageDraw.Draw(image)
+        draw.rectangle(tuple(round(v*px) for v in
+                       (x-ell.length+half, y-half, x+half, y+ell.length-half)), fill=0)
+        report = sheet.measure(out, self.mk, dpi=DPI, image=image)
+        self.assertEqual([m.name for m in report.wrong_shape], ["top-right L"])
+        self.assertEqual([m.name for m in report.found], ["top-left square", "bottom-left L"])
+        self.assertIn("top-right L: nearby ink does not have the expected mark shape",
+                      report.problems(self.grid.sheet_w_mm, self.grid.sheet_h_mm))
+
     def test_a_scaled_sheet_is_called_a_scaling_error(self):
         r = self._measure(
             self._transformed("translate(4.191,3.2385) scale(0.97)"),

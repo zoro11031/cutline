@@ -41,6 +41,15 @@ ESC_EOT = b"\x04"           # escape: initialise the device
 ESC_ENQ = b"\x05"           # escape: return status
 ESC_NAK = b"\x15"           # escape: return tool setup (Cameo 4 and later)
 
+# inkscape-silhouette Graphtec.py 198-205, identifiers returned by ESC NAK.
+TOOL_NAMES = {0: "Empty", 1: "Ratchet blade", 2: "AutoBlade", 3: "Deep-cut blade",
+              4: "Kraft blade", 5: "Rotary blade", 7: "Pen", 255: "Detection error"}
+
+
+def tool_name(code: int) -> str:
+    return TOOL_NAMES.get(code, f"Unknown tool (ID {code})")
+
+
 QUERY_FIRMWARE_VERSION = b"FG"
 
 RESP_READY = b"0"
@@ -50,8 +59,8 @@ RESP_DECODING = {RESP_READY: "ready", RESP_MOVING: "moving",
                  RESP_UNLOADED: "unloaded"}
 
 # The reply a successful registration scan sends back: four spaces, a zero and
-# an ETX (Graphtec.py ~1574).  Anything else means the marks were not found.
-# In particular, '    1\x03' is the failure reply when the sensor cannot find marks.
+# an ETX (Graphtec.py ~1574). The sensor failure reply reports the overall
+# result with no mark index. An unexpected reply is a separate transport error.
 RESP_REGMARK_OK = b"    0\x03"
 RESP_REGMARK_FAIL = b"    1\x03"
 
@@ -98,6 +107,18 @@ class Device:
     max_speed: int = 10             # 30 on the Cameo 4 line, see below
     two_tools: bool = False
     cameo3_on: bool = False         # the newer command dialect
+
+    @property
+    def detects_tools(self) -> bool:
+        # PRODUCT_LINE_CAMEO4 in inkscape-silhouette Graphtec.py 151-169.
+        return self.max_speed == 30
+
+    def supports_holder(self, holder: int) -> bool:
+        return holder == 1 or (holder == 2 and self.two_tools)
+
+    @property
+    def autoblade(self) -> bool:
+        return self.cameo3_on or self.product_id == 0x1132
 
     @property
     def usb_id(self) -> str:
@@ -252,20 +273,45 @@ def manual_regmark_mm(length_mm: float, width_mm: float) -> str:
     return f"TB23,{su(length_mm)},{su(width_mm)}"
 
 
-# The fixed preamble to any registration scan (Graphtec.py 1549-1555).
-# TB51 and TB53 are sent as the literal constants Silhouette Studio sends;
-# they are described upstream as the mark length and width, but in units that
-# were never pinned down, so they are passed through unchanged rather than
-# derived from our own mark geometry.  If a scan fails on marks that are
-# visibly correct, these two are the first thing to question.
+# The reference registration preamble (Graphtec.py 1549-1555). Use the
+# recovered constants except on the Cameo 4, for which the reference docs
+# also show a geometry-specific TB51/TB53 pair.
 REGMARK_PREAMBLE = (
     "TB50,0",       # 0 = portrait mode.  With registration it is always 0.
     "TB99",         # undocumented upstream; always sent before a scan
     "TB52,2",       # mark type: 0 = original/SD, 2 = Cameo/Portrait
-    "TB51,400",     # "length of regmarks", magic constant
-    "TB53,10",      # "width of regmarks", magic constant
+    "TB51,400",     # default arm length, copied from the reference driver
+    "TB53,10",      # default stroke width, copied from the reference driver
     "TB55,1",       # undocumented upstream
 )
+
+def registration_mat_commands(device: Device, width_mm: float, height_mm: float) -> tuple[str, ...]:
+    """Standard Cameo mat setup, from Graphtec.py set_cutting_mat."""
+    short, long = 304.8, 609.6
+    if not device.cameo3_on or device.width_mm < short or width_mm > short or height_mm > long:
+        return ()
+    mat, height = ("TG1", short) if height_mm <= short else ("TG2", long)
+    return (mat, "FN0", "TB50,0", upper_left_mm(0, 0), lower_right_mm(short, height))
+
+
+def captured_letter_scan(device, length, width, origin, mark_shape):
+    """The captured Letter window, including the standalone layout's 8 mm arms."""
+    if device.product_id != 0x1137 or mark_shape is None:
+        return False
+    arm, stroke = mark_shape
+    return (tuple(map(su, (length, width, *origin, stroke))) == (3918, 5188, 200, 200, 20)
+            and su(arm) in (160, 161))
+
+
+def registration_preamble(device: Device, mark_shape_mm: tuple[float, float] | None) -> tuple[str, ...]:
+    # docs/cameo4-usbprint-observations.md: Cameo 4 uses 200 and 20 for
+    # 10 mm arms and 1 mm strokes. Keep the recovered defaults on other models.
+    if device.product_id != 0x1137 or mark_shape_mm is None:
+        return REGMARK_PREAMBLE
+    arm, stroke = mark_shape_mm
+    return (*REGMARK_PREAMBLE[:3], f"TB51,{su(arm)}", f"TB53,{su(stroke)}",
+            REGMARK_PREAMBLE[-1])
+
 
 
 # --------------------------------------------------------------------------
@@ -331,8 +377,14 @@ class CutSettings:
     sharpen_corners: bool = False
     media: int | None = None            # advisory; no command carries it
 
+    # inkscape-silhouette Graphtec.py 1191-1196: FF takes tenths of a mm.
+    corner_start_mm: float = 0.1
+    corner_end_mm: float = 0.1
+
     def clamped(self, device: Device) -> "CutSettings":
         out = dataclasses.replace(self)
+        if not device.supports_holder(self.holder):
+            raise ValueError(f"{device.name} has no tool holder {self.holder}")
         out.force = max(1, min(self.force, device.max_pressure))
         out.speed = max(1, min(self.speed, device.max_speed))
         if out.depth is not None:
@@ -366,8 +418,9 @@ class CutJob:
                  origin_mm: tuple[float, float] = (0.0, 0.0),
                  reg_width_mm: float = 0.0, reg_length_mm: float = 0.0,
                  registration: bool = True, auto_search: bool = True,
-                 search_mm: float = 10.0, quad: bool = False,
-                 offset_mm: tuple[float, float] = (0.0, 0.0)):
+                 search_mm: float | None = None, quad: bool = False,
+                 offset_mm: tuple[float, float] = (0.0, 0.0),
+                 mark_shape_mm: tuple[float, float] | None = None):
         self.device = device
         self.settings = settings.clamped(device)
         self.origin_mm = origin_mm
@@ -381,6 +434,7 @@ class CutJob:
         self.registration = registration
         self.auto_search = auto_search
         self.search_mm = search_mm
+        self.mark_shape_mm = mark_shape_mm
         # A four-mark scan only exists on hardware that has it.
         self.quad = quad and device.quad_regmarks
 
@@ -391,6 +445,9 @@ class CutJob:
         dev = self.device
         tool = Tool(s.holder)
         cmds: list[str] = []
+        start = round(s.corner_start_mm * 10) if s.sharpen_corners else 0
+        end = round(s.corner_end_mm * 10) if s.sharpen_corners else 0
+        corners = tool.sharpen_corners(start, end)
         if dev.two_tools:
             cmds.append(tool.select())
 
@@ -401,38 +458,45 @@ class CutJob:
             cmds.append(tool.speed(s.speed))
             cmds.append(tool.cutter_offset(0, 0.05))
             cmds.append(tool.lift(s.lift_head))
-            if s.sharpen_corners:
-                cmds.extend(tool.sharpen_corners(1, 1))
-            else:
-                cmds.extend(tool.sharpen_corners(0, 0))
+            cmds.extend(corners)
             # Upstream sends the pressure twice, with an acceleration change
             # between, and notes it does not know why.  Reproduced.
             cmds.append(tool.pressure(s.force))
             cmds.append(acceleration(s.acceleration
                                      if s.acceleration is not None else 3))
             cmds.append(tool.cutter_offset(s.blade_diameter_mm, 0.05))
-            if s.depth is not None and s.holder == 1:
-                cmds.append(tool.depth(s.depth))
         else:
             cmds.append(tool.speed(s.speed) if dev.cameo3_on
                         else f"!{s.speed}")
             cmds.append(tool.pressure(s.force))
-            cmds.append(blade_diameter(s.blade_diameter_mm))
-            cmds.append("FE0,0")
+            if dev.cameo3_on:
+                # Cameo 3 setup, upstream Graphtec.py 1240–1262.
+                cmds.append(tool.lift(s.lift_head))
+                cmds.extend(corners)
+                cmds.append(tool.cutter_offset(0, 0.05))
+                cmds.append(tool.cutter_offset(s.blade_diameter_mm, 0.05))
+            else:
+                cmds.append(blade_diameter(s.blade_diameter_mm))
+                cmds.append("FE0,0")
+        if dev.autoblade and s.depth is not None and s.holder == 1:
+            if dev.product_id == 0x1132:
+                # Portrait 2 needs J1 immediately before TF, upstream line 1279.
+                cmds.append(tool.select())
+            cmds.append(tool.depth(s.depth))
         return cmds
 
     def _regmark_steps(self) -> list[Step]:
         if not self.registration:
             return []
         ox, oy = self.origin_mm
-        steps = [Step("write", frame(list(REGMARK_PREAMBLE)),
+        steps = [Step("write", frame(registration_preamble(self.device, self.mark_shape_mm)),
                       note="registration preamble")]
         if self.auto_search:
             fn = (auto_quad_regmark_search_mm if self.quad
                   else auto_regmark_search_mm)
-            cmd = fn(self.reg_length_mm, self.reg_width_mm,
-                     max(oy - self.search_mm, 0.0),
-                     max(ox - self.search_mm, 0.0))
+            margin = 10.0 if self.search_mm is None else self.search_mm
+            cmd = fn(self.reg_length_mm, self.reg_width_mm, max(oy - margin, 0.0),
+                     max(ox - margin, 0.0))
             steps.append(Step("write", frame(cmd),
                               note=f"scan for marks: {cmd}"))
         else:
@@ -480,13 +544,42 @@ class CutJob:
         return [move_mm(0.0, max_y), "SO0"]
 
     # ---- assembly ----------------------------------------------------
-    def plan(self, paths) -> list[Step]:
-        steps: list[Step] = []
-        steps.append(Step("write", CMD_ESC + ESC_EOT,
-                          note="initialise the device"))
-        steps.append(Step("write", frame(self._setup_commands()),
-                          note="blade settings"))
+    def _initial_steps(self) -> list[Step]:
+        steps = [Step("write", CMD_ESC + ESC_EOT, note="initialise the device")]
+        if self.registration:
+            x, y = self.origin_mm
+            commands = registration_mat_commands(
+                self.device, self.reg_width_mm + 2*x, self.reg_length_mm + 2*y)
+            if commands:
+                steps.append(Step("write", frame(commands), note="set up the Cameo cutting mat"))
+        return steps
+
+    def _registered_setup(self, settings):
+        if (self.registration and self.auto_search and not self.quad and self.search_mm is None
+                and captured_letter_scan(self.device, self.reg_length_mm, self.reg_width_mm,
+                                         self.origin_mm, self.mark_shape_mm)):
+            # First two bulk writes and post-registration clip in the Studio
+            # trace. The cutter must answer before any blade setup or paths.
+            preamble = registration_preamble(self.device, self.mark_shape_mm)
+            scan = auto_regmark_search_mm(self.reg_length_mm, self.reg_width_mm, 5.9, 5.9)
+            steps = [
+                Step("write", frame(("TG1", "FN0", *preamble[:2])), note="set up the Cameo cutting mat"),
+                Step("write", frame((*preamble[2:], scan, "TB99")), note=f"scan for marks: {scan}"),
+                Step("expect", expect=RESP_REGMARK_OK, timeout_ms=40000, note="marks found"),
+                Step("write", frame((upper_left_mm(0, 0), lower_right_mm(
+                    self.reg_width_mm, self.reg_length_mm))), note="registered cut window"),
+            ]
+            if settings is not None:
+                steps.append(Step("write", frame(self._setup_commands(settings)), note="blade settings"))
+            return steps
+        steps = self._initial_steps()
+        if settings is not None:
+            steps.append(Step("write", frame(self._setup_commands(settings)), note="blade settings"))
         steps.extend(self._regmark_steps())
+        return steps
+
+    def plan(self, paths) -> list[Step]:
+        steps = self._registered_setup(self.settings)
         if not self.device.cameo3_on:
             # The older dialect wants the cut window stated explicitly.
             steps.append(Step("write", frame([
@@ -512,13 +605,7 @@ class CutJob:
         that reached the blade by a different route would not be testing the
         thing you are about to cut with.
         """
-        steps: list[Step] = []
-        steps.append(Step("write", CMD_ESC + ESC_EOT,
-                          note="initialise the device"))
-        if groups:
-            steps.append(Step("write", frame(self._setup_commands(groups[0][0])),
-                              note="blade settings"))
-        steps.extend(self._regmark_steps())
+        steps = self._registered_setup(groups[0][0] if groups else None)
         if not self.device.cameo3_on:
             steps.append(Step("write", frame([
                 upper_left_mm(0, 0),

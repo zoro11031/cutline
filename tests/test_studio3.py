@@ -11,7 +11,7 @@ import pathlib
 import struct
 import unittest
 
-from cut_proxies import studio3
+from cut_proxies import importer, studio3
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "studio3"
 
@@ -23,6 +23,19 @@ KNOWN = {
     "a4-standard-v5": dict(cards=8, w=63.0, h=88.0, page=(296.9, 210.1)),
     "a4-bridge-v4": dict(cards=9, w=57.15, h=88.9, page=(210.1, 296.9)),
 }
+
+
+class TestNativeImport(unittest.TestCase):
+    def test_imports_card_maker_templates_in_native_page_coordinates(self):
+        for name, spec in KNOWN.items():
+            with self.subTest(template=name):
+                art = importer.load(FIXTURES / f"{name}.studio3")
+                self.assertEqual(len(art.paths), spec["cards"])
+                for path in art.paths:
+                    xs, ys = zip(*path.points)
+                    self.assertTrue(path.closed)
+                    self.assertAlmostEqual(max(xs) - min(xs), spec["w"], delta=0.02)
+                    self.assertAlmostEqual(max(ys) - min(ys), spec["h"], delta=0.02)
 
 
 def load(name):
@@ -199,33 +212,17 @@ if __name__ == "__main__":
 
 
 class TestArmLengthMatchesWhatProxyPressPrints(unittest.TestCase):
-    """The arm this side assumes has to be the arm the other side prints.
-
-    Proxy Press prints Silhouette's default 20 mm arm, which is what every
-    Card Maker cutting template carries -- readable straight out of the
-    vendored .studio3 files. When this was left on auto, the search here
-    answered 7.25 mm for a letter landscape sheet, and the Graphtec mark
-    search would then have hunted for a mark that was never printed.
-    """
-
-    def test_proxypress_marks_are_pinned_to_twenty_millimetres(self):
-        from cut_proxies import config
-        self.assertEqual(config.PROXYPRESS_8UP_MARKS["regLen"], 20)
+    def test_stock_landscape_jobs_use_active_arm_from_native_template(self):
+        from cut_proxies import job
+        for paper, base in (("Letter", "letter-standard-v6"), ("A4", "a4-standard-v5")):
+            with self.subTest(paper=paper):
+                arm = struct.unpack_from("<f", load(base), 1137)[0]
+                built = job.build(sheet=paper, engine="proxypress")
+                self.assertAlmostEqual(built.marks.length_mm, arm, places=3)
+                self.assertFalse(built.blocked)
 
     def test_card_maker_templates_place_a_card_inside_the_corner_zone(self):
-        """Evidence that the corner rule is stricter than Card Maker itself.
-
-        `regmarks.corner_zones` models a mark as a length x length square and
-        `collisions` refuses any card that enters one. At the 20 mm arm those
-        templates actually use, Card Maker's own letter-standard layout puts a
-        card well inside the bottom-left zone -- and Card Maker ships it, with
-        a guide that says to cover that card during the registration scan
-        rather than to move it. Proxy Press's interface says the same.
-
-        So a refusal here is not evidence of a bad layout. Recorded as a test
-        because it is the thing that would otherwise get quietly "fixed" by
-        loosening the check, which no cutter here could verify.
-        """
+        """A manually selected 20 mm arm crowds the stock Letter layout."""
         cards = studio3.read_cards(load("letter-standard-v6"))
         pw, ph = studio3.page_size(load("letter-standard-v6"))
         arm = 20.0
@@ -241,8 +238,7 @@ class TestArmLengthMatchesWhatProxyPressPrints(unittest.TestCase):
             "expected Card Maker's own layout to enter the 20 mm corner zone")
 
     def test_the_arm_only_reaches_cards_near_its_own_edge(self):
-        """The arms themselves do not cross a card, which is why it is safe
-        to print them at 20 mm and mask the bottom-left card instead."""
+        """Measure physical arm strokes independently of the exclusion square."""
         data = load("letter-standard-v6")
         cards = studio3.read_cards(data)
         pw, ph = studio3.page_size(data)

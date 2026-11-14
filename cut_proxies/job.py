@@ -21,7 +21,7 @@ from __future__ import annotations
 import dataclasses
 import pathlib
 
-from . import config, geometry, graphtec, presets, regmarks, template, verify
+from . import config, geometry, graphtec, layout_presets, presets, regmarks, template, verify
 
 
 @dataclasses.dataclass
@@ -69,8 +69,50 @@ class Job:
     def cut_length_mm(self) -> float:
         return template.total_length_mm(self.paths) * self.settings.passes
 
+    def registration_steps(self) -> tuple:
+        """Use the verified plan, stopping at the sensor's reply before paths."""
+        for i, step in enumerate(self.steps):
+            if step.kind == "expect" and step.expect == graphtec.RESP_REGMARK_OK:
+                return self.steps[:i+1]
+        return ()
+
+    def registration_writes(self) -> tuple[str, ...]:
+        """Display the USB/BLE command blocks that precede the scan reply."""
+        return tuple(" ".join(part.decode("ascii") if all(32 <= byte < 127 for byte in part)
+                              else part.hex(" ")
+                              for part in step.data.split(graphtec.CMD_ETX) if part)
+                     for step in self.registration_steps() if step.kind == "write")
+
+    def registration_notes(self, report=None, near_marks=None) -> list[str]:
+        """PDF and layout observations available after a hardware scan fails."""
+        notes = []
+        if report is not None:
+            problems = report.problems(self.marks.sheet_w_mm, self.marks.sheet_h_mm)
+            if problems:
+                notes.append("PDF check: " + "\n".join(problems))
+            else:
+                names = ", ".join(mark.name for mark in report.found)
+                notes.append(f"PDF check found all expected marks: {names}.")
+        if near_marks is None:
+            corners = {hint["mark"] for hint in self.mask_hints}
+            near_marks = [f"{corner} {'square' if corner == 'top-left' and self.marks.square else 'L'}"
+                          for corner in sorted(corners)]
+        if near_marks:
+            notes.append("Check for nearby artwork at " + ", ".join(near_marks)
+                         + " (mat view).")
+        return notes
+
     def summary(self) -> list[tuple[str, str]]:
         mk = self.marks
+        s = self.settings
+        tool = [f"holder {s.holder}"]
+        if self.device.cameo3_on:
+            tool.append("head lift on" if s.lift_head else "head lift off")
+            tool.append(f"corner extensions {s.corner_start_mm:g}/{s.corner_end_mm:g} mm"
+                        if s.sharpen_corners else "corner extensions off")
+        if self.device.detects_tools:
+            tool.append("automatic acceleration" if s.acceleration is None
+                        else f"acceleration {s.acceleration}")
         return [
             ("Cutter", f"{self.device.name} "
                        f"({self.device.width_mm:g} mm cuttable)"),
@@ -93,6 +135,7 @@ class Job:
                       f"pass(es), blade {self.settings.blade_diameter_mm:g} mm"
                       + (f", depth {self.settings.depth}"
                          if self.settings.depth is not None else "")),
+            ("Tool setup", ", ".join(tool)),
             ("Cut mode", self.mode),
             ("Calibration", "none"
              if tuple(self.offset_mm) == (0.0, 0.0)
@@ -104,6 +147,9 @@ class Job:
                          if self.skip else "")),
             ("Stream", f"{len(self.stream):,} bytes"),
         ]
+
+
+_USE_PRESET_DEPTH = object()
 
 
 def build(sheet: str = config.DEFAULT_SHEET,
@@ -121,14 +167,14 @@ def build(sheet: str = config.DEFAULT_SHEET,
           passes: int | None = None,
           force: int | None = None,
           speed: int | None = None,
-          depth: int | None = None,
+          depth: int | None | object = _USE_PRESET_DEPTH,
           bleed_mm: float = 0.0,
           proxypress: geometry.ProxyPressSettings | None = None,
           registration: bool = True,
           auto_search: bool = True,
           skip: tuple[int, ...] = (),
           offset_mm: tuple[float, float] | None = None,
-          imported=None) -> Job:
+          imported=None, blade_options=None) -> Job:
     """Build and check a job.  Raises only on things that cannot be reported."""
     device = graphtec.device_by_name(cutter)
 
@@ -146,8 +192,6 @@ def build(sheet: str = config.DEFAULT_SHEET,
                  else float(marks_cfg["regInset"]))
         # 0 means auto in Proxy Press and None means auto here.
         length = mark_length_mm
-        if length is None and marks_cfg["regLen"]:
-            length = float(marks_cfg["regLen"])
         thickness = (mark_thickness_mm if mark_thickness_mm is not None
                      else float(marks_cfg["regThickness"]))
         # Both layout engines use the same standard registration patterns.
@@ -158,6 +202,13 @@ def build(sheet: str = config.DEFAULT_SHEET,
         length = mark_length_mm
         thickness = (mark_thickness_mm if mark_thickness_mm is not None
                      else config.DEFAULT_MARK_THICKNESS_MM)
+
+    # Stock landscape jobs and bare cut files share the printed paper preset.
+    if (length is None and not grid.portrait and card == "standard"
+            and inset == 10 and proxypress is None and pattern == regmarks.THREE):
+        preset = layout_presets.BUILTIN.get(f"mtg-cameo-{sheet.lower()}")
+        if preset is not None:
+            length = preset.arm_mm
 
     # 2. the marks
     mk = regmarks.for_grid(grid, inset_mm=inset, length_mm=length,
@@ -209,14 +260,14 @@ def build(sheet: str = config.DEFAULT_SHEET,
 
     # 4. the settings and the stream
     preset = presets.get(preset_name)
-    cut = preset.cut_settings()
+    cut = dataclasses.replace(preset.cut_settings(), **(blade_options or {}))
     if passes is not None:
         cut.passes = passes
     if force is not None:
         cut.force = force
     if speed is not None:
         cut.speed = speed
-    if depth is not None:
+    if depth is not _USE_PRESET_DEPTH:
         cut.depth = depth
     warnings = cut.warnings(device)
     cut = cut.clamped(device)
@@ -228,7 +279,8 @@ def build(sheet: str = config.DEFAULT_SHEET,
         device, cut, origin_mm=mk.origin_mm,
         reg_width_mm=mk.reg_width_mm, reg_length_mm=mk.reg_length_mm,
         registration=registration, auto_search=auto_search,
-        quad=window["quad"], offset_mm=offset)
+        quad=window["quad"], offset_mm=offset,
+        mark_shape_mm=(mk.length_mm, mk.thickness_mm))
     steps = tuple(job.plan(paths))
     stream = b''.join(step.data for step in steps if step.kind == 'write')
 
@@ -285,7 +337,7 @@ def imported_page_errors(imported, grid) -> list[str]:
     w, h = imported.page_size_mm
     if abs(w - grid.sheet_w_mm) <= 0.1 and abs(h - grid.sheet_h_mm) <= 0.1:
         return []
-    return [f"SVG page is {w:g} x {h:g} mm; selected sheet is "
+    return [f"Imported page is {w:g} x {h:g} mm; selected sheet is "
             f"{grid.sheet_w_mm:g} x {grid.sheet_h_mm:g} mm. "
             "Select the matching sheet size and orientation, or export again "
             "for the selected sheet."]

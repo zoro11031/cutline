@@ -244,7 +244,8 @@ class TestVerificationRefuses(unittest.TestCase):
         self.job = graphtec.CutJob(
             self.dev, self.settings, origin_mm=self.mk.origin_mm,
             reg_width_mm=self.mk.reg_width_mm,
-            reg_length_mm=self.mk.reg_length_mm)
+            reg_length_mm=self.mk.reg_length_mm,
+            mark_shape_mm=(self.mk.length_mm, self.mk.thickness_mm))
         self.stream = self.job.stream(self.paths)
 
     def _check(self, stream, settings=None):
@@ -255,6 +256,31 @@ class TestVerificationRefuses(unittest.TestCase):
         ok, rows = self._check(self.stream)
         failed = [r.label for r in rows if not r.ok]
         self.assertTrue(ok, f"failed: {failed}")
+
+    def test_captured_letter_scan_and_explicit_search_override(self):
+        args = dict(origin_mm=(10, 10), reg_width_mm=259.4,
+                    reg_length_mm=195.9, mark_shape_mm=(8.0264, 1))
+        default = graphtec.CutJob(self.dev, self.settings, **args)
+        self.assertIn(graphtec.frame(["TB123,3918,5188,118,118", "TB99"]),
+                      default.stream(self.paths))
+        override = graphtec.CutJob(self.dev, self.settings, search_mm=10, **args)
+        self.assertIn(graphtec.frame("TB123,3918,5188,0,0"), override.stream(self.paths))
+
+    def test_cameo_4_sets_the_standard_mat_before_searching_for_marks(self):
+        commands = verify.decode(self.stream).commands
+        self.assertEqual(commands[:5], ["TG1", "FN0", "TB50,0", "TB99", "TB52,2"])
+        self.assertIn("TB123,3918,5188,118,118", commands)
+        search = next(i for i, cmd in enumerate(commands) if cmd.startswith("TB123,"))
+        self.assertEqual(commands[search-3:search],
+                         [f"TB51,{graphtec.su(self.mk.length_mm)}", "TB53,20", "TB55,1"])
+        for source, replaced, label in ((b"TG1", b"TG0", "registration mat setup"),
+                                       (b"TB53,20", b"TB53,10", "registration mark dimensions")):
+            with self.subTest(label=label):
+                clean_ok, _ = self._check(self.stream)
+                bad_ok, rows = self._check(self.stream.replace(source, replaced))
+                self.assertTrue(clean_ok)
+                self.assertFalse(bad_ok)
+                self.assertTrue(any(r.label == label and not r.ok for r in rows))
 
     def test_a_different_force_is_caught(self):
         ok, rows = self._check(self.stream,
@@ -275,7 +301,8 @@ class TestVerificationRefuses(unittest.TestCase):
         wrong = graphtec.CutJob(
             self.dev, self.settings, origin_mm=(11.0, 10.0),
             reg_width_mm=self.mk.reg_width_mm,
-            reg_length_mm=self.mk.reg_length_mm).stream(self.paths)
+            reg_length_mm=self.mk.reg_length_mm,
+            mark_shape_mm=(self.mk.length_mm, self.mk.thickness_mm)).stream(self.paths)
         ok, rows = self._check(wrong)
         self.assertFalse(ok)
         self.assertTrue(any(r.label == "card position error" and not r.ok

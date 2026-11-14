@@ -31,9 +31,9 @@ speed 1-30. But Silhouette's *own* shipped material database never uses a
 speed above 10 for any material on any cutter class, the Cameo 4 and 5
 classes included, while the Card Maker community guide recommends 25 on a
 Cameo 5. Those cannot both be describing the same scale, and no cutter has
-been attached here to settle it. The presets below follow the vendor,
-because on expensive stock too slow costs time and too fast costs the sheet.
-`docs/FINDINGS.md` section 11 records both. AutoBlade depth is 0-10 and is a
+been attached here to settle it. The black-core presets use the requested
+starting values. The project retains each cutter's force limit at send time.
+`docs/FINDINGS.md` section 11 records both speed references. AutoBlade depth is 0-10 and is a
 *ceiling*: it sets how far the blade can extend, and force and passes decide
 whether that depth is reached. The vendor's file gives depth in millimetres,
 and depth_mm x 10 lines up with the guide's index.
@@ -50,8 +50,11 @@ at a moderate force cut cleaner and are kinder to both the blade and the mat.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import pathlib
+import re
+import tempfile
 
 from .graphtec import CutSettings
 
@@ -71,32 +74,21 @@ class Preset:
 BUILTIN: tuple[Preset, ...] = (
     Preset(
         name="310 gsm black-core",
-        description="310 gsm black-core starting guess, based on Coverstock.",
+        description="User-selected 310 gsm black-core settings.",
         origin="derived",
-        settings=dict(force=33, speed=1, depth=7, passes=2,
+        settings=dict(force=35, speed=25, depth=7, passes=4,
                       blade_diameter_mm=0.9, lift_head=True,
                       sharpen_corners=False, media=135, acceleration=1),
-        note="Best guess for 310 gsm black-core: start with Silhouette's "
-             "Coverstock values (force 33, speed 1, depth 7, two passes). "
-             "The vendor does not identify this setting as 310 gsm or "
-             "black-core; material stiffness, coating and blade condition "
-             "can change the result. Never cut. Test on an offcut; tune "
-             "passes first, then force, speed and depth. If two passes "
-             "do not separate cleanly, try a third before increasing depth.",
+        note="User-selected settings. Never cut as part of this project's verification.",
     ),
     Preset(
         name="330 gsm black-core",
-        description="The stock this suite prints on. Coverstock plus a pass.",
+        description="User-selected 330 gsm black-core settings.",
         origin="derived",
-        settings=dict(force=33, speed=1, depth=7, passes=3,
+        settings=dict(force=35, speed=25, depth=7, passes=4,
                       blade_diameter_mm=0.9, lift_head=True,
                       sharpen_corners=False, media=135, acceleration=1),
-        note="Silhouette's own Coverstock setting (force 33, speed 1, two "
-             "passes, 0.7 mm depth) with a third pass added, because 330 gsm "
-             "black-core is heavier than Coverstock and force is already at "
-             "the Cameo 4's maximum of 33 - passes are the only axis left. "
-             "Never cut. Work DOWN: if three passes separate cleanly, try "
-             "two, which is the vendor's own figure.",
+        note="User-selected settings. Never cut as part of this project's verification.",
     ),
     Preset(
         name="Coverstock (Silhouette)",
@@ -244,25 +236,31 @@ def bundled_dir() -> pathlib.Path:
     return pathlib.Path(__file__).resolve().parent.parent / "profiles"
 
 
+def _read_presets(folder: pathlib.Path):
+    for path in sorted(folder.glob("*.json")):
+        try:
+            raw = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(raw, dict) or not isinstance(raw.get("settings", {}), dict):
+            continue
+        name = raw.get("name") or path.stem
+        if not isinstance(name, str):
+            continue
+        yield path, Preset(
+            name=name,
+            description=raw.get("description", ""),
+            origin=raw.get("origin", "derived"),
+            settings=raw.get("settings", {}),
+            note=raw.get("note", ""),
+        )
+
+
 def all_presets() -> dict[str, Preset]:
     """Built-ins, then bundled JSON, then the user's own, last one winning."""
     out = dict(BUILTIN_BY_NAME)
     for folder in (bundled_dir(), user_dir()):
-        if not folder.is_dir():
-            continue
-        for path in sorted(folder.glob("*.json")):
-            try:
-                raw = json.loads(path.read_text())
-            except (OSError, ValueError):
-                continue
-            name = raw.get("name") or path.stem
-            out[name] = Preset(
-                name=name,
-                description=raw.get("description", ""),
-                origin=raw.get("origin", "derived"),
-                settings=raw.get("settings", {}),
-                note=raw.get("note", ""),
-            )
+        out.update((preset.name, preset) for _, preset in _read_presets(folder))
     return out
 
 
@@ -292,10 +290,47 @@ def get(name: str) -> Preset:
                    + ", ".join(sorted(presets)))
 
 
+def save_blade_settings(name: str, *, force: int, speed: int, depth: int | None,
+                        passes: int, blade_options=None, new_name: str | None = None) -> pathlib.Path | None:
+    """Save edited blade settings, retaining any unspecified preset options."""
+    preset = get(name)
+    settings = dict(preset.settings, force=force, speed=speed, depth=depth, passes=passes)
+    settings.update(blade_options or {})
+    if new_name is not None:
+        new_name = new_name.strip()
+        if not new_name:
+            raise ValueError("Enter a preset name.")
+        if any(new_name.casefold() == name.casefold() for name in all_presets()):
+            raise ValueError("A preset with that name already exists.")
+        preset = dataclasses.replace(preset, name=new_name)
+    elif CutSettings(**settings) == preset.cut_settings():
+        return None
+    return save(dataclasses.replace(
+        preset, origin="derived", settings=settings, description="Locally edited preset.",
+        note="User-selected settings. Never cut as part of this project's verification."))
+
+
 def save(preset: Preset) -> pathlib.Path:
     folder = user_dir()
     folder.mkdir(parents=True, exist_ok=True)
-    slug = preset.name.lower().replace(" ", "-").replace(",", "")
-    path = folder / f"{slug}.json"
-    path.write_text(json.dumps(dataclasses.asdict(preset), indent=2) + "\n")
+    existing = {item.name: path for path, item in _read_presets(folder)}
+    path = existing.get(preset.name)
+    if path is None:
+        slug = re.sub(r"[^a-z0-9._-]+", "-", preset.name.lower().replace(",", ""))
+        slug = slug.strip(".-")[:100] or "preset"
+        path = folder / f"{slug}.json"
+        if path.exists():
+            suffix = hashlib.sha256(preset.name.encode()).hexdigest()[:12]
+            path = folder / f"{slug}-{suffix}.json"
+    data = json.dumps(dataclasses.asdict(preset), indent=2) + "\n"
+    temp = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", dir=folder, suffix=".tmp",
+                                         delete=False) as stream:
+            temp = pathlib.Path(stream.name)
+            stream.write(data)
+        temp.replace(path)
+    finally:
+        if temp is not None:
+            temp.unlink(missing_ok=True)
     return path

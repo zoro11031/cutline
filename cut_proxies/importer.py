@@ -32,7 +32,8 @@ import math
 import re
 import xml.etree.ElementTree as ET
 
-from .template import CHORD_TOLERANCE_MM, CutPath
+from .geometry import Rect
+from .template import CHORD_TOLERANCE_MM, CutPath, rounded_rect_points
 
 SVG_NS = "http://www.w3.org/2000/svg"
 INKSCAPE_NS = "http://www.inkscape.org/namespaces/inkscape"
@@ -941,12 +942,32 @@ def _read_text(path) -> str:
         return fh.read()
 
 
+def load_studio3(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
+    """Import the rounded-card outlines understood by the Studio template reader."""
+    from pathlib import Path
+    from . import studio3
+
+    data = Path(path).read_bytes()
+    try:
+        cards = studio3.read_cards(data)
+        page = studio3.page_size(data)
+    except studio3.Studio3Error as exc:
+        raise ImportError_(str(exc)) from exc
+    paths = tuple(CutPath(rounded_rect_points(Rect(c.x, c.y, c.w, c.h), c.radius, tolerance),
+                          closed=True, label=f"Card {i}")
+                  for i, c in enumerate(cards, 1))
+    return Imported(paths, *page, str(path), "Studio3 card coordinates in mm",
+                    ["Studio3 import reads rounded card outlines. Match registration to the printed sheet."],
+                    page_size_mm=page)
+
+
 def load(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
-    """Read an SVG or DXF, chosen by extension."""
+    """Read an SVG, DXF or Studio3 template, chosen by extension."""
     name = str(path).lower()
     if name.endswith(".svg"):
         return load_svg(path, tolerance)
     if name.endswith(".dxf"):
         return load_dxf(path, tolerance)
-    raise ImportError_(
-        f"don't know how to read {path}; expected .svg or .dxf")
+    if name.endswith(".studio3"):
+        return load_studio3(path, tolerance)
+    raise ImportError_(f"Unsupported cut file {path}. Expected SVG, DXF or Studio3.")

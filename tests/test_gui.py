@@ -1,10 +1,11 @@
 """GUI handlers and a display-backed Design button smoke test."""
 import os
+import tempfile
 from pathlib import Path
 import unittest
 import types
 from unittest import mock
-from cut_proxies import job
+from cut_proxies import config, job, presets
 
 try:
     from cut_proxies import gui
@@ -20,7 +21,7 @@ class TestDesignWorkspace(unittest.TestCase):
         if not gui.Gtk.init_check() or Gdk.Display.get_default() is None:
             self.skipTest('a display is required to create GTK widgets')
         gui.Adw.init()
-        app = gui.Adw.Application(application_id='org.printing.DesignSmokeTest',
+        app = gui.Adw.Application(application_id=f'org.printing.DesignSmokeTest.{self._testMethodName}',
                                   flags=gui.Gio.ApplicationFlags.NON_UNIQUE)
         self.assertTrue(app.register(None))
         win = gui.Window(app)
@@ -42,6 +43,71 @@ class TestDesignWorkspace(unittest.TestCase):
         win.close_design()
         self.assertEqual(win.workspaces.get_visible_child_name(), 'tools')
         self.assertIsNone(win.design)
+
+    def test_save_preset_button_reloads_edited_blade_settings(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             mock.patch.object(config, "CONFIG_DIR", Path(folder)):
+            win = self.make_window()
+            self.assertEqual(win.r_force.get_value(), 35)
+            win.r_force.set_value(32)
+            win.r_speed.set_value(21)
+            win.r_depth.set_value(-1)
+            win.r_passes.set_value(5)
+            win.r_diameter.set_value(0.65)
+            win.r_corners.set_active(True)
+            win.r_corner_start.set_value(0.4)
+            win.r_corner_end.set_value(0.7)
+            win.r_lift.set_active(False)
+            win.save_preset_btn.emit("clicked")
+            win.r_preset.set_selected(0)
+            names = sorted(presets.all_presets())
+            win.r_preset.set_selected(names.index(config.DEFAULT_PRESET))
+            self.assertEqual((win.r_force.get_value(), win.r_speed.get_value(),
+                              win.r_depth.get_value(), win.r_passes.get_value()),
+                             (32, 21, -1, 5))
+            self.assertIsNone(win.job.settings.depth)
+            self.assertEqual(win.job.settings.passes, 5)
+            for cmd in (b"FC13,1,1", b"FE0,1", b"FF4,7,1"):
+                self.assertIn(cmd, win.job.stream.split(b"\x03"))
+
+    def test_save_as_new_selects_a_distinct_preset(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             mock.patch.object(config, "CONFIG_DIR", Path(folder)):
+            win = self.make_window()
+            win.r_force.set_value(18)
+            win.r_depth.set_value(-1)
+            win.on_save_blade_preset(new_name=" Green holder ")
+            self.assertEqual(win._text(win.r_preset), "Green holder")
+            self.assertEqual(presets.get("Green holder").cut_settings().force, 18)
+            self.assertIsNone(presets.get("Green holder").cut_settings().depth)
+            self.assertEqual(presets.get(config.DEFAULT_PRESET).cut_settings().force, 35)
+            win.r_force.set_value(19)
+            win.on_save_blade_preset(new_name="GREEN HOLDER")
+            self.assertEqual(presets.get("Green holder").cut_settings().force, 18)
+
+    def test_registration_failure_opens_named_mark_diagnostics(self):
+        win = self.make_window()
+        report = mock.Mock()
+        report.problems.return_value = ["top-right L: no ink found in the search window"]
+        matched = mock.Mock()
+        matched.near_marks.return_value = ("bottom-left L",)
+        matched.mat_placement.return_value = "Align with the top-left of the mat grid."
+        from cut_proxies.transport import RegistrationFailed
+        with mock.patch.object(gui.Adw, 'AlertDialog') as dialog:
+            win.show_registration_failure(str(RegistrationFailed()), win.job, matched,
+                                          {"sheet": 2, "frontPage": 3}, report, "auto", 14.51)
+        self.assertTrue(win.scan_result.get_visible())
+        self.assertEqual(win.scan_result.get_title(), "Sheet 2 registration failed")
+        body = dialog.call_args.kwargs["body"]
+        self.assertIn("did not report which mark", body)
+        self.assertIn("PDF check: top-right L", body)
+        self.assertIn("Check for nearby artwork at bottom-left L", body)
+        self.assertIn("PDF front page 3", win.scan_result.get_subtitle())
+        self.assertIn("14.5 s", win.scan_result.get_subtitle())
+        self.assertIn("TB123,", win.scan_result.get_subtitle())
+        callback = dialog.return_value.connect.call_args.args[1]
+        callback()
+        self.assertEqual(win.stack.get_visible_child_name(), "sheet")
 
     @unittest.skipUnless(os.environ.get('PROXYPRESS_BUNDLE_DIR'), 'generate a ProxyPress bundle first')
     def test_selecting_a_real_zip_opens_its_paths_and_its_paired_studio_file(self):
@@ -100,7 +166,7 @@ class TestOpenDialogs(unittest.TestCase):
         dialog.return_value.open.assert_called_once()
         filters = dialog.return_value.set_filters.call_args.args[0]
         self.assertEqual(filters.get_n_items(), 1)
-        self.assertEqual(filters.get_item(0).get_name(), 'Cuttable vector (SVG, DXF)')
+        self.assertEqual(filters.get_item(0).get_name(), 'Cut templates (SVG, DXF, Studio3)')
 
     def test_pdf_button_opens_a_filtered_file_dialog(self):
         window = mock.Mock()
@@ -189,7 +255,7 @@ class TestCutConfirmationGuard(unittest.TestCase):
 class TestSheetRequestGuard(unittest.TestCase):
     def make_window(self, token):
         return types.SimpleNamespace(_sheet_token=token, pdf_bundle=None, preview=mock.Mock(),
-            sheet_result=mock.Mock(), adopt_btn=mock.Mock(), rebuild=mock.Mock())
+            sheet_result=mock.Mock(), rebuild=mock.Mock())
 
     def test_current_result_updates_artwork_and_measurement(self):
         token = object()

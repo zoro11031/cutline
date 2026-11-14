@@ -128,7 +128,7 @@ def combinations(base: CutSettings, forces=None, speeds=None, passes=None,
     f = _parse_list(forces) or [base.force]
     s = _parse_list(speeds) or [base.speed]
     p = _parse_list(passes) or [base.passes]
-    d = _parse_list(depths) or [base.depth]
+    d = [None if value == -1 else value for value in _parse_list(depths)] or [base.depth]
     out = []
     for force, speed, npass, depth in itertools.product(f, s, p, d):
         out.append(dataclasses.replace(

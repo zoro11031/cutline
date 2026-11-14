@@ -284,6 +284,21 @@ def _drop_preamble(stream: bytes) -> bytes | None:
     return _rejoin(head, out) if len(out) != len(cmds) else None
 
 
+def _drop_mat_setup(stream: bytes) -> bytes | None:
+    head, cmds = _split(stream)
+    out = [cmd for cmd in cmds if cmd not in (b"TG1", b"TG2")]
+    return _rejoin(head, out) if len(out) != len(cmds) else None
+
+
+def _corrupt_mark_arm(stream: bytes) -> bytes | None:
+    head, cmds = _split(stream)
+    for i, cmd in enumerate(cmds):
+        if cmd.startswith(b"TB51,"):
+            cmds[i] = b"TB51,%d" % (int(cmd[5:]) + graphtec.su(1.0))
+            return _rejoin(head, cmds)
+    return None
+
+
 def _corrupt_scan_window(stream: bytes) -> bytes | None:
     head, cmds = _split(stream)
     for i, c in enumerate(cmds):
@@ -315,6 +330,8 @@ PROBES = (
     ("cuts inside the marks", _corrupt_outside),
     ("cut paths", _drop_a_path),
     ("registration preamble", _drop_preamble),
+    ("registration mark dimensions", _corrupt_mark_arm),
+    ("registration mat setup", _drop_mat_setup),
     ("scan window length", _corrupt_scan_window),
 )
 
@@ -499,6 +516,25 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
             d.mark_type == "Cameo/Portrait")
 
     if mk is not None and registration:
+        scan_at = next((i for i, command in enumerate(d.commands)
+                        if command.startswith(("TB123,", "TB124,", "TB23,"))), 0)
+        before_scan = d.commands[:scan_at]
+        mat = graphtec.registration_mat_commands(device, mk.sheet_w_mm, mk.sheet_h_mm)
+        mat_commands = before_scan
+        if d.scan_command == "TB123" and graphtec.captured_letter_scan(
+                device, mk.reg_length_mm, mk.reg_width_mm, mk.origin_mm,
+                (mk.length_mm, mk.thickness_mm)):
+            mat = ("TG1", "FN0", "TB50,0", "TB99", "TB52,2", f"TB51,{graphtec.su(mk.length_mm)}", "TB53,20",
+                   "TB55,1", "TB123,3918,5188,118,118", "TB99")
+            mat_commands = d.commands
+        if mat:
+            row("registration mat setup", " ".join(mat),
+                " ".join(mat_commands[:len(mat)]) or "missing",
+                tuple(mat_commands[:len(mat)]) == mat)
+        shape = graphtec.registration_preamble(device, (mk.length_mm, mk.thickness_mm))[3:5]
+        sent_shape = tuple(command for command in before_scan if command.startswith(("TB51,", "TB53,")))
+        row("registration mark dimensions", " ".join(shape),
+            " ".join(sent_shape) or "missing", sent_shape == shape)
         want_cmd = "TB124" if (mk.pattern == "four" and device.quad_regmarks) \
             else "TB123"
         row("scan command", want_cmd, d.scan_command or "missing",

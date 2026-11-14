@@ -22,6 +22,10 @@ class TestCombinations(unittest.TestCase):
     def setUp(self):
         self.base = CutSettings(force=30, speed=2, passes=2, depth=7)
 
+    def test_manual_depth_and_retracted_autoblade_are_distinct(self):
+        cells = testcut.combinations(self.base, depths="-1,0,7")
+        self.assertEqual([c.depth for c in cells], [None, 0, 7])
+
     def test_an_unvaried_axis_keeps_the_base_value(self):
         out = testcut.combinations(self.base, forces="25,33")
         self.assertEqual([s.force for s in out], [25, 33])

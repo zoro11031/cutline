@@ -493,7 +493,7 @@ class DesignWorkspace:
                 self.project.shapes+shapes, len(self.project.shapes)) if response == 'place' else None)
             alert.present(self.parent)
 
-        self.file_dialog('Import cut geometry', opened, filters=('*.svg','*.dxf','*.SVG','*.DXF'))
+        self.file_dialog('Import cut geometry', opened, filters=('*.svg','*.dxf','*.SVG','*.DXF','*.studio3','*.STUDIO3'))
 
     def review_paths(self, _button):
         action = ACTIONS[self.review_action.get_selected()]
