@@ -55,6 +55,12 @@ class CutPath:
     points: tuple[tuple[float, float], ...]
     closed: bool
     label: str = ""
+    fill: str = ""
+    layer: tuple[str, ...] = ()
+
+    @property
+    def stroke(self) -> str:
+        return self.label.partition("|")[2]
 
     def length_mm(self) -> float:
         pts = list(self.points) + ([self.points[0]] if self.closed else [])

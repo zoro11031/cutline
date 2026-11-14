@@ -78,10 +78,14 @@ proxies, on Linux, without the VM:
 | Material cut settings | `materials` — read from Studio's own database |
 | Send to the cutter with an optical mark scan | `cut` |
 | Test cut to dial in blade settings | `testcut` — every combination in one pass |
+| Studio square-and-triangle sample | `testcut --shape studio` |
+| Adjust path order, pass direction and seam overlap | Blade → Cut paths |
+| Select a cutting mat and finish position | Cut → Media handling |
 | Machine calibration | `calibrate` |
 | Open an SVG or DXF and cut it | `cut --from`, `import` |
 | Use an Inkscape Silhouette design | [Inkscape Print & Cut workflow](docs/SETUP.md#inkscape-silhouette-print--cut) |
-| Cut by line colour | `--color` |
+| Send by line colour, fill colour, or layer | **Cut → Send by** or `--send-by` and `--group` |
+| Cut one line colour | `--color` |
 | — | `check-sheet`: measure where the marks actually printed |
 
 The last row checks the digital PDF geometry. It cannot detect scaling or
@@ -95,15 +99,34 @@ cut the marks.
 
 ## Design workspace
 
-Open **Design** from the header to edit the current card layout or start with
-**New**. The canvas supports drag placement, millimetre coordinates, rotation,
-mirroring, a 5 mm grid, and undo and redo. SVG and DXF imports show their source
-scale before placement. Open v1 template projects on their saved page and
-save current projects as `.scc-template` v2.
+Open **Design** to edit the current layout or use **New** to start a blank
+sheet. **Open** loads a saved project or creates a design from SVG, DXF, or
+supported Studio3 vectors. **Import** adds paths to the open design. Design
+projects use `.scc-template` and open projects saved by earlier releases.
 
-Assign each object **Cut**, **Score**, or **None**, then choose the action next
-to **Review paths**. Control Center checks that action in the existing Cut
-view. The blade and material controls there apply to the selected action.
+| Design panel | Controls |
+| --- | --- |
+| Page Setup | Media Size, Orientation, custom dimensions, Cutting Mat, Registration Marks, Show Cut Border, Show Grid, Show Rulers, and Snap to Grid. Mat selection and registration settings follow the design into Cut. |
+| Drawing Tool | Draw lines, rectangles, rounded rectangles, ellipses, freehand paths, and polygons on the canvas. Press Enter or click the first vertex to close a polygon. Use Point Edit to move vertices on a path or line. |
+| Transform | Set position, size, aspect ratio, rotation, and mirroring. Shift-click or drag a selection rectangle to move several objects, align their edges or centers, or space them evenly. Group and Ungroup control which objects move together on the canvas. |
+| Replicate | Make rows and columns of the selection with horizontal and vertical spacing in millimetres. |
+| Line and Fill | Set solid colors and the Cut, Score, or None action. Line and fill colors carry over to grouped Send. |
+
+**Review in Send** previews a checked job. **All actions** places Cut and Score
+in separate groups so each can have its own preset, holder, and order.
+**Back** keeps the current design open. Use **Save** to update an existing
+project or **Save As** to write a copy. Use Ctrl+scroll to zoom around the
+pointer and **Fit** to restore the whole canvas.
+
+**Review Send** is available below the layout and preview. In **Send**,
+**Send to Cutter** stays visible as you scroll through job settings. The footer
+shows why a job requires attention. With a PDF loaded, the preview offers
+**Cut paths**, **Print PDF**, and **Overlay**.
+
+Studio Design features still open include text and font editing, raster Trace,
+Offset, Modify operations such as Weld and Subtract, compound paths, printer
+margins, and multiple open document tabs. Point Edit works on stored path
+vertices. Studio3 import reads the available vectors and page dimensions.
 
 ## The sheet
 
@@ -131,7 +154,7 @@ Blade and cutter calibration are set locally. For a direct cut, load the
 front face-up with the paper aligned to the top-left of the mat grid. The
 placement for Studio's padded canvas can differ and is listed in the ZIP.
 
-**Cut → Test scan** runs the cutter's registration check before you send
+**Send → Test scan** runs the cutter's registration check before you send
 any cut paths. If the scan fails, **Review marks** opens the PDF check. It
 identifies missing, misshaped, or displaced PDF marks by corner. The Cameo's
 scan response gives an overall result, so the dialog lists nearby artwork
@@ -153,6 +176,19 @@ with the selected sheet in the ZIP. **Choose file…** in the Studio tab opens
 a standalone `.studio3` file. Earlier ProxyPress ZIPs with Studio files can
 be checked in **Sheet** and opened in **Studio**. For direct cutting, use a
 current ZIP that includes the physical cut SVG.
+
+Open a standalone `.studio3` in **Layout → Open SVG, DXF or Studio3…**
+to preview its stored vector outlines at the document's page size.
+
+```sh
+silhouette-control-center import artwork.studio3
+silhouette-control-center cut --from artwork.studio3 --dry-run
+silhouette-control-center cut --from artwork.studio3 --via studio
+```
+
+Direct import supports the `silhouette05;` format. Review the outlines and
+match the cut job's registration settings to the printed sheet. Opening
+the original document in Studio preserves its Studio settings and artwork.
 
 Choose **Letter · MTG Cameo** or **A4 · MTG Cameo** in the window's
 Layout preset selector, or use:
@@ -251,11 +287,16 @@ saved value is 35.
 | Material, action, tool holder | Apply a Studio material on **Blade**, review Cut or Score from **Design**, and choose the tool holder on **Blade** or with `--holder`. |
 | Detected tool | Opening **Blade** reads both holders. Click **Detect blades** after swapping tools. The terminal equivalent is `cut-proxies status`. |
 | Blade offset | **Blade diameter (mm)** or `--blade-diameter-mm`. Applying a Studio material also applies its tool offset. |
-| Line Segment Overcut | Control Center exposes recovered head lift and corner start/end extensions. Equivalence to Studio’s sharp-corner toolpath still needs a matched Studio trace. |
-| Track Enhancing, specialty-tool actions | Available through the Studio bridge. The native registered-cut path has no verified roller pre-feed sequence or specialty-tool path planner. |
+| Line Segment Overcut | **Blade** or `--line-segment-overcut`. Uses the recovered corner lift and independent Start and End Extension settings. |
+| Track Enhancing | **Blade** or `--track-enhancing`. Sends the recovered roller command before scan or cut. |
+| Cut Order Sorting | **Blade → Cut paths** offers No Sort, Maximize Speed, Minimize Roller Movement and Sort Interior Contours First. |
+| Feed Options | **Cut → Media handling** offers Feed, Feed Distance and Return to Origin. |
+| Weed Settings | Add a Weed Border and Weed Lines to imported artwork and Design projects. |
+| Show Cutter Divisions | **Blade** can show all cutter classes from the installed Studio material database, or prefer matching rows for the selected cutter. |
+| Restore Default Materials | **Blade → Silhouette's own material settings** backs up edits to shipped presets and restores their defaults. |
 
-Acceleration, head lift and corner extensions are also saved in the preset.
-Use `cut --help` for their switches. The extensions are independent start
+Acceleration, head lift, Line Segment Overcut and Track Enhancing can be
+saved in a preset. Use `cut --help` for their switches. The extensions are independent start
 and end distances in tenths of a millimetre. [Recovered command implementation](https://github.com/fablabnbg/inkscape-silhouette/blob/master/silhouette/Graphtec.py)
 
 On the Cameo 4, a live job that requests automatic depth checks holder 1
@@ -265,7 +306,7 @@ manual blade physically and select depth −1. Detection alone does not
 establish suitable material settings. [Cameo 4 manual](https://www.silhcdn.com/m/d/user-guides/cameo-4-en.pdf)
 
 Studio describes Track Enhancing and Line Segment Overcut under Edit Materials.
-Its rotary tool action also generates extra geometry to orient the blade.
+Its rotary tool action generates additional orientation moves and still uses the Studio bridge here.
 [Silhouette Handbook, page 146](https://www.silhcdn.com/m/d/silhouette-handbook.pdf) · [Studio rotary blade guide](https://www.silhouetteamerica.com/pub/media/wysiwyg/rotary-blade-guide.pdf)
 
 Force and speed are unitless machine indices, the same numbers Studio shows.
@@ -301,7 +342,8 @@ A Cameo 4 running firmware V1.05 answered USB status and firmware queries.
 Bluetooth LE discovery also found the cutter. See [docs/FINDINGS.md](docs/FINDINGS.md)
 for the current hardware results and [docs/SETUP.md](docs/SETUP.md) for
 Bluetooth setup. Physical registration and cut accuracy require a measured
-proof sheet.
+proof sheet. The [Inkscape Silhouette comparison](docs/INKSCAPE_COMPATIBILITY.md)
+tracks driver, geometry, and file-format coverage.
 
 Silhouette Studio is installed in the WinBoat guest and is detected
 automatically. `silhouette-control-center studio --run-helper` runs a read-only survey

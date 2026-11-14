@@ -1,91 +1,114 @@
-"""Cameo 4 GATT transport, based on inkscape-silhouette's BLETransport.py."""
+"""Graphtec cutter GATT transport."""
 
 import asyncio
-import re
+import concurrent.futures
+import threading
 
 from . import graphtec
+from .bluetooth import Candidate, confirm_firmware, select_candidate
 from .transport import Transport, TransportError
 
 SERVICE = "e2088282-4fde-42f9-bb22-6ec3c7ed8f91"
 WRITE = "6d92661d-f429-4d67-929b-28e7a9780912"
 READ = "8dcf199a-30e7-4bd4-beb6-beb57dca866c"
 CONTROL = "61490654-b5b4-458c-a867-9e15bc1471e0"
-MODEL = re.compile(r"CAMEO\s*4(?:-[A-Z0-9]+)?", re.I)
-FIRMWARE = re.compile(rb"CAMEO\s*4\s+V\d+(?:\.\d+)+", re.I)
 
 
 def _bleak():
     try:
         import bleak
     except ImportError as exc:
-        raise TransportError("Install Bleak and start BlueZ to use Bluetooth LE.") from exc
+        raise TransportError("Install Bleak and start the Bluetooth service to use Bluetooth LE.") from exc
     return bleak
 
 
 async def _scan():
-    records = await _bleak().BleakScanner.discover(timeout=8, return_adv=True)
-    return {device.address: (device, adv.local_name or device.name)
-            for device, adv in records.values()
-            if MODEL.fullmatch(adv.local_name or device.name or "")}
+    scanner = _bleak().BleakScanner
+    try:
+        records = await scanner.discover(timeout=8, return_adv=True)
+    except TypeError as exc:
+        if "return_adv" not in str(exc):
+            raise
+        records = await scanner.discover(timeout=8)
+    found = {}
+    for entry in records.values() if isinstance(records, dict) else records:
+        device, adv = entry if isinstance(entry, tuple) else (entry, None)
+        name = getattr(adv, "local_name", None) or device.name or ""
+        uuids = getattr(adv, "service_uuids", None) or ()
+        service = any(uuid.casefold() == SERVICE for uuid in uuids)
+        found[device.address.casefold()] = Candidate(device.address, name, service, device)
+    return list(found.values())
 
 
-def discover():
+def discover(include_all=False):
     async def scan():
-        return await asyncio.wait_for(_scan(), 12)
+        return await asyncio.wait_for(_scan(), 19)
 
     try:
-        return [(address, name) for address, (_, name)
-                in sorted(asyncio.run(scan()).items())]
+        devices = sorted(asyncio.run(scan()), key=lambda r: (r.name.casefold(), r.identifier))
+        return [(r.identifier, r.name) for r in devices if include_all or r.model or r.service]
+    except TransportError:
+        raise
     except Exception as exc:
-        raise TransportError(f"Bluetooth discovery failed: {exc}") from exc
+        raise TransportError(f"Bluetooth LE discovery failed. {exc}") from exc
 
 
 class BleTransport(Transport):
     name = "ble"
     can_read = True
-    device = graphtec.device_for(0x0b4d, 0x1137)
 
-    def __init__(self, identifier, device=None):
-        if not identifier:
-            raise TransportError("Select a Cameo 4 Bluetooth address first.")
-        if device is not None and device != self.device:
-            raise TransportError("Bluetooth LE requires the Silhouette Cameo 4 model.")
-        self._runner = asyncio.new_event_loop()
+    def __init__(self, identifier=None, device=None, *, name=None, allow_unknown=False):
         self._client = None
         self._buffer = bytearray()
-        self._ready = asyncio.Event()
+        self._start_worker()
         try:
-            self._run(self._connect(identifier), 25, "connection")
-            self.write(graphtec.frame(graphtec.QUERY_FIRMWARE_VERSION))
-            reply = self.read(timeout_ms=5000)
-            if not FIRMWARE.fullmatch(reply[:-1].strip()):
-                raise TransportError(f"Expected Cameo 4 firmware, received {reply!r}.")
+            selected = self._run(self._connect(identifier, name, device), 30, "connection")
+            self.identifier = selected.identifier
+            self.device = confirm_firmware(self.firmware_version(), device, selected.model,
+                                           allow_unknown=allow_unknown)
         except BaseException:
             self.close()
             raise
 
+    def _start_worker(self):
+        self._runner = asyncio.new_event_loop()
+        loop = self._runner
+
+        def run():
+            try:
+                loop.run_forever()
+            finally:
+                loop.close()
+
+        self._worker = threading.Thread(target=run, name="silhouette-bluetooth-le", daemon=True)
+        self._worker.start()
+
     def _run(self, operation, seconds, action):
+        if self._runner is None:
+            operation.close()
+            raise TransportError("Bluetooth LE transport is closed.")
+        future = asyncio.run_coroutine_threadsafe(operation, self._runner)
         try:
-            return self._runner.run_until_complete(asyncio.wait_for(operation, seconds))
+            return future.result(timeout=seconds)
         except TransportError:
             raise
-        except TimeoutError as exc:
+        except concurrent.futures.TimeoutError as exc:
+            future.cancel()
             raise TransportError(f"Bluetooth {action} timed out.") from exc
         except Exception as exc:
             raise TransportError(f"Bluetooth {action} failed: {exc}") from exc
 
-    async def _connect(self, identifier):
-        devices = await _scan()
-        match = devices.get(identifier.upper())
-        if match is None:
-            raise TransportError(f"Cameo 4 {identifier} was not found over Bluetooth.")
+    async def _connect(self, identifier, name, expected):
+        selected = select_candidate(await _scan(), identifier=identifier, name=name, expected=expected)
+        self._ready = asyncio.Event()
         self._client = _bleak().BleakClient(
-            match[0], disconnected_callback=lambda _: self._ready.set())
+            selected.peripheral, disconnected_callback=lambda _: self._ready.set())
         await self._client.connect()
         service = self._client.services.get_service(SERVICE)
         if service is None or any(service.get_characteristic(uuid) is None
                                   for uuid in (CONTROL, READ, WRITE)):
-            raise TransportError("The device lacks the Cameo Bluetooth GATT service.")
+            raise TransportError("The device lacks the Silhouette Bluetooth GATT service.")
+        # Inkscape's GATT transport keeps control notifications out of replies.
         await self._client.start_notify(CONTROL, lambda *_: None)
         await self._client.start_notify(READ, self._on_reply)
         for uuid in (CONTROL, READ, WRITE):
@@ -93,6 +116,7 @@ class BleTransport(Transport):
                 uuid, graphtec.CMD_ESC + graphtec.ESC_EOT, response=True)
         await asyncio.sleep(1)
         self._buffer.clear()
+        return selected
 
     def _on_reply(self, _characteristic, data):
         self._buffer.extend(data)
@@ -125,19 +149,30 @@ class BleTransport(Transport):
                 return result
             self._ready.clear()
             await self._ready.wait()
-        raise TransportError("Bluetooth cutter disconnected.")
+        raise TransportError("Bluetooth LE cutter disconnected.")
 
     def read(self, size=64, timeout_ms=10000):
         return self._run(self._read(), timeout_ms / 1000, "reply")
+
+    async def _shutdown(self):
+        try:
+            if self._client is not None:
+                await self._client.disconnect()
+        finally:
+            this = asyncio.current_task()
+            pending = [task for task in asyncio.all_tasks() if task is not this]
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
 
     def close(self):
         if self._runner is None:
             return
         try:
-            if self._client is not None:
-                self._run(self._client.disconnect(), 5, "disconnect")
+            self._run(self._shutdown(), 5, "disconnect")
         except TransportError:
             pass
         finally:
-            self._runner.close()
+            self._runner.call_soon_threadsafe(self._runner.stop)
+            self._worker.join(timeout=5)
             self._runner = None

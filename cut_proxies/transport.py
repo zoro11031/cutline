@@ -12,7 +12,7 @@ Three transports, in the order they are tried:
     `/dev/usb/lp0`.  Writes fine and will read on a device that answers, but
     the kernel driver claims the interface, so a scan that needs a reply may
     time out depending on how `usblp` buffers.  Kept because it needs no
-    extra permissions, and a manual-registration cut does not need to read.
+    extra application dependency. Both registration modes need a reply.
 
 `FileTransport`
     Writes the stream to a file and never pretends to read.  This is what
@@ -29,6 +29,11 @@ import os
 import time
 
 from . import graphtec
+
+# inkscape-silhouette Graphtec.py safe_write(): keep long path batches
+# command-aligned and wait for the cutter before sending more motion.
+PATH_BATCH_BYTES = 1024
+PATH_READY_TIMEOUT = 120
 
 
 class TransportError(RuntimeError):
@@ -78,8 +83,10 @@ class Transport:
         self.close()
 
     # ---- the shared run loop ----------------------------------------
-    def run(self, steps, log=lambda m: None) -> int:
-        """Execute a `CutJob` plan, stopping on the first failed expectation."""
+    def run(self, steps, log=lambda m: None, *, wait_done: bool = False) -> int:
+        """Execute a checked plan, optionally waiting after its final command."""
+        if wait_done and not self.can_read:
+            raise TransportError("Waiting for completion requires a readable cutter connection.")
         steps = tuple(steps)
         # Query before motion, once for the whole job (including test matrices).
         # A depth command is always a complete ETX-delimited TF command.
@@ -92,7 +99,9 @@ class Transport:
             if step.kind == "write":
                 if step.note:
                     log(step.note)
-                sent += self.write(step.data)
+                sent += self._write_paths(step.data) if step.pace else self.write(step.data)
+                if step.wait_ready and not (step.pace and len(step.data) > PATH_BATCH_BYTES):
+                    self._wait_until_ready()
             elif step.kind == "expect":
                 got = self.read(timeout_ms=step.timeout_ms)
                 if got != step.expect:
@@ -103,7 +112,69 @@ class Transport:
                         f"{step.expect!r}, got {got!r}")
                 if step.note:
                     log(f"{step.note}: ok")
+        if wait_done:
+            log("Waiting for the cutter to finish")
+            try:
+                self._wait_until_ready()
+            except TransportError as exc:
+                raise TransportError("The commands were sent, but cutter completion could not "
+                                     f"be confirmed. {exc}") from exc
         return sent
+
+    def _write_paths(self, data: bytes) -> int:
+        if len(data) <= PATH_BATCH_BYTES:
+            return self.write(data)
+        # Validate framing before the first batch, including truncated input.
+        commands = data.split(graphtec.CMD_ETX)
+        if commands[-1] or any(len(cmd) >= PATH_BATCH_BYTES for cmd in commands[:-1]):
+            raise TransportError("Cannot batch an incomplete or oversized cut command.")
+
+        sent = 0
+        while sent < len(data):
+            end = data.rfind(graphtec.CMD_ETX, sent, sent + PATH_BATCH_BYTES) + 1
+            written = self.write(data[sent:end])
+            if written != end - sent:
+                raise TransportError("Incomplete path write. The rest of the job was stopped.")
+            sent = end
+            self._wait_until_ready()
+        return sent
+
+    def _wait_until_ready(self) -> None:
+        deadline = time.monotonic() + PATH_READY_TIMEOUT
+        while True:
+            state = self.status()
+            if state == "ready":
+                return
+            if state != "moving":
+                raise TransportError(f"The cutter reported {state} during movement. "
+                                     "The rest of the job was stopped.")
+            if time.monotonic() >= deadline:
+                raise TransportError("The cutter stayed busy after a movement command. "
+                                     "The rest of the job was stopped.")
+            time.sleep(0.05)
+
+    def query_text(self, command, timeout_ms=5000):
+        """Read one ETX-framed reply to a known Graphtec query."""
+        self.write(graphtec.frame(command))
+        reply = self.read(timeout_ms=timeout_ms)
+        if not reply.endswith(graphtec.CMD_ETX):
+            raise TransportError(f"Unexpected reply to {command!r}. {reply!r}")
+        return reply[:-1].decode("ascii", errors="replace").strip()
+
+    def firmware_version(self):
+        if not getattr(self, "_firmware", None):
+            self._firmware = self.query_text(graphtec.QUERY_FIRMWARE_VERSION)
+        return self._firmware
+
+    def diagnostics(self):
+        """Read the same firmware and raw calibration queries as Graphtec.py."""
+        result = [("Firmware", self.firmware_version())]
+        if self.device and self.device.cameo3_on:
+            for query in ("TB71", "FA"):
+                result.append((query, self.query_text(query, timeout_ms=1000)))
+        if self.device and self.device.product_id == 0x112F:
+            result.append(("TC", self.query_text("TC", timeout_ms=1000)))
+        return result
 
     def tool_codes(self) -> tuple[int, ...]:
         """Query the installed holders (inkscape-silhouette Graphtec.py 927–941)."""
@@ -171,10 +242,13 @@ class PyUsbTransport(Transport):
                 "No Silhouette cutter found on USB. Known ids: "
                 + ", ".join(sorted({d.usb_id for d in graphtec.DEVICES})))
         self._dev, self.device = found
+        self._reply_buffer = bytearray()
+        self._detached_driver = False
 
         try:
             if self._dev.is_kernel_driver_active(0):
                 self._dev.detach_kernel_driver(0)
+                self._detached_driver = True
         except (NotImplementedError, usb.core.USBError):
             # usblp may not be loaded, or we may not be allowed to detach; the
             # claim below will fail with a clearer message either way.
@@ -182,55 +256,74 @@ class PyUsbTransport(Transport):
         try:
             self._dev.set_configuration()
         except usb.core.USBError as exc:
+            self.close()
             raise TransportError(
                 f"Could not claim the {self.device.name}: {exc}. This is "
                 f"usually permissions - install the udev rule from "
                 f"docs/SETUP.md - or the usblp kernel driver holding the "
                 f"interface.") from exc
 
-        cfg = self._dev.get_active_configuration()
-        intf = cfg[(0, 0)]
-        self._out = usb.util.find_descriptor(
-            intf, custom_match=lambda e:
-            usb.util.endpoint_direction(e.bEndpointAddress)
-            == usb.util.ENDPOINT_OUT)
-        self._in = usb.util.find_descriptor(
-            intf, custom_match=lambda e:
-            usb.util.endpoint_direction(e.bEndpointAddress)
-            == usb.util.ENDPOINT_IN)
-        if self._out is None:
-            raise TransportError("The cutter has no bulk OUT endpoint.")
+        try:
+            intf = self._dev.get_active_configuration()[(0, 0)]
+            endpoints = {
+                self._util.endpoint_direction(ep.bEndpointAddress): ep
+                for ep in intf if self._util.endpoint_type(ep.bmAttributes) == self._util.ENDPOINT_TYPE_BULK
+            }
+            self._out = endpoints.get(self._util.ENDPOINT_OUT)
+            self._in = endpoints.get(self._util.ENDPOINT_IN)
+            if self._out is None or self._in is None:
+                raise TransportError("The cutter needs both USB bulk endpoints.")
+        except (usb.core.USBError, KeyError, IndexError) as exc:
+            self.close()
+            raise TransportError(f"Could not open the cutter's USB interface: {exc}") from exc
+        except TransportError:
+            self.close()
+            raise
 
     def write(self, data: bytes) -> int:
-        # Long command lists have to go out in chunks or the device stalls;
-        # 4 KiB is what inkscape-silhouette settled on.
         total = 0
-        for i in range(0, len(data), 4096):
-            total += self._out.write(data[i:i + 4096], timeout=30000)
+        while total < len(data):
+            chunk = data[total:total + 4096]
+            try:
+                written = self._out.write(chunk, timeout=30000)
+            except self._usb.USBError as exc:
+                # A timeout can occur after bytes have reached the cutter.
+                # Do not replay a transfer whose accepted length is unknown.
+                raise TransportError(f"USB write failed after {total} confirmed bytes: {exc}") from exc
+            if not 0 < written <= len(chunk):
+                raise TransportError(f"USB write made no valid progress after {total} bytes.")
+            total += written
         return total
 
     def read(self, size: int = 64, timeout_ms: int = 10000) -> bytes:
-        if self._in is None:
-            raise TransportError("The cutter has no bulk IN endpoint.")
         deadline = time.monotonic() + timeout_ms / 1000.0
-        buf = b""
-        while time.monotonic() < deadline:
+        while True:
+            end = self._reply_buffer.find(graphtec.CMD_ETX) + 1
+            if end:
+                reply = bytes(self._reply_buffer[:end])
+                del self._reply_buffer[:end]
+                return reply
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TransportError(f"The cutter did not answer within {timeout_ms} ms "
+                                     f"(got {bytes(self._reply_buffer)!r})")
             try:
-                chunk = bytes(self._in.read(size, timeout=1000))
-            except self._usb.USBError:
+                chunk = self._in.read(size, timeout=max(1, min(1000, int(remaining * 1000))))
+            except self._usb.USBTimeoutError:
                 continue
-            buf += chunk
-            if buf.endswith(graphtec.CMD_ETX):
-                return buf
-        raise TransportError(
-            f"The cutter did not answer within {timeout_ms} ms "
-            f"(got {buf!r})")
+            except self._usb.USBError as exc:
+                raise TransportError(f"USB read failed: {exc}") from exc
+            self._reply_buffer.extend(chunk)
 
     def close(self) -> None:
         try:
             self._util.dispose_resources(self._dev)
-        except Exception:            # noqa: BLE001 - closing must not raise
+            if self._detached_driver:
+                self._dev.attach_kernel_driver(0)
+        except (NotImplementedError, self._usb.USBError):
             pass
+        finally:
+            self._detached_driver = False
 
 
 # --------------------------------------------------------------------------
@@ -261,10 +354,20 @@ class UsbLpTransport(Transport):
 
     def write(self, data: bytes) -> int:
         total = 0
+        deadline = time.monotonic() + 30
         while total < len(data):
             try:
-                total += os.write(self._fd, data[total:total + 4096])
+                written = os.write(self._fd, data[total:total + 4096])
             except BlockingIOError:
+                written = 0
+            except OSError as exc:
+                raise TransportError(f"Write to {self.path} failed after {total} bytes: {exc}") from exc
+            if written:
+                total += written
+                deadline = time.monotonic() + 30
+            elif time.monotonic() >= deadline:
+                raise TransportError(f"No write progress on {self.path} after {total} bytes.")
+            else:
                 time.sleep(0.01)
         return total
 
@@ -277,6 +380,8 @@ class UsbLpTransport(Transport):
             except BlockingIOError:
                 time.sleep(0.02)
                 continue
+            except OSError as exc:
+                raise TransportError(f"Read from {self.path} failed: {exc}") from exc
             if chunk:
                 buf += chunk
                 if buf.endswith(graphtec.CMD_ETX):
@@ -368,11 +473,12 @@ def find_devices() -> list[tuple[graphtec.Device, str]]:
 
 def open_transport(prefer: str = "auto", dump_to=None,
                    device: graphtec.Device | None = None,
-                   bluetooth_id: str | None = None) -> Transport:
+                   bluetooth_id: str | None = None, *, bluetooth_name: str | None = None,
+                   bluetooth_channel: int | None = None, allow_unknown_firmware: bool = False) -> Transport:
     """Open the best available transport.
 
-    `prefer` is "auto", "pyusb", "usblp" or "file".  "auto" takes pyusb when
-    it can, because it is the only one that can complete a registration scan.
+    Automatic selection tries USB. Bluetooth Classic and LE are explicit
+    choices so the job is sent to the intended cutter.
     """
     if prefer == "file" or dump_to is not None:
         if dump_to is None:
@@ -380,7 +486,12 @@ def open_transport(prefer: str = "auto", dump_to=None,
         return FileTransport(dump_to, device)
     if prefer == "ble":
         from .ble import BleTransport
-        return BleTransport(bluetooth_id, device)
+        return BleTransport(bluetooth_id, device, name=bluetooth_name,
+                            allow_unknown=allow_unknown_firmware)
+    if prefer == "bluetooth":
+        from .rfcomm import ClassicTransport
+        return ClassicTransport(bluetooth_id, device, name=bluetooth_name,
+                                channel=bluetooth_channel, allow_unknown=allow_unknown_firmware)
     errors = []
     order = {"auto": ("pyusb", "usblp"),
              "pyusb": ("pyusb",), "usblp": ("usblp",)}.get(prefer)

@@ -21,7 +21,7 @@ cheap: nine sub-suites of a few tests each.
 import io
 import unittest
 
-from cut_proxies import graphtec, job, regmarks, transport, verify, winboat
+from cut_proxies import graphtec, job, regmarks, testcut, transport, verify, winboat
 
 
 def _run(class_paths):
@@ -121,6 +121,64 @@ CASES += tuple(
      ["tests.test_templates.TestVerificationRefuses.test_cameo_4_sets_the_standard_mat_before_searching_for_marks"])
     for label in ("registration mat setup", "registration mark dimensions")
     for allowed in (True, False)
+)
+
+CASES += tuple(
+    (verify, "expectations_met", _force_verification_row(label, allowed),
+     f"{label} always {'allows' if allowed else 'refuses'}",
+     [f"tests.test_send.TestRegistrationOnly.{test}"])
+    for label, test in (
+        ("scan command", "test_manual_registration_is_checked_and_waits_for_the_scan_result"),
+        ("scan search start", "test_search_start_is_verified_against_the_captured_letter_window"),
+    )
+    for allowed in (True, False)
+)
+
+CASES += tuple(
+    (verify, "expectations_met", _force_verification_row(label, allowed),
+     f"{label} always {'allows' if allowed else 'refuses'}", [test])
+    for label, test in (
+        ("scheduled path geometry", "tests.test_toolpath.TestToolpathSchedule.test_schedule_is_validated_and_geometric_changes_are_detected"),
+        ("cutting mat setup", "tests.test_send.TestMediaHandling.test_matless_blank_sheet_explicitly_sets_the_device_boundary"),
+        ("return to start", "tests.test_send.TestMediaHandling.test_return_to_start_verifies_the_correct_trailer_for_each_dialect"),
+    )
+    for allowed in (True, False)
+)
+
+CASES += tuple(
+    (verify, "expectations_met", _force_verification_row(label, allowed),
+     f"{label} always {'allows' if allowed else 'refuses'}",
+     [f"tests.test_send.TestStudioMediaControls.{test}"])
+    for label, test in (
+        ("line segment overcut", "test_line_segment_overcut_uses_holder_and_disables_on_pen"),
+        ("track enhancing", "test_track_enhancing_has_one_waited_roller_step_before_registration"),
+        ("feed position", "test_feed_distance_is_added_to_the_farthest_cut_and_verified"),
+    )
+    for allowed in (True, False)
+)
+
+
+CASES += tuple(
+    (verify, "expectations_met", _force_verification_row("group blade settings", allowed),
+     f"group blade settings always {'allow' if allowed else 'refuse'}",
+     ["tests.test_actions.TestGroupedSend"])
+    for allowed in (True, False)
+)
+
+
+def _refuse_testcut(*args):
+    raise ValueError("refused")
+
+
+CASES += (
+    (job, "cutting_mat_errors", lambda *a: [], "every explicit cutting mat accepted",
+     ["tests.test_send.TestMediaHandling.test_compatible_portrait_mat_allows_matching_sheet_and_refuses_wrong_size"]),
+    (job, "cutting_mat_errors", lambda *a: ["wrong mat"], "every explicit cutting mat refused",
+     ["tests.test_send.TestMediaHandling.test_compatible_portrait_mat_allows_matching_sheet_and_refuses_wrong_size"]),
+    (testcut, "_check_geometry", lambda *a: None, "every test cut path accepted",
+     ["tests.test_testcut.TestStudioPattern"]),
+    (testcut, "_check_geometry", _refuse_testcut, "every test cut path refused",
+     ["tests.test_testcut.TestStudioPattern"]),
 )
 
 try:

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import dataclasses
 
-from . import graphtec
+from . import graphtec, toolpath
 from .geometry import Grid, Rect
 
 # A decoded card must measure its nominal size to within this.  One
@@ -158,9 +158,9 @@ def _corrupt_force(stream: bytes) -> bytes | None:
     head, cmds = _split(stream)
     for i, c in enumerate(cmds):
         if c.startswith(b"FX"):
-            force, _, rest = c[2:].partition(b",")
+            force, separator, rest = c[2:].partition(b",")
             new = max(1, (int(force) % 33) + 1)
-            cmds[i] = b"FX%d,%s" % (new, rest)
+            cmds[i] = b"FX%d%s%s" % (new, separator, rest)
             return _rejoin(head, cmds)
     return None
 
@@ -286,8 +286,53 @@ def _drop_preamble(stream: bytes) -> bytes | None:
 
 def _drop_mat_setup(stream: bytes) -> bytes | None:
     head, cmds = _split(stream)
-    out = [cmd for cmd in cmds if cmd not in (b"TG1", b"TG2")]
+    out = [cmd for cmd in cmds if not cmd.startswith(b"TG")]
     return _rejoin(head, out) if len(out) != len(cmds) else None
+
+
+def _corrupt_return_to_start(stream: bytes) -> bytes | None:
+    head, cmds = _split(stream)
+    if not cmds or cmds[-1] not in (b"H", b"TB50,0"):
+        return None
+    cmds[-1] = b"SO0"
+    return _rejoin(head, cmds)
+
+
+def _corrupt_segment_overcut(stream: bytes) -> bytes | None:
+    head, cmds = _split(stream)
+    for index, command in enumerate(cmds):
+        if command.startswith(b"FF"):
+            del cmds[index]
+            return _rejoin(head, cmds)
+    return None
+
+
+def _corrupt_track_enhancing(stream: bytes) -> bytes:
+    head, cmds = _split(stream)
+    if b"FY0" in cmds:
+        cmds.remove(b"FY0")
+    else:
+        cmds.insert(0, b"FY0")
+    return _rejoin(head, cmds)
+
+
+def _corrupt_group_force(stream: bytes) -> bytes | None:
+    head, cmds = _split(stream)
+    for i in range(len(cmds) - 1, -1, -1):
+        if cmds[i].startswith(b"FX"):
+            force, comma, holder = cmds[i][2:].partition(b",")
+            cmds[i] = b"FX%d%s%s" % (int(force) + 1, comma, holder)
+            return _rejoin(head, cmds)
+    return None
+
+
+def _corrupt_feed_position(stream: bytes) -> bytes | None:
+    head, cmds = _split(stream)
+    if len(cmds) < 2 or cmds[-1] != b"SO0" or not cmds[-2].startswith(b"M"):
+        return None
+    y, x = cmds[-2][1:].split(b",")
+    cmds[-2] = b"M%d,%s" % (int(y) + 20, x)
+    return _rejoin(head, cmds)
 
 
 def _corrupt_mark_arm(stream: bytes) -> bytes | None:
@@ -299,24 +344,32 @@ def _corrupt_mark_arm(stream: bytes) -> bytes | None:
     return None
 
 
-def _corrupt_scan_window(stream: bytes) -> bytes | None:
+def _corrupt_scan_command(stream: bytes) -> bytes | None:
     head, cmds = _split(stream)
-    for i, c in enumerate(cmds):
-        if c.startswith((b"TB123,", b"TB124,")):
-            name, _, args = c.partition(b",")
-            parts = args.split(b",")
-            parts[0] = b"%d" % (int(parts[0]) + graphtec.su(5.0))
-            cmds[i] = name + b"," + b",".join(parts)
+    for i, command in enumerate(cmds):
+        if command.startswith((b"TB123,", b"TB124,", b"TB23,")):
+            name, _, args = command.partition(b",")
+            swapped = b"TB123" if name == b"TB23" else b"TB23"
+            cmds[i] = swapped + b"," + args
             return _rejoin(head, cmds)
     return None
 
 
-# Each probe breaks the stream in one specific way that a named check is
-# supposed to catch. The label is the check that must reject it.
+def _corrupt_scan_argument(stream: bytes, index: int) -> bytes | None:
+    head, cmds = _split(stream)
+    for i, command in enumerate(cmds):
+        if command.startswith((b"TB123,", b"TB124,", b"TB23,")):
+            name, _, args = command.partition(b",")
+            parts = args.split(b",")
+            if index < len(parts):
+                parts[index] = b"%d" % (int(parts[index]) + graphtec.su(5.0))
+                cmds[i] = name + b"," + b",".join(parts)
+                return _rejoin(head, cmds)
+    return None
+
+
 # Each probe breaks the stream in one way and names the check that must
-# object. A probe may trip others too - some checks are genuinely entangled,
-# and a cut pushed off the sheet is also in the wrong place - but the named
-# one has to be among them, or it is still unproven.
+# object, even if other checks also fail.
 def _corrupt_last_position(stream: bytes) -> bytes | None:
     return _corrupt_position(stream, last=True)
 
@@ -329,10 +382,14 @@ PROBES = (
     ("card size error", _corrupt_size),
     ("cuts inside the marks", _corrupt_outside),
     ("cut paths", _drop_a_path),
+    ("track enhancing", _corrupt_track_enhancing),
     ("registration preamble", _drop_preamble),
     ("registration mark dimensions", _corrupt_mark_arm),
     ("registration mat setup", _drop_mat_setup),
-    ("scan window length", _corrupt_scan_window),
+    ("scan command", _corrupt_scan_command),
+    ("scan window length", lambda stream: _corrupt_scan_argument(stream, 0)),
+    ("scan window width", lambda stream: _corrupt_scan_argument(stream, 1)),
+    ("scan search start", lambda stream: _corrupt_scan_argument(stream, 2)),
 )
 
 
@@ -350,6 +407,12 @@ def _corrupt_imported_vertex(stream: bytes) -> bytes | None:
 
 IMPORTED_PROBES = (
     ("imported path geometry", _corrupt_imported_vertex),
+    ("group blade settings", _corrupt_group_force),
+    ("scheduled path geometry", _corrupt_imported_vertex),
+    ("cutting mat setup", _drop_mat_setup),
+    ("return to start", _corrupt_return_to_start),
+    ("line segment overcut", _corrupt_segment_overcut),
+    ("feed position", _corrupt_feed_position),
     ("cuts inside the sheet", _corrupt_outside),
 )
 
@@ -467,10 +530,58 @@ class Row:
     ok: bool
 
 
+def _observed_motion_settings(commands):
+    """Read which holder and settings were active at each drawing move."""
+    per_holder = {}
+    selected = 1
+    acceleration = None
+    motion = []
+    path = None
+
+    fields = {"FX": "force", "!": "speed", "TF": "depth", "FC": "diameter",
+              "FE": "lift", "FF": "corners"}
+    for command in commands:
+        prefix = command[:1] if command.startswith("!") else command[:2]
+        if prefix in fields:
+            values = tuple(int(part) for part in command[len(prefix):].split(","))
+            value_count = 2 if prefix in ("FC", "FF") and len(values) == 3 else 1
+            holder = values[-1] if len(values) > value_count else 1
+            value = values[:value_count] if prefix == "FF" else values[0]
+            per_holder.setdefault(holder, {})[fields[prefix]] = value
+        elif command in ("J1", "J2"):
+            selected = int(command[1:])
+        elif command.startswith("TJ"):
+            acceleration = int(command[2:])
+        elif command.startswith("M"):
+            path = None
+        elif command.startswith("D"):
+            tool = per_holder.get(selected, {})
+            state = (selected, *(tool.get(k) for k in fields.values()), acceleration)
+            if path is None:
+                path = len(motion)
+                motion.append(state)
+            elif motion[path] != state:
+                motion[path] = None
+    return motion
+
+
+def _requested_motion_settings(settings, device):
+    s = settings.clamped(device)
+    lift = int(s.lift_head or s.sharpen_corners) if device.cameo3_on else None
+    corners = ((round(s.corner_start_mm * 10), round(s.corner_end_mm * 10))
+               if s.sharpen_corners else (0, 0)) if device.cameo3_on else None
+    acceleration = (3 if s.acceleration is None else s.acceleration) if device.detects_tools else None
+    return (s.holder, s.force, s.speed, s.depth, graphtec.su(s.blade_diameter_mm),
+            lift, corners, acceleration)
+
+
 def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
                      mode: str = "rounded", cards=None,
                      offset_mm: tuple[float, float] = (0.0, 0.0),
-                     registration: bool = True, expected_paths=None
+                     registration: bool = True, expected_paths=None,
+                     auto_search: bool = True, source_paths=None,
+                     mat: str = "auto", end_position: str = "below",
+                    end_feed_mm: float = 0.0, action_groups=()
                      ) -> tuple[bool, list[Row]]:
     """Check a stream against the grid, marks and blade settings.
 
@@ -488,18 +599,32 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
     def row(label, want, got, ok):
         rows.append(Row(label, str(want), str(got), bool(ok)))
 
-    # Every force the stream carries must be the one asked for, not just
-    # the last. A single-settings job that changes force part-way through is
-    # a corrupted stream, and the machine would act on it.
-    row("blade force", s.force,
-        ", ".join(str(f) for f in d.forces) or "missing",
-        bool(d.forces) and set(d.forces) == {s.force})
-    row("speed", s.speed,
-        ", ".join(str(v) for v in d.speeds) or "missing",
-        bool(d.speeds) and set(d.speeds) == {s.speed})
-    row("tool holder", s.holder, d.holder, d.holder == s.holder)
-    if s.depth is not None and s.holder == 1:
-        row("autoblade depth", s.depth, d.depth, d.depth == s.depth)
+    if not action_groups:
+        # Check every emitted force and speed for a single-settings job.
+        row("blade force", s.force, ", ".join(str(f) for f in d.forces) or "missing",
+            bool(d.forces) and set(d.forces) == {s.force})
+        row("speed", s.speed, ", ".join(str(v) for v in d.speeds) or "missing",
+            bool(d.speeds) and set(d.speeds) == {s.speed})
+        holder = 1 if d.holder is None and not device.cameo3_on else d.holder
+        row("tool holder", s.holder, holder, holder == s.holder)
+        if device.autoblade and s.depth is not None and s.holder == 1:
+            row("autoblade depth", s.depth, d.depth, d.depth == s.depth)
+
+        if s.sharpen_corners:
+            tool = graphtec.Tool(s.holder)
+            wanted = (tool.lift(True), *tool.sharpen_corners(
+                round(s.corner_start_mm * 10), round(s.corner_end_mm * 10)))
+            found = tuple(command for command in d.commands if command.startswith(("FE", "FF")))
+            row("line segment overcut", " ".join(wanted), " ".join(found), found == wanted)
+
+    track_indices = [i for i, command in enumerate(d.commands) if command == "FY0"]
+    first_motion = next((i for i, command in enumerate(d.commands)
+                         if command.startswith(("TB123,", "TB124,", "TB23,", "M", "D"))),
+                        len(d.commands))
+    found = len(track_indices) == 1 and track_indices[0] < first_motion
+    row("track enhancing", "before scan or cut" if s.track_enhancing else "off",
+        "before scan or cut" if found else "off" if not track_indices else "out of sequence",
+        found if s.track_enhancing else not track_indices)
 
     # Registration. An unregistered job has none of this by design - it
     # cuts in sheet coordinates on a blank sheet - so asserting it anyway
@@ -508,6 +633,12 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
         row("registration", "not used", "not used", True)
         row("no scan commands sent", "none",
             d.scan_command or "none", d.scan_command is None)
+        mat_setup = graphtec.cutting_mat_commands(
+            device, mat, grid.sheet_w_mm, grid.sheet_h_mm, False)
+        if mat_setup:
+            found = tuple(d.commands[:len(mat_setup)])
+            row("cutting mat setup", " ".join(mat_setup), " ".join(found),
+                found == mat_setup)
     else:
         row("registration preamble", "present",
             "present" if d.preamble_present else "missing",
@@ -519,86 +650,105 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
         scan_at = next((i for i, command in enumerate(d.commands)
                         if command.startswith(("TB123,", "TB124,", "TB23,"))), 0)
         before_scan = d.commands[:scan_at]
-        mat = graphtec.registration_mat_commands(device, mk.sheet_w_mm, mk.sheet_h_mm)
+        mat_setup = graphtec.cutting_mat_commands(device, mat, mk.sheet_w_mm, mk.sheet_h_mm, True)
         mat_commands = before_scan
-        if d.scan_command == "TB123" and graphtec.captured_letter_scan(
+        captured = (auto_search and not s.track_enhancing
+                    and mat in ("auto", "cameo-12x12") and graphtec.captured_letter_scan(
                 device, mk.reg_length_mm, mk.reg_width_mm, mk.origin_mm,
-                (mk.length_mm, mk.thickness_mm)):
-            mat = ("TG1", "FN0", "TB50,0", "TB99", "TB52,2", f"TB51,{graphtec.su(mk.length_mm)}", "TB53,20",
-                   "TB55,1", "TB123,3918,5188,118,118", "TB99")
+                (mk.length_mm, mk.thickness_mm)))
+        if captured:
+            mat_setup = ("TG1", "FN0", "TB50,0", "TB99", "TB52,2",
+                         f"TB51,{graphtec.su(mk.length_mm)}", "TB53,20",
+                         "TB55,1", "TB123,3918,5188,118,118", "TB99")
             mat_commands = d.commands
-        if mat:
-            row("registration mat setup", " ".join(mat),
-                " ".join(mat_commands[:len(mat)]) or "missing",
-                tuple(mat_commands[:len(mat)]) == mat)
+        if mat_setup:
+            found = tuple(mat_commands[:len(mat_setup)])
+            row("registration mat setup", " ".join(mat_setup),
+                " ".join(found) or "missing", found == mat_setup)
         shape = graphtec.registration_preamble(device, (mk.length_mm, mk.thickness_mm))[3:5]
         sent_shape = tuple(command for command in before_scan if command.startswith(("TB51,", "TB53,")))
         row("registration mark dimensions", " ".join(shape),
             " ".join(sent_shape) or "missing", sent_shape == shape)
-        want_cmd = "TB124" if (mk.pattern == "four" and device.quad_regmarks) \
-            else "TB123"
-        row("scan command", want_cmd, d.scan_command or "missing",
-            d.scan_command == want_cmd)
-        if d.scan_args_mm and len(d.scan_args_mm) >= 2:
-            got_len, got_wid = d.scan_args_mm[0], d.scan_args_mm[1]
-            ok_len = abs(got_len - mk.reg_length_mm) <= 0.05
-            ok_wid = abs(got_wid - mk.reg_width_mm) <= 0.05
+        want_cmd = "TB23"
+        if auto_search:
+            want_cmd = "TB124" if mk.pattern == "four" and device.quad_regmarks else "TB123"
+        scan_commands = [command.partition(",")[0] for command in d.commands
+                         if command.startswith(("TB123,", "TB124,", "TB23,"))]
+        row("scan command", want_cmd, ", ".join(scan_commands) or "missing",
+            scan_commands == [want_cmd])
+        args = d.scan_args_mm or ()
+        if len(args) == (4 if auto_search else 2):
+            got_len, got_wid = args[:2]
+            ok_len = graphtec.su(got_len) == graphtec.su(mk.reg_length_mm)
+            ok_wid = graphtec.su(got_wid) == graphtec.su(mk.reg_width_mm)
             row("scan window length", f"{mk.reg_length_mm:.2f} mm",
                 f"{got_len:.2f} mm", ok_len)
             row("scan window width", f"{mk.reg_width_mm:.2f} mm",
                 f"{got_wid:.2f} mm", ok_wid)
         else:
-            row("scan window", "length and width", "missing", False)
+            row("scan window", "length, width and search point" if auto_search
+                else "length and width", args or "missing", False)
+        if auto_search:
+            x, y = mk.origin_mm
+            start = (5.9, 5.9) if captured else (max(y - 10, 0), max(x - 10, 0))
+            want_start = tuple(graphtec.su(value) for value in start)
+            got_start = tuple(graphtec.su(value) for value in args[2:])
+            row("scan search start", want_start, got_start or "missing",
+                got_start == want_start)
 
-    # Geometry: the check that actually protects the stock.
-    passes = max(1, s.passes)
-    if expected_paths is not None:
-        ox, oy = mk.origin_mm if mk is not None and registration else (0.0, 0.0)
-        ox, oy = ox - offset_mm[0], oy - offset_mm[1]
-        expected = []
-        for path in expected_paths:
-            points = [(graphtec.su(x - ox), graphtec.su(y - oy))
-                      for x, y in path.points]
-            if path.closed:
-                points.append(points[0])
-            expected.append(points)
+    # Compare the wire stream to the requested contour schedule. The card
+    # checks below still measure the decoded size and location independently.
+    passes = s.passes
+    ox, oy = mk.origin_mm if mk is not None and registration else (0.0, 0.0)
+    ox -= offset_mm[0]
+    oy -= offset_mm[1]
+    paths_to_schedule = expected_paths if expected_paths is not None else source_paths
+    scheduled = None
+    if paths_to_schedule is not None:
+        if action_groups:
+            scheduled = []
+            states = []
+            for group in action_groups:
+                draws = toolpath.schedule(group.paths, group.settings, (ox, oy))
+                scheduled.extend(draws)
+                states.extend([_requested_motion_settings(group.settings, device)] * len(draws))
+            actual_states = _observed_motion_settings(d.commands)
+            row("group blade settings", "requested holder and settings at each cut",
+                "matches" if actual_states == states else "tool settings differ",
+                actual_states == states)
+        else:
+            scheduled = toolpath.schedule(paths_to_schedule, s, (ox, oy))
+        wanted = [[(graphtec.su(x - ox), graphtec.su(y - oy)) for x, y in points]
+                  for _, points in scheduled]
         got = [[(graphtec.su(x), graphtec.su(y)) for x, y in path] for path in d.paths]
-        wanted = expected * passes
         row("cut paths", len(wanted), len(got), len(wanted) == len(got))
-        matches = wanted == got
-        row("imported path geometry", "all vertices in order on every pass",
-            "matches" if matches else "path coordinates differ", matches)
+        label = "imported path geometry" if expected_paths is not None else "scheduled path geometry"
+        row(label, "all vertices in scheduled order",
+            "matches" if wanted == got else "path coordinates differ", wanted == got)
         if not registration:
             inside = all(-0.05 <= x <= grid.sheet_w_mm + 0.05
                          and -0.05 <= y <= grid.sheet_h_mm + 0.05
                          for path in d.paths for x, y in path)
             row("cuts inside the sheet", "inside", "inside" if inside else "outside", inside)
-    elif mode == "cross":
-        want_paths = (2 * grid.cols + 2 * grid.rows) * passes
-        row("cut paths", want_paths, len(d.paths),
-            len(d.paths) == want_paths)
-    else:
-        want_paths = len(cards) * passes
-        row("cut paths", want_paths, len(d.paths),
-            len(d.paths) == want_paths)
-        row("closed loops", want_paths, len(d.closed_paths),
-            len(d.closed_paths) == want_paths)
 
-        # Without registration the machine's origin is the sheet corner,
-        # so no mark shift is undone.
-        ox, oy = (mk.origin_mm if (mk is not None and registration)
-                  else (0.0, 0.0))
-        # Undo the calibration offset before measuring, or a correctly
-        # calibrated job reads as a position error exactly its own size.
-        ox -= offset_mm[0]
-        oy -= offset_mm[1]
+    if expected_paths is None and mode == "cross":
+        if scheduled is None:
+            want_paths = (2 * grid.cols + 2 * grid.rows) * passes
+            row("cut paths", want_paths, len(d.paths), len(d.paths) == want_paths)
+    elif expected_paths is None:
+        want_cards = [cards[index] for index, _ in scheduled] if scheduled is not None else cards * passes
+        if scheduled is None:
+            row("cut paths", len(want_cards), len(d.paths), len(d.paths) == len(want_cards))
+        # Overcut traces a full closed contour, with a lead-in and lead-out
+        # along its seam. The scheduled-geometry check verifies those vertices.
+        if not s.overcut_mm:
+            row("closed loops", len(want_cards), len(d.closed_paths),
+                len(d.closed_paths) == len(want_cards))
+
         worst_size = 0.0
         worst_pos = 0.0
         boxes = d.path_bboxes()
-        for index, box in enumerate(boxes):
-            if not cards:
-                break
-            rect = cards[index % len(cards)]
+        for rect, box in zip(want_cards, boxes):
             worst_size = max(worst_size,
                              abs(box.w - rect.w), abs(box.h - rect.h))
             worst_pos = max(worst_pos,
@@ -621,6 +771,17 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
             f"0..{mk.reg_width_mm:.1f} x 0..{mk.reg_length_mm:.1f} mm",
             f"{min(xs):.2f}..{max(xs):.2f} x {min(ys):.2f}..{max(ys):.2f} mm",
             inside)
+
+    if end_position == "start":
+        trailer = graphtec.return_to_start_commands(device)
+        got_trailer = tuple(d.commands[-len(trailer):])
+        row("return to start", " ".join(trailer), " ".join(got_trailer),
+            got_trailer == trailer)
+    elif end_feed_mm:
+        last_y = max((graphtec.su(y) for path in d.paths for _, y in path), default=0)
+        trailer = (f"M{max(0, last_y) + graphtec.su(end_feed_mm)},0", "SO0")
+        got_trailer = tuple(d.commands[-2:])
+        row("feed position", " ".join(trailer), " ".join(got_trailer), got_trailer == trailer)
 
     # The sheet has to fit the machine.
     row("sheet fits the cutter", f"<= {device.width_mm:g} mm wide",
