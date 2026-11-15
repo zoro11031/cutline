@@ -10,6 +10,7 @@ from .template import CutPath
 
 SEND_MODES = {"simple": "Simple", "line": "Line", "fill": "Fill", "layer": "Layer"}
 CURRENT_SETTINGS = "Current Blade settings"
+HOLDER_SETTINGS = {1: "Tool Holder 1 settings", 2: "Tool Holder 2 settings"}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -68,7 +69,7 @@ def parse_assignment(value: str) -> Assignment:
     return Assignment(key.strip(), profile or CURRENT_SETTINGS)
 
 
-def resolve(paths, mode, assignments, preset, current, device) -> tuple[CutGroup, ...]:
+def resolve(paths, mode, assignments, preset, current, device, holder_profiles=None) -> tuple[CutGroup, ...]:
     available = group_paths(paths, mode)
     if not assignments:
         raise ValueError("Enable at least one cut group or choose Simple.")
@@ -83,13 +84,19 @@ def resolve(paths, mode, assignments, preset, current, device) -> tuple[CutGroup
             raise ValueError(f"Cut group {item.key!r} is absent. Available groups are "
                              + ", ".join(available) + ".")
         seen.add(key)
-        try:
-            group_preset = (preset if item.preset == CURRENT_SETTINGS else presets.get(item.preset))
-        except KeyError:
-            raise ValueError(f"Unknown preset {item.preset!r} in group {key!r}.") from None
-        settings = current if item.preset == CURRENT_SETTINGS else group_preset.cut_settings()
-        if item.holder is not None:
-            settings = dataclasses.replace(settings, holder=item.holder)
+        slot = next((slot for slot, label in HOLDER_SETTINGS.items() if label == item.preset), None)
+        if slot is not None and holder_profiles is not None:
+            if item.holder not in (None, slot):
+                raise ValueError(f"Group {key!r} uses Tool Holder {slot} settings. Choose the same holder.")
+            group_preset, settings = holder_profiles[slot]
+        else:
+            try:
+                group_preset = preset if item.preset == CURRENT_SETTINGS else presets.get(item.preset, device.name)
+            except KeyError:
+                raise ValueError(f"Unknown preset {item.preset!r} in group {key!r}.") from None
+            settings = current if item.preset == CURRENT_SETTINGS else group_preset.cut_settings()
+            if item.holder is not None:
+                settings = dataclasses.replace(settings, holder=item.holder)
         # A change of settings can adjust an installed AutoBlade between cuts,
         # but it cannot swap a pen and blade or undo physical manual depth.
         warnings = tuple(settings.warnings(device))

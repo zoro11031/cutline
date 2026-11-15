@@ -52,7 +52,7 @@ class TestRegistrationOnly(unittest.TestCase):
         self.assertIn("scan command", {row.label for row in rows if not row.ok})
 
     def test_search_start_is_verified_against_the_captured_letter_window(self):
-        checked = job.build(offset_mm=(0, 0))
+        checked = job.build(offset_mm=(0, 0), blade_options={"track_enhancing": False})
         self.assertEqual(checked.blocked, [])
         self.assertIn(b"TB123,3918,5188,118,118\x03", checked.stream)
         broken = checked.stream.replace(b"TB123,3918,5188,118,118", b"TB123,3918,5188,118,218")
@@ -62,7 +62,7 @@ class TestRegistrationOnly(unittest.TestCase):
         self.assertIn("scan search start", {row.label for row in rows if not row.ok})
 
     def test_legacy_force_and_full_sheet_window_work_without_registration(self):
-        checked = job.build(cutter="Silhouette Cameo 2", registration=False,
+        checked = job.build(cutter="Silhouette Cameo 2", registration=False, force=33,
                             offset_mm=(0, 0))
         self.assertEqual(checked.blocked, [])
         self.assertIn(graphtec.frame("FX33"), checked.stream)
@@ -73,7 +73,8 @@ class TestRegistrationOnly(unittest.TestCase):
 
     def test_report_prints_the_exact_captured_registration_writes(self):
         checked = job.build(sheet="Letter", portrait=False, mark_inset_mm=10,
-                            mark_length_mm=8.0264, mark_thickness_mm=1)
+                            mark_length_mm=8.0264, mark_thickness_mm=1,
+                            blade_options={"track_enhancing": False})
         self.assertEqual(checked.registration_writes(), (
             "TG1 FN0 TB50,0 TB99",
             "TB52,2 TB51,161 TB53,20 TB55,1 TB123,3918,5188,118,118 TB99",
@@ -130,15 +131,15 @@ class TestMediaHandling(unittest.TestCase):
 
 class TestStudioMediaControls(unittest.TestCase):
     def test_track_enhancing_has_one_waited_roller_step_before_registration(self):
-        checked = job.build(blade_options={"track_enhancing": True}, offset_mm=(0, 0))
+        checked = job.build(offset_mm=(0, 0))
         self.assertEqual(checked.blocked, [])
         [enhance] = [step for step in checked.steps if step.data == graphtec.frame("FY0")]
         self.assertTrue(enhance.wait_ready)
         self.assertIn(enhance, checked.registration_steps())
         self.assertLess(checked.stream.index(b"FX"), checked.stream.index(b"FY0"))
         self.assertLess(checked.stream.index(b"FY0"), checked.stream.index(b"TB123"))
-        default = job.build(offset_mm=(0, 0))
-        self.assertNotIn(graphtec.frame("FY0"), default.stream)
+        disabled = job.build(offset_mm=(0, 0), blade_options={"track_enhancing": False})
+        self.assertNotIn(graphtec.frame("FY0"), disabled.stream)
         broken = verify._corrupt_track_enhancing(checked.stream)
         ok, rows = verify.expectations_met(broken, checked.grid, checked.marks,
                                            checked.settings, checked.device)
@@ -207,7 +208,7 @@ class TestGuiCheckedPlan(unittest.TestCase):
             cut_button=mock.Mock(), scan_button=mock.Mock(), scan_result=mock.Mock(),
             r_auto=mock.Mock(), toast=mock.Mock(),
             rebuild=mock.Mock(), _send_done=mock.Mock(), update_send_actions=mock.Mock(),
-            _connection=lambda: ("auto", None))
+            _connection=lambda: ("auto", None), guide=mock.Mock())
         window.r_auto.get_active.return_value = True
         transport = mock.MagicMock()
         transport.__enter__.return_value = transport

@@ -1,5 +1,7 @@
 # Inkscape Silhouette compatibility
 
+For everyday use, start with [Inkscape Print & Cut](SETUP.md#inkscape-silhouette-print--cut).
+
 The comparison uses [Inkscape Silhouette at `e782d59`](https://github.com/fablabnbg/inkscape-silhouette/tree/e782d599b799861b8e2aaacc49bb2ccc7ec78633).
 That extension controls Graphtec hardware from Inkscape SVG. Studio-specific
 features and file interchange are a separate part of Control Center.
@@ -14,7 +16,7 @@ features and file interchange are a separate part of Control Center.
 | Path preparation | Travel and roller sorting, interior-first sorting, alternating pass direction, closed-path overlap, weed borders and lines, and a Studio-style test cut. | Reference-specific path preorientation, endpoint fusion, dash-to-perforation conversion, bounding-box-only plotting, and mat-free bridges are open. |
 | Motion limits | Verify the planned path geometry and reject jobs outside the permitted sheet or cut area. | The reference also offers software clipping of segments at the boundary. |
 | Inkscape SVG | Page selection, geometry and transforms, nested layers and color grouping, internal clones, and recognition of the plug-in's registration marks. | Complex effects and SVG features that require rendering still need outlining in Inkscape. |
-| Studio3 | The vector importer reads `silhouette05;` document paths, compound paths, curves, and native page dimensions. WinBoat can open the original document in Studio. | Registration settings, artwork visibility, colors, raster content, Studio-generated effects, and older container formats need further format work. |
+| Studio3 | The vector importer reads `silhouette05;` document paths, compound paths, curves, and native page dimensions. | Registration settings, artwork visibility, colors, raster content, Studio-generated effects, and older container formats need further format work. |
 
 The physical results recorded in [FINDINGS.md](FINDINGS.md) include Cameo 4 USB
 queries and Bluetooth LE discovery. The RFCOMM and GATT changes are covered by

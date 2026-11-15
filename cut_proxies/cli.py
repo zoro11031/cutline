@@ -5,9 +5,8 @@ Subcommands, in the order a sheet goes through them:
   template   lay out a sheet and write the SVG / DXF / proof
   layouts    what fits on what, including the ones that do not fit
   presets    the blade presets, and where each number came from
-  status     the cutter, the transports, and the WinBoat guest
+  status     the cutter and the transports
   cut        register and cut (or --dry-run to build and check only)
-  studio     hand a template to Silhouette Studio in the WinBoat guest
   gui        the window
 
 `cut` refuses rather than guesses.  Anything in `Job.blocked` stops it.
@@ -22,7 +21,7 @@ import pathlib
 import sys
 
 from . import (actions, bluetooth, config, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
-               template, testcut, toolpath, transport, verify, winboat)
+               template, testcut, toolpath, transport, verify)
 
 try:
     from rich.console import Console
@@ -220,8 +219,6 @@ def build_from_args(args, matched=None, bundle_row=None) -> job_mod.Job:
     send_mode = getattr(args, "send_by", "simple")
     if send_mode != "simple" and getattr(args, "colour", None):
         fail("--color is available in Simple mode. Assign groups with --group in Line mode.")
-    if send_mode != "simple" and getattr(args, "via", "cutter") == "studio":
-        fail("Grouped Send requires the direct cutter transport.")
     assignments = tuple(actions.parse_assignment(value) for value in getattr(args, "group", ()))
     source = getattr(args, "source", None)
     svg_page = getattr(args, "svg_page", None)
@@ -626,8 +623,7 @@ def cut_connection(args):
     options = connection_options(args)
     with contextlib.ExitStack() as stack:
         link = None
-        if (args.transport in bluetooth.BLUETOOTH_MODES and not args.cutter and not args.dry_run
-                and getattr(args, "via", "cutter") == "cutter"):
+        if (args.transport in bluetooth.BLUETOOTH_MODES and not args.cutter and not args.dry_run):
             try:
                 link = stack.enter_context(transport.open_transport(args.transport, **options))
             except transport.TransportError as exc:
@@ -643,7 +639,7 @@ def cmd_testcut(args):
 
 def _testcut(args, link, options):
     device = graphtec.device_by_name(args.cutter or "Silhouette Cameo 4")
-    base = dataclasses.replace(presets.get(args.preset).cut_settings(), **advanced_settings(args))
+    base = dataclasses.replace(presets.get(args.preset, device.name).cut_settings(), **advanced_settings(args))
     sheet = geometry.sheet(args.sheet)
     w, h = sheet.size(portrait=not args.landscape)
     try:
@@ -863,26 +859,6 @@ def cmd_status(args):
         except transport.TransportError as exc:
             say(f"  could not open the cutter: {exc}", style="yellow")
 
-    say("\nWinBoat guest", style="bold")
-    g = winboat.status()
-    say(f"  container     {'running' if g.container_running else 'not running'}")
-    if g.agent_port:
-        say(f"  guest agent   port {g.agent_port}"
-            + (f", version {g.agent_version}" if g.agent_version else ""))
-    if g.rdp_port:
-        say(f"  rdp           port {g.rdp_port}"
-            + ("" if g.rdp_reachable else "  (nothing listening)"),
-            style=None if g.rdp_reachable else "yellow")
-    if g.share_host_path:
-        say(f"  share         {g.share_host_path} -> {winboat.GUEST_SHARE}")
-    say(f"  usb passthru  {'yes' if g.usb_passthrough else 'no'}")
-    say(f"  studio        {g.studio_state}")
-    say(f"  rdp session   {g.rdp_in_use or 'free'}",
-        style="yellow" if g.rdp_in_use else None)
-    if not g.ready_for_studio:
-        say(f"  not ready     {g.why_not_ready()}", style="yellow")
-    for d in g.detail:
-        say(f"  - {d}", style="dim")
     return 0
 
 
@@ -896,22 +872,6 @@ def cmd_cut(args):
 
 
 def _cut(args, link, options):
-    if (args.via == "studio" and args.source
-            and pathlib.Path(args.source).suffix.lower() == ".studio3"):
-        path = pathlib.Path(args.source).expanduser()
-        if not path.is_file():
-            fail(f"No such file: {path}")
-        if args.send_by != "simple" or args.group or args.colour or args.skip or args.dump:
-            fail("Send grouping, path filters and stream dumps require direct cutter mode.")
-        try:
-            cmd = winboat.open_in_studio(path, dry_run=args.dry_run)
-        except (OSError, RuntimeError) as exc:
-            fail(str(exc))
-        say(" ".join(cmd), style="dim")
-        say(f"Opening the original {path.name} in Silhouette Studio."
-            if not args.dry_run else "Dry run: not launched.", style="bold")
-        return 0
-
     from . import bundle, sheet as sheet_mod
     matched = row = report = None
     try:
@@ -926,8 +886,7 @@ def _cut(args, link, options):
             if problems:
                 fail('PDF registration check failed. Nothing was sent.\n' + '\n'.join(problems))
             say(f"Matched sheet {row['sheet']} with PDF front page {row['frontPage']}.")
-            if args.via != "studio":
-                say(matched.mat_placement())
+            say(matched.mat_placement())
         else:
             j = build_from_args(args)
     except (ValueError, bundle.BundleError) as exc:
@@ -947,25 +906,6 @@ def _cut(args, link, options):
         say(f"\nStream written to {path} ({len(j.stream):,} bytes).",
             style="bold green")
 
-    if getattr(args, "via", "cutter") == "studio":
-        from . import job as job_mod
-        stem = (f"{j.grid.sheet_name.lower()}-{j.grid.card.name}-"
-                f"{j.grid.cols}x{j.grid.rows}-"
-                f"{'portrait' if j.grid.portrait else 'landscape'}-{j.mode}")
-        stage_dir = winboat.stage_dir()
-        written = job_mod.write_templates(j, stem, folder=stage_dir, proof=False)
-        dxf_path = written["dxf"]
-        say(f"\nDXF template generated and staged: {dxf_path.name}", style="bold green")
-        try:
-            cmd = winboat.open_in_studio(dxf_path, dry_run=args.dry_run)
-        except RuntimeError as exc:
-            fail(str(exc))
-        say("\n" + (" ".join(cmd)), style="dim")
-        say("\nSilhouette Studio is opening in the guest with that template."
-            if not args.dry_run else "\nDry run: not launched.", style="bold")
-        _show_studio_operator_guide(j)
-        return 0
-
     if args.dry_run:
         say("\nDry run: everything checks out, nothing sent.", style="bold")
         return 0
@@ -981,8 +921,7 @@ def _cut(args, link, options):
             args.transport, device=j.device, **options)
     except transport.TransportError as exc:
         say(f"\n{exc}", style="bold red")
-        fail("No way to reach the cutter. Use --dry-run, or go through "
-             "Silhouette Studio with 'silhouette-control-center studio'.")
+        fail("No way to reach the cutter. Check the connection or use --dry-run.")
 
     with connection as t:
         if args.transport in bluetooth.BLUETOOTH_MODES:
@@ -1028,160 +967,31 @@ def _plan(j):
     return j.steps
 
 
-def _show_studio_operator_guide(j):
-    w_mm, h_mm = j.grid.sheet_w_mm, j.grid.sheet_h_mm
-    w_in, h_in = w_mm / 25.4, h_mm / 25.4
-    bounds = j.grid.bounds
-    bw_mm, bh_mm = bounds.w, bounds.h
-    bw_in, bh_in = bw_mm / 25.4, bh_mm / 25.4
-    cw_mm, ch_mm = j.grid.card.width_mm, j.grid.card.height_mm
-    cw_in, ch_in = cw_mm / 25.4, ch_mm / 25.4
-    orient = "Landscape" if not j.grid.portrait else "Portrait"
-
-    say("\n=======================================================", style="bold cyan")
-    say("  Silhouette Studio Operator Guide (aligned with Card Maker)", style="bold cyan")
-    say("=======================================================", style="bold cyan")
-    say("1. Page Setup Panel (top-right icon):")
-    say(f"   - Page Size:        {j.grid.sheet_name} ({w_mm:.1f} x {h_mm:.1f} mm / {w_in:.2f} x {h_in:.2f} in)")
-    say(f"   - Orientation:      {orient}")
-    say(f"   - Cutting Mat:      12 x 12 in (or Cameo mat)")
-    say("2. Registration Marks (Page Setup -> 3rd tab):")
-    say(f"   - Registration:     Type 1 (Cameo, Portrait, Curio)")
-    say(f"   - Inset:            {j.marks.inset_mm:g} mm ({j.marks.inset_mm / 25.4:.3f} in)")
-    say(f"   - Length:           {j.marks.reg_length_mm:g} mm ({j.marks.reg_length_mm / 25.4:.3f} in)")
-    say(f"   - Thickness:        {j.marks.thickness_mm:g} mm")
-    say("3. Verify Template Sizing (Transform Panel / Ctrl+A):")
-    say(f"   - Group bounds:     {bw_mm:.2f} x {bh_mm:.2f} mm ({bw_in:.3f} x {bh_in:.3f} in)")
-    say(f"   - Single card:      {cw_mm:.1f} x {ch_mm:.1f} mm ({cw_in:.3f} x {ch_in:.3f} in)")
-    say("   - Note: If DXF imported scaled (e.g. 72/70 factor in Studio Basic Edition):")
-    say(f"     Select All (Ctrl+A) -> Transform panel -> Lock Aspect Ratio -> set Width to {bw_mm:.2f} mm ({bw_in:.3f} in).")
-    say("4. Blade & Cut Settings (Send tab):")
-    p = j.preset
-    s = j.settings
-    say(f"   - Material Preset:  {p.name}")
-    say(f"   - Settings:         Force {s.force}  |  Speed {s.speed}  |  Passes {s.passes}  |  Depth {s.depth or 7}")
-    say("   - Guide hint:       Cover the bottom-left card with a Post-It note during the mark scan,")
-    say("                       then remove it before cutting to prevent sensor confusion.")
-    say("   - Tuning priority:  Passes -> Force -> Speed -> Depth.")
-    say("                       If laminated edges ripple, ease off Force. If machine skips, reduce Speed.")
-    say("=======================================================\n", style="bold cyan")
-
-
-# --------------------------------------------------------------------------
-# studio / winboat
-# --------------------------------------------------------------------------
-
-def cmd_studio(args):
-    if args.release:
-        ours = winboat.our_stale_sessions()
-        if not ours:
-            say("No silhouette-control-center RDP sessions are running.", style="bold")
-            held = winboat.rdp_busy()
-            if held:
-                say(f"\n{held}", style="yellow")
-                say("That one is not ours and is left alone. If it belongs "
-                    "to another tool,\nclose it there rather than here.",
-                    style="dim")
-            return 0
-        for pid, cmd in ours:
-            say(f"  pid {pid}: {cmd[:110]}")
-        if not args.yes and not ask_yes(
-                f"\nClose {len(ours)} silhouette-control-center session(s)?", "n"):
-            say("Left alone.")
-            return 0
-        closed = winboat.release_our_sessions()
-        say(f"Closed {len(closed)} session(s).", style="bold green")
-        return 0
-
-    if args.run_helper:
-        info = winboat.prepare()
-        try:
-            cmd = winboat.run_script(info["guest_script"],
-                                     dry_run=args.dry_run)
-        except RuntimeError as exc:
-            fail(str(exc))
-        say("\n" + " ".join(cmd), style="dim")
-        say(f"\nRunning the helper in the guest. It writes "
-            f"{info['report']} when it finishes.", style="bold")
-        say("Nothing comes back over RDP, so read that file rather than "
-            "watching the window.", style="dim")
-        return 0
-
-    if args.prepare:
-        info = winboat.prepare()
-        say("\nWinBoat guest preparation", style="bold")
-        for step in info["steps"]:
-            say(f"  {step}")
-        return 0
-
-    if getattr(args, "app_only", False):
-        try:
-            cmd = winboat.open_in_studio(None, dry_run=args.dry_run)
-        except RuntimeError as exc:
-            fail(str(exc))
-        say("\n" + (" ".join(cmd)), style="dim")
-        say("\nSilhouette Studio is launching in the guest (blank workspace)."
-            if not args.dry_run else "\nDry run: not launched.", style="bold")
-        return 0
-
-    if getattr(args, "file", None):
-        path = pathlib.Path(args.file).expanduser()
-        if not path.is_file():
-            fail(f"No such file: {path}")
-        try:
-            cmd = winboat.open_in_studio(path, dry_run=args.dry_run)
-        except RuntimeError as exc:
-            fail(str(exc))
-        say("\n" + (" ".join(cmd)), style="dim")
-        say(f"\nSilhouette Studio is opening in the guest with {path.name}."
-            if not args.dry_run else "\nDry run: not launched.", style="bold")
-        if path.suffix.lower() in ('.studio', '.studio3'):
-            say("\nStudio opens the page and registration settings stored in the file.", style="dim")
-        else:
-            say("\nIn Studio: set the page to the same size and orientation, turn on "
-                "registration\nmarks with the same inset, and check the template "
-                "imported at 100%.", style="dim")
-        return 0
-
-    # No file: generate and stage DXF for the requested layout
-    try:
-        j = build_from_args(args)
-    except ValueError as exc:
-        fail(str(exc))
-    show_summary(j)
-    show_checks(j)
-    if j.blocked:
-        say()
-        for reason in j.blocked:
-            say(f"  {reason}", style="bold red")
-        fail("The job does not check out. Nothing was sent.")
-
-    from . import job as job_mod
-    stem = (f"{j.grid.sheet_name.lower()}-{j.grid.card.name}-"
-            f"{j.grid.cols}x{j.grid.rows}-"
-            f"{'portrait' if j.grid.portrait else 'landscape'}-{j.mode}")
-    stage_dir = winboat.stage_dir()
-    written = job_mod.write_templates(j, stem, folder=stage_dir, proof=False)
-    dxf_path = written["dxf"]
-    say(f"\nDXF template generated and staged: {dxf_path.name}", style="bold green")
-    try:
-        cmd = winboat.open_in_studio(dxf_path, dry_run=args.dry_run)
-    except RuntimeError as exc:
-        fail(str(exc))
-    say("\n" + (" ".join(cmd)), style="dim")
-    say("\nSilhouette Studio is opening in the guest with that template."
-        if not args.dry_run else "\nDry run: not launched.", style="bold")
-    _show_studio_operator_guide(j)
-    return 0
-
-
 # --------------------------------------------------------------------------
 # gui
 # --------------------------------------------------------------------------
 
 def cmd_gui(args):
-    from . import gui
-    return gui.main(args.argv)
+    return launch_gui(args.frontend, args.argv)
+
+
+def launch_gui(frontend="auto", argv=None):
+    from importlib.util import find_spec
+
+    if frontend == "qt" or (frontend == "auto" and find_spec("PySide6") is not None):
+        try:
+            from . import qt_gui
+        except ImportError as exc:
+            if frontend == "qt":
+                fail(f"The Qt frontend needs PySide6 with Qt Widgets. {exc}")
+        else:
+            return qt_gui.main(argv)
+
+    try:
+        from . import gui
+    except ImportError as exc:
+        fail(f"Install PySide6 for the Qt frontend or GTK4 and libadwaita for the GTK frontend. {exc}")
+    return gui.main(argv)
 
 
 # --------------------------------------------------------------------------
@@ -1294,7 +1104,7 @@ def main(argv=None):
                     help="save that material as a preset")
     ma.set_defaults(func=cmd_materials)
 
-    st = sub.add_parser("status", help="cutter, transports, WinBoat guest")
+    st = sub.add_parser("status", help="cutter and transports")
     connection_args(st)
     st.add_argument("--cutter", help="firmware model override")
     st.add_argument("--all-bluetooth", action="store_true", help="include unnamed and unrecognized devices")
@@ -1308,8 +1118,6 @@ def main(argv=None):
                    help="send everything together or group by line color, fill color, or layer")
     c.add_argument("--group", action="append", default=[], metavar="GROUP=PRESET",
                    help="enable a group in send order. Use GROUP=2:PRESET for holder 2")
-    c.add_argument("--via", default="cutter", choices=("cutter", "studio"),
-                   help="send directly or open the original Studio3 document or a generated DXF in WinBoat")
     connection_args(c)
     c.add_argument("--dry-run", action="store_true",
                    help="build and check the job, send nothing")
@@ -1325,39 +1133,20 @@ def main(argv=None):
     c.add_argument("-y", "--yes", action="store_true")
     c.set_defaults(func=cmd_cut)
 
-    s = sub.add_parser("studio", help="open a template in Silhouette Studio "
-                                      "in the WinBoat guest")
-    s.add_argument("file", nargs="?",
-                   help="specific Studio, DXF or SVG file to open (optional)")
-    common_layout_args(s)
-    common_cut_args(s)
-    s.add_argument("--app-only", action="store_true",
-                   help="launch Silhouette Studio with a blank workspace")
-    s.add_argument("--prepare", action="store_true",
-                   help="stage the guest helper script and explain the steps")
-    s.add_argument("--release", action="store_true",
-                   help="close stale silhouette-control-center RDP sessions. Never "
-                        "touches another tool's session.")
-    s.add_argument("--run-helper", action="store_true",
-                   help="stage the helper and run it in the guest over RDP")
-    s.add_argument("--dry-run", action="store_true")
-    s.set_defaults(func=cmd_studio)
-
     g = sub.add_parser("gui", help="open the window")
+    g.add_argument("--frontend", choices=("auto", "qt", "gtk"), default="auto",
+                   help="auto prefers Qt when PySide6 is installed")
     g.add_argument("argv", nargs="*")
     g.set_defaults(func=cmd_gui)
 
     args = p.parse_args(argv)
     if not getattr(args, "func", None):
-        # No subcommand: the window is the friendlier default, but only if it
-        # can actually open.
-        try:
-            import gi  # noqa: F401
-            from . import gui
-            return gui.main([])
-        except Exception:            # noqa: BLE001
+        # The launcher can also be called from an SSH session or a TTY.
+        import os
+        if not any(os.environ.get(key) for key in ("DISPLAY", "WAYLAND_DISPLAY", "QT_QPA_PLATFORM")):
             p.print_help()
             return 0
+        return launch_gui()
     return args.func(args)
 
 

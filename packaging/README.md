@@ -1,49 +1,38 @@
-# Distribution packages
+# Packages
 
-Build output goes into ignored `out/packages/`. Neither native packages nor
-the AppImage include the guest staging area, Studio, vendor material files,
-Windows credentials, or user settings. Application settings still live under
-the user's existing `~/.config/cut-proxies` directory.
+Builds go into `out/packages/`. Your presets and settings stay in
+`~/.config/cut-proxies/`. See [Setup](../docs/SETUP.md) for USB access and
+[LICENSE](../LICENSE) for the project’s license.
 
 ## RPM and Arch/AUR
 
-From the repository root:
+Run this from the repository folder:
 
 ```sh
 python3 packaging/build-native.py
 ```
 
-Build tools: Python 3, `makepkg` with fakeroot/zstd, and `rpmbuild`.
-This produces a source tarball, a noarch binary RPM and source RPM, plus
-`out/packages/aur/PKGBUILD`, `.SRCINFO`, the source tarball and an Arch
-`pkg.tar.zst`. Both builds execute a verified job without touching hardware.
-Build-time dependency resolution is disabled because the host is Arch;
-dependencies are still declared in the resulting RPM and Arch metadata.
-Install with the destination system's package manager so it resolves them:
+You’ll need Python 3, `makepkg` with fakeroot and zstd, and `rpmbuild`.
+The build creates the RPM and Arch packages, a source tarball, and an
+AUR recipe in `out/packages/aur/`. It runs a dry cut using no hardware.
+
+Install the output with your usual package manager:
 
 ```sh
-sudo dnf install ./silhouette-control-center-0.1.0-1.noarch.rpm
-sudo pacman -U ./silhouette-control-center-0.1.0-1-any.pkg.tar.zst
+sudo dnf install ./out/packages/silhouette-control-center-0.1.0-1.noarch.rpm
+sudo pacman -U ./out/packages/silhouette-control-center-0.1.0-1-any.pkg.tar.zst
 ```
 
-The RPM uses Fedora dependency names. It is built on Arch and has not been
-installed or exercised on Fedora. Both packages install private, version
-independent Python sources into `/usr/lib/cut-proxies`, a launcher into
-`/usr/bin`, and matching desktop/icon entries. GTK, Python, Pillow and
-Poppler are native dependencies; PyUSB and the WinBoat tools are optional.
+For AUR publishing, use the generated `PKGBUILD` and `.SRCINFO`. Check
+that the source URL, checksum, and license in the recipe match the release.
+The builder leaves publishing to you.
 
-The AUR recipe uses the user-provided upstream repository:
-`https://github.com/zoro11031/silhouette-linux`. The source tarball must be
-uploaded to that repository's `v0.1.0` release at the URL in the generated
-PKGBUILD before another machine can download it. The builder uses the local
-copy and pins its actual SHA-256; it does not publish anything. Commit the
-generated `PKGBUILD` and `.SRCINFO` to the AUR only after the source is
-available and upstream licensing is declared. `packaging/aur/PKGBUILD` is a
-build template; use the rendered recipe in `out/packages/aur`.
+## Desktop frontend selection
 
-The checkout currently has no LICENSE file. Metadata uses
-`LicenseRef-Unknown` instead of assigning a license on the author's behalf.
-That metadata must be resolved before public release.
+RPM and Arch packages install PySide6 and open Qt by default. With GTK 4,
+libadwaita, PyGObject, and Python Cairo installed, run
+`silhouette-control-center gui --frontend gtk`. The AppImage and
+Flatpak recipes bundle GTK.
 
 ## AppImage (x86_64)
 
@@ -67,7 +56,7 @@ python3 packaging/build-appimage.py --runtime /path/to/runtime-x86_64 \
 
 For a machine without usable FUSE, add `--appimage-extract-and-run` before
 the application arguments. The bundle uses the matching loader explicitly
-without exporting its library path to host Docker/FreeRDP processes. The
+without exporting its library path to host tools. The
 default renderer is Cairo to avoid bundling GPU drivers. Bundled runtime
 versions, runtime hash and package provenance are in
 `usr/share/doc/silhouette-control-center/bundle.json` inside the image. This is a local
@@ -87,7 +76,7 @@ The smoke test checks bundled module origins, the libusb backend, a verified
 job and its liveness probes, PDF physical dimensions, and rasterization. With
 `--gui`, it briefly opens a separate window, checks its verified preview,
 and closes it. It never sends a cut. Host USB permissions still apply; see
-`docs/SETUP.md`. Windows, Studio, Docker and FreeRDP are not bundled.
+`docs/SETUP.md`.
 
 For Cameo 4 Bluetooth LE, build the AppImage with Bleak and its Linux
 backend (dbus-fast) installed on the build host. The AppImage records
@@ -110,8 +99,7 @@ the GNOME 50 runtime from Flathub when needed. It can access USB devices,
 BlueZ, Documents, Downloads, and files chosen through the desktop file
 picker. For direct USB access, apply the model-specific seat permission
 once with `sh install-silverblue.sh --udev`, then reconnect the cutter.
-The AppImage runs on the host and can use host WinBoat, Docker and
-FreeRDP when they are installed. Use it for the Windows bridge.
+
 
 Build the Flatpak with `./packaging/build-flatpak.sh` after installing
 `org.gnome.Sdk//50` and `org.gnome.Platform//50` from Flathub. It uses the

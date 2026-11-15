@@ -13,7 +13,7 @@ export GIO_EXTRA_MODULES="$APPDIR/usr/lib/gio/modules"
 export GSK_RENDERER="${GSK_RENDERER:-cairo}"
 export PATH="$APPDIR/usr/bin:$PATH"
 # Use the bundled loader as well as its matching libc. Do not export
-# LD_LIBRARY_PATH: host tools (Docker/FreeRDP) must use their own libraries.
+# LD_LIBRARY_PATH: host tools must use their own libraries.
 exec "$APPDIR/usr/lib/ld-linux-x86-64.so.2" \
   --library-path "$APPDIR/usr/lib" "$APPDIR/usr/bin/python3" \
   "$APPDIR/usr/lib/cut-proxies/launcher.py" "$@"

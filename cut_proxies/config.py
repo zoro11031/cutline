@@ -8,6 +8,7 @@ import os
 import pathlib
 
 from .geometry import ProxyPressSettings
+from .presets import STARTING_NAME
 
 CONFIG_DIR = pathlib.Path(
     os.environ.get("CUT_PROXIES_CONFIG",
@@ -43,7 +44,7 @@ DEFAULT_CARD = "standard"
 # compromise - it is the layout.
 DEFAULT_PORTRAIT = False
 CARDS_PER_SHEET = 8
-DEFAULT_PRESET = "330 gsm black-core"
+DEFAULT_PRESET = STARTING_NAME
 DEFAULT_MARK_INSET_MM = 10.0
 DEFAULT_MARK_THICKNESS_MM = 1.0
 

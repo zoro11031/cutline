@@ -11,6 +11,7 @@ from .editor_canvas import DesignCanvas
 from .editor_model import (ACTIONS, ALIGNMENTS, ALL_ACTIONS, KINDS, REVIEW_ACTIONS,
                            History, Registration, Shape,
                            import_shapes, load_project, save_project)
+from .gtk_controls import disclosure
 
 
 @dataclass
@@ -57,10 +58,12 @@ class DesignWorkspace:
         self.title = Adw.WindowTitle(title='Design')
         header.set_title_widget(self.title)
         self.button(header, 'Back', on_back, start=True)
-        self.button(header, 'New', self.new_project, start=True)
-        self.button(header, 'Open…', self.open_project)
-        self.button(header, 'Save As…', self.save_as)
-        self.save_button = self.button(header, 'Save', self.save)
+        workspace = Gtk.Box(spacing=4)
+        design = self.button(workspace, 'Design', lambda *_: self.canvas.grab_focus())
+        design.add_css_class('suggested-action')
+        self.send_workspace = self.button(workspace, 'Send', self.review_paths)
+        self.send_workspace.set_tooltip_text('Review this design in Send.')
+        header.pack_end(workspace)
         self.view.add_top_bar(header)
         shortcuts = Gtk.ShortcutController(scope=Gtk.ShortcutScope.MANAGED)
         for trigger, callback in (("<Control>s", self.save), ("<Control><Shift>s", self.save_as)):
@@ -73,10 +76,16 @@ class DesignWorkspace:
         self.view.add_controller(shortcuts)
 
         toolbar = Gtk.Box(spacing=6, margin_start=12, margin_end=12, margin_top=6, margin_bottom=6)
+        menus = Gtk.Box(spacing=4, margin_start=12, margin_end=12, margin_top=4)
+        self.view.add_top_bar(menus)
         self.view.add_top_bar(toolbar)
+        self.button(toolbar, 'New', self.new_project)
+        self.button(toolbar, 'Open…', self.open_project)
+        self.save_button = self.button(toolbar, 'Save', self.save)
+        self.button(toolbar, 'Save As…', self.save_as)
+        self.button(toolbar, 'Import…', self.import_vector)
         self.undo_button = self.button(toolbar, 'Undo', lambda *_: self.change_history(self.history.undo))
         self.redo_button = self.button(toolbar, 'Redo', lambda *_: self.change_history(self.history.redo))
-        self.button(toolbar, 'Import…', self.import_vector)
         zoom_controls = Gtk.Box(css_classes=['linked'])
         toolbar.append(zoom_controls)
         zoom_out = self.button(zoom_controls, '−', lambda *_: self.canvas.zoom_by(1 / 1.25))
@@ -101,11 +110,12 @@ class DesignWorkspace:
         self.objects.connect('selected-rows-changed', self.select_shape)
         objects.append(self.objects)
         self.duplicate = self.button(objects, 'Duplicate', self.duplicate_shape)
-        self.group_button = self.button(objects, 'Group', lambda *_: self.group_selected())
-        self.ungroup_button = self.button(objects, 'Ungroup', lambda *_: self.group_selected(release=True))
         self.remove = self.button(objects, 'Delete', self.delete_shape)
-        self.forward = self.button(objects, 'Bring Forward', lambda *_: self.reorder(1))
-        self.backward = self.button(objects, 'Send Backward', lambda *_: self.reorder(-1))
+        more_objects, _ = disclosure(objects, 'Object Options')
+        self.group_button = self.button(more_objects, 'Group', lambda *_: self.group_selected())
+        self.ungroup_button = self.button(more_objects, 'Ungroup', lambda *_: self.group_selected(release=True))
+        self.forward = self.button(more_objects, 'Bring Forward', lambda *_: self.reorder(1))
+        self.backward = self.button(more_objects, 'Send Backward', lambda *_: self.reorder(-1))
 
         self.canvas = DesignCanvas(self)
         self.canvas.set_cursor_from_name('default')
@@ -119,7 +129,7 @@ class DesignWorkspace:
             scroll, content = panel(244)
             build(content)
             self.inspector.add_named(scroll, label)
-        switcher = Gtk.DropDown.new_from_strings([label for label, _ in panels])
+        self.panel_switcher = switcher = Gtk.DropDown.new_from_strings([label for label, _ in panels])
         switcher.set_margin_start(12)
         switcher.set_margin_end(12)
         switcher.set_margin_top(8)
@@ -141,6 +151,7 @@ class DesignWorkspace:
         self.review = self.button(footer, 'Review in Send', self.review_paths)
         self.review.add_css_class('suggested-action')
         self.view.add_bottom_bar(footer)
+        self.build_design_menus(menus, shortcuts)
         self.refresh_objects((0,))
         self.tool_changed()
 
@@ -177,12 +188,13 @@ class DesignWorkspace:
         self.mat = Gtk.DropDown.new_from_strings(list(graphtec.MAT_OPTIONS.values()))
         self.mat.connect('notify::selected', self.change_mat)
         inspector.append(self.mat)
-        self.show_mat = self.view_toggle(inspector, 'Show Cutting Mat', True)
-        self.show_cut_border = self.view_toggle(inspector, 'Show Cut Border', True)
         self.heading(inspector, 'Registration Marks')
         self.register = Gtk.CheckButton(label='Enable Registration Marks')
         self.register.connect('toggled', self.change_registration)
         inspector.append(self.register)
+        self.show_grid = self.view_toggle(inspector, 'Show Grid', True)
+        inspector, self.page_advanced = disclosure(inspector)
+        self.heading(inspector, 'Registration Marks')
         self.mark_pattern = Gtk.DropDown.new_from_strings(('Type 1 (3 marks)', '4 marks'))
         self.mark_pattern.connect('notify::selected', self.change_registration)
         inspector.append(self.mark_pattern)
@@ -194,9 +206,16 @@ class DesignWorkspace:
         for spin in (self.mark_inset, self.mark_length, self.mark_thickness):
             spin.connect('value-changed', self.change_registration)
         self.heading(inspector, 'Grid Settings')
+        self.show_mat = self.view_toggle(inspector, 'Show Cutting Mat', True)
+        self.show_cut_border = self.view_toggle(inspector, 'Show Cut Border', True)
+        self.print_border = self.view_toggle(inspector, 'Show Print Border')
+        self.print_margin = self.spin(inspector, 'Print margin (mm)', 0, 25, 5, step=0.5)
+        self.print_margin.set_tooltip_text('Set the margin you use on your printer.')
+        self.print_margin.connect('value-changed', lambda *_: self.canvas.queue_draw())
         self.show_rulers = self.view_toggle(inspector, 'Show Rulers')
-        self.show_grid = self.view_toggle(inspector, 'Show Grid', True)
         self.snap = self.view_toggle(inspector, 'Snap to Grid')
+        self.smart_snap = self.view_toggle(inspector, 'Enable Smart Snapping')
+        self.smart_snap.set_tooltip_text('Line up moving shapes with nearby edges or centers.')
         self.grid_spacing = self.spin(inspector, 'Spacing (mm)', 0.5, 100, 5, step=0.5)
         self.grid_spacing.connect('value-changed', lambda *_: self.canvas.queue_draw())
 
@@ -211,10 +230,10 @@ class DesignWorkspace:
         fields = (
             ('x', 'X (mm)', -1000, 1000), ('y', 'Y (mm)', -1000, 1000),
             ('width', 'Width (mm)', -1000, 1000), ('height', 'Height (mm)', -1000, 1000),
-            ('radius', 'Radius (mm)', 0, 1000), ('rotation', 'Rotation (°)', -360, 360),
+            ('rotation', 'Rotation (°)', -360, 360), ('radius', 'Radius (mm)', 0, 1000),
         )
         self.fields = {}
-        for field, label, low, high in fields:
+        for field, label, low, high in fields[:-1]:
             spin = self.spin(inspector, label, low, high, 0)
             spin.connect('value-changed', self.change_field, field)
             self.fields[field] = spin
@@ -231,6 +250,155 @@ class DesignWorkspace:
         self.alignment = Gtk.DropDown.new_from_strings(ALIGNMENTS)
         inspector.append(self.alignment)
         self.align_button = self.button(inspector, 'Apply Alignment', self.align_selection)
+        advanced, _ = disclosure(inspector)
+        self.fields['radius'] = self.spin(advanced, 'Radius (mm)', 0, 1000, 0)
+        self.fields['radius'].connect('value-changed', self.change_field, 'radius')
+
+    def build_design_menus(self, toolbar, shortcuts):
+        self.menu_actions = Gio.SimpleActionGroup()
+        self.view.insert_action_group('design', self.menu_actions)
+
+        def command(menu, label, name, callback, shortcut=None, field=None):
+            if field is None:
+                action = Gio.SimpleAction.new(name, None)
+            else:
+                action = Gio.SimpleAction.new_stateful(name, None, GLib.Variant.new_boolean(field.get_active()))
+                field.connect('toggled', lambda widget: action.set_state(GLib.Variant.new_boolean(widget.get_active())))
+            action.connect('activate', lambda *_: callback())
+            self.menu_actions.add_action(action)
+            full_name = f'design.{name}'
+            menu.append(label, full_name)
+            if shortcut:
+                shortcuts.add_shortcut(Gtk.Shortcut.new(
+                    Gtk.ShortcutTrigger.parse_string(shortcut), Gtk.NamedAction.new(full_name)))
+
+        view = Gio.Menu()
+        zoom = Gio.Menu()
+        view.append_submenu('Zoom', zoom)
+        command(zoom, 'Zoom In', 'zoom-in', lambda: self.canvas.zoom_by(1.25))
+        command(zoom, 'Zoom Out', 'zoom-out', lambda: self.canvas.zoom_by(0.8))
+        command(zoom, 'Fit', 'fit', lambda: self.fit(None))
+        rotate = Gio.Menu()
+        view.append_submenu('Rotate Page', rotate)
+        command(rotate, 'Left', 'rotate-page-left', lambda: self.rotate_page(False))
+        command(rotate, 'Right', 'rotate-page-right', lambda: self.rotate_page(True))
+        for label, name, field in (
+                ('Show Grid', 'grid', self.show_grid), ('Snap to Grid', 'snap', self.snap),
+                ('Enable Smart Snapping', 'smart-snap', self.smart_snap),
+                ('Show Print Border', 'print-border', self.print_border),
+                ('Show Cut Border', 'cut-border', self.show_cut_border)):
+            command(view, label, name, lambda toggle=field: toggle.set_active(not toggle.get_active()), field=field)
+        command(view, 'Grid Options…', 'grid-options', self.show_page_options)
+        command(view, 'Registration Marks…', 'registration', self.show_page_options)
+        command(view, 'Show Design Page Settings…', 'page-options', lambda: self.panel_switcher.set_selected(0),
+                '<Control>F1')
+        command(view, 'Show Send Page', 'send', lambda: self.review_paths(None), '<Control>F2')
+
+        panels = Gio.Menu()
+        for label, name, index in (('Page Setup', 'page-setup', 0), ('Fill Color', 'fill', 3),
+                                   ('Line Style', 'line', 3), ('Transform', 'transform', 1), ('Replicate', 'replicate', 2)):
+            command(panels, label, name, lambda panel=index: self.panel_switcher.set_selected(panel))
+        colors = Gio.Menu()
+        panels.append_submenu('Select by Color', colors)
+        for label, field in (('Same Line Color', 'stroke'), ('Same Fill Color', 'fill')):
+            command(colors, label, f'select-{field}', lambda channel=field: self.select_color(channel))
+        command(panels, 'Offset…', 'offset-panel', self.offset_selection)
+
+        objects = Gio.Menu()
+        for title, first, second in (
+                ('Mirror', ('Horizontally', 'horizontal'), ('Vertically', 'vertical')),
+                ('Rotate', ('Left', 'left'), ('Right', 'right'))):
+            menu = Gio.Menu()
+            objects.append_submenu(title, menu)
+            for label, operation in (first, second):
+                command(menu, label, operation, lambda op=operation: self.transform_objects(op))
+        arrange = Gio.Menu()
+        objects.append_submenu('Arrange', arrange)
+        command(arrange, 'Bring Forward', 'forward', lambda: self.reorder(1))
+        command(arrange, 'Send Backward', 'backward', lambda: self.reorder(-1))
+        align = Gio.Menu()
+        objects.append_submenu('Align', align)
+        for index, label in enumerate(ALIGNMENTS):
+            command(align, label, f'align-{index}', lambda option=index: self.align_objects(option))
+        command(objects, 'Replicate…', 'object-replicate', lambda: self.panel_switcher.set_selected(2))
+        command(objects, 'Group', 'group', self.group_selected)
+        command(objects, 'Ungroup', 'ungroup', lambda: self.group_selected(release=True))
+        holders = Gio.Menu()
+        objects.append_submenu('Tool Holder', holders)
+        for label, slot in (('Use Current Settings', None), ('Tool Holder 1', 1), ('Tool Holder 2', 2)):
+            command(holders, label, f'holder-{slot}', lambda holder=slot: self.change_properties(holder=holder))
+        self.menu_actions.lookup_action('holder-2').set_enabled(self.cutter.two_tools)
+        command(objects, 'Convert to Path', 'convert', self.convert_selection)
+        command(objects, 'Simplify', 'simplify', lambda: self.convert_selection(True), '<Control>j')
+        modify = Gio.Menu()
+        objects.append_submenu('Modify', modify)
+        command(modify, 'Offset…', 'offset', self.offset_selection)
+        for title, menu in (('View', view), ('Panels', panels), ('Object', objects)):
+            toolbar.append(Gtk.MenuButton(label=title, menu_model=menu))
+
+    def show_page_options(self):
+        self.panel_switcher.set_selected(0)
+        self.page_advanced.set_expanded(True)
+
+    def rotate_page(self, clockwise):
+        try:
+            project = editor_model.rotate_page(self.project, clockwise)
+        except ValueError as error:
+            self.status.set_text(str(error))
+            return
+        self.history.commit(project)
+        self.refresh_objects(self.selected_indices())
+
+    def transform_objects(self, operation):
+        selected = self.selected_indices()
+        try:
+            shapes = editor_model.transform_selection(self.project.shapes, selected, operation)
+        except ValueError as error:
+            self.status.set_text(str(error))
+            return
+        self.commit(shapes, selected)
+
+    def align_objects(self, option):
+        self.alignment.set_selected(option)
+        self.align_selection(None)
+
+    def select_color(self, field):
+        self.set_selection(editor_model.matching_color(self.project.shapes, self.selected_indices(), field))
+
+    def convert_selection(self, simplify=False):
+        selected = self.selected_indices()
+        try:
+            shapes = tuple(editor_model.convert_path(shape, simplify) if index in selected else shape
+                           for index, shape in enumerate(self.project.shapes))
+        except ValueError as error:
+            self.status.set_text(str(error))
+        else:
+            self.commit(shapes, selected)
+
+    def offset_selection(self):
+        if not self.selected_indices():
+            return
+        dialog = Adw.AlertDialog(heading='Offset', body='Use a negative distance to inset the shape.')
+        options = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        amount = self.spin(options, 'Distance (mm)', -20, 20, 1)
+        dialog.set_extra_child(options)
+        dialog.add_response('cancel', 'Cancel')
+        dialog.add_response('offset', 'Create Offset')
+        dialog.set_close_response('cancel')
+        dialog.set_default_response('offset')
+        dialog.set_response_appearance('offset', Adw.ResponseAppearance.SUGGESTED)
+
+        def apply(*_):
+            before = self.project.shapes
+            try:
+                copies = tuple(editor_model.offset_shape(before[i], amount.get_value()) for i in self.selected_indices())
+            except ValueError as error:
+                self.status.set_text(str(error))
+            else:
+                self.commit(before + copies, range(len(before), len(before) + len(copies)))
+
+        dialog.connect('response::offset', apply)
+        dialog.present(self.parent)
 
     def replicate_panel(self, inspector):
         self.heading(inspector, 'Replicate')
@@ -243,19 +411,48 @@ class DesignWorkspace:
     def style_panel(self, inspector):
         self.heading(inspector, 'Line and Fill')
         self.colors = {}
+        self.color_pickers = {}
         self.color_edits = set()
         for field, label in (('stroke', 'Line Color'), ('fill', 'Fill Color')):
             inspector.append(Gtk.Label(label=label, xalign=0))
             entry = Gtk.Entry(placeholder_text='#rrggbb or blank')
             entry.connect('activate', self.apply_colors)
             entry.connect('changed', self.change_color, field)
-            inspector.append(entry)
+            row = Gtk.Box(spacing=6)
+            entry.set_hexpand(True)
+            row.append(entry)
+            picker = Gtk.ColorDialogButton(dialog=Gtk.ColorDialog(with_alpha=False))
+            picker.set_tooltip_text(f'Pick {label.lower()}.')
+            picker.connect('notify::rgba', lambda widget, *_args, channel=field: self.pick_color(widget, channel))
+            row.append(picker)
+            inspector.append(row)
             self.colors[field] = entry
+            self.color_pickers[field] = picker
         self.button(inspector, 'Apply Colors', self.apply_colors)
+        self.heading(inspector, 'Line Style')
+        self.line_style = Gtk.DropDown.new_from_strings(list(editor_model.LINE_STYLES.values()))
+        self.line_style.set_tooltip_text('Appearance only. The cutter follows the whole line.')
+        self.line_style.connect('notify::selected', self.change_line_style)
+        inspector.append(self.line_style)
+        self.line_width = self.spin(inspector, 'Line Width (mm)', 0, 5, 0)
+        self.line_width.set_tooltip_text('Use 0 for a hairline.')
+        self.line_width.connect('value-changed', self.change_field, 'line_width_mm')
         self.heading(inspector, 'Object Action')
         self.action = Gtk.DropDown.new_from_strings(ACTIONS)
         self.action.connect('notify::selected', self.change_action)
         inspector.append(self.action)
+
+    def pick_color(self, picker, field):
+        color = picker.get_rgba()
+        if color is not None:
+            components = (color.red, color.green, color.blue)
+            self.change_properties(**{field: "#" + "".join(f"{round(value * 255):02x}" for value in components)})
+
+    def change_line_style(self, picker, *_args):
+        index = picker.get_selected()
+        choices = tuple(editor_model.LINE_STYLES)
+        if index < len(choices):
+            self.change_properties(line_style=choices[index])
 
     @staticmethod
     def button(parent, label, handler, start=False):
@@ -324,7 +521,8 @@ class DesignWorkspace:
             self.objects.remove(child)
         for i, obj in enumerate(self.project.shapes, 1):
             tooltip = obj.action if obj.group is None else f'{obj.action} · Group {obj.group}'
-            label = Gtk.Label(label=f'{i}. {obj.kind}', xalign=0, tooltip_text=tooltip,
+            tool = f' · Tool {obj.holder}' if obj.holder else ''
+            label = Gtk.Label(label=f'{i}. {obj.kind}{tool}', xalign=0, tooltip_text=tooltip,
                               margin_top=7, margin_bottom=7, margin_start=8, margin_end=8)
             self.objects.append(label)
         self.loading = False
@@ -339,6 +537,7 @@ class DesignWorkspace:
         self.orientation.set_selected(0 if p.width <= p.height else 1)
         for input_, value in ((self.page_width, p.width), (self.page_height, p.height)):
             input_.set_sensitive(name == 'Custom')
+            input_.get_parent().set_visible(name == 'Custom')
             input_.set_value(value)
         self.mat.set_selected(list(graphtec.MAT_OPTIONS).index(p.mat))
         reg = p.registration or self.last_registration
@@ -367,6 +566,7 @@ class DesignWorkspace:
         self.undo_button.set_sensitive(bool(self.history.past))
         self.redo_button.set_sensitive(bool(self.history.future))
         self.review.set_sensitive(count > 0)
+        self.send_workspace.set_sensitive(count > 0)
         self.canvas.queue_draw()
 
     def select_shape(self, *_args):
@@ -394,7 +594,18 @@ class DesignWorkspace:
             entry.set_sensitive(bool(indices))
             entry.set_placeholder_text('Mixed' if len(values) > 1 else '#rrggbb or blank')
             entry.set_text(values.pop() if len(values) == 1 else '')
+            picker = self.color_pickers[field]
+            picker.set_sensitive(bool(indices))
+            rgba = Gdk.RGBA()
+            if rgba.parse(entry.get_text() or '#313945'):
+                picker.set_rgba(rgba)
         self.color_edits.clear()
+        styles = {shapes[index].line_style for index in indices}
+        self.line_style.set_sensitive(bool(indices))
+        self.line_style.set_selected(tuple(editor_model.LINE_STYLES).index(styles.pop()) if len(styles) == 1
+                                     else Gtk.INVALID_LIST_POSITION)
+        self.line_width.set_sensitive(bool(indices))
+        self.line_width.set_value(obj.line_width_mm if obj else 0)
         self.action.set_sensitive(bool(indices))
         object_actions = {shapes[index].action for index in indices}
         self.action.set_selected(ACTIONS.index(object_actions.pop()) if len(object_actions) == 1
@@ -428,6 +639,9 @@ class DesignWorkspace:
             return
         shapes = tuple(replace(shape, **values) if i in indices else shape
                        for i, shape in enumerate(self.project.shapes))
+        if "holder" in values:
+            self.commit(shapes, indices)
+            return
         self.history.commit(replace(self.history.current, shapes=shapes))
         self.select_shape()
 
@@ -720,7 +934,10 @@ class DesignWorkspace:
                 ax = anchor.x + dx / drag.scale
                 ay = anchor.y + dy / drag.scale
                 ax, ay = self.grid_point(ax, ay)
-                shapes = editor_model.move(base.shapes, drag.indices, ax - anchor.x, ay - anchor.y)
+                mx, my = ax - anchor.x, ay - anchor.y
+                if self.smart_snap.get_active():
+                    mx, my = editor_model.snap_move(base.shapes, drag.indices, mx, my, base.width, base.height, 6 / drag.scale)
+                shapes = editor_model.move(base.shapes, drag.indices, mx, my)
                 self.draft = replace(base, shapes=shapes)
         else:
             limit = editor_model.SHAPE_LIMIT

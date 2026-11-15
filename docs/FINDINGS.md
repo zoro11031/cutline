@@ -1,5 +1,8 @@
 # FINDINGS
 
+References to the desktop app's WinBoat bridge describe an earlier workflow.
+For local file export, see the current setup guide.
+
 What was tried, what happened, what was concluded — including the things that
 turned out not to work and the things that are still unverified. The same
 record `canon-suite/docs/FINDINGS.md` keeps for the printer.

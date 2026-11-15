@@ -5,7 +5,7 @@ from pathlib import Path
 import unittest
 import types
 from unittest import mock
-from cut_proxies import config, graphtec, importer, job, presets
+from cut_proxies import config, corner_test, graphtec, importer, job, presets, starting_guide
 
 try:
     from cut_proxies import gui
@@ -35,7 +35,7 @@ class TestDesignWorkspace(unittest.TestCase):
         design = win.design
         self.assertIs(win.workspaces.get_visible_child(), design.view)
         self.assertTrue(design.project.shapes)
-        design.review.emit('clicked')
+        design.send_workspace.emit('clicked')
         self.assertEqual(win.stack.get_visible_child_name(), 'cut')
         self.assertIsNotNone(win.job)
         win.design_button.emit('clicked')
@@ -43,6 +43,78 @@ class TestDesignWorkspace(unittest.TestCase):
         win.close_design()
         self.assertEqual(win.workspaces.get_visible_child_name(), 'tools')
         self.assertIsNone(win.design)
+
+    def test_send_workspace_and_blade_share_material_and_cut_settings(self):
+        win = self.make_window()
+        win.send_workspace.emit('clicked')
+        self.assertEqual(win.stack.get_visible_child_name(), 'cut')
+        self.assertEqual(win._text(win.r_send_preset), presets.STARTING_NAME)
+        win.r_send_preset.set_selected(sorted(presets.all_presets()).index('Coverstock'))
+        self.assertEqual(win._text(win.r_preset), 'Coverstock')
+        win.send_controls['passes'].set_value(3)
+        win.r_force.set_value(22)
+        self.assertEqual(win.r_passes.get_value(), 3)
+        self.assertEqual(win.send_controls['force'].get_value(), 22)
+        self.assertEqual(win.job.settings.passes, 3)
+        self.assertEqual(win.job.settings.force, 22)
+        win.send_controls['track_enhancing'].set_active(False)
+        self.assertFalse(win.r_track.get_active())
+        self.assertFalse(win.job.settings.track_enhancing)
+
+    def test_advanced_controls_and_tool_profiles_are_independent(self):
+        from cut_proxies.editor_model import Shape
+
+        win = self.make_window()
+        win.send_workspace.emit('clicked')
+        self.assertFalse(win.send_advanced.get_expanded())
+        self.assertTrue(win.corner_button.get_visible())
+        win.send_sliders['force'].set_value(28)
+        win.send_holder_buttons[2].set_active(True)
+        self.assertFalse(win.r_depth.get_sensitive())
+        win.send_sliders['force'].set_value(12)
+        win.send_holder_buttons[1].set_active(True)
+        self.assertEqual(win.send_sliders['force'].get_value(), 28)
+        self.assertEqual(win.job.settings.holder, 1)
+        win.send_advanced.set_expanded(True)
+        win.r_end_position.set_selected(list(graphtec.END_POSITIONS).index('start'))
+        win.send_advanced.set_expanded(False)
+        self.assertEqual(win.job.end_position, 'start')
+
+        win.on_edit_template()
+        design = win.design
+        design.commit((Shape('Rectangle', 30, 40), Shape('Line', 95, 40)), (0,))
+        design.menu_actions.lookup_action('holder-1').activate(None)
+        design.set_selection((1,))
+        design.menu_actions.lookup_action('holder-2').activate(None)
+        design.menu_actions.lookup_action('registration').activate(None)
+        self.assertTrue(design.page_advanced.get_expanded())
+        design.menu_actions.lookup_action('print-border').activate(None)
+        self.assertTrue(design.print_border.get_active())
+        design.send_workspace.emit('clicked')
+        self.assertFalse(win.job.blocked)
+        self.assertEqual([(group.settings.holder, group.settings.force) for group in win.job.action_groups],
+                         [(1, 28), (2, 12)])
+
+    def test_material_guide_shows_fresh_spots_and_restores_the_cut_preview(self):
+        win = self.make_window()
+        win.preview.zoom_by(1.25)
+        self.assertEqual(win.preview_zoom.get_text(), '125%')
+        win.r_speed.set_value(18)
+        self.assertEqual(win.preview_zoom.get_text(), '125%')
+        win.preview.fit()
+        self.assertEqual(win.preview_zoom.get_text(), '100%')
+
+        original = win.job
+        win.open_material_guide()
+        first = win.preview.trial.sheet.extent()
+        self.assertEqual(win.preview_title.get_text(), 'Material test sheet')
+        self.assertFalse(win.cut_button.get_visible())
+        win.guide_next.emit('clicked')
+        self.assertFalse(win.preview.trial.sheet.extent().overlaps(first))
+        win.back_to_send.emit('clicked')
+        self.assertIsNone(win.preview.trial)
+        self.assertTrue(win.cut_button.get_visible())
+        self.assertIs(win.job, original)
 
     def test_design_page_setup_preserves_custom_page_mat_and_marks_in_send(self):
         from cut_proxies.editor_model import Shape
@@ -222,11 +294,62 @@ class TestDesignWorkspace(unittest.TestCase):
             self.assertEqual(open_transport.call_count, 0)
             self.assertIn('connection changed', warning.call_args.args[0])
 
+    def test_starting_guide_applies_settings_and_keeps_its_own_pass_count(self):
+        win = self.make_window()
+        win.guide_apply.emit('clicked')
+        self.assertEqual((win.r_force.get_value(), win.r_speed.get_value(), win.r_depth.get_value(),
+                          win.r_passes.get_value()), (25, 25, 7, 1))
+        trial = win.guide_proposal()
+        fake = mock.MagicMock()
+        fake.__enter__.return_value = fake
+        fake.can_read = True
+        fake.status.return_value = 'ready'
+
+        def synchronous_thread(*, target, daemon):
+            return types.SimpleNamespace(start=target)
+
+        with mock.patch.object(gui.threading, 'Thread', side_effect=synchronous_thread), \
+             mock.patch.object(gui.GLib, 'idle_add', side_effect=lambda callback, *args: callback(*args)), \
+             mock.patch.object(gui.transport, 'open_transport', return_value=fake):
+            win._guide_pass_response(None, 'cut', trial)
+            self.assertFalse(win.guide_send.get_sensitive())
+            win.guide_outcome.set_selected(tuple(starting_guide.OUTCOMES).index('holding'))
+            win._guide_pass_response(None, 'cut', trial)
+        self.assertEqual(fake.run.call_args_list, [mock.call(trial.sheet.steps, wait_done=True)] * 2)
+        self.assertIn('2 completed passes', win.guide_status.get_title())
+        win.guide_outcome.set_selected(tuple(starting_guide.OUTCOMES).index('clean'))
+        with mock.patch.object(win, 'offer_tested_preset') as prompt:
+            win.guide_use.emit('clicked')
+        prompt.assert_called_once()
+        self.assertEqual(win.r_passes.get_value(), 2)
+        win.guide_next.emit('clicked')
+        self.assertEqual(win.guide.spot, 2)
+
+    def test_corner_cut_confirms_and_sends_only_the_sample(self):
+        win = self.make_window()
+        plan = win.job
+        sample = corner_test.build(plan, bleed_mm=win.r_bleed.get_value())
+        fake = mock.MagicMock()
+        fake.__enter__.return_value = fake
+        fake.can_read = True
+        fake.status.return_value = 'ready'
+        with mock.patch.object(gui.Adw, 'AlertDialog') as dialog:
+            win.corner_button.emit('clicked')
+        self.assertIn(sample.describe(), dialog.call_args.kwargs['body'])
+        _, callback, *arguments = dialog.return_value.connect.call_args.args
+        with mock.patch.object(gui.threading, 'Thread', side_effect=lambda *, target, daemon:
+                               types.SimpleNamespace(start=target)), \
+             mock.patch.object(gui.GLib, 'idle_add', side_effect=lambda callback, *args: callback(*args)), \
+             mock.patch.object(gui.transport, 'open_transport', return_value=fake):
+            callback(dialog.return_value, 'cut', *arguments)
+        fake.run.assert_called_once_with(sample.job.steps, wait_done=True)
+        self.assertEqual(win.job.stream, plan.stream)
+
     def test_save_preset_button_reloads_edited_blade_settings(self):
         with tempfile.TemporaryDirectory() as folder, \
              mock.patch.object(config, "CONFIG_DIR", Path(folder)):
             win = self.make_window()
-            self.assertEqual(win.r_force.get_value(), 35)
+            self.assertEqual(win.r_force.get_value(), 25)
             win.r_force.set_value(32)
             win.r_speed.set_value(21)
             win.r_depth.set_value(-1)
@@ -258,7 +381,7 @@ class TestDesignWorkspace(unittest.TestCase):
             self.assertEqual(win._text(win.r_preset), "Green holder")
             self.assertEqual(presets.get("Green holder").cut_settings().force, 18)
             self.assertIsNone(presets.get("Green holder").cut_settings().depth)
-            self.assertEqual(presets.get(config.DEFAULT_PRESET).cut_settings().force, 35)
+            self.assertEqual(presets.get(config.DEFAULT_PRESET).cut_settings().force, 25)
             win.r_force.set_value(19)
             win.on_save_blade_preset(new_name="GREEN HOLDER")
             self.assertEqual(presets.get("Green holder").cut_settings().force, 18)
@@ -287,52 +410,36 @@ class TestDesignWorkspace(unittest.TestCase):
         callback()
         self.assertEqual(win.stack.get_visible_child_name(), "sheet")
 
-    @unittest.skipUnless(os.environ.get('PROXYPRESS_BUNDLE_DIR'), 'generate a ProxyPress bundle first')
-    def test_selecting_a_real_zip_opens_its_paths_and_its_paired_studio_file(self):
+    def verify_bundle_export(self, source, direct_cut):
         win = self.make_window()
-        source = Path(os.environ['PROXYPRESS_BUNDLE_DIR']) / 'letter-landscape-8.zip'
-        launched = []
-
-        def launch(path):
-            launched.append((path.name, path.read_bytes()[:13]))
-
-        with mock.patch.object(gui.Gtk, 'FileDialog') as chooser, \
-             mock.patch.object(win, 'measure_sheet') as measure, \
-             mock.patch.object(gui.winboat, 'open_in_studio', side_effect=launch):
-            win.on_pick_pdf()
-            dialog = chooser.return_value
-            callback = dialog.open.call_args.args[2]
-            dialog.open_finish.return_value = gui.Gio.File.new_for_path(str(source))
-            callback(dialog, mock.Mock())
-            measure.assert_called_once()
-            self.assertEqual(win.pdf_path, source)
-            self.assertEqual(len(win.imported.paths), 8)
-            self.assertFalse(win.job.blocked)
-            win.on_open_studio()
-        self.assertEqual(launched, [('sheet-1.studio3', b'silhouette05;')])
-
-    @unittest.skipUnless(os.environ.get('PROXYPRESS_LEGACY_BUNDLE'), 'supply a legacy print-and-cut ZIP first')
-    def test_selecting_legacy_zip_keeps_direct_cut_disabled_and_opens_studio_file(self):
-        win = self.make_window()
-        source = Path(os.environ['PROXYPRESS_LEGACY_BUNDLE'])
-        launched = []
-
-        def launch(path):
-            launched.append(path.read_bytes()[:13])
-
-        with mock.patch.object(gui.Gtk, 'FileDialog') as chooser, \
-             mock.patch.object(win, 'measure_sheet') as measure, \
-             mock.patch.object(gui.winboat, 'open_in_studio', side_effect=launch):
+        with tempfile.TemporaryDirectory() as folder, \
+             mock.patch.object(gui.Gtk, 'FileDialog') as chooser, \
+             mock.patch.object(win, 'measure_sheet') as measure:
             win.on_pick_pdf()
             dialog = chooser.return_value
             dialog.open_finish.return_value = gui.Gio.File.new_for_path(str(source))
             dialog.open.call_args.args[2](dialog, mock.Mock())
             measure.assert_called_once()
             self.assertEqual(win.pdf_path, source)
-            self.assertIsNone(win.job)
-            self.assertFalse(win.cut_button.get_sensitive())
-            win.on_open_studio()
-        self.assertEqual(launched, [b'silhouette05;'])
+            if direct_cut:
+                self.assertEqual(len(win.imported.paths), 8)
+                self.assertFalse(win.job.blocked)
+            else:
+                self.assertIsNone(win.job)
+                self.assertFalse(win.cut_button.get_sensitive())
+            win.on_save_bundle_file()
+            output = Path(folder) / 'local.studio3'
+            dialog.save_finish.return_value = gui.Gio.File.new_for_path(str(output))
+            dialog.save.call_args.args[2](dialog, mock.Mock())
+            self.assertEqual(output.read_bytes()[:13], b'silhouette05;')
+
+    @unittest.skipUnless(os.environ.get('PROXYPRESS_BUNDLE_DIR'), 'generate a ProxyPress bundle first')
+    def test_selecting_a_real_zip_opens_its_paths_and_exports_its_cut_file(self):
+        self.verify_bundle_export(Path(os.environ['PROXYPRESS_BUNDLE_DIR']) / 'letter-landscape-8.zip', True)
+
+    @unittest.skipUnless(os.environ.get('PROXYPRESS_LEGACY_BUNDLE'), 'supply a legacy print-and-cut ZIP first')
+    def test_legacy_zip_exports_the_paired_cut_file(self):
+        self.verify_bundle_export(Path(os.environ['PROXYPRESS_LEGACY_BUNDLE']), False)
 
 
 @unittest.skipUnless(gui is not None, 'PyGObject is not installed')
@@ -367,18 +474,6 @@ class TestOpenDialogs(unittest.TestCase):
                 entry.set_display_name(name)
                 entry.set_content_type(mime)
                 self.assertEqual(filt.match(entry), accepted)
-
-    def test_studio_file_picker_passes_the_native_file_to_the_launcher(self):
-        window = mock.Mock()
-        with mock.patch.object(gui.Gtk, 'FileDialog') as chooser:
-            gui.Window.on_pick_studio_file(window)
-        dialog = chooser.return_value
-        filters = dialog.set_filters.call_args.args[0]
-        self.assertEqual(filters.get_item(0).get_name(), 'Silhouette Studio files')
-        callback = dialog.open.call_args.args[2]
-        dialog.open_finish.return_value = gui.Gio.File.new_for_path('/tmp/sheet-2.studio3')
-        callback(dialog, mock.Mock())
-        window.launch_studio_file.assert_called_once_with(Path('/tmp/sheet-2.studio3'))
 
     def test_a_failed_import_keeps_the_previous_artwork_and_job(self):
         previous = object()

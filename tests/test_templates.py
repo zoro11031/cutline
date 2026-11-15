@@ -336,12 +336,14 @@ class TestPresets(unittest.TestCase):
                 self.assertIn(p.origin, ("silhouette", "guide", "recovered",
                                          "derived", "measured"))
 
-    def test_extrapolated_presets_say_so_in_their_note(self):
+    def test_default_presets_are_the_starting_point_and_factory_materials(self):
         from cut_proxies import presets
-        for name, p in presets.all_presets().items():
-            if p.origin == "derived":
-                with self.subTest(preset=name):
-                    self.assertIn("never cut", p.note.lower())
+        bundled = dict(presets.BUILTIN_BY_NAME)
+        bundled.update((preset.name, preset) for _, preset in presets._read_presets(presets.bundled_dir()))
+        self.assertEqual({name for name, preset in bundled.items() if preset.origin != "silhouette"},
+                         {presets.STARTING_NAME})
+        self.assertEqual(bundled[presets.STARTING_NAME].origin, "guide")
+        self.assertIn("Cardstock", bundled)
 
     def test_presets_build_valid_cut_settings(self):
         from cut_proxies import presets

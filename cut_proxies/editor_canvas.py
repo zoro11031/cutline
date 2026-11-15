@@ -107,6 +107,14 @@ class DesignCanvas(Gtk.DrawingArea):
         cr.set_source_rgb(0.68, 0.71, 0.74)
         cr.set_line_width(0.8 / scale)
         cr.stroke()
+        if editor.print_border.get_active():
+            margin = editor.print_margin.get_value()
+            if 2 * margin < min(w, h):
+                cr.rectangle(margin, margin, w - 2 * margin, h - 2 * margin)
+                cr.set_source_rgb(0.26, 0.45, 0.63)
+                cr.set_dash([2, 1])
+                cr.stroke()
+                cr.set_dash([])
         if editor.show_grid.get_active():
             spacing = editor.grid_spacing.get_value()
             spacing *= max(1, math.ceil(4 / (spacing * scale)))
@@ -241,9 +249,13 @@ class DesignCanvas(Gtk.DrawingArea):
             if shape.fill:
                 cr.set_source_rgb(*_rgb(shape.fill))
                 cr.fill_preserve()
-        color = _rgb(shape.stroke) if shape.stroke else (0.22, 0.27, 0.32)
+        color = _rgb(shape.stroke or {1: '#b2323a', 2: '#244b9a'}.get(shape.holder, '#384552'))
         cr.set_source_rgb(*color)
-        cr.set_line_width((2 if selected else 1.25) / scale)
-        cr.set_dash([3 / scale, 2 / scale] if shape.action == 'Score' else [])
+        line_width = shape.line_width_mm or (2 if selected else 1.25) / scale
+        cr.set_line_width(line_width)
+        if shape.line_style == 'dotted':
+            cr.set_dash([line_width, 2 * line_width])
+        elif shape.line_style == 'dashed' or shape.action == 'Score':
+            cr.set_dash([3 * line_width, 2 * line_width])
         cr.stroke()
         cr.set_dash([])

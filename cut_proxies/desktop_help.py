@@ -1,0 +1,35 @@
+"""Help shared by the native desktop frontends."""
+
+CONTROL_HELP = {
+    "force": "How hard the tool presses.",
+    "speed": "How fast the tool moves.",
+    "passes": "How many times the tool goes over each cut.",
+    "depth": "How far the AutoBlade can extend. Choose Manual / off to set it by hand.",
+    "holder": "The slot holding the tool.",
+    "acceleration": "How quickly the cutter speeds up and slows down.",
+    "blade_diameter_mm": "Helps a blade turn at corners. Use 0 for a pen.",
+    "sharpen_corners": "Lift the blade and extend the cuts at sharp corners.",
+    "corner_start_mm": "How far to extend the start of the cut.",
+    "corner_end_mm": "How far to extend the end of the cut.",
+    "track_enhancing": "Run the rollers before cutting. Use force 19 or higher.",
+    "path_order": "Choose the order in which shapes are cut.",
+    "pass_order": "Choose when the cutter repeats each cut.",
+    "interior_first": "Cut holes before the outside edge.",
+    "delicate_media": "Change the cut order to help keep thin material in place.",
+    "overcut_mm": "Overlap the start and end of a closed cut.",
+    "registration": "Use printed marks to line up the cut.",
+    "auto_search": "Let the cutter find the first mark on its own.",
+    "mark_inset_mm": "Distance from the paper edge to the marks.",
+    "mark_length_mm": "Length of the marks. Auto fits them around your cards.",
+    "mark_thickness_mm": "Width of the printed mark lines.",
+    "bleed_mm": "How far the artwork extends past each card edge.",
+    "mat": "Choose the mat you loaded.",
+    "end_position": "Choose where the cutter stops after the job.",
+    "end_feed_mm": "How far to feed past the last cut.",
+}
+
+SETUP_STEPS = (
+    "1. Draw in Design, open cut artwork in Layout, or open a ProxyPress ZIP in Sheet.\n\n"
+    "2. In Send, connect your cutter and choose a material. Use Dial In a Material to try a scrap.\n\n"
+    "3. Cutting a print? Check the PDF in Sheet and test the printed marks in Send."
+)

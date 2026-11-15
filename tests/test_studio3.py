@@ -11,7 +11,6 @@ import pathlib
 import struct
 import tempfile
 import unittest
-from unittest import mock
 
 from cut_proxies import cli, importer, job, studio3
 
@@ -96,13 +95,14 @@ class TestNativeImport(unittest.TestCase):
             with self.assertRaisesRegex(importer.ImportError_, "truncated Studio3 document"):
                 importer.load(source)
 
-    def test_original_file_is_forwarded_to_studio_without_converting(self):
+    def test_native_file_produces_a_verified_cut_without_an_external_app(self):
         with tempfile.TemporaryDirectory() as folder:
             source = pathlib.Path(folder) / "Example.studio3"
             source.write_bytes(self.vector_document())
-            with mock.patch.object(cli.winboat, "open_in_studio", return_value=["Studio"]) as open_file:
-                self.assertEqual(cli.main(["cut", "--from", str(source), "--via", "studio", "--dry-run"]), 0)
-                self.assertEqual(open_file.call_args, mock.call(source, dry_run=True))
+            target = source.with_suffix(".bin")
+            self.assertEqual(cli.main(["cut", "--from", str(source), "--no-registration",
+                                       "--dry-run", "--dump", str(target)]), 0)
+            self.assertTrue(target.read_bytes())
 
 
 def load(name):

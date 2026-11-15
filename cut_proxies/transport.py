@@ -226,8 +226,7 @@ class PyUsbTransport(Transport):
         except ImportError as exc:       # pragma: no cover - env dependent
             raise TransportError(
                 "pyusb is not installed, so the cutter cannot be driven "
-                "directly. Install python-pyusb, or use --dry-run, or go "
-                "through Silhouette Studio with the WinBoat bridge.") from exc
+                "directly over USB. Install PyUSB, use --dry-run, or select Bluetooth.") from exc
         self._usb = usb.core
         self._util = usb.util
 

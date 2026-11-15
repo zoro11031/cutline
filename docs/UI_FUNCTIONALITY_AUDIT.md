@@ -1,5 +1,40 @@
 # Silhouette Control Center: UI and functionality audit
 
+## Qt and GTK desktop workflow · November 18, 2026
+
+Checked both apps in compact 1000 × 720 windows, including the dark Design
+and material-guide views. The cut checks used a dry run and simulated cutter
+connections. A physical cutter was unavailable.
+
+| Step | What was checked |
+|---|---|
+| Setup and Layout | The Setup Guide leads to the material guide. The everyday layout choices stay visible. Marks, cut geometry, export, and other occasional choices are under **Advanced Options**. |
+| Design | **View** holds zoom, page rotation, grids, snapping, and borders. **Panels** opens the editing controls. **Object** handles transforms, grouping, path edits, and tool-holder assignments. Print Border uses the margin you enter in Page Setup. |
+| Sheet | A printed PDF showed the page image, cut overlay, and all three measured registration marks in both apps. Render DPI is under **Advanced Options**. |
+| Blade and Send | Both holder tabs, the five slider and number pairs, Line Segment Overcut, and Track Enhancing fit in the compact Send view. Changing holders and returning kept the earlier settings. Designs assigned to both holders reached grouped Send with the correct settings for each. |
+| Test cuts | The registration test and corner test stay beside **Send to Cutter**. The material guide shows its own test sheet and asks how the cut looks after each pass, with an option to save the result as a named preset. |
+
+The audit surfaced two compact-window problems. GTK now puts the holder tabs
+above the sliders and combines cutter connection and status in one section.
+Both apps now keep the test buttons in the Send footer, within reach while
+the settings scroll. Grouped Send also keeps the default holder selection
+valid when it first opens in GTK.
+
+**Send → Advanced Options** holds feed, mat, weed visibility, cut order,
+interior-first sorting, calibration, and the test matrix. **Defaults** can
+restore factory materials. **More Blade Options** opens blade and material
+details, including **Show Cutter Divisions**.
+
+Offset works on simple closed shapes without inward corners. PixScan, text
+and spelling, raster trace and effects, compound paths, Weld and other
+boolean edits, and Studio's Store, Library, Stipple, Sketch, and Pop-up
+panels are still open.
+
+## Earlier audit · November 9, 2026
+
+References to the desktop app's WinBoat bridge describe an earlier workflow.
+For local file export, see the current setup guide.
+
 2026-11-09. Audited the local application and current sibling Proxy Press
 source. No cutter was connected and no hardware job was sent. Findings below
 distinguish reproduced software behavior from source review and from work
