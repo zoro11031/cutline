@@ -65,7 +65,13 @@ PROXYPRESS_8UP_MARKS = {
     "silhouette": True,
     "regPattern": 3,
     "regInset": 10,
-    "regLen": 0,          # auto: the longest arm that clears the cards
+    # 20 mm, not auto. This has to be what Proxy Press actually *prints*, and
+    # Proxy Press now prints Silhouette's default 20 mm arm on these sheets --
+    # the same length every Card Maker cutting template uses. Leaving it auto
+    # let this side search for its own answer (7.25 mm on letter landscape,
+    # because the search subtracts a card-gap of safety from a 1.2 mm
+    # clearance) and then assume a sheet that was never printed.
+    "regLen": 20,
     "regThickness": 1,
 }
 
