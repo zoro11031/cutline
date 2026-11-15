@@ -1440,6 +1440,17 @@ fails the suite.
 machine. The geometry is checked and the container's invariants are checked;
 what Studio does on opening the result is not known. That is the open item.
 
+**On the undecoded fields, and why they are written down as undecoded.** The
+Canon side of this project settled the convention for exactly this situation:
+*"Do not add a setting on the strength of a plausible guess. If you cannot
+show the bytes, say so in the note."* A container that may not change length
+because of counters nobody has decoded is the same class of claim as a density
+band nobody has measured — the honest form is the bytes that were read, plus a
+plain statement of what was not. The numbers above for 0x20, 0x38 and 0x40 are
+the measurements; the absence of a formula for them is the finding, not a gap
+to be filled in with a guess later. Anyone who works one out should replace
+this paragraph with the bytes that show it.
+
 Cross-checked against Proxy Press: its browser-side writer produces files that
 this module parses back to the same card geometry its SVG export draws, on
 Letter and A4 in both orientations.
