@@ -19,7 +19,7 @@ cheap: nine sub-suites of a few tests each.
 import io
 import unittest
 
-from cut_proxies import corner_test, graphtec, job, regmarks, starting_guide, testcut, transport, verify
+from cut_proxies import corner_test, cutters, graphtec, job, regmarks, sheet, starting_guide, testcut, transport, verify
 
 
 def _run(class_paths):
@@ -48,6 +48,11 @@ def refuse_depth(codes):
 
 
 CASES = (
+    (cutters, "usb_refusal", lambda *a: "", "every endpoint accepted",
+     ["tests.test_cutter_detection.TestExactEndpoint.test_refusal_changes_with_endpoint_and_model"]),
+    (cutters, "usb_refusal", lambda *a: "refused", "every endpoint refused",
+     ["tests.test_cutter_detection.TestExactEndpoint.test_refusal_changes_with_endpoint_and_model"]),
+
     (graphtec.Device, "supports_holder", lambda *a: True, "every holder accepted",
      ["tests.test_guards.TestInstalledTools"]),
     (graphtec.Device, "supports_holder", lambda *a: False, "every holder refused",
@@ -154,7 +159,19 @@ def _ignore_corner_obstacles(source, occupied, find=corner_test._find_spot):
     return find(source, ())
 
 
+def _ignore_bundle_page_count(*args, expected_pages=None, measure=sheet.measure, **kwargs):
+    return measure(*args, **kwargs)
+
+
+def _reject_bundle_page_count(*args, **kwargs):
+    raise sheet.SheetError("The PDF page count does not match the bundle.")
+
+
 CASES += (
+    (sheet, "measure", _ignore_bundle_page_count, "every bundle PDF page count accepted",
+     ["tests.test_proxypress_bundle.BundleRules.test_pdf_page_count_must_match_the_full_bundle_mapping"]),
+    (sheet, "measure", _reject_bundle_page_count, "every bundle PDF page count refused",
+     ["tests.test_proxypress_bundle.BundleRules.test_pdf_page_count_must_match_the_full_bundle_mapping"]),
     (job, "cutting_mat_errors", lambda *a: [], "every explicit cutting mat accepted",
      ["tests.test_send.TestMediaHandling.test_compatible_portrait_mat_allows_matching_sheet_and_refuses_wrong_size"]),
     (job, "cutting_mat_errors", lambda *a: ["wrong mat"], "every explicit cutting mat refused",
@@ -175,6 +192,10 @@ CASES += (
      ["tests.test_starting_guide.TestStartingGuide"]),
     (starting_guide.Guide, "can_cut", property(lambda *_: False), "guided repeats always refused",
      ["tests.test_starting_guide.TestStartingGuide"]),
+    (starting_guide, "has_cutter_endpoint", lambda *_: True, "every material test cutter accepted",
+     ["tests.test_starting_guide.TestStartingGuide.test_sending_requires_a_selected_cutter_endpoint"]),
+    (starting_guide, "has_cutter_endpoint", lambda *_: False, "every material test cutter refused",
+     ["tests.test_starting_guide.TestStartingGuide.test_sending_requires_a_selected_cutter_endpoint"]),
 )
 
 try:

@@ -5,7 +5,7 @@ import threading
 from PySide6.QtCore import QObject, Qt, Signal, Slot
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
-                               QLabel, QLineEdit, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QStyle,
+                               QLabel, QLineEdit, QMenuBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QStyle,
                                QToolButton, QVBoxLayout, QWidget)
 
 
@@ -19,6 +19,7 @@ QFrame#workspaceBar {
     border: 1px solid palette(midlight);
     border-radius: 9px;
 }
+QFrame#workspaceTools { border-bottom: 1px solid palette(midlight); }
 QScrollArea[role="settings"], QWidget[role="settingsPage"] { background: palette(window); }
 QTabWidget[role="settings"]::pane { border: 0; border-top: 1px solid palette(midlight); }
 QTabWidget[role="settings"] QTabBar::tab {
@@ -37,6 +38,8 @@ QGroupBox[role="card"]::title {
     background: palette(base); border-radius: 3px; left: 11px; padding: 1px 5px;
 }
 QGroupBox[role="card"] QLabel { font-weight: normal; }
+QGroupBox[role="card"] QAbstractSpinBox, QGroupBox[role="card"] QComboBox,
+QGroupBox[role="card"] QLineEdit, QGroupBox[role="card"] QPushButton { min-height: 23px; }
 QCheckBox::indicator:unchecked {
     width: 12px; height: 12px; background: palette(base); border: 1px solid palette(mid); border-radius: 3px;
 }
@@ -48,10 +51,23 @@ QPushButton[role="workspaceTab"] {
 QPushButton[role="workspaceTab"]:hover, QPushButton[role="workspaceTab"]:focus {
     border-color: palette(highlight);
 }
+QPushButton[role="workspaceTab"][active="true"] {
+    background: palette(highlight); color: palette(highlighted-text); border-color: palette(highlight);
+}
+QPushButton[role="workspaceTool"], QToolButton[role="workspaceTool"] {
+    background: palette(button); border: 1px solid palette(midlight);
+    border-radius: 5px; padding: 4px 8px;
+}
+QPushButton[role="workspaceTool"]:hover, QPushButton[role="workspaceTool"]:focus,
+QToolButton[role="workspaceTool"]:hover, QToolButton[role="workspaceTool"]:focus {
+    border-color: palette(highlight);
+}
+QToolButton[role="workspaceTool"]:disabled { color: palette(mid); }
 QPushButton[role="holder"]:checked {
     background: palette(highlight); color: palette(highlighted-text); border-radius: 5px;
 }
-QPushButton[role="primary"], QPushButton[role="workspaceTab"][active="true"] {
+QPushButton:disabled { color: palette(mid); }
+QPushButton[role="primary"] {
     background: palette(highlight); color: palette(highlighted-text); font-weight: 650;
     border: 1px solid palette(highlight); border-radius: 6px; padding: 6px 14px;
 }
@@ -82,8 +98,17 @@ QSlider[role="cutSlider"]::handle:horizontal:focus,
 QSlider[role="cutSlider"]::handle:horizontal:hover { border: 1px solid palette(window-text); }
 QSlider[role="cutSlider"]::handle:horizontal:disabled,
 QSlider[role="cutSlider"]::sub-page:horizontal:disabled { background: palette(mid); }
-QSplitter::handle { background: transparent; width: 8px; }
+QMenuBar { padding: 2px 4px; }
+QMenuBar::item { padding: 5px 10px; }
+QMenuBar#workspaceMenu { background: transparent; padding: 0; }
+QSplitter::handle { background: transparent; width: 12px; }
+QSplitter::handle:horizontal {
+    background: palette(midlight);
+    border-left: 5px solid palette(window);
+    border-right: 5px solid palette(window);
+}
 QSplitter::handle:hover { background: palette(midlight); }
+QSplitter::handle:horizontal:hover { background: palette(highlight); }
 """
 
 
@@ -140,8 +165,35 @@ def bar(parent, margins=(12, 6, 12, 6)):
     return surface, layout
 
 
-def workspace_switch(parent, design, send, *, active):
-    switch = QWidget(parent)
+def workspace_layout(parent):
+    layout = QVBoxLayout(parent)
+    layout.setContentsMargins(14, 10, 14, 12)
+    layout.setSpacing(9)
+    return layout
+
+
+def workspace_tools(parent):
+    surface, layout = bar(parent, (2, 0, 2, 0))
+    surface.setObjectName("workspaceTools")
+    return surface, layout
+
+
+def workspace_tool_button(action):
+    widget = QToolButton()
+    widget.setDefaultAction(action)
+    widget.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+    widget.setProperty("role", "workspaceTool")
+    return widget
+
+
+def workspace_header(parent, design, send, *, active):
+    header, top = bar(parent, (6, 4, 8, 4))
+    menu = QMenuBar(header)
+    menu.setObjectName("workspaceMenu")
+    menu.setNativeMenuBar(False)
+    top.addWidget(menu)
+    top.addStretch(1)
+    switch = QWidget(header)
     row = QHBoxLayout(switch)
     row.setContentsMargins(0, 0, 0, 0)
     row.setSpacing(4)
@@ -154,7 +206,8 @@ def workspace_switch(parent, design, send, *, active):
             item.setAccessibleDescription("Current workspace")
         row.addWidget(item)
         buttons.append(item)
-    return switch, *buttons
+    top.addWidget(switch)
+    return header, menu, *buttons
 
 
 def set_choices(widget, choices, selected=None):
@@ -257,7 +310,8 @@ class Form(QFormLayout):
         self.addRow(label, field)
         return field
 
-    def number(self, label, value, minimum, maximum, step=1, decimals=0, changed=None, *, slider=False):
+    def number(self, label, value, minimum, maximum, step=1, decimals=0, changed=None, *,
+               slider=False, special_text=""):
         field = QDoubleSpinBox() if decimals else QSpinBox()
         if decimals:
             field.setDecimals(decimals)
@@ -265,6 +319,8 @@ class Form(QFormLayout):
         field.setSingleStep(step)
         field.setValue(value)
         field.setKeyboardTracking(False)
+        if special_text:
+            field.setSpecialValueText(special_text)
         if changed:
             field.valueChanged.connect(lambda: changed())
         if slider:
@@ -283,7 +339,8 @@ class Form(QFormLayout):
             track.valueChanged.connect(field.setValue)
             field.valueChanged.connect(track.setValue)
             content.addWidget(track, 1)
-            field.setFixedWidth(76)
+            field.setMinimumWidth(76)
+            field.setSizePolicy(QSizePolicy.Policy.Fixed, field.sizePolicy().verticalPolicy())
             content.addWidget(field)
             field.slider = track
             self.addRow(label, row)

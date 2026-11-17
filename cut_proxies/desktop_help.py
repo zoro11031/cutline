@@ -1,10 +1,13 @@
 """Help shared by the native desktop frontends."""
 
+BLADE_VALUE_TEXT = {"depth": "Manual", "acceleration": "Auto"}
+
 CONTROL_HELP = {
     "force": "How hard the tool presses.",
     "speed": "How fast the tool moves.",
     "passes": "How many times the tool goes over each cut.",
-    "depth": "How far the AutoBlade can extend. Choose Manual / off to set it by hand.",
+    "depth": "Sets AutoBlade depth in holder 1 on compatible cutters. "
+             "Choose Manual to leave the depth set on the tool.",
     "holder": "The slot holding the tool.",
     "acceleration": "How quickly the cutter speeds up and slows down.",
     "blade_diameter_mm": "Helps a blade turn at corners. Use 0 for a pen.",

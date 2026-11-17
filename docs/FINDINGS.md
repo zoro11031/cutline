@@ -1642,3 +1642,106 @@ reads with the AutoBlade installed. An earlier query returned ` 0, 0`.
 The first field identifies holder 1 and the second identifies holder 2.
 The detection test sent only queries. The Kraft blade and aftermarket
 green holder were unavailable for physical identification.
+
+## Cutter selection and local material import
+
+The WinBoat inventory identifies Studio file version 5.0.556.1, product
+version V5.0.556.001, SHA-256
+`4871EDB71FB28B02593850006992277E69E058D0A385B0AC6402F63B9514A47B`.
+The guest was reachable but its desktop session was occupied during this
+pass. Clean-profile enumeration and executable call tracing remain open.
+
+### Device evidence
+
+| Coverage | Evidence |
+| --- | --- |
+| Existing GPGL profiles | 15 named Cameo and Portrait variants with USB IDs from Inkscape Silhouette |
+| Catalog-only entries | Curio, Curio 2, Silhouette SD, Original Silhouette, and legacy Graphtec/Xyron cutters. Unknown IDs and capabilities need additional evidence |
+| Local USB status and identity | Cameo 4, `0b4d:1137`, `/dev/usb/lp0`, firmware V1.20, status `unloaded` |
+| Local BLE | BlueZ 5.88, Bleak 3.1.0, Cameo 4 V1.20. With USB attached, the cached name was `CAMEO 4-499341P` with a random LE address. A fresh scan missed it and connecting to the cached record disconnected during service discovery. The probe sent no cutter commands |
+| External hardware | Cuthulhu reports USB enumeration and status for Cameo 5 Alpha Plus (`3844:0002`) on macOS. Inkscape Silhouette reports BLE plotting with a pen on Cameo 5 Alpha on macOS |
+
+The Classic fallback previously read BlueZ's unfiltered device list and
+offered the unpaired Cameo 4 BLE record as an RFCOMM endpoint. Classic now
+requires Classic inquiry or BlueZ evidence of the Classic profile or
+pairing. Sillinux uses BlueZ pairing for its Linux RFCOMM channel 1 path.
+Inkscape and this application use the same vendor GATT UUIDs. Inkscape
+initializes only after resolving that service. Control Center checks for a
+matching firmware response before initialization. Linux BLE with USB
+detached and a same-device Studio capture remain open for this pass. The
+earlier November 17 trace reached the vendor service but did not establish
+a firmware reply under Linux.
+
+References: [Inkscape BLE transport](https://github.com/fablabnbg/inkscape-silhouette/blob/e782d599b799861b8e2aaacc49bb2ccc7ec78633/silhouette/BLETransport.py),
+[Sillinux Classic transport](https://github.com/racxusdev/Sillinux/blob/63b8d5d0fc28b1719a4a307b2b52d0e15200ec16/crates/silhouette-driver/src/bt.rs),
+[Cuthulhu hardware notes](https://github.com/vcolombo/cuthulhu/blob/c9a07a29ebc11c5e9d7274afc3930a6a8bb66ccd/docs/protocol/silhouette-cameo5.md).
+
+### Factory resource reconciliation
+
+The saved `SPEC_S/condition.csv` contains 29 material groups, 3 folders,
+1 root and 290 unique leaf UUIDs. The importer retains all 290 leaves.
+There are 29 per cutter class across 10 classes. Tool counts are adjustable
+270, blue 10, pen2 5, and unspecified 5. Holder and action are unspecified
+in all 290 rows. The two Blade Depth columns agree across all leaves.
+All 290 rows say Overcut off with start and end values of zero. Acceleration
+and Track Enhancing have no named columns in this source. The two saved
+`media.csv` tables describe paper sizes and UI metadata. Their headers
+contain no cutting-settings columns. Historical dated condition tables and
+runtime defaults were not reconciled with a clean Studio profile.
+
+The local snapshot preserves duplicate columns and unmapped fields such as
+platform, flags, message IDs, dash fields, and raw tool identifiers.
+Vendor rows stay local. The imported library is complete for this saved
+CSV. Whether Studio supplements it with newer model-, tool-, holder-, or
+action-specific data remains open. No GUI comparison with a clean Studio
+profile was performed in this pass.
+
+### Follow-up audit of the installed build
+
+After closing the occupied RDP session, a fresh installation inventory
+confirmed Studio 5.0.556.1 and the executable hash above. In addition to the
+legacy CSV, the installation contains a 3,333,472-byte
+`Resources/Resources/SPEC_CUTTER/materials` resource (SHA-256
+`2f809e26411866175b81b508306e74f85c9c1fd0cd98a9d885845a1e39b6a451`).
+It lacks a recognizable file header and has approximately 7.98 bits per byte
+of entropy. Its encoding and record count remain unresolved.
+
+Executable metadata exposes `Condition_root.generate_materials_list` with a
+division argument, material-action stand-in methods, a separate
+`user_defined_materials_folderitem` save path, and
+`CutJob.evaluate_track_enhancing`. These are static entry points for tracing.
+They do not establish runtime precedence, thresholds, or the relationship
+between the opaque resource and the CSV. The Bluetooth helper ships with
+`BluetoothIO.dll`, whose PE imports include Windows Bluetooth device
+enumeration and Winsock. These imports alone do not establish the Cameo 4
+connection path. An isolated clean profile, resource call tracing, and a
+same-cutter Studio traffic capture remain outstanding.
+
+### Isolated profile and USB-disconnected Bluetooth retry
+
+Studio 5.0.556.1 started successfully in a freshly created temporary Windows
+profile and opened an untitled document. At first startup it created
+`user_materials/A.materials4` (88 bytes), the same pathname and size seen in
+the ordinary profile inventory. Its presence alone does not prove that a user
+created a material. The temporary account and profile were removed. The
+executable separately names factory-default lookup, legacy CSV loaders, and
+custom serialization methods. The clean startup did not expose a count or
+decoded copy of the factory library. The opaque resource has no recognizable
+ZIP, gzip, zstd, or SQLite signature and yielded no printable runs of 20
+bytes. These observations do not establish its encoding.
+
+With the Cameo 4 powered on and the USB cable physically disconnected, a
+12-second scan found `CAMEO 4-499341P`. The advertisement exposed the generic
+GAP and GATT UUIDs. The direct BLE connection again disconnected during
+service discovery before the app could issue firmware or status queries.
+This narrows the USB-attached observation: the unplug helped advertising,
+but did not establish a usable Linux BLE link. The host did not grant access
+to the HCI monitor, so the disconnect reason was not captured. No pairing,
+initialization, or cutter motion commands were sent.
+
+A second isolated launch produced a Windows FileIO trace containing the
+pathnames `SPEC_CUTTER/materials` and `user_materials/A.materials4`. The
+pathname scan found no `SPEC_S/condition.csv` marker in that recording.
+The raw trace was not decoded into process-attributed read events, so a
+missing marker does not prove the CSV is unused. The temporary trace,
+account, and profile were cleaned up.

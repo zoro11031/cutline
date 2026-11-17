@@ -111,6 +111,18 @@ class TestBle(unittest.TestCase):
                 self.assertTrue(link.device.quad_regmarks)
             write.assert_called_once_with(b"FG\x03")
 
+    def test_status_preflight_never_initializes_the_transport(self):
+        model = graphtec.device_by_name("Silhouette Cameo 4")
+        record = bluetooth.Candidate("local-id", model.name)
+        with mock.patch.object(ble.BleTransport, "_connect", new_callable=mock.AsyncMock, return_value=record), \
+             mock.patch.object(ble.BleTransport, "_initialize", new_callable=mock.AsyncMock) as initialize, \
+             mock.patch.object(ble.BleTransport, "write") as write, \
+             mock.patch.object(ble.BleTransport, "read", side_effect=[b"CAMEO 4 V1.20\x03", b"2\x03"]):
+            with ble.BleTransport("local-id", model) as link:
+                self.assertEqual(link.status(), "unloaded")
+            self.assertEqual(write.call_args_list, [mock.call(b"FG\x03"), mock.call(b"\x1b\x05")])
+            initialize.assert_not_awaited()
+
     def test_wrong_firmware_closes_connection(self):
         model = graphtec.device_by_name("Silhouette Cameo 4")
         with mock.patch.object(ble.BleTransport, "_connect", new_callable=mock.AsyncMock,

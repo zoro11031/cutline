@@ -378,9 +378,13 @@ def mark_ink_matches(image, box: Rect, dpi: int, ell=None) -> bool:
 
 
 def measure(pdf, mk: Marks, page: int = 1, dpi: int = DEFAULT_DPI,
-            search_mm: float = SEARCH_MM, image=None, swap_page_axes=False) -> SheetReport:
+            search_mm: float = SEARCH_MM, image=None, swap_page_axes=False, *,
+            expected_pages: int | None = None) -> SheetReport:
     """Find each expected mark on the page and say where it actually is."""
     page_w, page_h, pages = page_size_mm(pdf)
+    if expected_pages is not None and pages != expected_pages:
+        raise SheetError(f"The PDF contains {pages} page(s), but the bundle maps "
+                         f"{expected_pages}. Download the matching print and cut files again.")
     if swap_page_axes:
         page_w, page_h = page_h, page_w
     if page < 1 or page > pages:

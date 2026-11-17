@@ -26,6 +26,12 @@ class TestStartingGuide(unittest.TestCase):
         self.assertIsNone(starting_guide.starting_values(older, 1, 0.9)["depth"])
         self.assertIsNone(starting_guide.starting_values(self.device, 2, 0.9)["depth"])
 
+    def test_sending_requires_a_selected_cutter_endpoint(self):
+        for mode, endpoint in (("auto", (1, 2)), ("ble", "AA"), ("bluetooth", "BB")):
+            with self.subTest(mode=mode):
+                self.assertFalse(starting_guide.has_cutter_endpoint((mode, None)))
+                self.assertTrue(starting_guide.has_cutter_endpoint((mode, endpoint)))
+
     def test_repeating_uses_exact_same_geometry_settings_and_return_to_origin(self):
         trial = self.prepare()
         self.assertEqual(len(verify.decode(trial.sheet.stream).paths), 1)

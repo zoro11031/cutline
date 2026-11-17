@@ -23,6 +23,16 @@ def _grid(cr, width, height, spacing):
     cr.stroke()
 
 
+def draw_feed_arrow(cr, width, color, unit=1):
+    center = width / 2
+    cr.set_source_rgb(*color)
+    cr.move_to(center, -11 * unit)
+    for dx, y in ((5, -6), (2, -6), (2, -2), (-2, -2), (-2, -6), (-5, -6)):
+        cr.line_to(center + dx * unit, y * unit)
+    cr.close_path()
+    cr.fill()
+
+
 class DesignCanvas(Gtk.DrawingArea):
     def __init__(self, editor):
         super().__init__(hexpand=True, vexpand=True, focusable=True)
@@ -170,16 +180,7 @@ class DesignCanvas(Gtk.DrawingArea):
         cr.rectangle(0, 0, width, height)
         cr.stroke()
         _grid(cr, width, height, max(25.4, 4/scale))
-        center = width / 2
-        cr.move_to(center, -12)
-        cr.line_to(center + 5, -7)
-        cr.line_to(center + 2, -7)
-        cr.line_to(center + 2, -3)
-        cr.line_to(center - 2, -3)
-        cr.line_to(center - 2, -7)
-        cr.line_to(center - 5, -7)
-        cr.close_path()
-        cr.fill()
+        draw_feed_arrow(cr, width, (0.32, 0.37, 0.41))
 
     @staticmethod
     def draw_rulers(cr, width, height, scale):

@@ -25,7 +25,7 @@ _MODELS = {name.replace(" ", ""): graphtec.device_for(*ids) for name, ids in _MO
 _FIRMWARE = re.compile(r"(.+?)\s+V\d+(?:\.\d+)*", re.I)
 _ADV_SUFFIX = re.compile(r"-[A-Z0-9]+$")
 _MODEL_ALIASES = {"CAMEOPROMKII": "CAMEOPROMARK2", "CAMEOPROMARKII": "CAMEOPROMARK2"}
-BLUETOOTH_MODES = {"ble": "Bluetooth LE", "bluetooth": "Bluetooth Classic (RFCOMM)"}
+BLUETOOTH_MODES = {"ble": "Bluetooth LE", "bluetooth": "Bluetooth Classic"}
 
 
 def advertised_model(name: str) -> graphtec.Device | None:
@@ -58,6 +58,16 @@ class Candidate:
     name: str
     service: bool = False
     peripheral: object = None
+
+    @property
+    def catalog_name(self):
+        if model := self.model:
+            return model.name
+        for name in ("Curio 2",):
+            compact = "".join(self.name.upper().split()).removeprefix("SILHOUETTE")
+            if compact == name.upper().replace(" ", "") or re.fullmatch(r"CURIO2-[A-Z0-9]+", compact):
+                return f"Silhouette {name}"
+        return None
 
     @property
     def model(self):

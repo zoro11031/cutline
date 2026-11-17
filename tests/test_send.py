@@ -208,15 +208,16 @@ class TestGuiCheckedPlan(unittest.TestCase):
             cut_button=mock.Mock(), scan_button=mock.Mock(), scan_result=mock.Mock(),
             r_auto=mock.Mock(), toast=mock.Mock(),
             rebuild=mock.Mock(), _send_done=mock.Mock(), update_send_actions=mock.Mock(),
-            _connection=lambda: ("auto", None), guide=mock.Mock())
+            _connection=lambda: ("auto", (1, 2)), selected_cutter=lambda: gui.cutters.AUTO, guide=mock.Mock())
         window.r_auto.get_active.return_value = True
         transport = mock.MagicMock()
         transport.__enter__.return_value = transport
         transport.status.return_value = 'ready'
         with mock.patch.object(gui.threading, 'Thread', ImmediateThread), \
+             mock.patch.object(gui.cutters.transport, 'usb_endpoints', return_value=[(checked.device, '', (1, 2))]), \
              mock.patch.object(gui.transport, 'open_transport', return_value=transport), \
              mock.patch.object(gui.GLib, 'idle_add'):
-            gui.Window._cut_response(window, None, 'cut', checked, scan_only=scan_only)
+            gui.Window._cut_response(window, None, 'cut', checked, window._connection(), scan_only=scan_only)
         return transport
 
     def test_actual_send_preserves_calibration(self):
