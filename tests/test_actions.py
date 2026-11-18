@@ -4,7 +4,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from cut_proxies import actions, cli, editor_model, graphtec, importer, job, transport, verify
+from cut_proxies import actions, cli, editor_model, graphtec, importer, job, presets, transport, verify
+from cut_proxies.holder_settings import HolderSettings
 
 
 ART = """<svg xmlns="http://www.w3.org/2000/svg"
@@ -35,6 +36,17 @@ class TestArtworkGroups(unittest.TestCase):
         self.assertEqual(list(actions.group_paths(self.artwork.paths, "layer")),
                          ["Panels", "Panels / Fold", "(no layer)"])
         self.assertEqual(self.artwork.only("red").paths, self.artwork.paths[:1])
+
+    def test_group_bound_to_holder_settings_cannot_be_redirected_to_another_holder(self):
+        preset = presets.get("Print Paper")
+        profiles = HolderSettings().profiles(preset, preset.cut_settings())
+        plan = job.build(imported=self.artwork, send_mode="line", holder_profiles=profiles,
+                         assignments=(actions.Assignment("red", actions.HOLDER_SETTINGS[1]),))
+        self.assertEqual(plan.blocked, [])
+        self.assertEqual(plan.action_groups[0].settings.holder, 1)
+        with self.assertRaisesRegex(ValueError, "Choose the same holder"):
+            job.build(imported=self.artwork, send_mode="line", holder_profiles=profiles,
+                      assignments=(actions.Assignment("red", actions.HOLDER_SETTINGS[1], 2),))
 
     def test_duplicate_inkscape_layer_names_remain_separate(self):
         svg = ART.replace('inkscape:label="Print"',

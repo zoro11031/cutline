@@ -7,6 +7,36 @@ from cut_proxies import actions, editor_model, job, regmarks
 
 
 class TestEditorModel(unittest.TestCase):
+    def test_page_rotation_repositions_geometry_and_swaps_dimensions(self):
+        shape = editor_model.Shape("Rectangle", 30, 40, 20, 10, holder=2, line_style="dashed")
+        project = editor_model.Project(200, 100, (shape,))
+        turned = editor_model.rotate_page(project, True)
+        self.assertEqual((turned.width, turned.height), (100, 200))
+        self.assertEqual(editor_model.bounds(turned.shapes), editor_model.geometry.Rect(50, 30, 10, 20))
+        self.assertEqual(editor_model.rotate_page(turned, False), project)
+        with tempfile.TemporaryDirectory() as folder:
+            target = pathlib.Path(folder) / "holder.scc-template"
+            editor_model.save_project(target, turned)
+            self.assertEqual(editor_model.load_project(target), turned)
+
+    def test_smart_snap_uses_nearby_edges_and_leaves_distant_moves_alone(self):
+        shapes = (editor_model.Shape("Rectangle", 10, 10, 10, 10),
+                  editor_model.Shape("Rectangle", 40, 40, 10, 10))
+        self.assertEqual(editor_model.snap_move(shapes, (0,), 19.5, 19, 200, 100, 2), (20, 20))
+        self.assertEqual(editor_model.snap_move(shapes, (0,), 17, 17, 200, 100, 2), (17, 17))
+
+    def test_offset_keeps_the_source_and_refuses_shapes_that_cannot_be_offset(self):
+        shape = editor_model.Shape("Rectangle", 30, 40, 20, 10, holder=2)
+        expanded = editor_model.offset_shape(shape, 2.0)
+        inset = editor_model.offset_shape(shape, -2.0)
+        self.assertEqual(editor_model.bounds((expanded,)), editor_model.geometry.Rect(28, 38, 24, 14))
+        self.assertEqual(editor_model.bounds((inset,)), editor_model.geometry.Rect(32, 42, 16, 6))
+        self.assertEqual(expanded.holder, 2)
+        with self.assertRaisesRegex(ValueError, "too large"):
+            editor_model.offset_shape(shape, -6.0)
+        with self.assertRaisesRegex(ValueError, "closed shape"):
+            editor_model.offset_shape(editor_model.Shape("Line"), 2.0)
+
     def test_shapes_go_through_the_checked_job_pipeline(self):
         shapes = tuple(editor_model.Shape(kind, x=40 + i * 47)
                        for i, kind in enumerate(editor_model.KINDS))
@@ -51,7 +81,9 @@ class TestEditorModel(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             target = pathlib.Path(folder) / 'design.scc-template'
             editor_model.save_project(target,project)
-            self.assertEqual(json.loads(target.read_text())['version'],2)
+            saved = json.loads(target.read_text())
+            self.assertEqual(saved['version'], 2)
+            self.assertTrue({'holder', 'line_style', 'line_width_mm'}.isdisjoint(saved['objects'][0]))
             reopened = editor_model.load_project(target)
         self.assertEqual(reopened, project)
         path, = reopened.artwork('Score').paths

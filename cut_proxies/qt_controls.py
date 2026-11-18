@@ -4,9 +4,9 @@ import threading
 
 from PySide6.QtCore import QObject, Qt, Signal, Slot
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
-                               QLabel, QLineEdit, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QStyle,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
+                               QLabel, QLineEdit, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QStyle,
+                               QToolButton, QVBoxLayout, QWidget)
 
 
 WORKSPACE_STYLE = """
@@ -48,6 +48,9 @@ QPushButton[role="workspaceTab"] {
 QPushButton[role="workspaceTab"]:hover, QPushButton[role="workspaceTab"]:focus {
     border-color: palette(highlight);
 }
+QPushButton[role="holder"]:checked {
+    background: palette(highlight); color: palette(highlighted-text); border-radius: 5px;
+}
 QPushButton[role="primary"], QPushButton[role="workspaceTab"][active="true"] {
     background: palette(highlight); color: palette(highlighted-text); font-weight: 650;
     border: 1px solid palette(highlight); border-radius: 6px; padding: 6px 14px;
@@ -60,6 +63,25 @@ QPushButton[role="primary"]:disabled {
     background: palette(button); color: palette(mid); border-color: palette(midlight);
 }
 QPlainTextEdit[role="diagnostics"] { font-family: monospace; }
+QToolButton[role="disclosure"] {
+    border: 1px solid palette(midlight); border-radius: 6px; padding: 5px 8px;
+    background: palette(base); font-weight: 600;
+}
+QToolButton[role="disclosure"]:hover, QToolButton[role="disclosure"]:focus {
+    border-color: palette(highlight);
+}
+QSlider[role="cutSlider"]::groove:horizontal {
+    height: 4px; border-radius: 2px; background: palette(midlight);
+}
+QSlider[role="cutSlider"]::sub-page:horizontal { border-radius: 2px; background: palette(highlight); }
+QSlider[role="cutSlider"]::handle:horizontal {
+    width: 12px; border: 1px solid palette(highlight); border-radius: 7px;
+    margin: -5px 0; background: palette(highlight);
+}
+QSlider[role="cutSlider"]::handle:horizontal:focus,
+QSlider[role="cutSlider"]::handle:horizontal:hover { border: 1px solid palette(window-text); }
+QSlider[role="cutSlider"]::handle:horizontal:disabled,
+QSlider[role="cutSlider"]::sub-page:horizontal:disabled { background: palette(mid); }
 QSplitter::handle { background: transparent; width: 8px; }
 QSplitter::handle:hover { background: palette(midlight); }
 """
@@ -171,6 +193,25 @@ class Page(QWidget):
         form.setContentsMargins(12, 15, 12, 10)
         return form
 
+    def section(self):
+        section = Page()
+        section.body.setContentsMargins(0, 0, 0, 0)
+        self.body.addWidget(section)
+        return section
+
+    def advanced(self, title="Advanced Options"):
+        toggle = QToolButton(text=title, checkable=True, arrowType=Qt.ArrowType.RightArrow,
+                             toolButtonStyle=Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        toggle.setProperty("role", "disclosure")
+        self.body.addWidget(toggle, alignment=Qt.AlignmentFlag.AlignLeft)
+        section = self.section()
+        section.disclosure = toggle
+        section.hide()
+        toggle.toggled.connect(section.setVisible)
+        toggle.toggled.connect(lambda shown: toggle.setArrowType(
+            Qt.ArrowType.DownArrow if shown else Qt.ArrowType.RightArrow))
+        return section
+
     def finish(self):
         self.body.addStretch(1)
         return scroll(self)
@@ -216,7 +257,7 @@ class Form(QFormLayout):
         self.addRow(label, field)
         return field
 
-    def number(self, label, value, minimum, maximum, step=1, decimals=0, changed=None):
+    def number(self, label, value, minimum, maximum, step=1, decimals=0, changed=None, *, slider=False):
         field = QDoubleSpinBox() if decimals else QSpinBox()
         if decimals:
             field.setDecimals(decimals)
@@ -226,7 +267,28 @@ class Form(QFormLayout):
         field.setKeyboardTracking(False)
         if changed:
             field.valueChanged.connect(lambda: changed())
-        self.addRow(label, field)
+        if slider:
+            row = QWidget()
+            content = QHBoxLayout(row)
+            content.setContentsMargins(0, 0, 0, 0)
+            content.setSpacing(9)
+            track = QSlider(Qt.Orientation.Horizontal)
+            track.setProperty("role", "cutSlider")
+            track.setAccessibleName(label)
+            field.setAccessibleName(f"{label} value")
+            track.setRange(minimum, maximum)
+            track.setSingleStep(step)
+            track.setValue(value)
+            track.setTracking(False)
+            track.valueChanged.connect(field.setValue)
+            field.valueChanged.connect(track.setValue)
+            content.addWidget(track, 1)
+            field.setFixedWidth(76)
+            content.addWidget(field)
+            field.slider = track
+            self.addRow(label, row)
+        else:
+            self.addRow(label, field)
         return field
 
     def check(self, label, value=False, changed=None):
@@ -235,6 +297,28 @@ class Form(QFormLayout):
         if changed:
             field.toggled.connect(lambda: changed())
         self.addRow(field)
+        return field
+
+    def holders(self, changed):
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        field = QSpinBox(row)
+        field.setRange(1, 2)
+        field.hide()
+        picker = QButtonGroup(row)
+        for slot in (1, 2):
+            tab = QPushButton(f"Tool Holder {slot}", checkable=True)
+            tab.setProperty("role", "holder")
+            tab.setMinimumHeight(28)
+            picker.addButton(tab, slot)
+            layout.addWidget(tab, 1)
+        picker.button(1).setChecked(True)
+        picker.idClicked.connect(field.setValue)
+        field.valueChanged.connect(lambda slot: picker.button(slot).setChecked(True))
+        field.valueChanged.connect(lambda: changed())
+        field.holders = picker
+        self.addRow(row)
         return field
 
     def text(self, label, value="", changed=None):

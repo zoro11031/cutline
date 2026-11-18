@@ -35,6 +35,8 @@ class TestStartingGuide(unittest.TestCase):
         self.assertEqual(trial.sheet.steps[-1].data, graphtec.frame(graphtec.return_to_start_commands(self.device)))
         self.guide.record(trial)
         self.assertIs(self.prepare(force=32, offset_mm=(2, -1)), trial)
+        with self.assertRaisesRegex(ValueError, "tool holder"):
+            self.prepare(blade_options={"holder": 2})
         self.guide.record(trial)
         self.assertEqual(self.guide.tested_settings.passes, 2)
         self.assertEqual(trial.settings.passes, 1)

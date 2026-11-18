@@ -132,6 +132,8 @@ class Guide:
         if reason:
             raise ValueError(reason)
         if self.trial:
+            if options["blade_options"].get("holder", 1) != self.trial.settings.holder:
+                raise ValueError("Switch back to the tested tool holder or use a fresh spot.")
             return self.trial
         device = graphtec.device_by_name(options["cutter"])
         blade = dict(options["blade_options"], track_enhancing=False)
