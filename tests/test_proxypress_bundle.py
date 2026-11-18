@@ -63,7 +63,7 @@ class BundleRules(unittest.TestCase):
             z.writestr(row['cutFile'], b'silhouette05;fixture')
         loaded = bundle.load(self.path)
         self.assertEqual(loaded.marks().length_mm, 8.0264)
-        self.assertEqual(loaded.studio_file(loaded.row(), self.path.parent).name, row['cutFile'])
+        self.assertEqual(loaded.save_cut_file(loaded.row(), self.path.parent / row['cutFile']).name, row['cutFile'])
         with self.assertRaisesRegex(bundle.BundleError, 'direct cutting'):
             loaded.artwork(loaded.row())
 
@@ -75,11 +75,22 @@ class BundleRules(unittest.TestCase):
         with zipfile.ZipFile(self.path, 'a') as z:
             z.writestr(row['cutFile'], payload)
         loaded = bundle.load(self.path)
-        staged = loaded.studio_file(loaded.row(2), self.path.parent)
+        staged = loaded.save_cut_file(loaded.row(2), self.path.parent / row['cutFile'])
         self.assertEqual(staged.name, row['cutFile'])
         self.assertEqual(staged.read_bytes(), payload)
-        with self.assertRaisesRegex(bundle.BundleError, 'no matching Studio'):
-            loaded.studio_file(dict(row, cutFile='sheet-1.studio3'), self.path.parent)
+        with self.assertRaisesRegex(bundle.BundleError, 'no matching cut file'):
+            loaded.save_cut_file(dict(row, cutFile='sheet-1.studio3'), self.path.parent / 'test.studio3')
+
+    def test_paired_svg_can_be_saved_without_overwriting_the_bundle(self):
+        self.write()
+        loaded = bundle.load(self.path)
+        row = loaded.row()
+        target = loaded.save_cut_file(row, self.path.parent / 'sheet-2.svg')
+        with zipfile.ZipFile(self.path) as archive:
+            self.assertEqual(target.read_bytes(), archive.read(row['svg']))
+        with self.assertRaisesRegex(bundle.BundleError, 'separate from the source ZIP'):
+            loaded.save_cut_file(row, self.path)
+        self.assertTrue(zipfile.is_zipfile(self.path))
 
     def test_cut_refuses_a_failed_pdf_check_and_accepts_a_matching_one(self):
         self.write()

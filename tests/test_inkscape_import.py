@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from cut_proxies import graphtec, importer, job
+from cut_proxies import corner_test, graphtec, importer, job
 
 
 class TestInkscapeImport(unittest.TestCase):
@@ -54,6 +54,14 @@ class TestInkscapeImport(unittest.TestCase):
         self.assertEqual(checked.marks.reg_length_mm, 169)
         self.assertIn(b"TB123,3380,4900,180,100\x03", checked.stream)
         self.assertIn(graphtec.frame(graphtec.move_mm(35, 26)), checked.stream)
+
+    def test_corner_cut_uses_the_imported_registration_measurements(self):
+        design = self.load_sheet(top=19, right=260, bottom=188)
+        active = job.build(imported=design, auto_search=False, offset_mm=(0, 0))
+        sample = corner_test.build(active, artwork=design)
+        self.assertEqual(sample.job.marks, active.marks)
+        self.assertEqual(sample.job.registration_steps(), active.registration_steps())
+        self.assertIn("Position the cutter head", sample.describe())
 
     def test_bad_registration_blocks_registered_job(self):
         design = self.load_sheet(right_top=20)

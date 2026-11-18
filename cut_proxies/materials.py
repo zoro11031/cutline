@@ -12,10 +12,7 @@ preset built from it is the one kind that can honestly be labelled
 
 The file is **not vendored into this repository** — it is Silhouette's, it
 ships with their software, and copying it here would be redistributing it.
-`load()` reads it out of an installation the user already has. On this setup
-that means the copy pulled out of the WinBoat guest by
-`cut-proxies studio --run-helper`, which lands in
-`~/cut-proxies/studio-extract/`.
+`load()` reads a file chosen by the user or a local copy in the app configuration directory.
 
 What the columns mean, and how they map onto what the machine is sent:
 
@@ -56,21 +53,8 @@ import csv
 import dataclasses
 import pathlib
 
+from . import config
 from .graphtec import CutSettings, su_to_mm
-
-# Where the file sits inside an install, and where our extract puts it.
-CONDITION_REL = pathlib.PurePath(
-    "Resources", "Resources", "SPEC_S", "condition.csv")
-
-# Where a Studio extract may have been left. The first is this project's
-# own staging directory; the second is the legacy location at the top of
-# the home directory, kept so an existing extract is still found.
-SEARCH_DIRS = (
-    pathlib.Path(__file__).resolve().parent.parent / "guest-staging"
-    / "studio-extract",
-    pathlib.Path.home() / "cut-proxies" / "studio-extract",
-    pathlib.Path.home() / ".config" / "cut-proxies",
-)
 
 # A material heavier than anything else made of paper in the table; the
 # closest published analogue to 330 gsm black-core stock.
@@ -116,20 +100,26 @@ class Material:
 
 
 def find_condition_csv() -> pathlib.Path | None:
-    """The first `condition.csv` we can find from a Studio installation."""
-    for folder in SEARCH_DIRS:
-        if not folder.is_dir():
-            continue
-        # The extract flattens Windows paths into one filename, so match on
-        # the tail rather than the directory structure.
-        for path in sorted(folder.iterdir()):
-            if path.is_file() and path.name.endswith("condition.csv") \
-                    and "_SPEC_S_" in path.name:
-                return path
-        direct = folder / CONDITION_REL
-        if direct.is_file():
-            return direct
-    return None
+    """Find the user's chosen CSV or a copy in the app configuration directory."""
+    selected = config.load_settings().get("material_csv")
+    if isinstance(selected, str) and selected:
+        path = pathlib.Path(selected).expanduser()
+        if path.is_file():
+            return path
+    default = config.CONFIG_DIR / "condition.csv"
+    return default if default.is_file() else None
+
+
+def select_condition_csv(path):
+    """Remember a valid CSV explicitly selected in the app."""
+    path = pathlib.Path(path).resolve()
+    rows = load(path)
+    if not rows:
+        raise ValueError(f"{path} contains no usable material settings.")
+    settings = config.load_settings()
+    settings["material_csv"] = str(path)
+    config.save_settings(settings)
+    return rows
 
 
 def _cell(row, idx, key):
@@ -149,9 +139,7 @@ def load(path=None) -> list[Material]:
     path = pathlib.Path(path) if path else find_condition_csv()
     if path is None:
         raise FileNotFoundError(
-            "No Silhouette condition.csv found. Run "
-            "'cut-proxies studio --run-helper' to pull one out of the "
-            "WinBoat guest, or pass the path to one from a Studio install.")
+            "No Silhouette condition.csv found. Choose a local copy in Blade or pass --file.")
     with open(path, encoding="utf-8-sig", errors="replace", newline="") as fh:
         rows = list(csv.reader(fh))
     if len(rows) < 3:

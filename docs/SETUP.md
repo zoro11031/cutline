@@ -311,43 +311,16 @@ This corrects a *translation*, and only that. Two things it cannot fix:
   correct and the back is wrong. Calibrate the printer's duplex offset in
   Proxy Press instead.
 
-## The WinBoat fallback
+## Exporting files and reading material settings
 
-Only needed if the direct USB path will not register or will not cut.
+Use **Layout → Export** to save SVG, DXF and proof files. Use **Sheet → Save
+Paired Cut File** to extract the selected template from a ProxyPress ZIP.
+Open the exported file in an application of your choice.
 
-```sh
-cut-proxies status              # is the guest up, is Studio installed
-cut-proxies studio --prepare    # stage the guest helper, print the steps
-cut-proxies studio --run-helper # stage it and run it in the guest over RDP
-```
-
-`--prepare` writes `prepare-guest.ps1` into the shared folder (your home
-directory, which the guest sees as `\\host.lan\Data`). Run it inside Windows
-in PowerShell; it reports whether Studio is installed, whether Windows can see
-a cutter, and what templates are staged, into `~/cut-proxies/guest-report.txt`
-where Linux can read it.
-
-**Windows serves one RDP session at a time.** If something else already has
-it — another tool, or a window you left open — a second connection silently
-does nothing rather than failing. `cut-proxies` checks first and refuses with
-the name of the process holding it, and `cut-proxies status` shows the
-session as free or held.
-
-**cut-proxies does not install Silhouette Studio.** Download it from
-<https://www.silhouetteamerica.com/software> inside the guest and run the
-installer yourself. Once it is there:
-
-```sh
-cut-proxies studio path/to/template.dxf
-```
-
-opens it as an RDP RemoteApp. In Studio: set the page to the same size and
-orientation, turn on registration marks with the same inset, and check the
-import landed at 100%.
-
-The guest login is read from `~/.winboat/docker-compose.yml` at the moment it
-is needed and is never printed. Override it with `CUT_PROXIES_GUEST_USER` and
-`CUT_PROXIES_GUEST_PASSWORD` if you would rather it were not read from there.
+If you already have Silhouette's vendor material CSV, choose it under
+**Blade → Choose condition.csv**, or pass `materials --file PATH` on the
+command line. Studio stores it under `Resources/Resources/SPEC_S` in its
+installation directory.
 
 ## Environment variables
 
@@ -355,8 +328,6 @@ is needed and is never printed. Override it with `CUT_PROXIES_GUEST_USER` and
 |---|---|
 | `CUT_PROXIES_CONFIG` | config directory (default `~/.config/cut-proxies`) |
 | `CUT_PROXIES_TEMPLATES` | where templates are written (default `~/Documents/cut-proxies`) |
-| `CUT_PROXIES_GUEST_SHARE` | what Windows calls the share (default `\\host.lan\Data`) |
-| `CUT_PROXIES_GUEST_USER` / `..._PASSWORD` | guest login, instead of reading the compose file |
 | `PRINTING_SUITE_HOME` | where the sibling projects live |
 
 ## Inkscape Silhouette Print & Cut

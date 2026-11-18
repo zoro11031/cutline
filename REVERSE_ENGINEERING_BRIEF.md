@@ -1,5 +1,8 @@
 # MISSION BRIEFING: Reverse Engineering Silhouette Studio & Bringing `cut-proxies` to Full Feature Parity
 
+References to the desktop app's WinBoat bridge describe an earlier workflow.
+For local file export, see the current setup guide.
+
 ## 1. Project Context & Location
 You are working on **`cut-proxies`** (located at `/home/justin/Projects/Printing/cut-proxies`), a Linux-native driver, cut-stream builder, verification engine, and GUI/CLI for the **Silhouette Cameo 4/5** cutting plotter, specifically optimized for cutting custom TCG proxy cards on heavy stock (ProxyJak 330gsm black core).
 

@@ -1,5 +1,8 @@
 # Silhouette Control Center: UI and functionality audit
 
+References to the desktop app's WinBoat bridge describe an earlier workflow.
+For local file export, see the current setup guide.
+
 2026-11-09. Audited the local application and current sibling Proxy Press
 source. No cutter was connected and no hardware job was sent. Findings below
 distinguish reproduced software behavior from source review and from work

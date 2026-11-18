@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Display-required GUI audit. No USB jobs, guest launches or settings writes.
+"""Display-required GUI audit. No USB jobs or settings writes.
 
 Run separately from the fast offline unit suite, with a 30-second bound.
 """
@@ -24,7 +24,7 @@ results = {'checks': [], 'screenshots': [], 'capture_errors': []}
 app = gui.Application()
 app.set_application_id('org.printing.SilhouetteControlCenter.Audit')
 app.set_flags(Gio.ApplicationFlags.NON_UNIQUE)
-pages = iter(('layout', 'sheet', 'blade', 'cut', 'studio'))
+pages = iter(('layout', 'sheet', 'blade', 'cut'))
 failed = []
 
 
@@ -150,8 +150,7 @@ def start(*_):
 
 app.connect('activate', start)
 GLib.timeout_add_seconds(25, lambda: (failed.append('audit timed out'), app.quit(), False)[-1])
-with mock.patch.object(gui.transport, 'open_transport', side_effect=AssertionError('USB prohibited during UI audit')), \
-     mock.patch.object(gui.winboat, 'open_in_studio', side_effect=AssertionError('guest launch prohibited during UI audit')):
+with mock.patch.object(gui.transport, 'open_transport', side_effect=AssertionError('USB prohibited during UI audit')):
     app.run([])
 results['failures'] = failed
 (args.output / 'report.json').write_text(json.dumps(results, indent=2) + '\n')

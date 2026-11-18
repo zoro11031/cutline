@@ -3,9 +3,7 @@
 A guard tested solely on the failure case is still unproven: a function
 hardwired to "always refuse" passes every such test. The mirror is just as
 bad — a class full of negative cases is passed by a function that can only
-say "fine", which is what `rdp_busy`'s tests did until this file existed.
-That guard is the one stopping this session walking into another's VM
-session, and it had never been asked to say "busy".
+say "fine". The mutation cases below check both kinds of failure.
 
 So for each guard, hardwire it **both** ways and require its test class to
 notice each time. A check that can only answer one way then fails at least
@@ -21,7 +19,7 @@ cheap: nine sub-suites of a few tests each.
 import io
 import unittest
 
-from cut_proxies import graphtec, job, regmarks, starting_guide, testcut, transport, verify, winboat
+from cut_proxies import corner_test, graphtec, job, regmarks, starting_guide, testcut, transport, verify
 
 
 def _run(class_paths):
@@ -72,18 +70,6 @@ CASES = (
      "Imported mode guard always allows", ["tests.test_imported_page.ImportedPage"]),
     (job, "imported_mode_errors", lambda *a: ["cross mode unsupported"],
      "Imported mode guard always refuses", ["tests.test_imported_page.ImportedPage"]),
-    (winboat, "rdp_busy", lambda *a, **k: "",
-     "rdp_busy can never report a held session",
-     ["tests.test_guards.TestRdpBusyFires", "tests.test_rdp_hidden.TestHiddenRdp"]),
-    (winboat, "rdp_busy", lambda *a, **k: "pid 1 running x holds it",
-     "rdp_busy reports every port as held",
-     ["tests.test_guards.TestRdpBusyFires", "tests.test_rdp_hidden.TestHiddenRdp"]),
-    (winboat, "port_open", lambda *a, **k: True,
-     "port_open calls every port open",
-     ["tests.test_guards.TestPortOpenFires"]),
-    (winboat, "port_open", lambda *a, **k: False,
-     "port_open calls every port closed",
-     ["tests.test_guards.TestPortOpenFires"]),
     (regmarks, "off_sheet", lambda *a, **k: [],
      "off_sheet never reports anything off the sheet",
      ["tests.test_regmarks.TestClearance"]),
@@ -99,12 +85,6 @@ CASES = (
     (regmarks, "mask_hints", lambda *a, **k: [],
      "mask_hints never warns about a crowded card",
      ["tests.test_guards.TestMaskHintsFire"]),
-    (winboat, "our_stale_sessions", lambda *a, **k: [],
-     "our_stale_sessions never finds one of ours",
-     ["tests.test_guards.TestOurStaleSessionsNeverSeesAnotherTool"]),
-    (winboat, "our_stale_sessions", lambda *a, **k: [(999, "foreign")],
-     "our_stale_sessions claims a foreign session is ours",
-     ["tests.test_guards.TestOurStaleSessionsNeverSeesAnotherTool"]),
 )
 
 CASES += tuple(
@@ -170,6 +150,10 @@ def _refuse_testcut(*args):
     raise ValueError("refused")
 
 
+def _ignore_corner_obstacles(source, occupied, find=corner_test._find_spot):
+    return find(source, ())
+
+
 CASES += (
     (job, "cutting_mat_errors", lambda *a: [], "every explicit cutting mat accepted",
      ["tests.test_send.TestMediaHandling.test_compatible_portrait_mat_allows_matching_sheet_and_refuses_wrong_size"]),
@@ -179,6 +163,10 @@ CASES += (
      ["tests.test_testcut.TestStudioPattern"]),
     (testcut, "_check_geometry", _refuse_testcut, "every test cut path refused",
      ["tests.test_testcut.TestStudioPattern"]),
+    (corner_test, "_find_spot", _ignore_corner_obstacles, "corner placement ignores obstacles",
+     ["tests.test_corner_cut.TestCornerTest"]),
+    (corner_test, "_find_spot", _refuse_testcut, "every corner placement is refused",
+     ["tests.test_corner_cut.TestCornerTest"]),
     (starting_guide.Guide, "refusal", lambda *a: "", "every guide repeat accepted",
      ["tests.test_starting_guide.TestStartingGuide"]),
     (starting_guide.Guide, "refusal", lambda *a: "blocked", "every guide repeat refused",
@@ -227,18 +215,15 @@ class TestGuardsDiscriminate(unittest.TestCase):
         # A discrimination run that leaked a stub would quietly disable a
         # guard for every test after it.
         self.assertFalse(
-            getattr(winboat.rdp_busy, "__name__", "") == "<lambda>")
-        self.assertFalse(
             getattr(regmarks.collisions, "__name__", "") == "<lambda>")
         self.assertEqual(regmarks.collisions.__name__, "collisions")
-        self.assertEqual(winboat.port_open.__name__, "port_open")
 
     def test_an_unguarded_case_would_be_reported(self):
         # Prove this file can fail: a guard nothing asserts on.
         real = regmarks.clamp
         regmarks.clamp = lambda i, l, t: (i, l, t)
         try:
-            result = _run(["tests.test_guards.TestPortOpenFires"])
+            result = _run(["tests.test_guards.TestOpenTransportFires"])
         finally:
             regmarks.clamp = real
         # Port tests know nothing about clamp, so they stay green - which is
