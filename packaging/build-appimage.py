@@ -91,6 +91,13 @@ def main():
             else:
                 tree(pathlib.Path(module.__file__).parent, site / 'usb',
                      shutil.ignore_patterns('__pycache__', '*.pyc'))
+        try:
+            ble_modules = [importlib.import_module(name) for name in ('bleak', 'dbus_fast')]
+        except ImportError:
+            ble_modules = []
+        for module in ble_modules:
+            tree(pathlib.Path(module.__file__).parent, site / module.__name__,
+                 shutil.ignore_patterns('__pycache__', '*.pyc'))
         copy(sys.executable, app / 'usr/bin/python3')
         for namespace in repo.get_loaded_namespaces():
             path = pathlib.Path(repo.get_typelib_path(namespace))
@@ -155,6 +162,7 @@ def main():
             'runtime_sha256': hashlib.sha256(runtime.read_bytes()).hexdigest(),
             'unowned_files': ownership.stderr.splitlines(),
             'host_packages': run('pacman', '-Q', *packages, capture_output=True, text=True).stdout.splitlines(),
+            'bleak_bundled': bool(ble_modules),
             'pyusb_bundled': (site / 'usb').exists(),
             'pyusb_wheel_sha256': digest if args.pyusb_wheel else None,
         }

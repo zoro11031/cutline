@@ -80,6 +80,7 @@ proxies, on Linux, without the VM:
 | Test cut to dial in blade settings | `testcut` — every combination in one pass |
 | Machine calibration | `calibrate` |
 | Open an SVG or DXF and cut it | `cut --from`, `import` |
+| Use an Inkscape Silhouette design | [Inkscape Print & Cut workflow](docs/SETUP.md#inkscape-silhouette-print--cut) |
 | Cut by line colour | `--color` |
 | — | `check-sheet`: measure where the marks actually printed |
 
@@ -219,12 +220,11 @@ guest.
 
 ## Caveats
 
-**No cutter has ever been attached to this machine** — a Cameo 4 is on order.
-The geometry is verified
-against a published reference and the stream is decoded and measured, but
-"the bytes are right" and "the machine did the right thing" are different
-claims and only the first is being made. [docs/FINDINGS.md](docs/FINDINGS.md)
-keeps them apart, section by section, including the null results.
+A Cameo 4 running firmware V1.05 answered USB status and firmware queries.
+Bluetooth LE discovery also found the cutter. See [docs/FINDINGS.md](docs/FINDINGS.md)
+for the current hardware results and [docs/SETUP.md](docs/SETUP.md) for
+Bluetooth setup. Physical registration and cut accuracy require a measured
+proof sheet.
 
 Silhouette Studio is installed in the WinBoat guest and is detected
 automatically. `silhouette-control-center studio --run-helper` runs a read-only survey

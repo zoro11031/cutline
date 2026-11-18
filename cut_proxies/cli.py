@@ -83,8 +83,9 @@ def show_checks(j):
         style = None if r.ok else "bold red"
         say(f"  [{mark}] {r.label:26} {r.got}", style=style)
     live = not j.liveness_failures
+    probe_count = len(verify.applicable_probes(j.rows))
     say(f"  [{'ok  ' if live else 'FAIL'}] {'checks proven live':26} "
-        f"{len(verify.PROBES) - len(j.liveness_failures)}/{len(verify.PROBES)}"
+        f"{max(0, probe_count - len(j.liveness_failures))}/{probe_count}"
         f" probes caught",
         style=None if live else "bold red")
     for m in j.liveness_failures:
@@ -656,6 +657,22 @@ def cmd_materials(args):
 # --------------------------------------------------------------------------
 
 def cmd_status(args):
+    if args.transport == "ble":
+        from . import ble
+        try:
+            if args.bluetooth_id:
+                with transport.open_transport("ble", bluetooth_id=args.bluetooth_id) as cutter:
+                    say(f"{cutter.device.name}: {cutter.status()}")
+            else:
+                devices = ble.discover()
+                for address, name in devices:
+                    say(f"{address}  {name}")
+                if not devices:
+                    say("No Cameo 4 found over Bluetooth LE.")
+        except transport.TransportError as exc:
+            fail(str(exc))
+        return 0
+
     say("\nCutter", style="bold")
     found = transport.find_devices()
     if found:
@@ -762,19 +779,27 @@ def cmd_cut(args):
              f"({j.preset.origin}). Cut the plain-paper test first.")
 
     try:
-        t = transport.open_transport(args.transport, device=j.device)
+        t = transport.open_transport(args.transport, device=j.device,
+                                     bluetooth_id=args.bluetooth_id)
     except transport.TransportError as exc:
         say(f"\n{exc}", style="bold red")
         fail("No way to reach the cutter. Use --dry-run, or go through "
              "Silhouette Studio with 'silhouette-control-center studio'.")
 
     with t:
+        if args.transport == "ble":
+            say(f"\nBluetooth target: {j.device.name} ({args.bluetooth_id})")
         if t.can_read:
-            state = t.status()
+            try:
+                state = t.status()
+            except transport.TransportError as exc:
+                fail(str(exc))
             say(f"\nCutter reports: {state}")
             if state == "unloaded":
                 fail("The cutter says no media is loaded. Load the mat and "
                      "the sheet first.")
+            elif state != "ready" and args.transport == "ble":
+                fail(f"The Bluetooth cutter is not ready ({state}).")
             elif state == "moving":
                 fail("The cutter is busy.")
         if not args.yes and not ask_yes(
@@ -1056,6 +1081,8 @@ def main(argv=None):
     ma.set_defaults(func=cmd_materials)
 
     st = sub.add_parser("status", help="cutter, transports, WinBoat guest")
+    st.add_argument("--transport", choices=("auto", "ble"), default="auto")
+    st.add_argument("--bluetooth-id", metavar="ADDRESS")
     st.set_defaults(func=cmd_status)
 
     c = sub.add_parser("cut", help="register and cut")
@@ -1065,7 +1092,8 @@ def main(argv=None):
                    help="cutter = cut via USB directly; studio = stage DXF "
                         "and open in Silhouette Studio in WinBoat guest")
     c.add_argument("--transport", default="auto",
-                   choices=("auto", "pyusb", "usblp"))
+                   choices=("auto", "pyusb", "usblp", "ble"))
+    c.add_argument("--bluetooth-id", metavar="ADDRESS")
     c.add_argument("--dry-run", action="store_true",
                    help="build and check the job, send nothing")
     c.add_argument("--dump", metavar="PATH",

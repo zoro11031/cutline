@@ -88,3 +88,33 @@ job and its liveness probes, PDF physical dimensions, and rasterization. With
 `--gui`, it briefly opens a separate window, checks its verified preview,
 and closes it. It never sends a cut. Host USB permissions still apply; see
 `docs/SETUP.md`. Windows, Studio, Docker and FreeRDP are not bundled.
+
+For Cameo 4 Bluetooth LE, build the AppImage with Bleak and its Linux
+backend (dbus-fast) installed on the build host. The AppImage records
+whether they were bundled in its manifest and uses the target host's BlueZ
+service at runtime.
+
+## Fedora Silverblue (x86-64)
+
+Copy `install-silverblue.sh` and the matching package to the laptop. Install
+either package as your desktop user:
+
+```sh
+sh install-silverblue.sh --flatpak
+# Or use the AppImage, including on systems without FUSE 2:
+sh install-silverblue.sh --appimage
+```
+
+Both install a desktop launcher. The Flatpak installs per user and downloads
+the GNOME 50 runtime from Flathub when needed. It can access USB devices,
+BlueZ, Documents, Downloads, and files chosen through the desktop file
+picker. For direct USB access, apply the model-specific seat permission
+once with `sh install-silverblue.sh --udev`, then reconnect the cutter.
+The AppImage runs on the host and can use host WinBoat, Docker and
+FreeRDP when they are installed. Use it for the Windows bridge.
+
+Build the Flatpak with `./packaging/build-flatpak.sh` after installing
+`org.gnome.Sdk//50` and `org.gnome.Platform//50` from Flathub. It uses the
+GNOME SDK's Python and compiles the PDF utilities from the pinned
+[Poppler source](https://poppler.freedesktop.org/). AppImage build steps
+are above.

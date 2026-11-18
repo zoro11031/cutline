@@ -1492,3 +1492,50 @@ refusal stays as it is until something can measure it.
 
 `tests/test_studio3.py` records the evidence as a test, because the tempting
 "fix" is to loosen the check.
+
+## Cameo 4 USB and Bluetooth bring-up (2026-11-17)
+
+Linux enumerated USB ID `0b4d:1137` with a bidirectional printer interface
+and bulk OUT `0x01` and IN `0x82`. Both usblp and PyUSB returned
+`unloaded`. The USB firmware query returned `CAMEO 4 V1.05`.
+The eight-card Letter plain-paper job passed all nine verifier probes.
+Raster inspection of the proof PDF at 200 dpi found all three registration
+marks within 0.03 mm per axis of the template coordinates.
+
+BlueZ discovered the Cameo 4 over BLE. The first connection with USB still
+attached did not expose the vendor GATT service, so the suite refused it
+before sending commands. With USB unplugged and the unpaired BlueZ discovery
+entry recreated, Bleak connected and reported zero resolved GATT services.
+The desktop pairing dialog also reported setup failure. Physical registration,
+blade motion and cut measurements remain pending.
+
+A read-only WinBoat inventory found zero present Windows Bluetooth devices.
+PktMon was available, but neither USBPcapCMD nor tshark was on PATH. The
+host's AX200 Bluetooth adapter is visible to Linux. A Studio Bluetooth
+trace still needs a Bluetooth adapter exposed to the guest.
+
+The Intel AX200 USB Bluetooth function (`8087:0029`) was hot-plugged into
+WinBoat's QEMU xHCI controller and added to WinBoat's Compose arguments.
+Windows enumerated the radio, both Bluetooth enumerators, and RFCOMM.
+The radio reported problem code 0 and used Intel driver `23.90.0.8`.
+The adapter was detached from Linux while assigned to the guest.
+
+In the same guest, Silhouette Studio's Send panel showed “No Silhouette
+Devices Connected” with the Cameo USB cable disconnected. A host USB
+monitor trace filtered to the AX200 recorded successful HCI inquiry and
+extended inquiry results. It did not establish a connection to the Cameo
+or show a GATT or RFCOMM command exchange. Windows WinRT also returned
+no device for the previously observed random LE address.
+
+After the firmware update in Studio, Linux PyUSB returned `unloaded` and
+`CAMEO 4 V1.20`. WinBoat enumerated the cutter as a Bluetooth LE device
+with Windows problem code 0, and the operator confirmed Studio connected
+over Bluetooth. The AX200 and the Cameo USB interface were then released
+from the running guest to test Linux.
+
+Linux could establish the LE link and the ATT trace showed the cutter
+returning primary service `e2088282-4fde-42f9-bb22-6ec3c7ed8f91`. BlueZ
+signalled services resolved, but no cutter GATT objects were exposed and
+the link subsequently timed out. The Linux suite obtained no Bluetooth
+firmware or status reply. The Letter plain-paper dry run passed its nine
+verification probes and the 395-test offline suite passed its audit.

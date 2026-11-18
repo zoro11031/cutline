@@ -77,3 +77,37 @@ square, one changed cut setting) in the exact installed Studio version. Test
 container signatures and repeated-save stability before assigning meaning to
 binary differences. Keep vendor/user samples local and use synthetic fixtures
 for any eventual parser tests.
+
+### Cameo 4 Bluetooth comparison
+
+The Linux host discovers the V1.05 Cameo 4. Even with USB disconnected and
+a fresh BlueZ discovery entry, an LE connection reported zero resolved
+GATT services. The documented vendor GATT service is therefore an
+unconfirmed match for this unit. See [upstream BLE transport](https://github.com/fablabnbg/inkscape-silhouette/blob/main/silhouette/BLETransport.py).
+
+For a differential test, expose a dedicated USB Bluetooth adapter to the
+Windows guest and verify that Windows sees its radio. Keep the cutter's USB
+cable disconnected. Start an adapter capture before opening Studio's Send
+panel, then record discovery, connection, and its idle status query. Record
+whether Studio uses ATT/GATT or Classic RFCOMM, the service and
+characteristics or channel, and the firmware response. Use those
+observations to choose the transport for this firmware before testing
+registration or blade motion.
+
+### Inkscape Silhouette import
+
+The upstream extension reads the SVG document directly. Its traversal skips
+labelled Print, CuttingMat and Regmarks groups. The registration renderer
+writes corner IDs `regmark-tl`, `regmark-tr`, `regmark-bl` and optionally
+`regmark-br`. Its default square is 5 mm, its L centreline arms reach 20 mm,
+and its L stroke is 0.3 mm. The importer recognizes that geometry after
+parent transforms and uses it for the existing scan window and clearance
+checks. The generated text note is advisory. A fixture with a stale note
+proves the import is based on the shapes. [Traversal and command export](https://github.com/fablabnbg/inkscape-silhouette/blob/main/sendto_silhouette.py) · [Registration renderer](https://github.com/fablabnbg/inkscape-silhouette/blob/main/render_silhouette_regmarks.py)
+
+For a protocol comparison, use a single-page SVG and an offline upstream
+`--dry_run` command transcript. Compare model setup, tool settings, mark
+search and decoded coordinates one variable at a time. Then repeat the
+same design in Studio and compare observable status and command traffic.
+The SVG import is software-verified. The optical scan, AutoBlade behavior,
+and final alignment on a printed sheet still require a hardware proof.

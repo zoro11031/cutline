@@ -143,6 +143,11 @@ class Preview(Gtk.DrawingArea):
         self.colorblind = bool(enabled)
         self.queue_draw()
 
+    @staticmethod
+    def viewport(width, height, sheet_width, sheet_height):
+        scale = min((width - 32) / sheet_width, (height - 32) / sheet_height)
+        return (width - sheet_width * scale) / 2, (height - sheet_height * scale) / 2, scale
+
     def _draw(self, _area, cr, width, height):
         dark = Adw.StyleManager.get_default().get_dark()
         bg = (0.13, 0.13, 0.14) if dark else (0.95, 0.95, 0.96)
@@ -161,11 +166,12 @@ class Preview(Gtk.DrawingArea):
             return
 
         W, H = j.grid.sheet_w_mm, j.grid.sheet_h_mm
-        pad = 16
         canvas_w, canvas_h = (max(W, self.pdf_size_mm[0]), max(H, self.pdf_size_mm[1])) \
             if self.pdf_size_mm is not None else (W, H)
-        scale = min((width - 2 * pad) / canvas_w, (height - 2 * pad) / canvas_h)
-        cr.translate((width - canvas_w * scale) / 2, (height - canvas_h * scale) / 2)
+        x, y, scale = self.viewport(width, height, canvas_w, canvas_h)
+        if scale <= 0:
+            return
+        cr.translate(x, y)
         cr.scale(scale, scale)
         hair = 1.0 / scale
 
@@ -301,6 +307,7 @@ class Window(Adw.ApplicationWindow):
         self.pdf_path = None
         self._sheet_token = None
         self.imported = None
+        self.template_shapes = ()
         self._building = False
         self._sending = False
         self._suppress = True        # don't rebuild while constructing rows
@@ -415,9 +422,7 @@ class Window(Adw.ApplicationWindow):
 
         gsrc = Adw.PreferencesGroup(
             title="What to cut",
-            description="Either a layout generated here, or the paths in an "
-                        "SVG or DXF you already have — a Card Maker "
-                        "template, an Inkscape sheet, anything.")
+            description="Use a generated layout or open an Inkscape SVG or DXF cut file.")
         self.import_row = Adw.ActionRow(
             title="Generated layout",
             subtitle="Using the sheet and card settings below")
@@ -428,6 +433,10 @@ class Window(Adw.ApplicationWindow):
         clear_btn = Gtk.Button(label="Clear")
         clear_btn.set_valign(Gtk.Align.CENTER)
         clear_btn.connect("clicked", self.on_clear_artwork)
+        edit_btn = Gtk.Button(label="Template editor")
+        edit_btn.set_valign(Gtk.Align.CENTER)
+        edit_btn.connect("clicked", self.on_edit_template)
+        self.import_row.add_suffix(edit_btn)
         self.import_row.add_suffix(open_btn)
         self.import_row.add_suffix(clear_btn)
         gsrc.add(self.import_row)
@@ -672,6 +681,14 @@ class Window(Adw.ApplicationWindow):
         refresh.set_valign(Gtk.Align.CENTER)
         refresh.connect("clicked", self.on_refresh_status)
         self.status_row.add_suffix(refresh)
+        self.r_connection = _combo("Connection", ["USB", "Bluetooth LE"])
+        self.r_bluetooth = _combo("Bluetooth cutter", ["Select a cutter"])
+        self._bluetooth_devices = []
+        scan = Gtk.Button(label="Find Bluetooth cutters")
+        scan.connect("clicked", self._scan_bluetooth)
+        self.r_bluetooth.add_suffix(scan)
+        g2.add(self.r_connection)
+        g2.add(self.r_bluetooth)
         g2.add(self.status_row)
         page.add(g2)
 
@@ -813,6 +830,7 @@ class Window(Adw.ApplicationWindow):
         options = profile.options()
         was, self._suppress = self._suppress, True
         self.imported = None
+        self.template_shapes = ()
         self.import_row.set_title('Generated layout')
         self.import_row.set_subtitle('Using the sheet and card settings below')
         self.r_colour.set_model(Gtk.StringList.new(['all colours']))
@@ -1073,24 +1091,47 @@ class Window(Adw.ApplicationWindow):
             except Exception as exc:              # noqa: BLE001
                 self.toast(f"Could not read {path.name}: {exc}")
                 return
-            self.imported = artwork
-            self.import_row.set_title(path.name)
-            lines = [self.imported.describe()] + self.imported.warnings
-            self.import_row.set_subtitle("\n".join(lines))
-            cols = list(self.imported.colours())
-            was, self._suppress = self._suppress, True
-            self.r_colour.set_model(
-                Gtk.StringList.new(["all colours"] + cols))
-            self.r_colour.set_selected(0)
-            self._suppress = was
-            self.on_changed()
+            self.template_shapes = ()
+            self.set_artwork(artwork, path.name)
 
         dialog.open(self, None, done)
+
+    def on_edit_template(self, *_args):
+        if self.job is None:
+            self.toast("Select a sheet before opening the template editor.")
+            return
+        from .editor import TemplateEditor
+
+        def apply(shapes, artwork):
+            self.template_shapes = shapes
+            self._suppress = True
+            try:
+                self.r_orient.set_selected(1 if self.job.grid.portrait else 2)
+                self.r_mode.set_selected(0)
+                self.r_skip.set_text("")
+            finally:
+                self._suppress = False
+            self.set_artwork(artwork, "Custom template")
+
+        TemplateEditor(self, self.job, self.options(), Preview(),
+                       self.template_shapes, apply).present()
+
+    def set_artwork(self, artwork, name):
+        self.imported = artwork
+        self.import_row.set_title(name)
+        lines = [artwork.describe()] + artwork.warnings
+        self.import_row.set_subtitle("\n".join(lines))
+        was, self._suppress = self._suppress, True
+        self.r_colour.set_model(Gtk.StringList.new(["all colours"] + list(artwork.colours())))
+        self.r_colour.set_selected(0)
+        self._suppress = was
+        self.on_changed()
 
     def on_clear_artwork(self, *_a):
         if self.imported is None:
             return
         self.imported = None
+        self.template_shapes = ()
         was, self._suppress = self._suppress, True
         self.r_colour.set_model(Gtk.StringList.new(["all colours"]))
         self.r_colour.set_selected(0)
@@ -1241,6 +1282,9 @@ class Window(Adw.ApplicationWindow):
         self.rebuild()
 
     def on_test_cut(self, *_a):
+        if self._connection()[0] == "ble":
+            self.toast("Select USB for the settings test.")
+            return
         from . import testcut
         device = graphtec.device_by_name(self._text(self.r_cutter))
         base = presets.get(self._text(self.r_preset)).cut_settings()
@@ -1278,14 +1322,58 @@ class Window(Adw.ApplicationWindow):
                     sent = tr.run(ts.steps)
                 GLib.idle_add(self.toast, f"Test cut sent: {sent:,} bytes")
             except Exception as exc:              # noqa: BLE001
-                GLib.idle_add(self.toast, f"Not cut: {exc}")
+                GLib.idle_add(self.toast, f"Send failed: {exc}")
 
         threading.Thread(target=work, daemon=True).start()
 
-    def on_refresh_status(self, *_a):
-        self.status_row.set_subtitle("checking...")
+    def _scan_bluetooth(self, button):
+        from . import ble
+
+        def update(devices, error):
+            button.set_sensitive(True)
+            if error:
+                self.toast(error)
+                return
+            self._bluetooth_devices = devices
+            self.r_bluetooth.set_model(Gtk.StringList.new(
+                ["Select a cutter"] + [f"{name} ({address})"
+                                       for address, name in devices]))
+            self.r_bluetooth.set_selected(0)
+            if not devices:
+                self.toast("No Cameo 4 found over Bluetooth LE.")
 
         def work():
+            try:
+                GLib.idle_add(update, ble.discover(), None)
+            except transport.TransportError as exc:
+                GLib.idle_add(update, [], str(exc))
+
+        button.set_sensitive(False)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _connection(self):
+        if self.r_connection.get_selected() == 0:
+            return "auto", None
+        index = self.r_bluetooth.get_selected() - 1
+        if 0 <= index < len(self._bluetooth_devices):
+            return "ble", self._bluetooth_devices[index][0]
+        return "ble", None
+
+    def on_refresh_status(self, *_a):
+        if self._sending:
+            return
+        self.status_row.set_subtitle("checking...")
+        mode, address = self._connection()
+
+        def work():
+            if mode == "ble":
+                try:
+                    with transport.open_transport(mode, bluetooth_id=address) as cutter:
+                        text = f"{cutter.device.name} ({address}): {cutter.status()}"
+                except transport.TransportError as exc:
+                    text = str(exc)
+                GLib.idle_add(self.status_row.set_subtitle, text)
+                return
             found = transport.find_devices()
             if not found:
                 text = ("no Silhouette cutter on the USB bus; "
@@ -1308,6 +1396,10 @@ class Window(Adw.ApplicationWindow):
         if refusal:
             self.toast(refusal)
             return
+        connection = self._connection()
+        if connection[0] == "ble" and not connection[1]:
+            self.toast("Select a Cameo 4 Bluetooth cutter first.")
+            return
         body = ("This moves the blade.\n\n"
                 f"{j.grid.describe()}\n"
                 f"{j.preset.name}: force {j.settings.force}, speed "
@@ -1323,10 +1415,12 @@ class Window(Adw.ApplicationWindow):
         dialog.set_response_appearance("cut",
                                        Adw.ResponseAppearance.DESTRUCTIVE)
         dialog.set_default_response("cancel")
-        dialog.connect("response", self._cut_response, j)
+        if connection[1]:
+            dialog.set_body(f"{body}\n\nBluetooth target: {j.device.name} ({connection[1]})")
+        dialog.connect("response", self._cut_response, j, connection)
         dialog.present(self)
 
-    def _cut_response(self, _dialog, response, j):
+    def _cut_response(self, _dialog, response, j, connection=("auto", None)):
         if response != "cut":
             return
         refusal = cut_refusal(self.job, j, self._sending)
@@ -1338,21 +1432,25 @@ class Window(Adw.ApplicationWindow):
 
         def work():
             try:
-                with transport.open_transport("auto", device=j.device) as t:
+                mode, address = connection
+                options = {"bluetooth_id": address} if mode == "ble" else {}
+                with transport.open_transport(mode, device=j.device, **options) as t:
                     if t.can_read:
                         state = t.status()
                         if state == "unloaded":
                             raise transport.TransportError(
                                 "the cutter says no media is loaded")
+                        if mode == "ble" and state != "ready":
+                            raise transport.TransportError(f"Bluetooth cutter is not ready ({state})")
                         if state == "moving":
                             raise transport.TransportError(
                                 "the cutter is busy")
                     sent = t.run(j.steps)
                 GLib.idle_add(self.toast, f"Cut sent: {sent:,} bytes")
             except transport.TransportError as exc:
-                GLib.idle_add(self.toast, f"Not cut: {exc}")
+                GLib.idle_add(self.toast, f"Send failed: {exc}")
             except Exception as exc:              # noqa: BLE001
-                GLib.idle_add(self.toast, f"Not cut: {exc}")
+                GLib.idle_add(self.toast, f"Send failed: {exc}")
             GLib.idle_add(self._send_done)
 
         threading.Thread(target=work, daemon=True).start()

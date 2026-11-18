@@ -35,6 +35,19 @@ import xml.etree.ElementTree as ET
 from .template import CHORD_TOLERANCE_MM, CutPath
 
 SVG_NS = "http://www.w3.org/2000/svg"
+INKSCAPE_NS = "http://www.inkscape.org/namespaces/inkscape"
+INKSCAPE_LABEL = f"{{{INKSCAPE_NS}}}label"
+
+# IDs and geometry from inkscape-silhouette/render_silhouette_regmarks.py.
+INKSCAPE_MARK_IDS = ("regmark-tl", "regmark-tr", "regmark-bl", "regmark-br")
+
+
+@dataclasses.dataclass(frozen=True)
+class InkscapeMarks:
+    inset_mm: float
+    pattern: str
+    length_mm: float = 20.0
+    thickness_mm: float = 0.3
 
 # CSS px per inch, which is what an SVG user unit means when nothing else
 # says otherwise.
@@ -69,6 +82,8 @@ class Imported:
 
     # Explicit SVG viewport; DXF extents are artwork bounds, not a page.
     page_size_mm: tuple[float, float] | None = None
+    inkscape_marks: InkscapeMarks | None = None
+    inkscape_mark_error: str | None = None
 
     def colours(self) -> dict[str, int]:
         """Stroke colours present, and how many paths each has."""
@@ -502,6 +517,36 @@ UNSUPPORTED = {"text", "tspan", "image", "use", "clipPath", "mask", "pattern",
                "foreignObject"}
 
 
+def _inkscape_marks(mark_paths, page_size):
+    """Recognize symmetric marks from rendered coordinates, including transforms."""
+    if page_size is None:
+        raise ImportError_("Inkscape registration requires an explicit SVG page size.")
+    w, h = page_size
+    tl = mark_paths.get("regmark-tl", ())
+    if not tl:
+        raise ImportError_("The Inkscape Regmarks layer is missing its top-left mark.")
+    inset = round(min(x for x, _ in tl), 6)
+    length = 20
+    four = "regmark-br" in mark_paths
+    corners = [(inset, inset, 1, 1), (w - inset, inset, -1, 1),
+               (inset, h - inset, 1, -1), (w - inset, h - inset, -1, -1)]
+    if not 0 < inset <= 86.36 or min(w, h) - 2 * inset < 2 * length:
+        raise ImportError_("Inkscape registration marks do not fit the page.")
+    for index, (x, y, dx, dy) in enumerate(corners[:4 if four else 3]):
+        expected = [(x + dx * length, y), (x, y), (x, y + dy * length)]
+        if index == 0 and not four:
+            expected = [(x, y), (x + 5, y), (x + 5, y + 5), (x, y + 5)]
+        points = mark_paths.get(INKSCAPE_MARK_IDS[index], ())
+        if (len(points) != len(expected)
+                or any(not any(math.dist(p, q) <= 0.05 for q in points)
+                       for p in expected)
+                or (len(expected) == 3 and math.dist(points[1], (x, y)) > 0.05)):
+            raise ImportError_(
+                "Inkscape registration marks must match the plugin's standard "
+                "geometry with equal insets on all edges.")
+    return InkscapeMarks(inset, "four" if four else "three")
+
+
 def load_svg(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
     """Read an SVG into cut paths in millimetres."""
     try:
@@ -511,6 +556,9 @@ def load_svg(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
     root = tree.getroot()
     if _tag(root) != "svg":
         raise ImportError_("the root element is not <svg>")
+
+    if len(root.findall(f".//{{{INKSCAPE_NS}}}page")) > 1:
+        raise ImportError_("Export each Inkscape page to a separate SVG before cutting.")
 
     vb = root.get("viewBox")
     vb_nums = [float(n) for n in _NUM.findall(vb)] if vb else None
@@ -567,16 +615,42 @@ def load_svg(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
     warnings: list[str] = []
     seen_unsupported: set[str] = set()
 
-    def walk(el, mat, stroke):
+    mark_paths = {}
+    has_inkscape_marks = False
+    ignored_layers = []
+
+    def walk(el, mat, stroke, in_marks=False):
+        nonlocal has_inkscape_marks
         mat = _matmul(mat, parse_transform(el.get("transform")))
         stroke = _inherited_stroke(el, stroke)
         name = _tag(el)
         if name == "svg" and el is not root:
             raise ImportError_("nested SVG viewports are unsupported; flatten the drawing before cutting")
+        style = dict(field.split(":", 1) for field in (el.get("style") or "").split(";")
+                     if ":" in field)
+        if (name in {"defs", "metadata", "namedview"}
+                or el.get("display") == "none"
+                or any(k.strip() == "display" and v.strip() == "none"
+                       for k, v in style.items())):
+            return
+        label = el.get(INKSCAPE_LABEL, "") if name == "g" else ""
+        if not in_marks and label and any(
+                word in label.lower() for word in ("print", "cuttingmat", "regmark")):
+            ignored_layers.append(label)
+            if "regmark" not in label.lower():
+                return
+            has_inkscape_marks = in_marks = True
+        if in_marks:
+            marker = el.get("id")
+            if marker in INKSCAPE_MARK_IDS:
+                parts = _shape_subpaths(el, tolerance)
+                mark_paths[marker] = (tuple(apply(mat, x, y) for x, y in parts[0][0])
+                                      if len(parts) == 1 and marker not in mark_paths else ())
+            for child in el:
+                walk(child, mat, stroke, in_marks=True)
+            return
         if name in UNSUPPORTED:
             seen_unsupported.add(name)
-            return
-        if el.get("display") == "none":
             return
         # Largest singular value bounds error after every parent transform,
         # including unequal scales and shear. Flatten in final millimetres.
@@ -594,6 +668,20 @@ def load_svg(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
             walk(child, mat, stroke)
 
     walk(root, base, "")
+    inkscape_marks = None
+    mark_error = None
+    if ignored_layers:
+        warnings.append("Excluded Inkscape layers: " + ", ".join(ignored_layers))
+    if has_inkscape_marks:
+        try:
+            inkscape_marks = _inkscape_marks(mark_paths, page_size)
+        except ImportError_ as exc:
+            mark_error = str(exc)
+            warnings.append(mark_error)
+        else:
+            warnings.append(
+                f"Inkscape registration: {inkscape_marks.pattern} marks, "
+                f"{inkscape_marks.inset_mm:g} mm inset, 20 mm arms.")
 
     if seen_unsupported:
         warnings.append(
@@ -608,7 +696,8 @@ def load_svg(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
         raise ImportError_("no cuttable geometry found in this SVG")
 
     return Imported(tuple(paths), w_mm or 0.0, h_mm or 0.0, str(path), note,
-                    warnings, page_size_mm=page_size)
+                    warnings, page_size_mm=page_size, inkscape_marks=inkscape_marks,
+                    inkscape_mark_error=mark_error)
 
 
 # --------------------------------------------------------------------------
