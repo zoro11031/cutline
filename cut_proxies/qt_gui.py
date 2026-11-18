@@ -71,6 +71,7 @@ class Window(QMainWindow):
         self.pages = {}
         self.controls = {}
         self.blade = {}
+        self._initial_workspace_layout = True
 
         self.workspaces = QStackedWidget()
         self.setCentralWidget(self.workspaces)
@@ -79,30 +80,30 @@ class Window(QMainWindow):
         setup.setObjectName("workspace")
         self.workspaces.addWidget(setup)
         content = QVBoxLayout(setup)
-        content.setContentsMargins(16, 14, 16, 12)
-        content.setSpacing(12)
-        header, top = bar(setup)
-        top.addWidget(styled_label("Silhouette Control Center", "title"))
+        content.setContentsMargins(14, 10, 14, 12)
+        content.setSpacing(9)
+        header, top = bar(setup, (6, 4, 8, 4))
+        self.menu_bar = QMenuBar(header)
+        self.menu_bar.setObjectName("workspaceMenu")
+        self.menu_bar.setNativeMenuBar(False)
+        top.addWidget(self.menu_bar)
         top.addStretch(1)
-        setup_help = button("Setup Guide", self.show_setup_guide,
-                            icon=("help-contents", QStyle.StandardPixmap.SP_DialogHelpButton))
-        top.addWidget(setup_help)
         switch, self.design_button, self.send_workspace = workspace_switch(
-            setup, self.open_design, self.open_send_workspace, active="Send")
+            header, self.open_design, self.open_send_workspace, active="Send")
         self.design_button.setToolTip("Open the editor to draw, move or arrange cut paths.")
         self.send_workspace.setToolTip("Review the cut, loaded material, and cutter connection.")
         top.addWidget(switch)
         content.addWidget(header)
-        self.menu_bar = QMenuBar(setup)
-        content.addWidget(self.menu_bar)
-        split = QSplitter(Qt.Orientation.Horizontal)
+        self.workspace_split = split = QSplitter(Qt.Orientation.Horizontal)
         split.setChildrenCollapsible(False)
+        split.setHandleWidth(12)
         content.addWidget(split, 1)
         self.tabs = QTabWidget()
         self.tabs.setProperty("role", "settings")
         self.tabs.setMinimumWidth(345)
         self.tabs.setAccessibleName("Cut settings")
         self.tabs.setDocumentMode(True)
+        self.tabs.tabBar().setDrawBase(False)
         self.tabs.setUsesScrollButtons(True)
         self.tabs.currentChanged.connect(self.change_page)
 
@@ -110,7 +111,8 @@ class Window(QMainWindow):
         right = QVBoxLayout(preview_panel)
         right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(7)
-        preview_bar, preview_controls = bar(preview_panel)
+        self.preview_bar, preview_controls = bar(preview_panel, (2, 0, 2, 0))
+        self.preview_bar.setObjectName("previewBar")
         self.preview_title = styled_label("Sheet preview")
         preview_controls.addWidget(self.preview_title)
         preview_controls.addStretch(1)
@@ -123,7 +125,7 @@ class Window(QMainWindow):
         preview_controls.addWidget(self.preview_mode)
         self.preview_zoom = ZoomControls(self.preview)
         preview_controls.addWidget(self.preview_zoom)
-        right.addWidget(preview_bar)
+        right.addWidget(self.preview_bar)
         self.preview.colorblind = bool(self.settings.get("colorblind_mode"))
         right.addWidget(self.preview, 1)
 
@@ -156,7 +158,6 @@ class Window(QMainWindow):
         split.addWidget(preview_panel)
         split.addWidget(self.tabs)
         split.setStretchFactor(0, 1)
-        split.setSizes([746, 424])
 
         footer_bar, footer = bar(setup)
         self.footer = footer
@@ -188,6 +189,18 @@ class Window(QMainWindow):
                 widget.slider.setToolTip(description)
         self.skip.setToolTip("Comma-separated slot numbers, starting at 0 in the top-left. Skipped slots are left uncut.")
         self.rebuild()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._initial_workspace_layout:
+            self._initial_workspace_layout = False
+            width = self.workspace_split.width()
+            settings_width = min(480, max(360, round(width * 0.36)))
+            self.workspace_split.setSizes([width - settings_width, settings_width])
+            tabs = self.tabs.tabBar()
+            height = max(tabs.sizeHint().height(), self.preview_bar.sizeHint().height())
+            tabs.setMinimumHeight(height)
+            self.preview_bar.setMinimumHeight(height)
 
     @contextmanager
     def editing(self):

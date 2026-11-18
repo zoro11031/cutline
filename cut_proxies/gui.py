@@ -496,10 +496,6 @@ class Window(Adw.ApplicationWindow):
         header.set_title_widget(Adw.WindowTitle(title="Silhouette Control Center"))
         outer.add_top_bar(header)
 
-        setup = Gtk.Button(label="Setup Guide")
-        setup.connect("clicked", self.show_setup_guide)
-        header.pack_start(setup)
-
         workspace = Gtk.Box(spacing=4)
         self.design_button = Gtk.Button(label='Design')
         self.design_button.connect('clicked', self.on_edit_template)
@@ -515,19 +511,18 @@ class Window(Adw.ApplicationWindow):
         outer.add_top_bar(self.banner)
 
         split = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL,
-                          wide_handle=True, position=700,
+                          wide_handle=True, position=675,
                           resize_start_child=True, resize_end_child=False,
                           shrink_start_child=False, shrink_end_child=False)
         self.split = split
         settings = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        settings.set_size_request(414, -1)
+        settings.set_size_request(440, -1)
         settings.append(switcher)
         settings.append(self.stack)
         split.set_end_child(settings)
 
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         right.set_size_request(320, -1)
-        right.set_margin_top(12)
         right.set_margin_bottom(12)
         right.set_margin_start(6)
         right.set_margin_end(12)
@@ -620,7 +615,8 @@ class Window(Adw.ApplicationWindow):
         self._load_materials()
         self.on_preset()
         self.add_control_help()
-        outer.add_top_bar(self.workspace_menu_bar())
+        self.menu_bar = self.workspace_menu_bar()
+        header.pack_start(self.menu_bar)
         outer.add_bottom_bar(self._send_bar())
 
         self._suppress = False
@@ -675,11 +671,7 @@ class Window(Adw.ApplicationWindow):
         for label, menu in (("_File", files), ("_Edit", edit), ("_View", view),
                             ("_Settings", settings), ("_Help", help_menu)):
             menus.append_submenu(label, menu)
-        bar = Gtk.PopoverMenuBar.new_from_model(menus)
-        bar.set_margin_start(10)
-        bar.set_margin_end(10)
-        bar.set_margin_bottom(6)
-        return bar
+        return Gtk.PopoverMenuBar.new_from_model(menus)
 
     def open_print_from_menu(self):
         self.stack.set_visible_child_name("sheet")
