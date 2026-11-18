@@ -1,4 +1,5 @@
 """The actual transport plan must be the stream that was verified."""
+from pathlib import Path
 import types
 import unittest
 from unittest import mock
@@ -12,6 +13,21 @@ except ImportError:
 
 
 class TestRegistrationOnly(unittest.TestCase):
+    def test_four_card_scan_is_the_two_captured_studio_writes(self):
+        capture = Path(__file__).resolve().parents[1] / "docs/cameo4-studio-registration-2026-11-17.tsv"
+        packets = [line.split() for line in capture.read_text().splitlines()[1:]]
+        writes = [bytes.fromhex(data) for _, endpoint, data in packets
+                  if endpoint == "0x01" and bytes.fromhex(data).startswith((b"TG1", b"TB52"))]
+        self.assertEqual(len(writes), 2)
+        built = graphtec.CutJob(graphtec.device_by_name("Silhouette Cameo 4"),
+                                graphtec.CutSettings(), origin_mm=(10, 10),
+                                reg_width_mm=259.4, reg_length_mm=195.9,
+                                mark_shape_mm=(8.0264, 1))
+        for steps in (built.plan([]), built.plan_matrix([(built.settings, [])])):
+            self.assertEqual([s.data for s in steps[:2]], writes)
+            self.assertEqual(steps[2].expect, graphtec.RESP_REGMARK_OK)
+            self.assertEqual(steps[3].data, graphtec.frame((r"\0,0", "Z3918,5188")))
+
     def test_registration_only_has_the_same_scan_and_no_cut_paths(self):
         checked = job.build(offset_mm=(0, 0))
         steps = checked.registration_steps()

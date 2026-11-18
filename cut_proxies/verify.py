@@ -520,10 +520,17 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
                         if command.startswith(("TB123,", "TB124,", "TB23,"))), 0)
         before_scan = d.commands[:scan_at]
         mat = graphtec.registration_mat_commands(device, mk.sheet_w_mm, mk.sheet_h_mm)
+        mat_commands = before_scan
+        if d.scan_command == "TB123" and graphtec.captured_letter_scan(
+                device, mk.reg_length_mm, mk.reg_width_mm, mk.origin_mm,
+                (mk.length_mm, mk.thickness_mm)):
+            mat = ("TG1", "FN0", "TB50,0", "TB99", "TB52,2", "TB51,161", "TB53,20",
+                   "TB55,1", "TB123,3918,5188,118,118", "TB99")
+            mat_commands = d.commands
         if mat:
             row("registration mat setup", " ".join(mat),
-                " ".join(before_scan[:len(mat)]) or "missing",
-                tuple(before_scan[:len(mat)]) == mat)
+                " ".join(mat_commands[:len(mat)]) or "missing",
+                tuple(mat_commands[:len(mat)]) == mat)
         shape = graphtec.registration_preamble(device, (mk.length_mm, mk.thickness_mm))[3:5]
         sent_shape = tuple(command for command in before_scan if command.startswith(("TB51,", "TB53,")))
         row("registration mark dimensions", " ".join(shape),

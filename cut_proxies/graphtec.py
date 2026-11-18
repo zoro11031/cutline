@@ -273,6 +273,13 @@ def registration_mat_commands(device: Device, width_mm: float, height_mm: float)
     return (mat, "FN0", "TB50,0", upper_left_mm(0, 0), lower_right_mm(short, height))
 
 
+def captured_letter_scan(device, length, width, origin, mark_shape):
+    """Geometry of the successful Studio USB capture in docs/FINDINGS.md."""
+    geometry = (length, width, *origin, *(mark_shape or ()))
+    return device.product_id == 0x1137 and tuple(map(su, geometry)) == (
+        3918, 5188, 200, 200, 161, 20)
+
+
 def registration_preamble(device: Device, mark_shape_mm: tuple[float, float] | None) -> tuple[str, ...]:
     # docs/cameo4-usbprint-observations.md: Cameo 4 uses 200 and 20 for
     # 10 mm arms and 1 mm strokes. Keep the recovered defaults on other models.
@@ -382,7 +389,7 @@ class CutJob:
                  origin_mm: tuple[float, float] = (0.0, 0.0),
                  reg_width_mm: float = 0.0, reg_length_mm: float = 0.0,
                  registration: bool = True, auto_search: bool = True,
-                 search_mm: float = 10.0, quad: bool = False,
+                 search_mm: float | None = None, quad: bool = False,
                  offset_mm: tuple[float, float] = (0.0, 0.0),
                  mark_shape_mm: tuple[float, float] | None = None):
         self.device = device
@@ -448,9 +455,9 @@ class CutJob:
         if self.auto_search:
             fn = (auto_quad_regmark_search_mm if self.quad
                   else auto_regmark_search_mm)
-            cmd = fn(self.reg_length_mm, self.reg_width_mm,
-                     max(oy - self.search_mm, 0.0),
-                     max(ox - self.search_mm, 0.0))
+            margin = 10.0 if self.search_mm is None else self.search_mm
+            cmd = fn(self.reg_length_mm, self.reg_width_mm, max(oy - margin, 0.0),
+                     max(ox - margin, 0.0))
             steps.append(Step("write", frame(cmd),
                               note=f"scan for marks: {cmd}"))
         else:
@@ -508,11 +515,32 @@ class CutJob:
                 steps.append(Step("write", frame(commands), note="set up the Cameo cutting mat"))
         return steps
 
-    def plan(self, paths) -> list[Step]:
+    def _registered_setup(self, settings):
+        if (self.registration and self.auto_search and not self.quad and self.search_mm is None
+                and captured_letter_scan(self.device, self.reg_length_mm, self.reg_width_mm,
+                                         self.origin_mm, self.mark_shape_mm)):
+            # First two bulk writes and post-registration clip in the Studio
+            # trace. The cutter must answer before any blade setup or paths.
+            preamble = registration_preamble(self.device, self.mark_shape_mm)
+            scan = auto_regmark_search_mm(self.reg_length_mm, self.reg_width_mm, 5.9, 5.9)
+            steps = [
+                Step("write", frame(("TG1", "FN0", *preamble[:2])), note="set up the Cameo cutting mat"),
+                Step("write", frame((*preamble[2:], scan, "TB99")), note=f"scan for marks: {scan}"),
+                Step("expect", expect=RESP_REGMARK_OK, timeout_ms=40000, note="marks found"),
+                Step("write", frame((upper_left_mm(0, 0), lower_right_mm(
+                    self.reg_width_mm, self.reg_length_mm))), note="registered cut window"),
+            ]
+            if settings is not None:
+                steps.append(Step("write", frame(self._setup_commands(settings)), note="blade settings"))
+            return steps
         steps = self._initial_steps()
-        steps.append(Step("write", frame(self._setup_commands()),
-                          note="blade settings"))
+        if settings is not None:
+            steps.append(Step("write", frame(self._setup_commands(settings)), note="blade settings"))
         steps.extend(self._regmark_steps())
+        return steps
+
+    def plan(self, paths) -> list[Step]:
+        steps = self._registered_setup(self.settings)
         if not self.device.cameo3_on:
             # The older dialect wants the cut window stated explicitly.
             steps.append(Step("write", frame([
@@ -538,11 +566,7 @@ class CutJob:
         that reached the blade by a different route would not be testing the
         thing you are about to cut with.
         """
-        steps = self._initial_steps()
-        if groups:
-            steps.append(Step("write", frame(self._setup_commands(groups[0][0])),
-                              note="blade settings"))
-        steps.extend(self._regmark_steps())
+        steps = self._registered_setup(groups[0][0] if groups else None)
         if not self.device.cameo3_on:
             steps.append(Step("write", frame([
                 upper_left_mm(0, 0),

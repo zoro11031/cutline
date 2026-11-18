@@ -1539,3 +1539,62 @@ signalled services resolved, but no cutter GATT objects were exposed and
 the link subsequently timed out. The Linux suite obtained no Bluetooth
 firmware or status reply. The Letter plain-paper dry run passed its nine
 verification probes and the 395-test offline suite passed its audit.
+
+## Studio registration failure on the four-card Letter landscape sheet, 2026-11-17
+
+A host-side USB capture followed the Cameo 4 (firmware 1.20) through
+WinBoat while Studio registered the landscape working document. On the
+first attempt Studio wrote the following ETX-terminated commands, in order:
+
+    TG1 FN0 TB50,0 TB99 TB52,2 TB51,161 TB53,20 TB55,1
+    TB123,3918,5188,118,118 TB99
+
+The cutter returned four spaces, ASCII 1 and ETX 14.03 seconds after the
+scan command. Studio displayed Registration Failed. On retry it sent the
+same mark settings, scan and trailing TB99. The same failure arrived after
+14.02 seconds. Neither attempt produced a cut-path stream.
+
+The PDF checker measured all three marks within 0.03 mm of their expected
+positions on page one of New deck.pdf. Control Center builds the same arm,
+stroke and scan dimensions for the supplied bundle, with scan start (0,0)
+instead of Studio's (118,118), a difference of 5.9 mm on each axis.
+The trace establishes the command difference for this geometry. Neither
+the physical print's alignment nor a successful scan was measured here.
+
+### Successful Studio cut on the same date
+
+The operator confirmed all four cards cut successfully. The successful trace
+contains the same TB123 and trailing TB99 as the two failures above. The
+Cameo returned four spaces, ASCII 0 and ETX 14.056 seconds after TB123.
+Studio then sent clip bounds 0,0 through 3918,5188, tool settings and
+M/BE1/BE2 movements. The trace includes final TB0, L0 and the park.
+The identical scan command on failed and successful attempts leaves the
+cause of the earlier optical failure unresolved.
+
+Control Center uses the measured start and trailing TB99 for the captured
+Cameo 4 geometry. Its own verified movement encoder and blade settings are
+retained. The successful physical run was sent by Windows Studio.
+
+The retained device-only trace is
+[cameo4-studio-registration-2026-11-17.tsv](cameo4-studio-registration-2026-11-17.tsv).
+It includes eight pen-up M moves before the park, including moves left of
+the intended four cards. Studio had multiple documents open. The operator
+confirmed the four physical cards, but USB carries no document filename
+and this capture cannot establish that only the four intended paths ran.
+
+The local desktop launcher's verified registration-only plan now writes the
+two captured Studio payloads verbatim for this geometry. The earlier plan
+also initialized the device, set full-mat clip bounds and applied blade
+settings before asking for registration. Studio sent its registered clip
+bounds after the success reply, then selected the tool. Control Center now
+uses that ordering on this geometry. The regression compares both setup
+writes directly with the retained USB capture, for normal and matrix jobs.
+
+With the same printed four-card sheet reloaded, the operator authorized
+a registration-only test. The Linux host claimed the Cameo 4 over PyUSB
+after release from WinBoat. The bundle PDF measurement and job verifier
+passed. The current device status was ready. The checked registration
+prefix sent 80 bytes in two writes and received the marks-found reply in
+14.51 seconds. No blade setup or path was sent. This verifies the direct
+Linux registration fix on this sheet. Several commands changed together,
+so the test does not isolate a single causative byte.

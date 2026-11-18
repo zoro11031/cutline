@@ -13,8 +13,13 @@ trap 'rm -rf "$work"' EXIT
 mkdir "$work/src"
 cd "$work/src"
 
-curl -fsSLO https://poppler.freedesktop.org/poppler-26.11.0.tar.xz
-curl -fsSLO https://poppler.freedesktop.org/poppler-data-0.4.12.tar.gz
+for tarball in poppler-26.11.0.tar.xz poppler-data-0.4.12.tar.gz; do
+    if [ -f "/tmp/cameo-flatpak-sources/$tarball" ]; then
+        cp "/tmp/cameo-flatpak-sources/$tarball" .
+    fi
+done
+[ -f poppler-26.11.0.tar.xz ] || curl --http1.1 -fsSLO https://poppler.freedesktop.org/poppler-26.11.0.tar.xz
+[ -f poppler-data-0.4.12.tar.gz ] || curl --http1.1 -fsSLO https://poppler.freedesktop.org/poppler-data-0.4.12.tar.gz
 sha256sum -c <<'HASHES'
 41c32680160addf5a8dd7a830e4869c01e9f6bee1abb91e44fabd1ba9d7828fb  poppler-26.11.0.tar.xz
 c835b640a40ce357e1b83666aabd95edffa24ddddd49b8daff63adb851cdab74  poppler-data-0.4.12.tar.gz

@@ -79,6 +79,10 @@ def _result_class(counts, current):
             current[0] = test.id()
             counts.setdefault(current[0], 0)
             super().startTest(test)
+
+        def addSkip(self, test, reason):
+            counts.pop(test.id(), None)
+            super().addSkip(test, reason)
     return Watch
 
 

@@ -257,6 +257,15 @@ class TestVerificationRefuses(unittest.TestCase):
         failed = [r.label for r in rows if not r.ok]
         self.assertTrue(ok, f"failed: {failed}")
 
+    def test_captured_letter_scan_and_explicit_search_override(self):
+        args = dict(origin_mm=(10, 10), reg_width_mm=259.4,
+                    reg_length_mm=195.9, mark_shape_mm=(8.0264, 1))
+        default = graphtec.CutJob(self.dev, self.settings, **args)
+        self.assertIn(graphtec.frame(["TB123,3918,5188,118,118", "TB99"]),
+                      default.stream(self.paths))
+        override = graphtec.CutJob(self.dev, self.settings, search_mm=10, **args)
+        self.assertIn(graphtec.frame("TB123,3918,5188,0,0"), override.stream(self.paths))
+
     def test_cameo_4_sets_the_standard_mat_before_searching_for_marks(self):
         commands = verify.decode(self.stream).commands
         self.assertEqual(commands[:5], ["TG1", "FN0", "TB50,0", "\\0,0", "Z6096,6096"])
