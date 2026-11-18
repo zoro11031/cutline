@@ -40,6 +40,10 @@ ADVICE = {
 MAX_JOB_PASSES = 10
 
 
+def has_cutter_endpoint(connection):
+    return bool(connection[1])
+
+
 def starting_values(device, holder, blade_diameter):
     """Apply the guide values within the selected cutter's supported ranges."""
     return {"force": min(STARTING.force, device.max_pressure),

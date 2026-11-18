@@ -447,6 +447,19 @@ class TestQtFrontend(unittest.TestCase):
         window.preview_zoom.fit_button.click()
         self.assertEqual(window.preview_zoom.level.text(), "100%")
 
+    def test_material_guide_requires_a_selected_cutter_to_send(self):
+        window = self.window
+        window.open_material_guide()
+        self.assertTrue(window.guide_send.isEnabled())
+
+        window.detected.setCurrentIndex(0)
+        self.assertFalse(window.guide_send.isEnabled())
+        self.assertIn("select a cutter", window.guide_status.text())
+
+        window.detected.setCurrentIndex(window.detected.findData((1, 2)))
+        self.assertTrue(window.guide_send.isEnabled())
+        self.assertNotIn("select a cutter", window.guide_status.text())
+
     def test_material_guide_previews_fresh_spots_without_replacing_the_job(self):
         window = self.window
         window.show()

@@ -225,6 +225,19 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertEqual([(group.settings.holder, group.settings.force) for group in win.job.action_groups],
                          [(1, 28), (2, 12)])
 
+    def test_material_guide_requires_a_selected_cutter_to_send(self):
+        win = self.make_window()
+        win.open_material_guide()
+        self.assertTrue(win.guide_send.get_sensitive())
+
+        win.r_bluetooth.set_selected(0)
+        self.assertFalse(win.guide_send.get_sensitive())
+        self.assertIn("select a cutter", win.guide_status.get_subtitle())
+
+        win.r_bluetooth.set_selected(1)
+        self.assertTrue(win.guide_send.get_sensitive())
+        self.assertNotIn("select a cutter", win.guide_status.get_subtitle())
+
     def test_material_guide_shows_fresh_spots_and_restores_the_cut_preview(self):
         win = self.make_window()
         win.preview.zoom_by(1.25)

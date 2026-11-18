@@ -1455,7 +1455,7 @@ class Window(QMainWindow):
         state = self.guide
         for field in (self.guide_apply, self.guide_edit, self.guide_next, self.guide_reset):
             field.setEnabled(not self.busy)
-        connected = bool(self.connection()[1])
+        connected = starting_guide.has_cutter_endpoint(self.connection())
         self.guide_send.setEnabled(not self.busy and connected and state.can_cut)
         self.guide_use.setEnabled(not self.busy and state.outcome == "clean" and state.tested_settings is not None)
         self.guide_send.setText("Repeat One Pass…" if state.completed else "Cut One Pass…")

@@ -2370,7 +2370,7 @@ class Window(Adw.ApplicationWindow):
         for field in (self.guide_apply, self.guide_edit, self.guide_next, self.guide_reset):
             field.set_sensitive(not busy)
         state = self.guide
-        connected = bool(self._connection()[1])
+        connected = starting_guide.has_cutter_endpoint(self._connection())
         self.guide_send.set_sensitive(not busy and connected and state.can_cut)
         self.guide_use.set_sensitive(not busy and state.outcome == "clean" and state.tested_settings is not None)
         for button in (self.guide_send, self.guide_use):

@@ -192,6 +192,10 @@ CASES += (
      ["tests.test_starting_guide.TestStartingGuide"]),
     (starting_guide.Guide, "can_cut", property(lambda *_: False), "guided repeats always refused",
      ["tests.test_starting_guide.TestStartingGuide"]),
+    (starting_guide, "has_cutter_endpoint", lambda *_: True, "every material test cutter accepted",
+     ["tests.test_starting_guide.TestStartingGuide.test_sending_requires_a_selected_cutter_endpoint"]),
+    (starting_guide, "has_cutter_endpoint", lambda *_: False, "every material test cutter refused",
+     ["tests.test_starting_guide.TestStartingGuide.test_sending_requires_a_selected_cutter_endpoint"]),
 )
 
 try:
