@@ -298,6 +298,33 @@ def _corrupt_return_to_start(stream: bytes) -> bytes | None:
     return _rejoin(head, cmds)
 
 
+def _corrupt_segment_overcut(stream: bytes) -> bytes | None:
+    head, cmds = _split(stream)
+    for index, command in enumerate(cmds):
+        if command.startswith(b"FF"):
+            del cmds[index]
+            return _rejoin(head, cmds)
+    return None
+
+
+def _corrupt_track_enhancing(stream: bytes) -> bytes:
+    head, cmds = _split(stream)
+    if b"FY0" in cmds:
+        cmds.remove(b"FY0")
+    else:
+        cmds.insert(0, b"FY0")
+    return _rejoin(head, cmds)
+
+
+def _corrupt_feed_position(stream: bytes) -> bytes | None:
+    head, cmds = _split(stream)
+    if len(cmds) < 2 or cmds[-1] != b"SO0" or not cmds[-2].startswith(b"M"):
+        return None
+    y, x = cmds[-2][1:].split(b",")
+    cmds[-2] = b"M%d,%s" % (int(y) + 20, x)
+    return _rejoin(head, cmds)
+
+
 def _corrupt_mark_arm(stream: bytes) -> bytes | None:
     head, cmds = _split(stream)
     for i, cmd in enumerate(cmds):
@@ -345,6 +372,7 @@ PROBES = (
     ("card size error", _corrupt_size),
     ("cuts inside the marks", _corrupt_outside),
     ("cut paths", _drop_a_path),
+    ("track enhancing", _corrupt_track_enhancing),
     ("registration preamble", _drop_preamble),
     ("registration mark dimensions", _corrupt_mark_arm),
     ("registration mat setup", _drop_mat_setup),
@@ -372,6 +400,8 @@ IMPORTED_PROBES = (
     ("scheduled path geometry", _corrupt_imported_vertex),
     ("cutting mat setup", _drop_mat_setup),
     ("return to start", _corrupt_return_to_start),
+    ("line segment overcut", _corrupt_segment_overcut),
+    ("feed position", _corrupt_feed_position),
     ("cuts inside the sheet", _corrupt_outside),
 )
 
@@ -494,7 +524,8 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
                      offset_mm: tuple[float, float] = (0.0, 0.0),
                      registration: bool = True, expected_paths=None,
                      auto_search: bool = True, source_paths=None,
-                     mat: str = "auto", end_position: str = "below"
+                     mat: str = "auto", end_position: str = "below",
+                    end_feed_mm: float = 0.0
                      ) -> tuple[bool, list[Row]]:
     """Check a stream against the grid, marks and blade settings.
 
@@ -526,6 +557,22 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
     if device.autoblade and s.depth is not None and s.holder == 1:
         row("autoblade depth", s.depth, d.depth, d.depth == s.depth)
 
+    if s.sharpen_corners:
+        tool = graphtec.Tool(s.holder)
+        wanted = (tool.lift(True), *tool.sharpen_corners(
+            round(s.corner_start_mm * 10), round(s.corner_end_mm * 10)))
+        found = tuple(command for command in d.commands if command.startswith(("FE", "FF")))
+        row("line segment overcut", " ".join(wanted), " ".join(found), found == wanted)
+
+    track_indices = [i for i, command in enumerate(d.commands) if command == "FY0"]
+    first_motion = next((i for i, command in enumerate(d.commands)
+                         if command.startswith(("TB123,", "TB124,", "TB23,", "M", "D"))),
+                        len(d.commands))
+    found = len(track_indices) == 1 and track_indices[0] < first_motion
+    row("track enhancing", "before scan or cut" if s.track_enhancing else "off",
+        "before scan or cut" if found else "off" if not track_indices else "out of sequence",
+        found if s.track_enhancing else not track_indices)
+
     # Registration. An unregistered job has none of this by design - it
     # cuts in sheet coordinates on a blank sheet - so asserting it anyway
     # made every `--no-registration` job unsendable.
@@ -552,9 +599,10 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
         before_scan = d.commands[:scan_at]
         mat_setup = graphtec.cutting_mat_commands(device, mat, mk.sheet_w_mm, mk.sheet_h_mm, True)
         mat_commands = before_scan
-        captured = auto_search and mat in ("auto", "cameo-12x12") and graphtec.captured_letter_scan(
+        captured = (auto_search and not s.track_enhancing
+                    and mat in ("auto", "cameo-12x12") and graphtec.captured_letter_scan(
                 device, mk.reg_length_mm, mk.reg_width_mm, mk.origin_mm,
-                (mk.length_mm, mk.thickness_mm))
+                (mk.length_mm, mk.thickness_mm)))
         if captured:
             mat_setup = ("TG1", "FN0", "TB50,0", "TB99", "TB52,2",
                          f"TB51,{graphtec.su(mk.length_mm)}", "TB53,20",
@@ -664,6 +712,11 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
         got_trailer = tuple(d.commands[-len(trailer):])
         row("return to start", " ".join(trailer), " ".join(got_trailer),
             got_trailer == trailer)
+    elif end_feed_mm:
+        last_y = max((graphtec.su(y) for path in d.paths for _, y in path), default=0)
+        trailer = (f"M{max(0, last_y) + graphtec.su(end_feed_mm)},0", "SO0")
+        got_trailer = tuple(d.commands[-2:])
+        row("feed position", " ".join(trailer), " ".join(got_trailer), got_trailer == trailer)
 
     # The sheet has to fit the machine.
     row("sheet fits the cutter", f"<= {device.width_mm:g} mm wide",

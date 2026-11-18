@@ -67,7 +67,7 @@ class TestDesignWorkspace(unittest.TestCase):
                              (32, 21, -1, 5))
             self.assertIsNone(win.job.settings.depth)
             self.assertEqual(win.job.settings.passes, 5)
-            for cmd in (b"FC13,1,1", b"FE0,1", b"FF4,7,1"):
+            for cmd in (b"FC13,1,1", b"FE1,1", b"FF4,7,1"):
                 self.assertIn(cmd, win.job.stream.split(b"\x03"))
 
     def test_save_as_new_selects_a_distinct_preset(self):
@@ -231,6 +231,21 @@ class TestOpenDialogs(unittest.TestCase):
             dialog.return_value.connect.call_args.args[1](dialog.return_value, "open")
         self.assertEqual(load.call_args_list, [mock.call(path, page=None), mock.call(path, page=2)])
         window.set_artwork.assert_called_once_with(artwork, "multipage.svg · Page 2")
+
+    def test_show_weed_settings_changes_visibility_only(self):
+        window = types.SimpleNamespace(r_show_weed=mock.Mock(), _text=mock.Mock(),
+            r_weed_border=mock.Mock(), r_weed_lines=mock.Mock(), weed_group=mock.Mock())
+        window.r_weed_border.get_value.return_value = 3
+        for mode, imported, visible in (("Auto", None, False), ("Auto", object(), True),
+                                        ("Always", None, True), ("Never", object(), False)):
+            with self.subTest(mode=mode, imported=bool(imported)):
+                window._text.return_value = mode
+                window.imported = imported
+                gui.Window._update_weed_controls(window)
+                window.weed_group.set_visible.assert_called_with(visible)
+                window.r_weed_border.set_sensitive.assert_called_with(imported is not None)
+        self.assertEqual(window.weed_group.set_visible.call_count, 4)
+        self.assertEqual(window.r_weed_border.set_value.call_count, 0)
 
     def test_colorblind_preference_preserves_calibration(self):
         window = types.SimpleNamespace(preview=mock.Mock(), toast=mock.Mock())

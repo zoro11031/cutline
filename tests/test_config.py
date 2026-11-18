@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from cut_proxies import cli, config, job, presets, verify
+from cut_proxies import cli, config, job, materials, presets, verify
 
 
 class TestConfig(unittest.TestCase):
@@ -102,7 +102,7 @@ class TestBladePresets(unittest.TestCase):
         checked = cli.build_from_args(args)
         self.assertFalse(checked.blocked)
         commands = verify.decode(checked.stream).commands
-        for expected in ("J2", "FX19,2", "!8,2", "FC13,1,2", "FE0,2", "FF4,7,2", "TJ0", "TJ3"):
+        for expected in ("J2", "FX19,2", "!8,2", "FC13,1,2", "FE1,2", "FF4,7,2", "TJ0", "TJ3"):
             self.assertIn(expected, commands)
         self.assertIsNone(verify.decode(checked.stream).depth)
         self.assertEqual(len(verify.decode(checked.stream).paths), 2 * len(checked.paths))
@@ -129,6 +129,38 @@ class TestBladePresets(unittest.TestCase):
         self.assertIsNone(verify.decode(job.build(preset_name=name, depth=None).stream).depth)
         presets.save_blade_settings(name, force=35, speed=25, depth=None, passes=4)
         self.assertIsNone(verify.decode(job.build(preset_name=name).stream).depth)
+
+
+    def test_restore_defaults_backs_up_shipped_overrides_and_keeps_custom_presets(self):
+        name = "330 gsm black-core"
+        built_in = presets.get(name)
+        override = presets.save_blade_settings(name, force=23, speed=8, passes=2, depth=3)
+        personal = presets.save_blade_settings(name, force=24, speed=9, passes=3, depth=4,
+                                              new_name="My test")
+        count, backup = presets.restore_default_materials()
+        self.assertEqual(count, 1)
+        self.assertEqual(presets.get(name), built_in)
+        self.assertEqual(presets.get("My test").settings["force"], 24)
+        self.assertTrue(personal.exists())
+        self.assertEqual(json.loads((backup / override.name).read_text())["settings"]["force"], 23)
+        self.assertEqual(presets.restore_default_materials(), (0, None))
+
+
+class TestCutterDivisions(unittest.TestCase):
+    def test_known_prefers_matching_material_division_and_all_lists_vendor_rows(self):
+        common = materials.Material("Coverstock", "cameo", 28, 3, 1, 0.4, 18, "blade")
+        portrait = materials.Material("Coverstock", "portrait", 25, 2, 1, 0.4, 18, "blade")
+        cameo4 = materials.Material("Coverstock", "cameo4", 30, 4, 1, 0.4, 18, "blade")
+        rows = (portrait, common, cameo4)
+        self.assertEqual(materials.cutter_divisions(rows, "Silhouette Cameo 4", False),
+                         {"Coverstock": cameo4})
+        self.assertEqual(materials.cutter_divisions(rows, "Silhouette Portrait 4", False),
+                         {"Coverstock": portrait})
+        self.assertEqual(materials.cutter_divisions(rows, "Silhouette Cameo 3", False),
+                         {"Coverstock": common})
+        choices = materials.cutter_divisions(rows, "Silhouette Cameo 4", True)
+        self.assertEqual(len(choices), 3)
+        self.assertEqual(set(choices.values()), set(rows))
 
 
 if __name__ == '__main__':

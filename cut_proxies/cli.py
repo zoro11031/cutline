@@ -145,6 +145,10 @@ def common_layout_args(p, bundles=False):
                    help="cut only the paths with this stroke colour, the "
                         "way Studio selects by line colour (e.g. red, "
                         "#ff0000)")
+    p.add_argument("--weed-border-mm", type=float, default=0.0, metavar="MM",
+                   help="padding for a Weed Border around imported paths")
+    p.add_argument("--weed-lines", choices=toolpath.WEED_LINES, default="none",
+                   help="add divider lines in clear gaps between imported contours")
     p.add_argument("--skip", type=int, action="append", default=[],
                    metavar="N",
                    help="leave card N uncut (0-based). Use it for the slot "
@@ -169,7 +173,9 @@ def media_handling_args(p):
     p.add_argument("--mat", choices=graphtec.MAT_OPTIONS, default="auto",
                    help="select the physical cutting mat or use --mat none")
     p.add_argument("--end-position", choices=graphtec.END_POSITIONS, default="below",
-                   help="park below the cut or return to the starting position")
+                   help="feed past the cut or return to origin")
+    p.add_argument("--feed-mm", type=float, default=0.0, metavar="MM",
+                   help="additional distance past the cut in Feed mode")
 
 
 def advanced_cut_args(p):
@@ -177,26 +183,35 @@ def advanced_cut_args(p):
     p.add_argument("--acceleration", type=int, choices=range(-1, 4), help="-1 uses the automatic TJ sequence")
     p.add_argument("--blade-diameter-mm", type=float, choices=[i / 20 for i in range(47)], metavar="MM")
     p.add_argument("--lift-head", action=argparse.BooleanOptionalAction, default=None)
-    p.add_argument("--sharpen-corners", action=argparse.BooleanOptionalAction, default=None)
+    p.add_argument("--line-segment-overcut", "--sharpen-corners", dest="sharpen_corners",
+                   action=argparse.BooleanOptionalAction, default=None,
+                   help="lift and overcut sharp corners")
+    p.add_argument("--track-enhancing", action=argparse.BooleanOptionalAction, default=None,
+                   help="run the rollers before registration or cutting")
     for flag in ("--corner-start-mm", "--corner-end-mm"):
-        p.add_argument(flag, type=float, choices=[i / 10 for i in range(1, 10)], metavar="MM",
-                       help="corner extension from 0.1 to 0.9 mm")
+        p.add_argument(flag, type=float, choices=[i / 10 for i in range(10)], metavar="MM",
+                       help="line segment extension from 0 to 0.9 mm")
 
     p.add_argument("--path-order", choices=toolpath.PATH_ORDERS,
-                   help="preserve design order or choose the nearest starting point")
+                   help="no sort, maximize speed, or minimize roller movement")
+    p.add_argument("--interior-first", action=argparse.BooleanOptionalAction, default=None,
+                   help="cut nested paths before enclosing contours")
+    p.add_argument("--delicate-media", action=argparse.BooleanOptionalAction, default=None,
+                   help="sort interiors first and alternate the winding of closed contours")
     p.add_argument("--pass-order", choices=toolpath.PASS_ORDERS,
                    help="repeat the whole sheet or finish each path first")
     p.add_argument("--alternate-direction", action=argparse.BooleanOptionalAction, default=None,
                    help="reverse the direction on every second pass")
     p.add_argument("--overcut-mm", type=float, metavar="MM",
-                   help="overlap both sides of a closed contour's seam")
+                   help="seam overcut on closed contours")
 
 
 def advanced_settings(args):
     options = {key: getattr(args, key) for key in
                ("holder", "acceleration", "blade_diameter_mm", "lift_head",
                 "sharpen_corners", "corner_start_mm", "corner_end_mm", "path_order",
-                "pass_order", "alternate_direction", "overcut_mm")
+                "pass_order", "alternate_direction", "overcut_mm", "interior_first",
+                "delicate_media", "track_enhancing")
                if getattr(args, key, None) is not None}
     if options.get("acceleration") == -1:
         options["acceleration"] = None
@@ -231,6 +246,9 @@ def build_from_args(args, matched=None, bundle_row=None) -> job_mod.Job:
         imported=imported,
         mat=getattr(args, "mat", "auto"),
         end_position=getattr(args, "end_position", "below"),
+        end_feed_mm=getattr(args, "feed_mm", 0.0),
+        weed_border_mm=getattr(args, "weed_border_mm", 0.0),
+        weed_lines=getattr(args, "weed_lines", "none"),
         sheet=args.sheet, card=args.card, portrait=args.portrait,
         engine=args.engine,
         preset_name=getattr(args, "preset", config.DEFAULT_PRESET),
@@ -570,7 +588,7 @@ def cmd_testcut(args):
             gap_mm=args.gap, margin_mm=args.margin, cols=args.cols,
             sheet_w_mm=w, sheet_h_mm=h, registration=args.registration,
             offset_mm=config.cut_offset(), shape=args.shape, mat=args.mat,
-            end_position=args.end_position)
+            end_position=args.end_position, end_feed_mm=args.feed_mm)
     except ValueError as exc:
         fail(str(exc))
 

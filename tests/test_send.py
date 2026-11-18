@@ -128,6 +128,54 @@ class TestMediaHandling(unittest.TestCase):
                 self.assertIn("return to start", {row.label for row in rows if not row.ok})
 
 
+class TestStudioMediaControls(unittest.TestCase):
+    def test_track_enhancing_has_one_waited_roller_step_before_registration(self):
+        checked = job.build(blade_options={"track_enhancing": True}, offset_mm=(0, 0))
+        self.assertEqual(checked.blocked, [])
+        [enhance] = [step for step in checked.steps if step.data == graphtec.frame("FY0")]
+        self.assertTrue(enhance.wait_ready)
+        self.assertIn(enhance, checked.registration_steps())
+        self.assertLess(checked.stream.index(b"FX"), checked.stream.index(b"FY0"))
+        self.assertLess(checked.stream.index(b"FY0"), checked.stream.index(b"TB123"))
+        default = job.build(offset_mm=(0, 0))
+        self.assertNotIn(graphtec.frame("FY0"), default.stream)
+        broken = verify._corrupt_track_enhancing(checked.stream)
+        ok, rows = verify.expectations_met(broken, checked.grid, checked.marks,
+                                           checked.settings, checked.device)
+        self.assertFalse(ok)
+        self.assertIn("track enhancing", {row.label for row in rows if not row.ok})
+
+    def test_line_segment_overcut_uses_holder_and_disables_on_pen(self):
+        settings = dict(sharpen_corners=True, lift_head=False, holder=2,
+                        corner_start_mm=0.4, corner_end_mm=0.7)
+        checked = job.build(blade_options=settings, offset_mm=(0, 0))
+        self.assertEqual(checked.blocked, [])
+        self.assertIn(graphtec.frame(("FE1,2", "FF4,0,2", "FF4,7,2")), checked.stream)
+        broken = verify._corrupt_segment_overcut(checked.stream)
+        ok, rows = verify.expectations_met(broken, checked.grid, checked.marks,
+                                           checked.settings, checked.device)
+        self.assertFalse(ok)
+        self.assertIn("line segment overcut", {row.label for row in rows if not row.ok})
+        pen = job.build(preset_name="Pen, no blade", blade_options={"sharpen_corners": True})
+        self.assertEqual(pen.blocked, [])
+        self.assertFalse(pen.settings.sharpen_corners)
+        self.assertIn(graphtec.frame(("FE0,1", "FF0,0,1", "FF0,0,1")), pen.stream)
+
+    def test_feed_distance_is_added_to_the_farthest_cut_and_verified(self):
+        checked = job.build(end_feed_mm=4, offset_mm=(0, 0))
+        self.assertEqual(checked.blocked, [])
+        self.assertTrue(checked.stream.endswith(graphtec.frame(("M3810,0", "SO0"))))
+        broken = verify._corrupt_feed_position(checked.stream)
+        ok, rows = verify.expectations_met(broken, checked.grid, checked.marks,
+                                           checked.settings, checked.device, end_feed_mm=4)
+        self.assertFalse(ok)
+        self.assertIn("feed position", {row.label for row in rows if not row.ok})
+        with self.assertRaisesRegex(ValueError, "active feed window"):
+            job.build(end_feed_mm=50, offset_mm=(0, 0))
+        with self.assertRaisesRegex(ValueError, "Select Feed"):
+            job.build(end_position="start", end_feed_mm=4)
+
+
 class ImmediateThread:
     def __init__(self, target, **kwargs):
         self.target = target

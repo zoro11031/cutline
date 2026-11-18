@@ -98,6 +98,8 @@ class Transport:
                 if step.note:
                     log(step.note)
                 sent += self._write_paths(step.data) if step.pace else self.write(step.data)
+                if step.wait_ready:
+                    self._wait_until_ready()
             elif step.kind == "expect":
                 got = self.read(timeout_ms=step.timeout_ms)
                 if got != step.expect:
@@ -125,20 +127,20 @@ class Transport:
             if written != end - sent:
                 raise TransportError("Incomplete path write. The rest of the job was stopped.")
             sent = end
-            self._wait_after_paths()
+            self._wait_until_ready()
         return sent
 
-    def _wait_after_paths(self) -> None:
+    def _wait_until_ready(self) -> None:
         deadline = time.monotonic() + PATH_READY_TIMEOUT
         while True:
             state = self.status()
             if state == "ready":
                 return
             if state != "moving":
-                raise TransportError(f"The cutter reported {state} during the cut. "
+                raise TransportError(f"The cutter reported {state} during movement. "
                                      "The rest of the job was stopped.")
             if time.monotonic() >= deadline:
-                raise TransportError("The cutter stayed busy after a path batch. "
+                raise TransportError("The cutter stayed busy after a movement command. "
                                      "The rest of the job was stopped.")
             time.sleep(0.05)
 

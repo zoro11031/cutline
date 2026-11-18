@@ -214,6 +214,38 @@ def by_name(path=None, cutter_class: str = "") -> dict[str, Material]:
     return out
 
 
+def cutter_divisions(rows, cutter_name: str, show_all: bool) -> dict[str, Material]:
+    """Expose the material divisions recorded by Studio's database."""
+    if show_all:
+        choices = {}
+        for material in rows:
+            division = material.cutter_class or "General"
+            tool = f" · {material.tool}" if material.tool else ""
+            label = f"{material.name} · {division}{tool}"
+            choices.setdefault(label, material)
+        return choices
+
+    def normalize(value):
+        return "".join(char for char in value.lower() if char.isalnum())
+
+    model = cutter_name.removeprefix("Silhouette ")
+    family = normalize(model.split()[0]) if model else ""
+    exact = normalize(model)
+
+    def rank(material):
+        division = normalize(material.cutter_class)
+        if division and division == exact:
+            return 2
+        return int(bool(division) and division == family)
+
+    choices = {}
+    for material in rows:
+        current = choices.get(material.name)
+        if current is None or rank(material) > rank(current):
+            choices[material.name] = material
+    return choices
+
+
 def varies_by_cutter(path=None) -> list[str]:
     """Materials whose settings are not the same for every machine class."""
     seen: dict[str, set] = {}

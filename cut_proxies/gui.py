@@ -239,10 +239,11 @@ class Preview(Gtk.DrawingArea):
         cr.save()
         cr.translate(*j.offset_mm)
         bad = bool(j.blocked)
-        cr.set_source_rgb(*(bad_color if bad else good_color))
         cr.set_line_width(max(hair, 0.25))
-        cr.set_dash([2.0, 1.0] if self.colorblind and bad else [])
         for p in j.paths:
+            weed = toolpath.is_weed_path(p)
+            cr.set_source_rgb(*(bad_color if bad else (0.1, 0.45, 0.75) if weed else good_color))
+            cr.set_dash([2.0, 1.0] if weed or (self.colorblind and bad) else [])
             pts = p.points
             if not pts:
                 continue
@@ -645,12 +646,16 @@ class Window(Adw.ApplicationWindow):
         self.r_diameter = _spin("Blade diameter (mm)", 0, 2.3, 0.9, 0.05, 2,
                                 subtitle="Cutter offset from the tool setting; 0 for a pen")
         self.r_lift = _switch("Lift head", True)
-        self.r_corners = _switch("Sharpen corners", False)
-        self.r_corner_start = _spin("Corner start extension (mm)", 0.1, 0.9, 0.1, 0.1, 1)
-        self.r_corner_end = _spin("Corner end extension (mm)", 0.1, 0.9, 0.1, 0.1, 1)
+        self.r_corners = _switch("Line Segment Overcut", False,
+                                 subtitle="Lift the blade and extend cuts at sharp corners")
+        self.r_corner_start = _spin("Start Extension (mm)", 0, 0.9, 0.1, 0.1, 1)
+        self.r_corner_end = _spin("End Extension (mm)", 0, 0.9, 0.1, 0.1, 1)
+        self.r_track = _switch("Track Enhancing", False,
+                                subtitle="Run the rollers before registration or cutting")
         for r in (self.r_cutter, self.r_force, self.r_speed, self.r_passes,
                   self.r_depth, self.r_holder, self.r_acceleration, self.r_diameter,
-                  self.r_lift, self.r_corners, self.r_corner_start, self.r_corner_end):
+                  self.r_lift, self.r_corners, self.r_corner_start, self.r_corner_end,
+                  self.r_track):
             g2.add(r)
         self.tool_row = Adw.ActionRow(title="Installed tools", subtitle="Read the tool IDs from the connected cutter")
         detect = Gtk.Button(label="Detect blades", valign=Gtk.Align.CENTER)
@@ -674,20 +679,36 @@ class Window(Adw.ApplicationWindow):
         page.add(g2)
 
         paths = Adw.PreferencesGroup(title="Cut paths")
-        self.r_path_order = _combo("Cut order", list(toolpath.PATH_ORDERS.values()))
+        self.r_path_order = _combo("Cut Order Sorting", list(toolpath.PATH_ORDERS.values()))
+        self.r_interiors = _switch("Sort Interior Contours First", False)
+        self.r_delicate = _switch("Delicate Media Path", False,
+                                  subtitle="Software alternative to Intelligent Path Technology")
         self.r_pass_order = _combo("Pass order", list(toolpath.PASS_ORDERS.values()))
         self.r_alternate = _switch("Alternate pass direction", False)
-        self.r_overcut = _spin("Overcut (mm)", 0, 1000, 0, 0.1, 2,
+        self.r_overcut = _spin("Seam Overcut (mm)", 0, 1000, 0, 0.1, 2,
                                subtitle="Overlap the seam of each closed contour")
-        for row in (self.r_path_order, self.r_pass_order, self.r_alternate, self.r_overcut):
+        for row in (self.r_path_order, self.r_interiors, self.r_delicate,
+                    self.r_pass_order, self.r_alternate, self.r_overcut):
             paths.add(row)
         page.add(paths)
+
+        self.weed_group = Adw.PreferencesGroup(
+            title="Weed Settings", description="Available for imported artwork and Design projects")
+        self.r_weed_border = _spin("Weed Border Padding (mm)", 0, 1000, 0, 0.5, 2,
+                                   subtitle="Positive padding adds a cut border")
+        self.r_weed_lines = _combo("Weed Lines", list(toolpath.WEED_LINES.values()))
+        self.weed_group.add(self.r_weed_border)
+        self.weed_group.add(self.r_weed_lines)
+        page.add(self.weed_group)
 
         g3 = Adw.PreferencesGroup(
             title="Silhouette's own material settings",
             description="Read from Studio's condition.csv. Coverstock is the "
                         "heaviest paper they publish a setting for, and this "
                         "suite prints on something heavier.")
+        self.r_cutter_divisions = _combo("Show Cutter Divisions", ["Known Cutters", "All Cutters"])
+        self.r_cutter_divisions.connect("notify::selected", self._load_materials)
+        g3.add(self.r_cutter_divisions)
         self.r_material = _combo("Material", ["(none loaded)"])
         apply_row = Adw.ActionRow(
             title="Apply the selected material",
@@ -698,16 +719,24 @@ class Window(Adw.ApplicationWindow):
         apply_row.add_suffix(apply_btn)
         g3.add(self.r_material)
         g3.add(apply_row)
+        restore = Adw.ActionRow(title="Restore Default Materials",
+                                subtitle="Back up edits to built-in materials and restore their original settings")
+        restore_button = Gtk.Button(label="Restore", valign=Gtk.Align.CENTER)
+        restore_button.connect("clicked", self.on_restore_default_materials)
+        restore.add_suffix(restore_button)
+        g3.add(restore)
         page.add(g3)
         self._load_materials()
+        self.r_cutter.connect("notify::selected", self._load_materials)
 
-        for row in (self.r_cutter, self.r_path_order, self.r_pass_order):
+        for row in (self.r_cutter, self.r_path_order, self.r_pass_order, self.r_weed_lines):
             row.connect("notify::selected", self.on_changed)
-        for r in (self.r_lift, self.r_corners, self.r_alternate):
+        for r in (self.r_lift, self.r_corners, self.r_alternate, self.r_track,
+                  self.r_interiors, self.r_delicate):
             r.connect("notify::active", self.on_changed)
         for r in (self.r_force, self.r_speed, self.r_passes, self.r_depth, self.r_holder,
                   self.r_acceleration, self.r_diameter, self.r_corner_start, self.r_corner_end,
-                  self.r_overcut):
+                  self.r_overcut, self.r_weed_border):
             r.connect("notify::value", self.on_changed)
 
         self.stack.add_titled_with_icon(page, "blade", "Blade",
@@ -761,10 +790,20 @@ class Window(Adw.ApplicationWindow):
 
         media = Adw.PreferencesGroup(title="Media handling")
         self.r_mat = _combo("Cutting mat", list(graphtec.MAT_OPTIONS.values()))
-        self.r_end_position = _combo("End position", list(graphtec.END_POSITIONS.values()))
+        self.r_end_position = _combo("Feed Options", list(graphtec.END_POSITIONS.values()))
+        self.r_feed = _spin("Feed Distance (mm)", 0, max(d.length_mm for d in graphtec.DEVICES),
+                            0, 0.5, 2, subtitle="Distance beyond the farthest cut")
         for row in (self.r_mat, self.r_end_position):
             media.add(row)
             row.connect("notify::selected", self.on_changed)
+        media.add(self.r_feed)
+        self.r_feed.connect("notify::value", self.on_changed)
+        modes = ["Auto", "Always", "Never"]
+        preferred = config.load_settings().get("show_weed_settings")
+        self.r_show_weed = _combo("Show Weed Settings", modes,
+                                  modes.index(preferred) if preferred in modes else 0)
+        self.r_show_weed.connect("notify::selected", self.on_show_weed_settings)
+        media.add(self.r_show_weed)
         page.add(media)
 
         gcal = Adw.PreferencesGroup(
@@ -969,9 +1008,13 @@ class Window(Adw.ApplicationWindow):
             auto_search=self.r_auto.get_active(),
             mat=list(graphtec.MAT_OPTIONS)[self.r_mat.get_selected()],
             end_position=list(graphtec.END_POSITIONS)[self.r_end_position.get_selected()],
+            end_feed_mm=self.r_feed.get_value() if self.r_end_position.get_selected() == 0 else 0,
             skip=self._skip_indices(),
             offset_mm=(self.r_cal_x.get_value(), self.r_cal_y.get_value()),
             imported=self._selected_artwork(),
+            weed_border_mm=self.r_weed_border.get_value() if self.imported else 0,
+            weed_lines=(list(toolpath.WEED_LINES)[self.r_weed_lines.get_selected()]
+                        if self.imported and self.r_weed_border.get_value() else "none"),
         )
         if self.pdf_bundle:
             options.update(self.pdf_bundle.layout, engine='scm', mode=template.ROUNDED,
@@ -1005,9 +1048,12 @@ class Window(Adw.ApplicationWindow):
         self.r_depth.set_sensitive(device.autoblade and (not device.two_tools or self.r_holder.get_value() == 1))
         self.r_acceleration.set_sensitive(device.detects_tools)
         self.r_lift.set_sensitive(device.cameo3_on)
-        self.r_corners.set_sensitive(device.cameo3_on)
+        corner_capable = device.cameo3_on and self.r_diameter.get_value() > 0
+        self.r_corners.set_sensitive(corner_capable)
         for extension in (self.r_corner_start, self.r_corner_end):
-            extension.set_sensitive(device.cameo3_on and self.r_corners.get_active())
+            extension.set_sensitive(corner_capable and self.r_corners.get_active())
+        self.r_feed.set_sensitive(self.r_end_position.get_selected() == 0)
+        self._update_weed_controls()
         self._sheet_token = None
         self.bundle_checked = False
         if self.sheet_report is not None:
@@ -1022,6 +1068,22 @@ class Window(Adw.ApplicationWindow):
         if self.pdf_bundle:
             self.measure_sheet()
 
+    def _update_weed_controls(self):
+        mode = self._text(self.r_show_weed)
+        can_weed = self.imported is not None
+        self.weed_group.set_visible(mode == "Always" or (mode == "Auto" and can_weed))
+        self.r_weed_border.set_sensitive(can_weed)
+        self.r_weed_lines.set_sensitive(can_weed and self.r_weed_border.get_value() > 0)
+
+    def on_show_weed_settings(self, *_args):
+        self._update_weed_controls()
+        settings = config.load_settings()
+        settings["show_weed_settings"] = self._text(self.r_show_weed)
+        try:
+            config.save_settings(settings)
+        except OSError as exc:
+            self.toast(f"Could not save Weed Settings visibility. {exc}")
+
     def _blade_options(self):
         acceleration = int(self.r_acceleration.get_value())
         return dict(holder=int(self.r_holder.get_value()) if self.r_holder.get_sensitive() else 1,
@@ -1033,7 +1095,10 @@ class Window(Adw.ApplicationWindow):
                     path_order=list(toolpath.PATH_ORDERS)[self.r_path_order.get_selected()],
                     pass_order=list(toolpath.PASS_ORDERS)[self.r_pass_order.get_selected()],
                     alternate_direction=self.r_alternate.get_active(),
-                    overcut_mm=round(self.r_overcut.get_value(), 2))
+                    overcut_mm=round(self.r_overcut.get_value(), 2),
+                    interior_first=self.r_interiors.get_active(),
+                    delicate_media=self.r_delicate.get_active(),
+                    track_enhancing=self.r_track.get_active())
 
     def _load_blade_settings(self, settings):
         self.r_force.set_value(settings.force)
@@ -1051,6 +1116,9 @@ class Window(Adw.ApplicationWindow):
         self.r_pass_order.set_selected(list(toolpath.PASS_ORDERS).index(settings.pass_order))
         self.r_alternate.set_active(settings.alternate_direction)
         self.r_overcut.set_value(settings.overcut_mm)
+        self.r_interiors.set_active(settings.interior_first)
+        self.r_delicate.set_active(settings.delicate_media)
+        self.r_track.set_active(settings.track_enhancing)
 
     def on_save_blade_preset(self, *_a, new_name=None):
         name = self._text(self.r_preset)
@@ -1581,17 +1649,52 @@ class Window(Adw.ApplicationWindow):
         self.rebuild()
 
     # ---- Silhouette's own materials ----------------------------------
-    def _load_materials(self):
+    def _load_materials(self, *_args):
+        selected = self._text(self.r_material)
+        previous = getattr(self, "_materials", {}).get(selected)
         self._materials = {}
         try:
             from . import materials
-            self._materials = materials.by_name()
-        except Exception:                         # noqa: BLE001
+            self._materials = materials.cutter_divisions(
+                materials.load(), self._text(self.r_cutter),
+                self.r_cutter_divisions.get_selected() == 1)
+        except (OSError, ValueError):
             pass
         names = sorted(self._materials) or ["(no Studio installation found)"]
         self.r_material.set_model(Gtk.StringList.new(names))
-        if "Coverstock" in self._materials:
+        if selected in self._materials:
+            self.r_material.set_selected(names.index(selected))
+        elif previous is not None:
+            match = next((i for i, name in enumerate(names)
+                          if self._materials.get(name) == previous), 0)
+            self.r_material.set_selected(match)
+        elif "Coverstock" in self._materials:
             self.r_material.set_selected(names.index("Coverstock"))
+
+    def on_restore_default_materials(self, *_args):
+        dialog = Adw.AlertDialog(heading="Restore Default Materials?",
+                                 body="Edits to built-in materials will be backed up. Custom materials stay available.")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("restore", "Restore")
+        dialog.set_close_response("cancel")
+        dialog.set_default_response("cancel")
+
+        def restore(_dialog, response):
+            if response != "restore":
+                return
+            try:
+                count, directory = presets.restore_default_materials()
+            except OSError as exc:
+                self.toast(f"Could not restore defaults. {exc}")
+                return
+            if count:
+                self.on_preset()
+                self.toast(f"Restored {count} material presets. Backup at {directory}.")
+            else:
+                self.toast("The default materials already have their original settings.")
+
+        dialog.connect("response", restore)
+        dialog.present(self)
 
     def on_apply_material(self, *_a):
         name = self._text(self.r_material)
@@ -1637,7 +1740,8 @@ class Window(Adw.ApplicationWindow):
                 sheet_h_mm=self.job.grid.sheet_h_mm if self.job else 279.4,
                 offset_mm=opts["offset_mm"],
                 shape=list(testcut.TEST_SHAPES)[self.r_test_shape.get_selected()],
-                mat=opts["mat"], end_position=opts["end_position"])
+                mat=opts["mat"], end_position=opts["end_position"],
+                end_feed_mm=opts["end_feed_mm"])
         except ValueError as exc:
             self.toast(str(exc))
             return

@@ -304,7 +304,7 @@ MATS = {
     "portrait-8x12": ("TG3", 203.2, 304.8),
     "portrait-8.5x12": ("TG11", 215.9, 304.8),
 }
-END_POSITIONS = {"below": "Below the cut", "start": "Return to start"}
+END_POSITIONS = {"below": "Feed", "start": "Return to Origin"}
 
 
 def cutting_mat_commands(device: Device, mat: str, sheet_width: float,
@@ -396,6 +396,7 @@ class Step:
     timeout_ms: int = 10000
     note: str = ""
     pace: bool = False          # long path blocks use command-aligned batches
+    wait_ready: bool = False    # finish a standalone movement before the next step
 
 
 @dataclasses.dataclass
@@ -425,11 +426,15 @@ class CutSettings:
     pass_order: str = "sheet"
     alternate_direction: bool = False
     overcut_mm: float = 0.0
+    interior_first: bool = False
+    delicate_media: bool = False
+    track_enhancing: bool = False
 
     @property
     def custom_toolpath(self) -> bool:
         return (self.path_order != "design" or self.pass_order != "sheet"
-                or self.alternate_direction or self.overcut_mm != 0)
+                or self.alternate_direction or self.overcut_mm != 0
+                or self.interior_first or self.delicate_media)
 
     def clamped(self, device: Device) -> "CutSettings":
         out = dataclasses.replace(self)
@@ -447,6 +452,11 @@ class CutSettings:
             raise ValueError("Unknown path or pass order.")
         if not math.isfinite(self.overcut_mm) or self.overcut_mm < 0:
             raise ValueError("Overcut must be a finite distance of zero or more millimetres.")
+        if not device.cameo3_on or not self.blade_diameter_mm:
+            out.sharpen_corners = False
+        if out.sharpen_corners and not all(math.isfinite(v) and v >= 0
+                                         for v in (self.corner_start_mm, self.corner_end_mm)):
+            raise ValueError("Line segment extensions must be finite and nonnegative.")
         return out
 
     def warnings(self, device: Device) -> list[str]:
@@ -463,6 +473,10 @@ class CutSettings:
         elif self.depth is not None and self.holder != 1:
             out.append("AutoBlade depth only applies to tool holder 1; it "
                        "will not be sent")
+        if self.sharpen_corners and (not device.cameo3_on or not self.blade_diameter_mm):
+            out.append("Line Segment Overcut requires a blade on a cutter that accepts corner extensions.")
+        if self.track_enhancing and min(self.force, device.max_pressure) < 19:
+            out.append("The reference driver reports that Track Enhancing requires force 19 or higher.")
         return out
 
 
@@ -482,7 +496,7 @@ class CutJob:
                  offset_mm: tuple[float, float] = (0.0, 0.0),
                  mark_shape_mm: tuple[float, float] | None = None,
                  sheet_size_mm: tuple[float, float] | None = None,
-                 mat: str = "auto", end_position: str = "below"):
+                 mat: str = "auto", end_position: str = "below", end_feed_mm: float = 0.0):
         self.device = device
         self.settings = settings.clamped(device)
         self.origin_mm = origin_mm
@@ -500,7 +514,12 @@ class CutJob:
         if mat not in MAT_OPTIONS or end_position not in END_POSITIONS:
             raise ValueError("Unknown cutting mat or end position.")
         self.mat = mat
+        if not math.isfinite(end_feed_mm) or end_feed_mm < 0:
+            raise ValueError("Feed distance must be finite and nonnegative.")
+        if end_feed_mm and end_position == "start":
+            raise ValueError("Select Feed to add a feed distance.")
         self.end_position = end_position
+        self.end_feed_mm = end_feed_mm
         x, y = origin_mm
         self.sheet_size_mm = sheet_size_mm or (reg_width_mm + 2*x, reg_length_mm + 2*y)
         # A four-mark scan only exists on hardware that has it.
@@ -525,7 +544,7 @@ class CutJob:
                                      if s.acceleration is not None else 0))
             cmds.append(tool.speed(s.speed))
             cmds.append(tool.cutter_offset(0, 0.05))
-            cmds.append(tool.lift(s.lift_head))
+            cmds.append(tool.lift(s.lift_head or s.sharpen_corners))
             cmds.extend(corners)
             # Upstream sends the pressure twice, with an acceleration change
             # between, and notes it does not know why.  Reproduced.
@@ -541,7 +560,7 @@ class CutJob:
             cmds.append(tool.pressure(s.force) if dev.cameo3_on else f"FX{s.force}")
             if dev.cameo3_on:
                 # Cameo 3 setup, upstream Graphtec.py 1240–1262.
-                cmds.append(tool.lift(s.lift_head))
+                cmds.append(tool.lift(s.lift_head or s.sharpen_corners))
                 cmds.extend(corners)
                 cmds.append(tool.cutter_offset(0, 0.05))
                 cmds.append(tool.cutter_offset(s.blade_diameter_mm, 0.05))
@@ -599,14 +618,22 @@ class CutJob:
         """Move the head to the chosen position after the cut."""
         if self.end_position == "start":
             return return_to_start_commands(self.device)
-        ox, oy = self.origin_mm if self.registration else (0.0, 0.0)
-        oy -= self.offset_mm[1]
-        max_y = 0.0
-        for p in paths:
-            for _, y in p.points:
-                max_y = max(max_y, y - oy)
-        # "SO0" follows the move upstream; its meaning is not documented.
-        return (move_mm(0.0, max_y), "SO0")
+        oy = self.origin_mm[1] if self.registration else 0.0
+        plot_origin_y = oy - self.offset_mm[1]
+        last_y = max((y - plot_origin_y for path in paths for _, y in path.points), default=0.0)
+        park_units = su(max(0.0, last_y)) + su(self.end_feed_mm)
+        park_y = su_to_mm(park_units)
+        if self.end_feed_mm:
+            if self.registration:
+                limit = self.reg_length_mm
+            elif self.mat == "none":
+                limit = self.device.length_mm
+            else:
+                limit = MATS[self.mat][2] if self.mat in MATS else self.sheet_size_mm[1]
+            if park_units > su(limit):
+                raise ValueError(f"Feed reaches {park_y:.2f} mm. The active feed window ends at {limit:g} mm.")
+        # Inkscape Graphtec.py plot(): move below the cut, then set a new origin.
+        return (move_mm(0.0, park_y), "SO0")
 
     # ---- assembly ----------------------------------------------------
     def _initial_steps(self) -> list[Step]:
@@ -621,8 +648,9 @@ class CutJob:
         return steps
 
     def _registered_setup(self, settings):
+        track_enhancing = settings is not None and settings.track_enhancing
         if (self.registration and self.auto_search and not self.quad and self.search_mm is None
-                and self.mat in ("auto", "cameo-12x12")
+                and not track_enhancing and self.mat in ("auto", "cameo-12x12")
                 and captured_letter_scan(self.device, self.reg_length_mm, self.reg_width_mm,
                                          self.origin_mm, self.mark_shape_mm)):
             # First two bulk writes and post-registration clip in the Studio
@@ -642,6 +670,9 @@ class CutJob:
         steps = self._initial_steps()
         if settings is not None:
             steps.append(Step("write", frame(self._setup_commands(settings)), note="blade settings"))
+        if track_enhancing:
+            # Graphtec.py setup(): condition the media with the rollers before registration.
+            steps.append(Step("write", frame("FY0"), note="track enhancing", wait_ready=True))
         steps.extend(self._regmark_steps())
         return steps
 

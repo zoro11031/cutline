@@ -57,6 +57,7 @@ class Job:
     auto_search: bool = True
     mat: str = "auto"
     end_position: str = "below"
+    end_feed_mm: float = 0.0
 
     # ---- reporting ---------------------------------------------------
     @property
@@ -116,19 +117,26 @@ class Job:
         s = self.settings
         tool = [f"holder {s.holder}"]
         if self.device.cameo3_on:
-            tool.append("head lift on" if s.lift_head else "head lift off")
-            tool.append(f"corner extensions {s.corner_start_mm:g}/{s.corner_end_mm:g} mm"
-                        if s.sharpen_corners else "corner extensions off")
+            tool.append("head lift on" if s.lift_head or s.sharpen_corners else "head lift off")
+            if s.sharpen_corners:
+                tool.append(f"Line Segment Overcut {s.corner_start_mm:g}/{s.corner_end_mm:g} mm")
         if self.device.detects_tools:
             tool.append("automatic acceleration" if s.acceleration is None
                         else f"acceleration {s.acceleration}")
+        if s.track_enhancing:
+            tool.append("Track Enhancing")
         if s.custom_toolpath:
             tool.extend((toolpath.PATH_ORDERS[s.path_order], toolpath.PASS_ORDERS[s.pass_order]))
+            if s.interior_first or s.delicate_media:
+                tool.append("interior contours first")
+            if s.delicate_media:
+                tool.append("delicate media path")
             if s.alternate_direction:
                 tool.append("alternating direction")
             if s.overcut_mm:
                 tool.append(f"{s.overcut_mm:g} mm overcut")
 
+        weed_count = sum(toolpath.is_weed_path(path) for path in self.paths)
         return [
             ("Cutter", f"{self.device.name} "
                        f"({self.device.width_mm:g} mm cuttable)"),
@@ -143,7 +151,9 @@ class Job:
                      f"{self.grid.card.radius_mm:g} mm corners"),
             ("Marks", mk.describe()),
             ("Cutting mat", graphtec.MAT_OPTIONS[self.mat]),
-            ("End position", graphtec.END_POSITIONS[self.end_position]),
+            ("End position", graphtec.END_POSITIONS[self.end_position]
+             + (f" +{self.end_feed_mm:g} mm" if self.end_feed_mm else "")),
+            *([("Weed Settings", f"{weed_count} cut paths")] if weed_count else []),
             ("Origin shift", f"cut coordinates are measured from "
                              f"({mk.origin_mm[0]:g}, {mk.origin_mm[1]:g}) mm"
              if self.registration else "registration off; sheet coordinates"),
@@ -193,7 +203,8 @@ def build(sheet: str = config.DEFAULT_SHEET,
           skip: tuple[int, ...] = (),
           offset_mm: tuple[float, float] | None = None,
           imported=None, blade_options=None, mat: str = "auto",
-          end_position: str = "below") -> Job:
+          end_position: str = "below", end_feed_mm: float = 0.0,
+          weed_border_mm: float = 0.0, weed_lines: str = "none") -> Job:
     """Build and check a job.  Raises only on things that cannot be reported."""
     device = graphtec.device_by_name(cutter)
 
@@ -273,6 +284,9 @@ def build(sheet: str = config.DEFAULT_SHEET,
                       if i not in set(skip))
     else:
         paths = template.cut_paths(grid, mode, radius_mm, skip=skip)
+        if weed_border_mm or weed_lines != "none":
+            raise ValueError("Open cut artwork or review a Design to add a Weed Border.")
+    paths += toolpath.weed_paths(paths, weed_border_mm, weed_lines)
     cut_cards = tuple(c for i, c in enumerate(grid.cards) if i not in set(skip))
     hints = [h for h in regmarks.mask_hints(grid, mk)
              if h["index"] not in set(skip)]
@@ -303,14 +317,14 @@ def build(sheet: str = config.DEFAULT_SHEET,
         quad=window["quad"], offset_mm=offset,
         mark_shape_mm=(mk.length_mm, mk.thickness_mm),
         sheet_size_mm=(grid.sheet_w_mm, grid.sheet_h_mm),
-        mat=mat, end_position=end_position)
+        mat=mat, end_position=end_position, end_feed_mm=end_feed_mm)
     steps = tuple(job.plan(paths))
     stream = b''.join(step.data for step in steps if step.kind == 'write')
 
     # 5. take it apart again
     verify_mode = mode if imported is None else "rounded"
     check_options = dict(cards=cut_cards, offset_mm=offset, registration=registration,
-                         auto_search=auto_search, mat=mat, end_position=end_position)
+                         auto_search=auto_search, mat=mat, end_position=end_position, end_feed_mm=end_feed_mm)
     if imported is not None:
         check_options["expected_paths"] = paths
     elif cut.custom_toolpath:
@@ -337,7 +351,7 @@ def build(sheet: str = config.DEFAULT_SHEET,
                collisions=collisions, off_sheet=off, warnings=warnings,
                skip=skip, mask_hints=hints, offset_mm=offset,
                liveness_failures=liveness, steps=steps, registration=registration,
-               auto_search=auto_search, mat=mat, end_position=end_position)
+               auto_search=auto_search, mat=mat, end_position=end_position, end_feed_mm=end_feed_mm)
 
 
 def cutting_mat_errors(device, mat: str, sheet_w: float, sheet_h: float) -> list[str]:

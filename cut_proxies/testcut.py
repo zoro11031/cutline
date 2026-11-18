@@ -179,7 +179,8 @@ def build(device: graphtec.Device, base: CutSettings, forces=None,
           sheet_w_mm: float = 215.9, sheet_h_mm: float = 279.4,
           registration: bool = False,
           offset_mm: tuple[float, float] = (0.0, 0.0),
-          shape: str = "square", mat: str = "auto", end_position: str = "below") -> TestSheet:
+          shape: str = "square", mat: str = "auto", end_position: str = "below",
+          end_feed_mm: float = 0.0) -> TestSheet:
     """Lay out the test squares and build the job.
 
     Raises `ValueError` rather than producing a sheet that will not fit or a
@@ -199,7 +200,8 @@ def build(device: graphtec.Device, base: CutSettings, forces=None,
         raise ValueError(mat_errors[0])
     if shape == "studio":
         # Finish the triangle while the outer square still holds the material.
-        base = dataclasses.replace(base, path_order="design", pass_order="path")
+        base = dataclasses.replace(base, path_order="design", pass_order="path",
+                                   interior_first=False, delicate_media=False)
     settings = combinations(base, forces, speeds, passes, depths)
     if not settings:
         raise ValueError("no settings to test")
@@ -236,7 +238,8 @@ def build(device: graphtec.Device, base: CutSettings, forces=None,
     job = graphtec.CutJob(
         device, base, origin_mm=origin, reg_width_mm=width, reg_length_mm=height,
         registration=registration, offset_mm=offset_mm,
-        sheet_size_mm=(sheet_w_mm, sheet_h_mm), mat=mat, end_position=end_position)
+        sheet_size_mm=(sheet_w_mm, sheet_h_mm), mat=mat, end_position=end_position,
+        end_feed_mm=end_feed_mm)
     groups = [(c.settings, _cell_paths(c.rect, shape)) for c in cells]
     steps = job.plan_matrix(groups)
     stream = b"".join(s.data for s in steps if s.kind == "write")

@@ -161,22 +161,39 @@ Two ways to avoid it entirely:
 
 ## Cut paths and media handling
 
-In **Blade → Cut paths**, use **Nearest path** to reduce travel among
-independent contours. Use **Design order** when cut order matters, such as a
-design whose inside details should come out before its outer border. **Finish
-each path** completes its passes in place. **Alternate pass direction**
-reverses every other pass. **Overcut** overlaps the seam on closed paths by
-the requested distance on both sides, following the existing contour.
+In **Blade → Cut paths**, choose **No Sort**, **Maximize Speed** for
+shorter travel between contours, or **Minimize Roller Movement** for
+top-to-bottom ordering by contour entry. **Sort Interior Contours First**
+puts nested paths ahead of their enclosing contours. **Delicate Media Path**
+also alternates the winding of successive closed contours to balance blade
+drag. This is a software alternative to Silhouette's proprietary Intelligent
+Path Technology. [Silhouette machine features](https://silhouetteamerica.freshdesk.com/support/solutions/articles/35000273078-features-cutting-machines-)
+
+**Finish each path** completes its passes in place. **Alternate pass
+direction** reverses every other pass. **Seam Overcut** overlaps both sides
+of a closed contour's start and end. **Line Segment Overcut** on **Blade**
+uses the cutter's sharp-corner controls in 0.1 mm steps. **Track Enhancing**
+runs the rollers before registration or cutting. The recovered driver
+reports force 19 or higher for this operation.
 
 In **Cut → Media handling**, choose the mat loaded in the machine or
-**No cutting mat**. The desktop and CLI check whether the sheet fits the
-selected mat. **Return to start** moves the head back to its starting
-position after the cut.
+**No cutting mat**. **Feed** adds a distance beyond the farthest cut within
+the active feed window. **Return to Origin** returns to the cutter's
+starting position. [Cameo 4 manual, page 27](https://www.silhcdn.com/m/d/user-guides/cameo-4-en.pdf#page=28)
 
 ```sh
-cut-proxies cut --path-order nearest --pass-order path --alternate-direction \
-  --overcut-mm 0.5 --mat cameo-12x12 --end-position start --dry-run
+cut-proxies cut --path-order rollers --interior-first --line-segment-overcut \
+  --track-enhancing --feed-mm 4 --dry-run
 ```
+
+For imported artwork or a Design project, **Blade → Weed Settings** adds a
+padded **Weed Border** and optional **Weed Lines** in clear horizontal or
+vertical gaps between contours. **Show Weed Settings** controls panel
+visibility. Review the blue dashed lines in the cut preview.
+**Show Cutter Divisions** switches between materials condensed for the
+selected cutter and all cutter classes in the installed Studio database.
+**Restore Default Materials** backs up edits to shipped presets and
+restores those settings.
 
 ## Finding your blade settings
 

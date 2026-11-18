@@ -310,6 +310,27 @@ def save_blade_settings(name: str, *, force: int, speed: int, depth: int | None,
         note="User-selected settings. Never cut as part of this project's verification."))
 
 
+def restore_default_materials() -> tuple[int, pathlib.Path | None]:
+    """Restore shipped presets and back up the overridden user files."""
+    folder = user_dir()
+    shipped = set(BUILTIN_BY_NAME) | {preset.name for _, preset in _read_presets(bundled_dir())}
+    overrides = [path for path, preset in _read_presets(folder) if preset.name in shipped]
+    if not overrides:
+        return 0, None
+    backup = pathlib.Path(tempfile.mkdtemp(prefix="material-backup-", dir=folder))
+    moved = []
+    try:
+        for path in overrides:
+            path.rename(backup / path.name)
+            moved.append(path)
+    except OSError:
+        for path in reversed(moved):
+            (backup / path.name).rename(path)
+        backup.rmdir()
+        raise
+    return len(moved), backup
+
+
 def save(preset: Preset) -> pathlib.Path:
     folder = user_dir()
     folder.mkdir(parents=True, exist_ok=True)

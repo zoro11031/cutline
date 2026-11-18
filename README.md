@@ -254,11 +254,16 @@ saved value is 35.
 | Material, action, tool holder | Apply a Studio material on **Blade**, review Cut or Score from **Design**, and choose the tool holder on **Blade** or with `--holder`. |
 | Detected tool | Opening **Blade** reads both holders. Click **Detect blades** after swapping tools. The terminal equivalent is `cut-proxies status`. |
 | Blade offset | **Blade diameter (mm)** or `--blade-diameter-mm`. Applying a Studio material also applies its tool offset. |
-| Line Segment Overcut | Control Center exposes recovered head lift and corner start/end extensions. Equivalence to Studio’s sharp-corner toolpath still needs a matched Studio trace. |
-| Track Enhancing, specialty-tool actions | Available through the Studio bridge. The native registered-cut path has no verified roller pre-feed sequence or specialty-tool path planner. |
+| Line Segment Overcut | **Blade** or `--line-segment-overcut`. Uses the recovered corner lift and independent Start and End Extension settings. |
+| Track Enhancing | **Blade** or `--track-enhancing`. Sends the recovered roller command before scan or cut. |
+| Cut Order Sorting | **Blade → Cut paths** offers No Sort, Maximize Speed, Minimize Roller Movement and Sort Interior Contours First. |
+| Feed Options | **Cut → Media handling** offers Feed, Feed Distance and Return to Origin. |
+| Weed Settings | Add a Weed Border and Weed Lines to imported artwork and Design projects. |
+| Show Cutter Divisions | **Blade** can show all cutter classes from the installed Studio material database, or prefer matching rows for the selected cutter. |
+| Restore Default Materials | **Blade → Silhouette's own material settings** backs up edits to shipped presets and restores their defaults. |
 
-Acceleration, head lift and corner extensions are also saved in the preset.
-Use `cut --help` for their switches. The extensions are independent start
+Acceleration, head lift, Line Segment Overcut and Track Enhancing can be
+saved in a preset. Use `cut --help` for their switches. The extensions are independent start
 and end distances in tenths of a millimetre. [Recovered command implementation](https://github.com/fablabnbg/inkscape-silhouette/blob/master/silhouette/Graphtec.py)
 
 On the Cameo 4, a live job that requests automatic depth checks holder 1
@@ -268,7 +273,7 @@ manual blade physically and select depth −1. Detection alone does not
 establish suitable material settings. [Cameo 4 manual](https://www.silhcdn.com/m/d/user-guides/cameo-4-en.pdf)
 
 Studio describes Track Enhancing and Line Segment Overcut under Edit Materials.
-Its rotary tool action also generates extra geometry to orient the blade.
+Its rotary tool action generates additional orientation moves and still uses the Studio bridge here.
 [Silhouette Handbook, page 146](https://www.silhcdn.com/m/d/silhouette-handbook.pdf) · [Studio rotary blade guide](https://www.silhouetteamerica.com/pub/media/wysiwyg/rotary-blade-guide.pdf)
 
 Force and speed are unitless machine indices, the same numbers Studio shows.

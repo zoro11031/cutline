@@ -87,6 +87,18 @@ class TestPathBatches(unittest.TestCase):
         self.assertEqual(park, b"SO0\x03")
         self.assertEqual(sent, len(self.data) + len(park))
 
+    def test_track_enhancing_waits_for_ready_before_sending_a_scan(self):
+        roller = graphtec.Step("write", graphtec.frame("FY0"), wait_ready=True)
+        scan = graphtec.Step("write", graphtec.frame("TB123,100,100,0,0"))
+        self.cutter.status.return_value = "unloaded"
+        with self.assertRaisesRegex(transport.TransportError, "unloaded"):
+            self.cutter.run([roller, scan])
+        self.cutter.write.assert_called_once_with(roller.data)
+        self.cutter.write.reset_mock()
+        self.cutter.status.return_value = "ready"
+        self.assertEqual(self.cutter.run([roller, scan]), len(roller.data) + len(scan.data))
+        self.assertEqual(self.cutter.write.call_args_list, [mock.call(roller.data), mock.call(scan.data)])
+
     def test_unloaded_status_stops_the_later_batches_and_park(self):
         self.cutter.status.return_value = "unloaded"
         with self.assertRaisesRegex(transport.TransportError, "unloaded"):
