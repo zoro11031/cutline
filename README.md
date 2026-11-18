@@ -240,9 +240,19 @@ preferred.
 
 ## Finding your settings
 
-Rather than guessing from a table, cut a sheet of test squares — each one
-with its own force, speed, depth and pass count, all in a single pass of the
-mat:
+Open **Send → Starting Guide** and choose **Apply Starting Settings** to
+load the Card Maker starting point into Blade. On a Cameo 4 with an AutoBlade
+in holder 1, this sets force **25**, speed **25**, depth **7**, and **1 pass**.
+
+Load a blank sheet of the same stock on the mat and choose **Cut One Pass**.
+The cutter returns to origin, and the guide waits for it to report completion.
+Keep the mat loaded and lift a corner. If the cut still holds, choose
+**Repeat One Pass** to cut the same spot with the same settings. When it
+separates cleanly, **Use Tested Settings** copies the guide's blade numbers
+and completed pass count into **Blade**. Use **Next Test Spot** to try a
+different setting on fresh material on the same sheet.
+
+The test-cut matrix cuts multiple samples at once:
 
 ```sh
 silhouette-control-center testcut --force 25,29,33 --passes 1,2,3 --out ~/Documents

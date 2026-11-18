@@ -21,7 +21,7 @@ cheap: nine sub-suites of a few tests each.
 import io
 import unittest
 
-from cut_proxies import graphtec, job, regmarks, testcut, transport, verify, winboat
+from cut_proxies import graphtec, job, regmarks, starting_guide, testcut, transport, verify, winboat
 
 
 def _run(class_paths):
@@ -179,6 +179,10 @@ CASES += (
      ["tests.test_testcut.TestStudioPattern"]),
     (testcut, "_check_geometry", _refuse_testcut, "every test cut path refused",
      ["tests.test_testcut.TestStudioPattern"]),
+    (starting_guide.Guide, "refusal", lambda *a: "", "every guide repeat accepted",
+     ["tests.test_starting_guide.TestStartingGuide"]),
+    (starting_guide.Guide, "refusal", lambda *a: "blocked", "every guide repeat refused",
+     ["tests.test_starting_guide.TestStartingGuide"]),
 )
 
 try:

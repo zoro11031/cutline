@@ -151,6 +151,31 @@ class TestQtFrontend(unittest.TestCase):
         self.assertIsNone(window.preview.report)
         self.assertFalse(window.preview.pdf.isNull())
 
+    def test_starting_guide_repeats_one_confirmed_pass_and_applies_the_count(self):
+        window = self.window
+        window.guide_apply.click()
+        self.assertEqual([window.blade[field].value() for field in ("force", "speed", "depth", "passes")],
+                         [25, 25, 7, 1])
+        trial = window.guide.prepare(window.connection(), window.job_options(), window.job, "square")
+        fake = mock.MagicMock()
+        fake.__enter__.return_value = fake
+        fake.can_read = True
+        fake.status.return_value = "ready"
+        fake.run.return_value = 200
+
+        with mock.patch.object(window.tasks, "run", side_effect=lambda work, done: done(work(), None)), \
+             mock.patch.object(transport, "open_transport", return_value=fake):
+            window.start_guide_pass(trial)
+            window.blade["force"].setValue(27)
+            window.start_guide_pass(trial)
+        self.assertEqual(fake.run.call_args_list, [mock.call(trial.sheet.steps, wait_done=True)] * 2)
+        self.assertIn("2 completed passes", window.guide_status.text())
+        window.guide_use.click()
+        self.assertEqual((window.blade["force"].value(), window.blade["passes"].value()), (25, 2))
+        window.guide_next.click()
+        self.assertEqual(window.guide.spot, 2)
+        self.assertFalse(window.guide_use.isEnabled())
+
     def test_qt_launcher_can_be_selected_explicitly_or_automatically(self):
         with mock.patch.object(qt_gui, "main", return_value=0) as launch:
             self.assertEqual(cli.main(["gui", "--frontend", "qt"]), 0)

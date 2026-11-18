@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, 
                                QSplitter, QStackedWidget, QTabWidget, QVBoxLayout, QWidget)
 
 from . import (actions, bluetooth, bundle, config, editor_model, geometry, graphtec, importer, job,
-               layout_presets, materials, presets, regmarks, template, testcut, toolpath, transport, winboat)
+               layout_presets, materials, presets, regmarks, starting_guide, template, testcut, toolpath, transport, winboat)
 from .qt_canvas import PREVIEW_MODES, Preview
 from .qt_controls import Form, Page, Tasks, button, set_choices
 
@@ -56,6 +56,7 @@ class Window(QMainWindow):
         self.job = self.artwork = self.project_shapes = self.design = self.reviewed_design = None
         self.pdf = self.bundle = self.sheet_token = self.report = None
         self.bundle_checked = self.busy = self.loading = False
+        self.guide = starting_guide.Guide()
         self.group_rows = {}
         self.group_choices = {}
         self.pages = {}
@@ -272,12 +273,20 @@ class Window(QMainWindow):
         self.number(media, "end_feed_mm", "Feed Distance (mm)", 0, 0, 3000, 0.5, 2)
         self.weed_visibility = media.choice("Show Weed Settings", ("Auto", "Always", "Never"),
                                           self.settings.get("show_weed_settings"), self.update_weed_preference)
+        guide = page.group("Starting Guide")
+        guide.note(starting_guide.GUIDE_TEXT)
+        self.guide_apply = guide.push("Apply Starting Settings", self.apply_guide_start)
+        self.guide_status = guide.note()
+        self.guide_send = guide.push("Cut One Pass…", self.confirm_guide_pass)
+        self.guide_use = guide.push("Use Tested Settings", self.use_guide_settings)
+        self.guide_next = guide.push("Next Test Spot", self.next_guide_spot)
+        self.guide_reset = guide.push("New Test Sheet", self.reset_guide)
         calibration = page.group("Calibration")
         dx, dy = config.cut_offset()
         self.cal_x = calibration.number("Offset X (mm)", dx, -5, 5, 0.05, 2, self.rebuild)
         self.cal_y = calibration.number("Offset Y (mm)", dy, -5, 5, 0.05, 2, self.rebuild)
         calibration.push("Save Calibration", self.save_calibration)
-        tests = page.group("Test cut")
+        tests = page.group("Test-Cut Matrix")
         self.test_shape = tests.choice("Shape", testcut.TEST_SHAPES)
         self.test_force = tests.text("Force values", "25,29,33")
         self.test_passes = tests.text("Pass counts", "1,2,3,4")
@@ -584,8 +593,9 @@ class Window(QMainWindow):
             else:
                 current = self.job
                 problems = current.blocked
+                passes = "pass" if current.settings.passes == 1 else "passes"
                 caption = f"{len(current.action_groups)} Send groups" if current.action_groups else (
-                    f"{current.preset.name} · {current.settings.passes} passes")
+                    f"{current.preset.name} · {current.settings.passes} {passes}")
                 summary = (f"{current.grid.sheet_w_mm:g} × {current.grid.sheet_h_mm:g} mm · "
                            f"{len(current.paths)} paths\n{caption}")
                 if problems or current.warnings:
@@ -654,6 +664,7 @@ class Window(QMainWindow):
         self.send_button.setEnabled(not reason)
         self.scan_button.setEnabled(not self.send_refusal(self.job, self.connection(), scan_only=True))
         self.test_button.setEnabled(not self.busy)
+        self.update_guide()
         self.footer_status.setText(reason or (
             f"{self.job.device.name} · {len(self.job.paths)} paths · "
             + ("Registration on" if self.job.registration else "Registration off")))
@@ -962,6 +973,7 @@ class Window(QMainWindow):
                         on_registration_failure=failed)
 
     def send_steps(self, device, connection, steps, success, *, on_registration_failure=None, test=False):
+        self.guide.invalidate()
         self.busy = True
         self.scan_result.clear()
         self.refresh_send()
@@ -980,6 +992,88 @@ class Window(QMainWindow):
             if isinstance(error, transport.RegistrationFailed) and on_registration_failure:
                 on_registration_failure(error)
             self.message(str(error) if error else f"{success} {sent:,} bytes.")
+
+        self.tasks.run(work, done)
+
+    def update_guide(self):
+        state = self.guide
+        for field in (self.guide_apply, self.guide_next, self.guide_reset):
+            field.setEnabled(not self.busy)
+        self.guide_send.setEnabled(not self.busy and not state.interrupted)
+        self.guide_use.setEnabled(not self.busy and state.tested_settings is not None)
+        self.guide_send.setText("Repeat One Pass…" if state.completed else "Cut One Pass…")
+        self.guide_status.setText("Waiting for the cutter to finish…" if self.busy else state.status())
+
+    def set_guide_blade_values(self, values):
+        with self.editing():
+            for key, value in values.items():
+                self.blade[key].setValue(-1 if value is None else value)
+        self.rebuild()
+
+    def apply_guide_start(self):
+        values = self.blade_values()
+        device = graphtec.device_by_name(self.choice("cutter"))
+        self.set_guide_blade_values(starting_guide.starting_values(
+            device, values["holder"] if device.two_tools else 1, values["blade_diameter_mm"]))
+        suffix = "" if self.blade["depth"].value() >= 0 else " Set depth on the blade."
+        self.message("Starting settings applied to Blade." + suffix)
+
+    def use_guide_settings(self):
+        settings = self.guide.tested_settings
+        if settings is None:
+            return
+        device = graphtec.device_by_name(self.choice("cutter"))
+        holder = self.blade["holder"].value() if device.two_tools else 1
+        if device != self.guide.trial.sheet.device or settings.holder != holder:
+            self.message("Select the tested cutter and tool holder first.")
+            return
+        self.set_guide_blade_values({name: getattr(settings, name) for name in ("force", "speed", "depth", "passes")})
+        self.message(f"Applied the tested settings with {settings.passes} pass(es).")
+
+    def next_guide_spot(self):
+        self.guide.next_spot()
+        self.update_guide()
+
+    def reset_guide(self):
+        if self.confirm("Start a New Test Sheet?", "Load a fresh blank sheet to start at the first spot."):
+            self.guide.reset()
+            self.update_guide()
+
+    def confirm_guide_pass(self):
+        if self.busy:
+            return
+        try:
+            trial = self.guide.prepare(self.connection(), self.job_options(), self.job, self.test_shape.currentData())
+        except (ValueError, KeyError) as error:
+            self.message(str(error))
+            return
+        prompt = self.guide.prompt(trial)
+        if self.confirm("Send One Test Pass?", prompt):
+            self.start_guide_pass(trial)
+
+    def start_guide_pass(self, trial):
+        if self.busy:
+            return
+        try:
+            current = self.guide.prepare(self.connection(), self.job_options(), self.job, self.test_shape.currentData())
+        except (ValueError, KeyError) as error:
+            self.message(str(error))
+            return
+        if trial != current:
+            self.message("Test settings or cutter connection changed. Review the pass again.")
+            return
+        self.busy = True
+        self.refresh_send()
+
+        def work():
+            with self.open_link(trial.connection, trial.sheet.device) as cutter:
+                return starting_guide.run_pass(cutter, trial)
+
+        def done(_sent, error):
+            self.guide.record(trial, error)
+            self.busy = False
+            self.refresh_send()
+            self.message(str(error) if error else "Pass complete. Keep the mat loaded and lift a corner.")
 
         self.tasks.run(work, done)
 

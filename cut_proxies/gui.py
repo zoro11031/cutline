@@ -40,7 +40,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 
 from . import (actions, bluetooth, bundle, config, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
-               template, testcut, toolpath, transport, winboat)  # noqa: E402
+               starting_guide, template, testcut, toolpath, transport, winboat)  # noqa: E402
 
 APP_ID = "org.printing.SilhouetteControlCenter"
 PREVIEW_MODES = ("Cut paths", "Print PDF", "Overlay")
@@ -356,6 +356,7 @@ class Window(Adw.ApplicationWindow):
         self._building = False
         self._sending = False
         self._checking_status = False
+        self.guide = starting_guide.Guide()
         self._suppress = True        # don't rebuild while constructing rows
 
         self.toasts = Adw.ToastOverlay()
@@ -533,6 +534,7 @@ class Window(Adw.ApplicationWindow):
         status = reason or f"{len(job.paths)} paths · {job.device.name} · {'Registration on' if job.registration else 'Registration off'}"
         self.send_status.set_label(status)
         self.send_status.set_tooltip_text(status)
+        self.update_guide()
 
     # ---- pages -------------------------------------------------------
     def _page_layout(self):
@@ -926,6 +928,17 @@ class Window(Adw.ApplicationWindow):
         media.add(self.r_show_weed)
         page.add(media)
 
+        guide = Adw.PreferencesGroup(title="Starting Guide", description=starting_guide.GUIDE_TEXT)
+        self.guide_apply = self.guide_button(guide, "Apply Starting Settings", self.on_guide_start)
+        self.guide_status = Adw.ActionRow(title="Test spot 1")
+        self.guide_status.set_subtitle_lines(0)
+        guide.add(self.guide_status)
+        self.guide_send = self.guide_button(guide, "Cut One Pass…", self.on_guide_pass)
+        self.guide_use = self.guide_button(guide, "Use Tested Settings", self.on_guide_use)
+        self.guide_next = self.guide_button(guide, "Next Test Spot", self.on_guide_next)
+        self.guide_reset = self.guide_button(guide, "New Test Sheet", self.on_guide_reset)
+        page.add(guide)
+
         gcal = Adw.PreferencesGroup(
             title="Calibration",
             description="The standing error between where the sensor sees "
@@ -951,7 +964,7 @@ class Window(Adw.ApplicationWindow):
             r.connect("notify::value", self.on_changed)
 
         gtest = Adw.PreferencesGroup(
-            title="Find your settings",
+            title="Test-Cut Matrix",
             description="Cut each sample at its own force and pass count. "
                         "Lift each sample without ejecting the mat.")
         self.r_test_shape = _combo("Test shape", list(testcut.TEST_SHAPES.values()))
@@ -1902,6 +1915,126 @@ class Window(Adw.ApplicationWindow):
         self.toast(f"Calibration saved: {dx:+g}, {dy:+g} mm")
         self.rebuild()
 
+    @staticmethod
+    def guide_button(group, label, handler):
+        button = Gtk.Button(label=label, halign=Gtk.Align.START)
+        button.connect("clicked", handler)
+        group.add(button)
+        return button
+
+    def update_guide(self):
+        busy = self._sending or self._checking_status
+        for field in (self.guide_apply, self.guide_next, self.guide_reset):
+            field.set_sensitive(not busy)
+        self.guide_send.set_sensitive(not busy and not self.guide.interrupted)
+        self.guide_use.set_sensitive(not busy and self.guide.tested_settings is not None)
+        label = "Repeat One Pass…" if self.guide.completed else "Cut One Pass…"
+        self.guide_send.set_label(label)
+        title, _, body = self.guide.status().partition("\n")
+        self.guide_status.set_title(title)
+        self.guide_status.set_subtitle("Waiting for the cutter to finish…" if self._sending else body)
+
+    def set_guide_blade_values(self, values):
+        fields = {"force": self.r_force, "speed": self.r_speed, "depth": self.r_depth, "passes": self.r_passes}
+        previous, self._suppress = self._suppress, True
+        try:
+            for name, value in values.items():
+                fields[name].set_value(-1 if value is None else value)
+        finally:
+            self._suppress = previous
+        self.on_changed()
+
+    def on_guide_start(self, *_args):
+        device = graphtec.device_by_name(self._text(self.r_cutter))
+        opts = self._blade_options()
+        self.set_guide_blade_values(starting_guide.starting_values(device, opts["holder"], opts["blade_diameter_mm"]))
+        suffix = "" if self.r_depth.get_value() >= 0 else " Set depth on the blade."
+        self.toast("Starting settings applied to Blade." + suffix)
+
+    def on_guide_use(self, *_args):
+        settings = self.guide.tested_settings
+        if settings is None:
+            return
+        device = graphtec.device_by_name(self._text(self.r_cutter))
+        if device != self.guide.trial.sheet.device or settings.holder != self._blade_options()["holder"]:
+            self.toast("Select the tested cutter and tool holder first.")
+            return
+        self.set_guide_blade_values({name: getattr(settings, name) for name in ("force", "speed", "depth", "passes")})
+        self.toast(f"Applied the tested settings with {settings.passes} pass(es).")
+
+    def on_guide_next(self, *_args):
+        self.guide.next_spot()
+        self.update_guide()
+
+    def on_guide_reset(self, *_args):
+        dialog = Adw.AlertDialog(heading="Start a New Test Sheet?",
+                                 body="Load a fresh blank sheet to start at the first spot.")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("new", "New Sheet")
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def reset(_dialog, response):
+            if response == "new" and not (self._sending or self._checking_status):
+                self.guide.reset()
+                self.update_guide()
+
+        dialog.connect("response", reset)
+        dialog.present(self)
+
+    def guide_proposal(self):
+        shape = list(testcut.TEST_SHAPES)[self.r_test_shape.get_selected()]
+        return self.guide.prepare(self._connection(), self.options(), self.job, shape)
+
+    def on_guide_pass(self, *_args):
+        if self._sending or self._checking_status:
+            return
+        try:
+            trial = self.guide_proposal()
+        except (ValueError, KeyError) as error:
+            self.toast(str(error))
+            return
+        prompt = self.guide.prompt(trial)
+        dialog = Adw.AlertDialog(heading="Send One Test Pass?", body=prompt)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("cut", "Cut")
+        dialog.set_response_appearance("cut", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._guide_pass_response, trial)
+        dialog.present(self)
+
+    def _guide_pass_response(self, _dialog, response, trial):
+        if response != "cut" or self._sending or self._checking_status:
+            return
+        try:
+            current = self.guide_proposal()
+        except (ValueError, KeyError) as error:
+            self.toast(str(error))
+            return
+        if trial != current:
+            self.toast("Test settings or cutter connection changed. Review the pass again.")
+            return
+        self._sending = True
+        self.update_send_actions()
+
+        def done(error=None):
+            self.guide.record(trial, error)
+            self._send_done()
+            self.toast(str(error) if error else "Pass complete. Keep the mat loaded and lift a corner.")
+
+        def work():
+            mode, options = _transport_options(trial.connection)
+            try:
+                with transport.open_transport(mode, device=trial.sheet.device, **options) as cutter:
+                    starting_guide.run_pass(cutter, trial)
+            except Exception as error:
+                GLib.idle_add(done, error)
+            else:
+                GLib.idle_add(done)
+
+        threading.Thread(target=work, daemon=True).start()
+
     def on_test_cut(self, *_a):
         connection = self._connection()
         if connection[0] in bluetooth.BLUETOOTH_MODES and not connection[1]:
@@ -1945,7 +2078,9 @@ class Window(Adw.ApplicationWindow):
         if self._sending or self._checking_status:
             self.toast("The cutter connection is busy.")
             return
+        self.guide.invalidate()
         self._sending = True
+        self.update_send_actions()
 
         def work():
             try:
@@ -2141,6 +2276,7 @@ class Window(Adw.ApplicationWindow):
         if not steps:
             self.toast("This job does not use registration.")
             return
+        self.guide.invalidate()
         self._sending = True
         self.cut_button.set_sensitive(False)
         self.scan_button.set_sensitive(False)

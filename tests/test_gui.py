@@ -222,6 +222,32 @@ class TestDesignWorkspace(unittest.TestCase):
             self.assertEqual(open_transport.call_count, 0)
             self.assertIn('connection changed', warning.call_args.args[0])
 
+    def test_starting_guide_applies_settings_and_keeps_its_own_pass_count(self):
+        win = self.make_window()
+        win.guide_apply.emit('clicked')
+        self.assertEqual((win.r_force.get_value(), win.r_speed.get_value(), win.r_depth.get_value(),
+                          win.r_passes.get_value()), (25, 25, 7, 1))
+        trial = win.guide_proposal()
+        fake = mock.MagicMock()
+        fake.__enter__.return_value = fake
+        fake.can_read = True
+        fake.status.return_value = 'ready'
+
+        def synchronous_thread(*, target, daemon):
+            return types.SimpleNamespace(start=target)
+
+        with mock.patch.object(gui.threading, 'Thread', side_effect=synchronous_thread), \
+             mock.patch.object(gui.GLib, 'idle_add', side_effect=lambda callback, *args: callback(*args)), \
+             mock.patch.object(gui.transport, 'open_transport', return_value=fake):
+            win._guide_pass_response(None, 'cut', trial)
+            win._guide_pass_response(None, 'cut', trial)
+        self.assertEqual(fake.run.call_args_list, [mock.call(trial.sheet.steps, wait_done=True)] * 2)
+        self.assertIn('2 completed passes', win.guide_status.get_title())
+        win.guide_use.emit('clicked')
+        self.assertEqual(win.r_passes.get_value(), 2)
+        win.guide_next.emit('clicked')
+        self.assertEqual(win.guide.spot, 2)
+
     def test_save_preset_button_reloads_edited_blade_settings(self):
         with tempfile.TemporaryDirectory() as folder, \
              mock.patch.object(config, "CONFIG_DIR", Path(folder)):

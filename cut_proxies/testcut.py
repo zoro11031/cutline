@@ -180,11 +180,11 @@ def build(device: graphtec.Device, base: CutSettings, forces=None,
           registration: bool = False,
           offset_mm: tuple[float, float] = (0.0, 0.0),
           shape: str = "square", mat: str = "auto", end_position: str = "below",
-          end_feed_mm: float = 0.0) -> TestSheet:
+          end_feed_mm: float = 0.0, spot: int | None = None) -> TestSheet:
     """Lay out the test squares and build the job.
 
-    Raises `ValueError` rather than producing a sheet that will not fit or a
-    map too long to read.
+    An explicit spot places one settings combination at a numbered cell.
+    Spots are numbered left to right, then top to bottom, starting at one.
     """
     if shape not in TEST_SHAPES:
         raise ValueError(f"Unknown test cut shape {shape!r}.")
@@ -217,15 +217,23 @@ def build(device: graphtec.Device, base: CutSettings, forces=None,
         raise ValueError("The test cut size and margins exceed the sheet width.")
     max_cols = max(1, int((usable_w + gap_mm) // pitch))
     cols = min(cols, max_cols) if cols > 0 else max_cols
-    rows = -(-len(settings) // cols)
+    if spot is not None:
+        if len(settings) != 1 or type(spot) is not int or spot < 1:
+            raise ValueError("A numbered test spot requires one settings combination and a positive spot number.")
+        first = spot - 1
+    else:
+        first = 0
+    rows = -(-(first + len(settings)) // cols)
     if rows * pitch - gap_mm > usable_h:
+        if spot is not None:
+            raise ValueError("This spot is outside the test sheet. Start a new sheet or select larger stock.")
         raise ValueError(
             f"{len(settings)} squares of {size_mm:g} mm need "
             f"{rows * pitch - gap_mm:.0f} mm of height but only "
             f"{usable_h:.0f} mm is usable. Use fewer, or a smaller --size.")
 
     cells = []
-    for i, s in enumerate(settings):
+    for i, s in enumerate(settings, first):
         row, col = divmod(i, cols)
         cells.append(Cell(
             index=i, row=row, col=col,
