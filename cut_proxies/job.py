@@ -76,6 +76,13 @@ class Job:
                 return self.steps[:i+1]
         return ()
 
+    def registration_writes(self) -> tuple[str, ...]:
+        """Display the USB/BLE command blocks that precede the scan reply."""
+        return tuple(" ".join(part.decode("ascii") if all(32 <= byte < 127 for byte in part)
+                              else part.hex(" ")
+                              for part in step.data.split(graphtec.CMD_ETX) if part)
+                     for step in self.registration_steps() if step.kind == "write")
+
     def registration_notes(self, report=None, near_marks=None) -> list[str]:
         """PDF and layout observations available after a hardware scan fails."""
         notes = []

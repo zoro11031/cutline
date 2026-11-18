@@ -834,6 +834,8 @@ def cmd_cut(args):
         except transport.RegistrationFailed as exc:
             notes = j.registration_notes(report, matched.near_marks(row) if matched else None)
             notes.append("Check that the printed front is at 100% scale and all marks are visible.")
+            notes.append("Commands sent before the reply (one write per line)")
+            notes.extend(j.registration_writes())
             fail("\n".join([str(exc), *notes]))
         except transport.TransportError as exc:
             fail(str(exc))

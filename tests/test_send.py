@@ -37,6 +37,16 @@ class TestRegistrationOnly(unittest.TestCase):
         self.assertFalse(any(step.note == "cut paths" for step in steps))
         self.assertEqual(job.build(registration=False).registration_steps(), ())
 
+    def test_report_prints_the_exact_captured_registration_writes(self):
+        checked = job.build(sheet="Letter", portrait=False, mark_inset_mm=10,
+                            mark_length_mm=8.0264, mark_thickness_mm=1)
+        self.assertEqual(checked.registration_writes(), (
+            "TG1 FN0 TB50,0 TB99",
+            "TB52,2 TB51,161 TB53,20 TB55,1 TB123,3918,5188,118,118 TB99",
+        ))
+        self.assertEqual(job.build(registration=False).registration_writes(), ())
+
+
 
 class ImmediateThread:
     def __init__(self, target, **kwargs):

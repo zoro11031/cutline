@@ -20,7 +20,7 @@ class TestDesignWorkspace(unittest.TestCase):
         if not gui.Gtk.init_check() or Gdk.Display.get_default() is None:
             self.skipTest('a display is required to create GTK widgets')
         gui.Adw.init()
-        app = gui.Adw.Application(application_id=f'org.printing.DesignSmokeTest.{self._testMethodName}',
+        app = gui.Adw.Application(application_id='org.printing.DesignSmokeTest',
                                   flags=gui.Gio.ApplicationFlags.NON_UNIQUE)
         self.assertTrue(app.register(None))
         win = gui.Window(app)
@@ -53,13 +53,16 @@ class TestDesignWorkspace(unittest.TestCase):
         from cut_proxies.transport import RegistrationFailed
         with mock.patch.object(gui.Adw, 'AlertDialog') as dialog:
             win.show_registration_failure(str(RegistrationFailed()), win.job, matched,
-                                          {"sheet": 2}, report)
+                                          {"sheet": 2, "frontPage": 3}, report, "auto", 14.51)
         self.assertTrue(win.scan_result.get_visible())
         self.assertEqual(win.scan_result.get_title(), "Sheet 2 registration failed")
         body = dialog.call_args.kwargs["body"]
         self.assertIn("did not report which mark", body)
         self.assertIn("PDF check: top-right L", body)
         self.assertIn("Check for nearby artwork at bottom-left L", body)
+        self.assertIn("PDF front page 3", win.scan_result.get_subtitle())
+        self.assertIn("14.5 s", win.scan_result.get_subtitle())
+        self.assertIn("TB123,", win.scan_result.get_subtitle())
         callback = dialog.return_value.connect.call_args.args[1]
         callback()
         self.assertEqual(win.stack.get_visible_child_name(), "sheet")

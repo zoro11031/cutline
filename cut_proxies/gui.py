@@ -28,6 +28,7 @@ import io
 import pathlib
 import tempfile
 import threading
+import time
 import traceback
 import zipfile
 import cairo
@@ -1663,8 +1664,8 @@ class Window(Adw.ApplicationWindow):
         report = self.sheet_report if matched else None
 
         def work():
+            mode, address = connection
             try:
-                mode, address = connection
                 options = {"bluetooth_id": address} if mode == "ble" else {}
                 with transport.open_transport(mode, device=j.device, **options) as t:
                     if t.can_read:
@@ -1677,18 +1678,20 @@ class Window(Adw.ApplicationWindow):
                         if state == "moving":
                             raise transport.TransportError(
                                 "the cutter is busy")
+                    started = time.monotonic()
                     sent = t.run(steps)
                 GLib.idle_add(self.toast, "Registration scan passed. No cut paths were sent."
                               if scan_only else f"Cut sent: {sent:,} bytes")
             except transport.RegistrationFailed as exc:
-                GLib.idle_add(self.show_registration_failure, str(exc), j, matched, row, report)
+                GLib.idle_add(self.show_registration_failure, str(exc), j, matched, row, report,
+                              mode, time.monotonic() - started)
             except Exception as exc:              # noqa: BLE001
                 GLib.idle_add(self.toast, f"Send failed: {exc}")
             GLib.idle_add(self._send_done)
 
         threading.Thread(target=work, daemon=True).start()
 
-    def show_registration_failure(self, message, j, matched, row, report):
+    def show_registration_failure(self, message, j, matched, row, report, mode="auto", elapsed=None):
         heading = f'Sheet {row["sheet"]} registration failed' if row else 'Registration failed'
         notes = j.registration_notes(report, matched.near_marks(row) if matched else None)
         if report is None:
@@ -1697,15 +1700,26 @@ class Window(Adw.ApplicationWindow):
             notes.append(matched.mat_placement())
         notes.append("Check the printed front at 100% scale. Keep all marks uncovered "
                      "and check for glare at the corners.")
+        connection = "Bluetooth LE" if mode == "ble" else "USB"
+        scan_details = [f"{j.device.name} · {connection}"]
+        if row:
+            scan_details.append(f"PDF front page {row['frontPage']}")
+        if elapsed is not None:
+            scan_details.append(f"Scan rejected after {elapsed:.1f} s.")
+        scan_details.append("Commands sent before the reply (one write per line)")
+        scan_details.extend(j.registration_writes())
         detail = "\n\n".join([message, *notes])
+        diagnostics = "\n\n".join([detail, "\n".join(scan_details)])
         self.scan_result.set_title(heading)
-        self.scan_result.set_subtitle(detail)
+        self.scan_result.set_subtitle(diagnostics)
         self.scan_result.set_visible(True)
         dialog = Adw.AlertDialog(heading=heading, body=detail)
         dialog.add_response("close", "Close")
+        dialog.add_response("copy", "Copy scan details")
         dialog.add_response("sheet", "Review marks")
         dialog.set_default_response("sheet")
         dialog.set_close_response("close")
+        dialog.connect("response::copy", lambda *_: self.get_clipboard().set(diagnostics))
         dialog.connect("response::sheet", lambda *_: self.stack.set_visible_child_name("sheet"))
         dialog.present(self)
 
