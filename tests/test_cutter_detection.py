@@ -69,6 +69,9 @@ leaf,c,g,,portrait,12,2,off,1
                 self.assertTrue((backup / override.name).exists())
                 self.assertTrue(personal.exists())
                 self.assertEqual(presets.get(selected.name, cutter).cut_settings().force, 20)
+                path.write_text(source + "leaf,a,g,,cameo,16,3,on,1\nleaf,d,g,,cameo,?,4,off,1\n")
+                with self.assertRaisesRegex(ValueError, "row 8: repeated.*row 9: missing"):
+                    materials.select_condition_csv(root)
                 path.write_text("bad CSV")
                 with self.assertRaises(ValueError):
                     materials.select_condition_csv(root)

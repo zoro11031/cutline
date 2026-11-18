@@ -1716,3 +1716,25 @@ between the opaque resource and the CSV. The Bluetooth helper ships with
 enumeration and Winsock. These imports alone do not establish the Cameo 4
 connection path. An isolated clean profile, resource call tracing, and a
 same-cutter Studio traffic capture remain outstanding.
+
+### Isolated profile and USB-disconnected Bluetooth retry
+
+Studio 5.0.556.1 started successfully in a freshly created temporary Windows
+profile and opened an untitled document. At first startup it created
+`user_materials/A.materials4` (88 bytes), the same pathname and size seen in
+the ordinary profile inventory. Its presence alone does not prove that a user
+created a material. The temporary account and profile were removed. The
+executable separately names factory-default lookup, legacy CSV loaders, and
+custom serialization methods. The clean startup did not expose a count or
+decoded copy of the factory library. The opaque resource has no recognizable
+ZIP, gzip, zstd, or SQLite signature and yielded no printable runs of 20
+bytes. These observations do not establish its encoding.
+
+With the Cameo 4 powered on and the USB cable physically disconnected, a
+12-second scan found `CAMEO 4-499341P`. The advertisement exposed the generic
+GAP and GATT UUIDs. The direct BLE connection again disconnected during
+service discovery before the app could issue firmware or status queries.
+This narrows the USB-attached observation: the unplug helped advertising,
+but did not establish a usable Linux BLE link. The host did not grant access
+to the HCI monitor, so the disconnect reason was not captured. No pairing,
+initialization, or cutter motion commands were sent.

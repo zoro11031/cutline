@@ -176,7 +176,7 @@ def load(path=None) -> list[Material]:
     if path is None:
         raise FileNotFoundError(
             "No Silhouette condition.csv found. Choose a local copy in Blade or pass --file.")
-    with open(path, encoding="utf-8-sig", errors="replace", newline="") as fh:
+    with open(path, encoding="utf-8-sig", newline="") as fh:
         rows = list(csv.reader(fh))
     if len(rows) < 3:
         raise ValueError(f"{path} is not a Studio condition.csv")
@@ -196,7 +196,7 @@ def load(path=None) -> list[Material]:
             return None
         try:
             return cast(float(raw))
-        except ValueError:
+        except (ValueError, OverflowError):
             return None
 
     parents = {_cell(row, idx, "uuid"): _cell(row, idx, "parent_uuid") for row in body}
@@ -220,15 +220,24 @@ def load(path=None) -> list[Material]:
         return None
 
     out: list[Material] = []
-    for row in body:
+    rejected = []
+    seen_ids = set()
+    for lineno, row in enumerate(rows[2:], start=3):
         if _cell(row, idx, "category") != "leaf":
             continue
         name = (names.get(_cell(row, idx, "parent_uuid"))
                 or _cell(row, idx, "name_resolved"))
         force = number(row, "(force.pressure)")
         speed = number(row, "(speed)")
+        source_id = _cell(row, idx, "uuid")
         if not name or force is None or speed is None:
+            rejected.append(f"row {lineno}: missing material name, force or speed")
             continue
+        if source_id and source_id in seen_ids:
+            rejected.append(f"row {lineno}: repeated variant identifier {source_id}")
+            continue
+        if source_id:
+            seen_ids.add(source_id)
         out.append(Material(
             name=name,
             cutter_class=_cell(row, idx, "cutter_class_id"),
@@ -237,7 +246,7 @@ def load(path=None) -> list[Material]:
             depth_mm=number(row, "(blade_depth)", float),
             offset_su=number(row, "(tool.offset)") or 0,
             tool=_cell(row, idx, "(tool.type)"),
-            source_id=_cell(row, idx, "uuid"),
+            source_id=source_id,
             group_id=_cell(row, idx, "parent_uuid"),
             holder=number(row, "(tool_holder)"),
             action=_cell(row, idx, "(action)"),
@@ -250,6 +259,8 @@ def load(path=None) -> list[Material]:
             raw=tuple(zip(rows[0], row)),
 
         ))
+    if rejected:
+        raise ValueError("Studio material import rejected " + "; ".join(rejected))
     return out
 
 
