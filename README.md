@@ -38,15 +38,28 @@ ln -sf ~/Projects/Printing/cut-proxies/bin/silhouette-control-center ~/.local/bi
 Template generation needs nothing but the standard library. Driving the
 cutter needs `pyusb` and a udev rule — see [docs/SETUP.md](docs/SETUP.md).
 
+The desktop launcher prefers **Qt 6** when PySide6 is installed. KDE Plasma
+uses the system Qt theme and file dialogs. Install the distro binding and
+start the Qt frontend explicitly if you want to check the installation.
+
+```sh
+sudo dnf install python3-pyside6       # Fedora
+sudo pacman -S pyside6 qt6-wayland   # Arch / CachyOS
+silhouette-control-center gui --frontend qt
+```
+
+Use `gui --frontend gtk` to switch to the GTK frontend. Both frontends use
+the same project files, presets, calibration, and checked cutter plans.
+
 AppImage, RPM and Arch/AUR build recipes are in
 [packaging/README.md](packaging/README.md). Built artifacts go into
 `out/packages/`.
 
 The [UI and functionality audit](docs/UI_FUNCTIONALITY_AUDIT.md) records
-tested behavior, fixes, and remaining issues. In the window, **Advanced
-details** reveals diagnostics; **Colorblind mode** adds blue/orange styling,
-patterned failures and text labels. Uploaded PDF artwork appears behind the
-cut paths at its physical page size.
+tested behavior, fixes, and remaining issues. **Job details** in Qt and
+**Advanced details** in GTK show cut diagnostics. **Colorblind mode** uses
+blue and orange and dashes failed paths. The preview overlays the PDF at
+its physical page size.
 
 ## Use
 
@@ -80,11 +93,11 @@ proxies, on Linux, without the VM:
 | Test cut to dial in blade settings | `testcut` — every combination in one pass |
 | Studio square-and-triangle sample | `testcut --shape studio` |
 | Adjust path order, pass direction and seam overlap | Blade → Cut paths |
-| Select a cutting mat and finish position | Cut → Media handling |
+| Select a cutting mat and finish position | Send → Media handling |
 | Machine calibration | `calibrate` |
 | Open an SVG or DXF and cut it | `cut --from`, `import` |
 | Use an Inkscape Silhouette design | [Inkscape Print & Cut workflow](docs/SETUP.md#inkscape-silhouette-print--cut) |
-| Send by line colour, fill colour, or layer | **Cut → Send by** or `--send-by` and `--group` |
+| Send by line colour, fill colour, or layer | **Send → Send by** or `--send-by` and `--group` |
 | Cut one line colour | `--color` |
 | — | `check-sheet`: measure where the marks actually printed |
 
@@ -290,7 +303,7 @@ saved value is 35.
 | Line Segment Overcut | **Blade** or `--line-segment-overcut`. Uses the recovered corner lift and independent Start and End Extension settings. |
 | Track Enhancing | **Blade** or `--track-enhancing`. Sends the recovered roller command before scan or cut. |
 | Cut Order Sorting | **Blade → Cut paths** offers No Sort, Maximize Speed, Minimize Roller Movement and Sort Interior Contours First. |
-| Feed Options | **Cut → Media handling** offers Feed, Feed Distance and Return to Origin. |
+| Feed Options | **Send → Media handling** offers Feed, Feed Distance and Return to Origin. |
 | Weed Settings | Add a Weed Border and Weed Lines to imported artwork and Design projects. |
 | Show Cutter Divisions | **Blade** can show all cutter classes from the installed Studio material database, or prefer matching rows for the selected cutter. |
 | Restore Default Materials | **Blade → Silhouette's own material settings** backs up edits to shipped presets and restores their defaults. |

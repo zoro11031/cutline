@@ -45,6 +45,14 @@ The checkout currently has no LICENSE file. Metadata uses
 `LicenseRef-Unknown` instead of assigning a license on the author's behalf.
 That metadata must be resolved before public release.
 
+## Desktop frontend selection
+
+The RPM and Arch package install the distro's PySide6 binding and launch the
+Qt frontend. Native installations with the GTK4, libadwaita, PyGObject, and
+Cairo Python bindings can also use `gui --frontend gtk`. The AppImage and
+Flatpak recipes bundle the GTK runtime.
+
+
 ## AppImage (x86_64)
 
 This builder packages the build host's Python, GTK4, libadwaita, GI typelibs,

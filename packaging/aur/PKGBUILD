@@ -9,8 +9,12 @@ conflicts=('cut-proxies')
 arch=('any')
 url='https://github.com/zoro11031/silhouette-linux'
 license=('LicenseRef-Unknown')
-depends=('python>=3.10' 'python-gobject' 'python-cairo' 'gtk4>=4.10' 'libadwaita>=1.5' 'python-pillow' 'poppler')
-optdepends=('python-pyusb: USB cutter transport and registration readback'
+depends=('python>=3.10' 'pyside6>=6.4' 'python-pillow' 'poppler')
+optdepends=('python-gobject: GTK fallback frontend'
+            'python-cairo: GTK fallback canvas'
+            'libadwaita: GTK fallback widgets'
+            'qt6-wayland: native Qt support under Wayland'
+            'python-pyusb: USB cutter transport and registration readback'
             'libusb: USB backend'
             'python-bleak: Bluetooth LE cutter transport'
             'bluez: system Bluetooth service'

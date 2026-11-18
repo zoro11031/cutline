@@ -1180,8 +1180,26 @@ def cmd_studio(args):
 # --------------------------------------------------------------------------
 
 def cmd_gui(args):
-    from . import gui
-    return gui.main(args.argv)
+    return launch_gui(args.frontend, args.argv)
+
+
+def launch_gui(frontend="auto", argv=None):
+    from importlib.util import find_spec
+
+    if frontend == "qt" or (frontend == "auto" and find_spec("PySide6") is not None):
+        try:
+            from . import qt_gui
+        except ImportError as exc:
+            if frontend == "qt":
+                fail(f"The Qt frontend needs PySide6 with Qt Widgets. {exc}")
+        else:
+            return qt_gui.main(argv)
+
+    try:
+        from . import gui
+    except ImportError as exc:
+        fail(f"Install PySide6 for the Qt frontend or GTK4 and libadwaita for the GTK frontend. {exc}")
+    return gui.main(argv)
 
 
 # --------------------------------------------------------------------------
@@ -1344,20 +1362,19 @@ def main(argv=None):
     s.set_defaults(func=cmd_studio)
 
     g = sub.add_parser("gui", help="open the window")
+    g.add_argument("--frontend", choices=("auto", "qt", "gtk"), default="auto",
+                   help="auto prefers Qt when PySide6 is installed")
     g.add_argument("argv", nargs="*")
     g.set_defaults(func=cmd_gui)
 
     args = p.parse_args(argv)
     if not getattr(args, "func", None):
-        # No subcommand: the window is the friendlier default, but only if it
-        # can actually open.
-        try:
-            import gi  # noqa: F401
-            from . import gui
-            return gui.main([])
-        except Exception:            # noqa: BLE001
+        # The launcher can also be called from an SSH session or a TTY.
+        import os
+        if not any(os.environ.get(key) for key in ("DISPLAY", "WAYLAND_DISPLAY", "QT_QPA_PLATFORM")):
             p.print_help()
             return 0
+        return launch_gui()
     return args.func(args)
 
 

@@ -10,17 +10,14 @@ Source0:        https://github.com/zoro11031/silhouette-linux/releases/download/
 BuildArch:      noarch
 BuildRequires:  python3
 Requires:       python3 >= 3.10
-Requires:       python3-gobject
-Requires:       python3-cairo
-Requires:       gtk4 >= 4.10
-Requires:       libadwaita >= 1.5
+Requires:       python3-pyside6 >= 6.4
 Requires:       python3-pillow
 Requires:       poppler-utils
 Recommends:     python3-pyusb
 Recommends:     libusb1
 
 %description
-GTK4 and terminal front ends for Silhouette Cameo proxy-card templates,
+Qt 6, GTK4 and terminal front ends for Silhouette Cameo proxy-card templates,
 cut-stream generation, and verification. Hardware cutting requires device
 access permissions. Studio integration uses an existing WinBoat installation.
 
