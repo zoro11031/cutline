@@ -246,6 +246,8 @@ def all_presets(cutter=DEFAULT_CUTTER) -> dict[str, Preset]:
 def for_context(preset, cutter, holder, *, tool=None, action=None):
     """Resolve one compatible variant of a selected factory material."""
     if not preset.factory_group:
+        if preset.factory_holder not in (None, holder):
+            raise ValueError(f"No compatible variant of {preset.name} for Holder {holder}.")
         return preset
     matches = [item for item in all_presets(cutter).values()
                if item.factory_group == preset.factory_group

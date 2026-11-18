@@ -71,6 +71,13 @@ Print at **100%**. Keep the cut file and PDF from the same export. For
 ProxyPress, open its ZIP in **Sheet** and pick the front you printed. For a
 generated layout, use **Layout → Advanced Options → Export** to save the cut files and proof.
 
+ProxyPress's **Silhouette Card Maker** export can also be cut against the stock
+Studio template named on its PDF. In Control Center, its ZIP keeps the exact
+page and registration dimensions, including A4's small difference from the
+nominal paper size. Load the paper at the top-left of the mat as shown in
+**Sheet**. When using the stock borderless template in Studio, follow SCM's own
+mat placement instructions.
+
 Load the print face-up and square to the top-left grid of the mat. Choose
 that mat in **Send → Advanced Options → Media handling**. Load it into the cutter and check
 that the cutter says it’s ready.

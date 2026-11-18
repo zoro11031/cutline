@@ -550,9 +550,18 @@ class Window(QMainWindow):
 
     def load_preset(self):
         cutter = self.choice("cutter")
-        selected = presets.get(self.choice("preset"), cutter)
+        name, slot = self.choice("preset"), self.holder_state.active
+        selected = presets.get(name, cutter)
+        try:
+            selected = presets.for_context(selected, cutter, slot)
+        except ValueError as error:
+            self.message(str(error))
+            selected = presets.get(presets.STARTING_NAME, cutter)
+        if selected.name != name:
+            with self.editing():
+                self.select("preset", selected.name)
         self.provenance.setText(selected.note)
-        self.set_blade_settings(for_holder(selected.cut_settings(), self.holder_state.active))
+        self.set_blade_settings(for_holder(selected.cut_settings(), slot))
 
     def current_holder_profile(self):
         preset = presets.get(self.choice("preset"), self.choice("cutter"))
@@ -828,7 +837,7 @@ class Window(QMainWindow):
             options["weed_lines"] = self.choice("weed_lines") if options["weed_border_mm"] else "none"
         if self.bundle:
             options.update(self.bundle.layout, engine="scm", mode=template.ROUNDED, bleed_mm=0, registration=True,
-                           skip=(), use_document_page=False, imported=self.artwork)
+                           skip=(), imported=self.artwork)
         return options
 
     def update_enabled_fields(self):

@@ -1608,11 +1608,22 @@ class Window(Adw.ApplicationWindow):
         self.toast(f"Saved {name}.")
 
     def on_preset(self, *_a):
-        p = presets.get(self._text(self.r_preset), self._text(self.r_cutter))
+        name, cutter = self._text(self.r_preset), self._text(self.r_cutter)
+        slot = self.holder_state.active
+        try:
+            p = presets.for_context(presets.get(name, cutter), cutter, slot)
+        except ValueError as error:
+            self.toast(str(error))
+            p = presets.get(presets.STARTING_NAME, cutter)
+        if p.name != name:
+            model = self.r_preset.get_model()
+            index = next(i for i in range(model.get_n_items()) if model.get_string(i) == p.name)
+            with self.r_preset.handler_block(self.preset_changed_id):
+                self.r_preset.set_selected(index)
         self.preset_note.set_subtitle(p.note or p.description)
         was = self._suppress
         self._suppress = True
-        self._load_blade_settings(for_holder(p.cut_settings(), self.holder_state.active))
+        self._load_blade_settings(for_holder(p.cut_settings(), slot))
         self._suppress = was
         self.on_changed()
 

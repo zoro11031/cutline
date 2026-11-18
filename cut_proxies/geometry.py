@@ -101,6 +101,7 @@ SHEETS: dict[str, Sheet] = {
     # The Canon's page-size list stops well short of Tabloid; it is here
     # because the Cameo can cut it and someone may print elsewhere.
     "Tabloid": Sheet("Tabloid", 279.4, 431.8, printable=False),
+    "A3": Sheet("A3", 297.0, 420.0, printable=False),
 }
 
 

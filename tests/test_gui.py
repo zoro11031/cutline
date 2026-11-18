@@ -77,6 +77,22 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertFalse(win.r_track.get_active())
         self.assertFalse(win.job.settings.track_enhancing)
 
+    def test_material_selection_resolves_the_active_holder_variant(self):
+        variants = {f"Sample · Holder {slot}": presets.Preset(
+            f"Sample · Holder {slot}", "", "silhouette", {"force": force},
+            factory_id=str(slot), factory_group="sample", factory_holder=slot)
+            for slot, force in ((1, 12), (2, 21))}
+        win = self.make_window()
+        with mock.patch.object(presets, "factory_presets", return_value=variants):
+            win.refresh_preset_choices()
+            win.send_holder_buttons[2].set_active(True)
+            names = win.r_send_preset.get_model()
+            win.r_send_preset.set_selected(next(i for i in range(names.get_n_items())
+                                               if names.get_string(i) == "Sample · Holder 1"))
+            self.assertEqual(win._text(win.r_preset), "Sample · Holder 2")
+            self.assertEqual(win.job.settings.force, 21)
+            self.assertEqual(win.job.settings.holder, 2)
+
     def test_advanced_controls_and_tool_profiles_are_independent(self):
         from cut_proxies.editor_model import Shape
 

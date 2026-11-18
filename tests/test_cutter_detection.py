@@ -34,6 +34,17 @@ class TestExactEndpoint(unittest.TestCase):
 
 
 class TestFactorySnapshot(unittest.TestCase):
+    def test_model_override_keeps_the_family_variant_for_the_other_holder(self):
+        shared = dict(name="Vinyl", group_id="v", speed=3, passes=1,
+                      depth_mm=None, offset_su=0, tool="blade", action="cut")
+        rows = [materials.Material(**shared, cutter_class=division, force=force,
+                                   source_id=key, holder=holder)
+                for division, force, key, holder in (("cameo", 15, "base", 1),
+                    ("cameo4", 18, "exact", 1), ("cameo", 20, "second", 2))]
+        choices = materials.cutter_divisions(rows, "Silhouette Cameo 4", False)
+        self.assertEqual({m.source_id: m.force for m in choices.values()}, {"exact": 18, "second": 20})
+        self.assertEqual(len(materials.cutter_divisions(rows, "Silhouette Cameo 4", True)), 3)
+
     def test_preserves_variants_and_keeps_a_valid_snapshot_on_failed_refresh(self):
         source = """category,uuid,parent_uuid,name_resolved,cutter_class_id,(force.pressure),(speed),(tangential_emulation),(tool_holder)
 Category,ID,Parent,Name,Class,Force,Speed,Overcut,Holder

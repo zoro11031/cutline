@@ -23,12 +23,13 @@ class BundleRules(unittest.TestCase):
                              registration=dict(pattern=3, inset=10, armLength=8.0264, thickness=1),
                              sheets=[dict(sheet=2, frontPage=1, backPage=2, cards=1, svg='sheet-2.svg')])
 
-    def write(self):
+    def write(self, svg_size=(279.4, 215.9)):
+        w, h = svg_size
         with zipfile.ZipFile(self.path, 'w') as z:
             z.writestr('registration.json', json.dumps(self.manifest))
             z.writestr('cards.pdf', b'%PDF-1.4')
             z.writestr('sheet-2.svg', '<svg xmlns="http://www.w3.org/2000/svg" '
-                       'width="279.4mm" height="215.9mm" viewBox="0 0 279.4 215.9">'
+                       f'width="{w}mm" height="{h}mm" viewBox="0 0 {w} {h}">'
                        '<rect x="20" y="22" width="63" height="88"/></svg>')
 
     def test_uses_project_sheet_number_and_actual_pdf_page(self):
@@ -51,6 +52,23 @@ class BundleRules(unittest.TestCase):
         self.write()
         with self.assertRaisesRegex(bundle.BundleError, 'PDF page'):
             bundle.load(self.path)
+
+    def test_uses_the_exact_scm_a4_frame_and_rejects_unmatched_svg(self):
+        size = 3507 * 25.4 / 300, 2480 * 25.4 / 300
+        for section in ['pdfPage', 'mat']:
+            self.manifest[section].update(width=size[0], height=size[1])
+        self.write()
+        matched = bundle.load(self.path)
+        self.assertEqual(matched.layout['sheet'], 'A4')
+        with self.assertRaisesRegex(bundle.BundleError, 'SVG does not match'):
+            matched.artwork(matched.row())
+        self.write(size)
+        matched = bundle.load(self.path)
+        plan = job.build(**matched.layout, imported=matched.artwork(matched.row()))
+        self.assertFalse(plan.blocked)
+        for marks in [matched.marks(), plan.marks]:
+            self.assertAlmostEqual(marks.sheet_w_mm, size[0])
+            self.assertAlmostEqual(marks.sheet_h_mm, size[1])
 
     def test_unversioned_studio_zip_still_loads_its_pdf_and_studio_template(self):
         del self.manifest['format']

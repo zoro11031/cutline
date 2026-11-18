@@ -298,8 +298,16 @@ def cutter_divisions(rows, cutter_name: str, show_all: bool) -> dict[str, Materi
     choices = {}
     for name, variants in groups.items():
         if not show_all:
-            rank = max(ranks[normalize(row.cutter_class)] for row in variants)
-            variants = [row for row in variants if ranks[normalize(row.cutter_class)] == rank]
+            # A model override replaces only the same holder/tool/action entry.
+            # Family defaults for the other tools and holders remain available.
+            contexts = {}
+            for row in variants:
+                key = row.group_id, row.holder, normalize(row.tool), normalize(row.action)
+                contexts.setdefault(key, []).append(row)
+            variants = []
+            for rows in contexts.values():
+                rank = max(ranks[normalize(row.cutter_class)] for row in rows)
+                variants.extend(row for row in rows if ranks[normalize(row.cutter_class)] == rank)
         for row in variants:
             label = name
             if show_all or len(variants) > 1:

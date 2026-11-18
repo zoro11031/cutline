@@ -84,6 +84,20 @@ class TestQtFrontend(unittest.TestCase):
         self.assertFalse(window.blade["track_enhancing"].isChecked())
         self.assertFalse(window.job.settings.track_enhancing)
 
+    def test_material_selection_resolves_the_active_holder_variant(self):
+        variants = {f"Sample · Holder {slot}": presets.Preset(
+            f"Sample · Holder {slot}", "", "silhouette", {"force": force},
+            factory_id=str(slot), factory_group="sample", factory_holder=slot)
+            for slot, force in ((1, 12), (2, 21))}
+        window = self.window
+        with mock.patch.object(presets, "factory_presets", return_value=variants):
+            window.refresh_preset_choices()
+            window.send_blade["holder"].holders.button(2).click()
+            window.send_preset.setCurrentIndex(window.send_preset.findData("Sample · Holder 1"))
+            self.assertEqual(window.choice("preset"), "Sample · Holder 2")
+            self.assertEqual(window.job.settings.force, 21)
+            self.assertEqual(window.job.settings.holder, 2)
+
     def test_advanced_controls_and_tool_profiles_are_independent(self):
         window = self.window
         window.show()
