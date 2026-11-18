@@ -316,6 +316,16 @@ def _corrupt_track_enhancing(stream: bytes) -> bytes:
     return _rejoin(head, cmds)
 
 
+def _corrupt_group_force(stream: bytes) -> bytes | None:
+    head, cmds = _split(stream)
+    for i in range(len(cmds) - 1, -1, -1):
+        if cmds[i].startswith(b"FX"):
+            force, comma, holder = cmds[i][2:].partition(b",")
+            cmds[i] = b"FX%d%s%s" % (int(force) + 1, comma, holder)
+            return _rejoin(head, cmds)
+    return None
+
+
 def _corrupt_feed_position(stream: bytes) -> bytes | None:
     head, cmds = _split(stream)
     if len(cmds) < 2 or cmds[-1] != b"SO0" or not cmds[-2].startswith(b"M"):
@@ -397,6 +407,7 @@ def _corrupt_imported_vertex(stream: bytes) -> bytes | None:
 
 IMPORTED_PROBES = (
     ("imported path geometry", _corrupt_imported_vertex),
+    ("group blade settings", _corrupt_group_force),
     ("scheduled path geometry", _corrupt_imported_vertex),
     ("cutting mat setup", _drop_mat_setup),
     ("return to start", _corrupt_return_to_start),
@@ -519,13 +530,58 @@ class Row:
     ok: bool
 
 
+def _observed_motion_settings(commands):
+    """Read which holder and settings were active at each drawing move."""
+    per_holder = {}
+    selected = 1
+    acceleration = None
+    motion = []
+    path = None
+
+    fields = {"FX": "force", "!": "speed", "TF": "depth", "FC": "diameter",
+              "FE": "lift", "FF": "corners"}
+    for command in commands:
+        prefix = command[:1] if command.startswith("!") else command[:2]
+        if prefix in fields:
+            values = tuple(int(part) for part in command[len(prefix):].split(","))
+            value_count = 2 if prefix in ("FC", "FF") and len(values) == 3 else 1
+            holder = values[-1] if len(values) > value_count else 1
+            value = values[:value_count] if prefix == "FF" else values[0]
+            per_holder.setdefault(holder, {})[fields[prefix]] = value
+        elif command in ("J1", "J2"):
+            selected = int(command[1:])
+        elif command.startswith("TJ"):
+            acceleration = int(command[2:])
+        elif command.startswith("M"):
+            path = None
+        elif command.startswith("D"):
+            tool = per_holder.get(selected, {})
+            state = (selected, *(tool.get(k) for k in fields.values()), acceleration)
+            if path is None:
+                path = len(motion)
+                motion.append(state)
+            elif motion[path] != state:
+                motion[path] = None
+    return motion
+
+
+def _requested_motion_settings(settings, device):
+    s = settings.clamped(device)
+    lift = int(s.lift_head or s.sharpen_corners) if device.cameo3_on else None
+    corners = ((round(s.corner_start_mm * 10), round(s.corner_end_mm * 10))
+               if s.sharpen_corners else (0, 0)) if device.cameo3_on else None
+    acceleration = (3 if s.acceleration is None else s.acceleration) if device.detects_tools else None
+    return (s.holder, s.force, s.speed, s.depth, graphtec.su(s.blade_diameter_mm),
+            lift, corners, acceleration)
+
+
 def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
                      mode: str = "rounded", cards=None,
                      offset_mm: tuple[float, float] = (0.0, 0.0),
                      registration: bool = True, expected_paths=None,
                      auto_search: bool = True, source_paths=None,
                      mat: str = "auto", end_position: str = "below",
-                    end_feed_mm: float = 0.0
+                    end_feed_mm: float = 0.0, action_groups=()
                      ) -> tuple[bool, list[Row]]:
     """Check a stream against the grid, marks and blade settings.
 
@@ -543,26 +599,23 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
     def row(label, want, got, ok):
         rows.append(Row(label, str(want), str(got), bool(ok)))
 
-    # Every force the stream carries must be the one asked for, not just
-    # the last. A single-settings job that changes force part-way through is
-    # a corrupted stream, and the machine would act on it.
-    row("blade force", s.force,
-        ", ".join(str(f) for f in d.forces) or "missing",
-        bool(d.forces) and set(d.forces) == {s.force})
-    row("speed", s.speed,
-        ", ".join(str(v) for v in d.speeds) or "missing",
-        bool(d.speeds) and set(d.speeds) == {s.speed})
-    holder = 1 if d.holder is None and not device.cameo3_on else d.holder
-    row("tool holder", s.holder, holder, holder == s.holder)
-    if device.autoblade and s.depth is not None and s.holder == 1:
-        row("autoblade depth", s.depth, d.depth, d.depth == s.depth)
+    if not action_groups:
+        # Check every emitted force and speed for a single-settings job.
+        row("blade force", s.force, ", ".join(str(f) for f in d.forces) or "missing",
+            bool(d.forces) and set(d.forces) == {s.force})
+        row("speed", s.speed, ", ".join(str(v) for v in d.speeds) or "missing",
+            bool(d.speeds) and set(d.speeds) == {s.speed})
+        holder = 1 if d.holder is None and not device.cameo3_on else d.holder
+        row("tool holder", s.holder, holder, holder == s.holder)
+        if device.autoblade and s.depth is not None and s.holder == 1:
+            row("autoblade depth", s.depth, d.depth, d.depth == s.depth)
 
-    if s.sharpen_corners:
-        tool = graphtec.Tool(s.holder)
-        wanted = (tool.lift(True), *tool.sharpen_corners(
-            round(s.corner_start_mm * 10), round(s.corner_end_mm * 10)))
-        found = tuple(command for command in d.commands if command.startswith(("FE", "FF")))
-        row("line segment overcut", " ".join(wanted), " ".join(found), found == wanted)
+        if s.sharpen_corners:
+            tool = graphtec.Tool(s.holder)
+            wanted = (tool.lift(True), *tool.sharpen_corners(
+                round(s.corner_start_mm * 10), round(s.corner_end_mm * 10)))
+            found = tuple(command for command in d.commands if command.startswith(("FE", "FF")))
+            row("line segment overcut", " ".join(wanted), " ".join(found), found == wanted)
 
     track_indices = [i for i, command in enumerate(d.commands) if command == "FY0"]
     first_motion = next((i for i, command in enumerate(d.commands)
@@ -652,7 +705,19 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
     paths_to_schedule = expected_paths if expected_paths is not None else source_paths
     scheduled = None
     if paths_to_schedule is not None:
-        scheduled = toolpath.schedule(paths_to_schedule, s, (ox, oy))
+        if action_groups:
+            scheduled = []
+            states = []
+            for group in action_groups:
+                draws = toolpath.schedule(group.paths, group.settings, (ox, oy))
+                scheduled.extend(draws)
+                states.extend([_requested_motion_settings(group.settings, device)] * len(draws))
+            actual_states = _observed_motion_settings(d.commands)
+            row("group blade settings", "requested holder and settings at each cut",
+                "matches" if actual_states == states else "tool settings differ",
+                actual_states == states)
+        else:
+            scheduled = toolpath.schedule(paths_to_schedule, s, (ox, oy))
         wanted = [[(graphtec.su(x - ox), graphtec.su(y - oy)) for x, y in points]
                   for _, points in scheduled]
         got = [[(graphtec.su(x), graphtec.su(y)) for x, y in path] for path in d.paths]

@@ -696,7 +696,7 @@ class CutJob:
                           note="park the head"))
         return steps
 
-    def plan_matrix(self, groups) -> list[Step]:
+    def plan_matrix(self, groups, *, wait_between: bool = False) -> list[Step]:
         """One job that cuts each group of paths with its own settings.
 
         `groups` is a sequence of `(CutSettings, paths)`. The machine is set
@@ -721,7 +721,7 @@ class CutJob:
                                        if s.depth is not None else ""))))
             steps.append(Step("write",
                               frame(self._path_commands(paths, s)),
-                              note=f"{len(paths)} path(s)", pace=True))
+                              note=f"{len(paths)} path(s)", pace=True, wait_ready=wait_between))
             all_paths.extend(paths)
         steps.append(Step("write", frame(self._trailer_commands(all_paths)),
                           note="park the head"))

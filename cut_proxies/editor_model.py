@@ -10,6 +10,8 @@ from . import geometry, importer, regmarks, template
 
 KINDS = ("Rectangle", "Rounded rectangle", "Ellipse", "Line")
 ACTIONS = ("Cut", "Score", "None")
+ALL_ACTIONS = "All actions"
+REVIEW_ACTIONS = (*ACTIONS[:2], ALL_ACTIONS)
 
 
 @dataclass(frozen=True)
@@ -57,7 +59,9 @@ class Shape:
 
 
 def artwork(shapes, width, height, action="Cut"):
-    paths = tuple(shape.path() for shape in shapes if shape.visible and shape.action == action)
+    paths = tuple(replace(shape.path(), layer=(shape.action,)) for shape in shapes
+                  if shape.visible and shape.action != "None"
+                  and action in (shape.action, ALL_ACTIONS))
     return importer.Imported(paths, width, height,
                              "Template editor", "editor coordinates in millimetres",
                              page_size_mm=(width, height))

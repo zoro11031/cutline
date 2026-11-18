@@ -22,7 +22,7 @@ import dataclasses
 import pathlib
 import math
 
-from . import config, geometry, graphtec, layout_presets, presets, regmarks, template, toolpath, verify
+from . import actions, config, geometry, graphtec, layout_presets, presets, regmarks, template, toolpath, verify
 
 
 @dataclasses.dataclass
@@ -58,6 +58,8 @@ class Job:
     mat: str = "auto"
     end_position: str = "below"
     end_feed_mm: float = 0.0
+    send_mode: str = "simple"
+    action_groups: tuple[actions.CutGroup, ...] = ()
 
     # ---- reporting ---------------------------------------------------
     @property
@@ -72,11 +74,14 @@ class Job:
 
     @property
     def cut_length_mm(self) -> float:
-        if not self.settings.custom_toolpath:
+        if not self.action_groups and not self.settings.custom_toolpath:
             return template.total_length_mm(self.paths) * self.settings.passes
         origin = self.marks.origin_mm if self.registration else (0.0, 0.0)
         start = tuple(axis - offset for axis, offset in zip(origin, self.offset_mm))
-        return sum(math.dist(a, b) for _, points in toolpath.schedule(self.paths, self.settings, start)
+        groups = ([(group.settings, group.paths) for group in self.action_groups]
+                  if self.action_groups else [(self.settings, self.paths)])
+        return sum(math.dist(a, b) for settings, paths in groups
+                   for _, points in toolpath.schedule(paths, settings, start)
                    for a, b in zip(points, points[1:]))
 
     def registration_steps(self) -> tuple:
@@ -137,6 +142,19 @@ class Job:
                 tool.append(f"{s.overcut_mm:g} mm overcut")
 
         weed_count = sum(toolpath.is_weed_path(path) for path in self.paths)
+        blade_rows = [
+            ("Preset", f"{self.preset.name} [{self.preset.origin}]"),
+            ("Blade", f"force {self.settings.force}, speed "
+                      f"{self.settings.speed}, {self.settings.passes} "
+                      f"pass(es), blade {self.settings.blade_diameter_mm:g} mm"
+                      + (f", depth {self.settings.depth}"
+                         if self.settings.depth is not None else "")),
+            ("Tool setup", ", ".join(tool)),
+        ]
+        if self.action_groups:
+            blade_rows = [("Send by", actions.SEND_MODES[self.send_mode])]
+            blade_rows.extend((f"{i + 1}. {group.key}", group.describe())
+                              for i, group in enumerate(self.action_groups))
         return [
             ("Cutter", f"{self.device.name} "
                        f"({self.device.width_mm:g} mm cuttable)"),
@@ -157,13 +175,7 @@ class Job:
             ("Origin shift", f"cut coordinates are measured from "
                              f"({mk.origin_mm[0]:g}, {mk.origin_mm[1]:g}) mm"
              if self.registration else "registration off; sheet coordinates"),
-            ("Preset", f"{self.preset.name} [{self.preset.origin}]"),
-            ("Blade", f"force {self.settings.force}, speed "
-                      f"{self.settings.speed}, {self.settings.passes} "
-                      f"pass(es), blade {self.settings.blade_diameter_mm:g} mm"
-                      + (f", depth {self.settings.depth}"
-                         if self.settings.depth is not None else "")),
-            ("Tool setup", ", ".join(tool)),
+            *blade_rows,
             ("Cut mode", self.mode),
             ("Calibration", "none"
              if tuple(self.offset_mm) == (0.0, 0.0)
@@ -204,9 +216,35 @@ def build(sheet: str = config.DEFAULT_SHEET,
           offset_mm: tuple[float, float] | None = None,
           imported=None, blade_options=None, mat: str = "auto",
           end_position: str = "below", end_feed_mm: float = 0.0,
-          weed_border_mm: float = 0.0, weed_lines: str = "none") -> Job:
+          weed_border_mm: float = 0.0, weed_lines: str = "none",
+          send_mode: str = "simple", assignments: tuple[actions.Assignment, ...] = ()) -> Job:
     """Build and check a job.  Raises only on things that cannot be reported."""
     device = graphtec.device_by_name(cutter)
+    preset = presets.get(preset_name)
+    requested = dataclasses.replace(preset.cut_settings(), **(blade_options or {}))
+    if passes is not None:
+        requested.passes = passes
+    if force is not None:
+        requested.force = force
+    if speed is not None:
+        requested.speed = speed
+    if depth is not _USE_PRESET_DEPTH:
+        requested.depth = depth
+
+    groups = ()
+    if send_mode not in actions.SEND_MODES:
+        raise ValueError(f"Unknown send mode {send_mode!r}.")
+    if send_mode == "simple":
+        if assignments:
+            raise ValueError("Choose Line, Fill, or Layer to assign cut groups.")
+    else:
+        if imported is None or mode == template.CROSS:
+            raise ValueError("Grouped Send requires imported or Design cut paths.")
+        skipped = set(skip)
+        candidates = tuple(path for index, path in enumerate(imported.paths) if index not in skipped)
+        groups = actions.resolve(candidates, send_mode, assignments, preset, requested, device)
+        imported = dataclasses.replace(imported, paths=tuple(path for group in groups for path in group.paths))
+        skip = ()
 
     # 1. the grid
     if engine == "proxypress":
@@ -236,9 +274,9 @@ def build(sheet: str = config.DEFAULT_SHEET,
     # Stock landscape jobs and bare cut files share the printed paper preset.
     if (length is None and not grid.portrait and card == "standard"
             and inset == 10 and proxypress is None and pattern == regmarks.THREE):
-        preset = layout_presets.BUILTIN.get(f"mtg-cameo-{sheet.lower()}")
-        if preset is not None:
-            length = preset.arm_mm
+        layout_preset = layout_presets.BUILTIN.get(f"mtg-cameo-{sheet.lower()}")
+        if layout_preset is not None:
+            length = layout_preset.arm_mm
 
     # 2. the marks
     mk = regmarks.for_grid(grid, inset_mm=inset, length_mm=length,
@@ -286,7 +324,10 @@ def build(sheet: str = config.DEFAULT_SHEET,
         paths = template.cut_paths(grid, mode, radius_mm, skip=skip)
         if weed_border_mm or weed_lines != "none":
             raise ValueError("Open cut artwork or review a Design to add a Weed Border.")
-    paths += toolpath.weed_paths(paths, weed_border_mm, weed_lines)
+    weed = toolpath.weed_paths(paths, weed_border_mm, weed_lines)
+    paths += weed
+    if groups and weed:
+        groups = (*groups[:-1], dataclasses.replace(groups[-1], paths=groups[-1].paths + weed))
     cut_cards = tuple(c for i, c in enumerate(grid.cards) if i not in set(skip))
     hints = [h for h in regmarks.mask_hints(grid, mk)
              if h["index"] not in set(skip)]
@@ -294,18 +335,14 @@ def build(sheet: str = config.DEFAULT_SHEET,
     off += cutting_mat_errors(device, mat, grid.sheet_w_mm, grid.sheet_h_mm)
 
     # 4. the settings and the stream
-    preset = presets.get(preset_name)
-    cut = dataclasses.replace(preset.cut_settings(), **(blade_options or {}))
-    if passes is not None:
-        cut.passes = passes
-    if force is not None:
-        cut.force = force
-    if speed is not None:
-        cut.speed = speed
-    if depth is not _USE_PRESET_DEPTH:
-        cut.depth = depth
-    warnings = cut.warnings(device)
-    cut = cut.clamped(device)
+    if groups:
+        warnings = [f"{group.key}: {msg}" for group in groups for msg in group.warnings]
+        track = requested.track_enhancing or any(group.settings.track_enhancing for group in groups)
+        cut = dataclasses.replace(groups[0].settings, track_enhancing=track)
+        groups = (dataclasses.replace(groups[0], settings=cut), *groups[1:])
+    else:
+        warnings = requested.warnings(device)
+        cut = requested.clamped(device)
 
     # No explicit offset means "use whatever this machine was calibrated to".
     offset = config.cut_offset() if offset_mm is None else offset_mm
@@ -318,13 +355,17 @@ def build(sheet: str = config.DEFAULT_SHEET,
         mark_shape_mm=(mk.length_mm, mk.thickness_mm),
         sheet_size_mm=(grid.sheet_w_mm, grid.sheet_h_mm),
         mat=mat, end_position=end_position, end_feed_mm=end_feed_mm)
-    steps = tuple(job.plan(paths))
+    steps = tuple(job.plan_matrix([(group.settings, group.paths) for group in groups], wait_between=True)
+                  if groups else job.plan(paths))
     stream = b''.join(step.data for step in steps if step.kind == 'write')
 
     # 5. take it apart again
     verify_mode = mode if imported is None else "rounded"
     check_options = dict(cards=cut_cards, offset_mm=offset, registration=registration,
-                         auto_search=auto_search, mat=mat, end_position=end_position, end_feed_mm=end_feed_mm)
+                         auto_search=auto_search, mat=mat, end_position=end_position,
+                         end_feed_mm=end_feed_mm)
+    if groups:
+        check_options["action_groups"] = groups
     if imported is not None:
         check_options["expected_paths"] = paths
     elif cut.custom_toolpath:
@@ -351,7 +392,8 @@ def build(sheet: str = config.DEFAULT_SHEET,
                collisions=collisions, off_sheet=off, warnings=warnings,
                skip=skip, mask_hints=hints, offset_mm=offset,
                liveness_failures=liveness, steps=steps, registration=registration,
-               auto_search=auto_search, mat=mat, end_position=end_position, end_feed_mm=end_feed_mm)
+               auto_search=auto_search, mat=mat, end_position=end_position, end_feed_mm=end_feed_mm,
+               send_mode=send_mode, action_groups=groups)
 
 
 def cutting_mat_errors(device, mat: str, sheet_w: float, sheet_h: float) -> list[str]:

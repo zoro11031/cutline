@@ -232,6 +232,28 @@ class TestOpenDialogs(unittest.TestCase):
         self.assertEqual(load.call_args_list, [mock.call(path, page=None), mock.call(path, page=2)])
         window.set_artwork.assert_called_once_with(artwork, "multipage.svg · Page 2")
 
+    def test_group_assignments_keep_explicit_order_and_omit_disabled_rows(self):
+        from cut_proxies import actions
+
+        def row(key, active, preset, holder, order):
+            enabled = mock.Mock()
+            enabled.get_active.return_value = active
+            slot = mock.Mock()
+            slot.get_selected.return_value = holder
+            position = mock.Mock()
+            position.get_value.return_value = order
+            return key, None, enabled, preset, slot, position
+
+        window = types.SimpleNamespace(_text=lambda value: value, _send_rows=[
+            row("Cut", True, "Plain paper test", 1, 3),
+            row("Guide", False, "Plain paper test", 0, 2),
+            row("Score", True, "Pen, no blade", 2, 1),
+        ])
+        self.assertEqual(gui.Window._group_assignments(window), (
+            actions.Assignment("Score", "Pen, no blade", 2),
+            actions.Assignment("Cut", "Plain paper test", 1),
+        ))
+
     def test_show_weed_settings_changes_visibility_only(self):
         window = types.SimpleNamespace(r_show_weed=mock.Mock(), _text=mock.Mock(),
             r_weed_border=mock.Mock(), r_weed_lines=mock.Mock(), weed_group=mock.Mock())

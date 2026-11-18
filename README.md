@@ -84,7 +84,8 @@ proxies, on Linux, without the VM:
 | Machine calibration | `calibrate` |
 | Open an SVG or DXF and cut it | `cut --from`, `import` |
 | Use an Inkscape Silhouette design | [Inkscape Print & Cut workflow](docs/SETUP.md#inkscape-silhouette-print--cut) |
-| Cut by line colour | `--color` |
+| Send by line colour, fill colour, or layer | **Cut → Send by** or `--send-by` and `--group` |
+| Cut one line colour | `--color` |
 | — | `check-sheet`: measure where the marks actually printed |
 
 The last row checks the digital PDF geometry. It cannot detect scaling or
@@ -104,9 +105,9 @@ mirroring, a 5 mm grid, and undo and redo. SVG and DXF imports show their source
 scale before placement. Open v1 template projects on their saved page and
 save current projects as `.scc-template` v2.
 
-Assign each object **Cut**, **Score**, or **None**, then choose the action next
-to **Review paths**. Control Center checks that action in the existing Cut
-view. The blade and material controls there apply to the selected action.
+Assign each object **Cut**, **Score**, or **None**, then choose an action next
+to **Review paths**. Choose **All actions** to send Cut and Score together
+with separate presets, holders and order in the Cut view.
 
 ## The sheet
 

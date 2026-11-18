@@ -98,7 +98,7 @@ class Transport:
                 if step.note:
                     log(step.note)
                 sent += self._write_paths(step.data) if step.pace else self.write(step.data)
-                if step.wait_ready:
+                if step.wait_ready and not (step.pace and len(step.data) > PATH_BATCH_BYTES):
                     self._wait_until_ready()
             elif step.kind == "expect":
                 got = self.read(timeout_ms=step.timeout_ms)

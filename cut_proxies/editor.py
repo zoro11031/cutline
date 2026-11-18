@@ -6,7 +6,8 @@ from pathlib import Path
 from gi.repository import Adw, Gio, GLib, Gtk
 
 from . import geometry
-from .editor_model import ACTIONS, KINDS, History, Shape, import_shapes, load_project, save_project
+from .editor_model import (ACTIONS, ALL_ACTIONS, KINDS, REVIEW_ACTIONS, History, Shape,
+                           import_shapes, load_project, save_project)
 
 
 class DesignCanvas(Gtk.DrawingArea):
@@ -201,7 +202,7 @@ class DesignWorkspace:
         footer = Gtk.Box(spacing=8, margin_start=12, margin_end=12, margin_top=6, margin_bottom=8)
         self.status = Gtk.Label(xalign=0, hexpand=True, wrap=True)
         footer.append(self.status)
-        self.review_action = Gtk.DropDown.new_from_strings(ACTIONS[:2])
+        self.review_action = Gtk.DropDown.new_from_strings(REVIEW_ACTIONS)
         self.review_action.set_tooltip_text('Action to review')
         self.review_action.connect('notify::selected', lambda *_: self.refresh_status())
         footer.append(self.review_action)
@@ -260,9 +261,11 @@ class DesignWorkspace:
 
     def refresh_status(self):
         p = self.project
-        action = ACTIONS[self.review_action.get_selected()]
-        count = sum(s.visible and s.action == action for s in p.shapes)
-        self.status.set_text(f'{p.width:g} × {p.height:g} mm · {count} {action.lower()} path(s)')
+        action = REVIEW_ACTIONS[self.review_action.get_selected()]
+        count = sum(s.visible and s.action != "None" and action in (s.action, ALL_ACTIONS)
+                    for s in p.shapes)
+        label = "cut and score" if action == ALL_ACTIONS else action.lower()
+        self.status.set_text(f'{p.width:g} × {p.height:g} mm · {count} {label} path(s)')
         self.title.set_subtitle('Unsaved changes' if self.dirty else '')
         self.undo_button.set_sensitive(bool(self.history.past))
         self.redo_button.set_sensitive(bool(self.history.future))
@@ -496,5 +499,5 @@ class DesignWorkspace:
         self.file_dialog('Import cut geometry', opened, filters=('*.svg','*.dxf','*.SVG','*.DXF','*.studio3','*.STUDIO3'))
 
     def review_paths(self, _button):
-        action = ACTIONS[self.review_action.get_selected()]
+        action = REVIEW_ACTIONS[self.review_action.get_selected()]
         self.on_review(self.project, action)

@@ -158,6 +158,14 @@ CASES += tuple(
 )
 
 
+CASES += tuple(
+    (verify, "expectations_met", _force_verification_row("group blade settings", allowed),
+     f"group blade settings always {'allow' if allowed else 'refuse'}",
+     ["tests.test_actions.TestGroupedSend"])
+    for allowed in (True, False)
+)
+
+
 def _refuse_testcut(*args):
     raise ValueError("refused")
 

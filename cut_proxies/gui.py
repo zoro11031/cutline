@@ -39,7 +39,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
-from . import (bundle, config, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
+from . import (actions, bundle, config, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
                template, testcut, toolpath, transport, winboat)  # noqa: E402
 
 APP_ID = "org.printing.SilhouetteControlCenter"
@@ -317,6 +317,11 @@ class Window(Adw.ApplicationWindow):
         self.bundle_checked = False
         self._sheet_token = None
         self.imported = None
+        self._send_source = None
+        self._send_mode = "simple"
+        self._send_profiles = ()
+        self._send_choices = {}
+        self._send_rows = []
         self.template_shapes = ()
         self.design = None
         self._close_confirmed = False
@@ -853,6 +858,15 @@ class Window(Adw.ApplicationWindow):
         gtest.add(test_row)
         page.add(gtest)
 
+        modes = Adw.PreferencesGroup(title="Send by")
+        self.r_send_mode = _combo("Mode", list(actions.SEND_MODES.values()))
+        self.r_send_mode.connect("notify::selected", self.on_changed)
+        modes.add(self.r_send_mode)
+        page.add(modes)
+        self.send_groups = Adw.PreferencesGroup(
+            title="Cut groups", description="Enable the groups to send and choose their order.")
+        page.add(self.send_groups)
+
         g3 = Adw.PreferencesGroup(
             title="Send",
             description="Cut stays locked until the job has been built and "
@@ -984,6 +998,7 @@ class Window(Adw.ApplicationWindow):
         engine = "scm" if self._text(self.r_engine) == "Silhouette Card Maker" \
             else "proxypress"
         length = self.r_length.get_value()
+        send_mode = self._active_send_mode()
         options = dict(
             sheet=self._text(self.r_sheet),
             card=self._text(self.r_card),
@@ -1011,7 +1026,9 @@ class Window(Adw.ApplicationWindow):
             end_feed_mm=self.r_feed.get_value() if self.r_end_position.get_selected() == 0 else 0,
             skip=self._skip_indices(),
             offset_mm=(self.r_cal_x.get_value(), self.r_cal_y.get_value()),
-            imported=self._selected_artwork(),
+            imported=self._selected_artwork() if send_mode == "simple" else self.imported,
+            send_mode=send_mode,
+            assignments=self._group_assignments() if send_mode != "simple" else (),
             weed_border_mm=self.r_weed_border.get_value() if self.imported else 0,
             weed_lines=(list(toolpath.WEED_LINES)[self.r_weed_lines.get_selected()]
                         if self.imported and self.r_weed_border.get_value() else "none"),
@@ -1020,6 +1037,54 @@ class Window(Adw.ApplicationWindow):
             options.update(self.pdf_bundle.layout, engine='scm', mode=template.ROUNDED,
                            bleed_mm=0, registration=True, skip=(), imported=self.imported)
         return options
+
+    def _active_send_mode(self):
+        return list(actions.SEND_MODES)[self.r_send_mode.get_selected()] if self.imported else "simple"
+
+    def _group_assignments(self):
+        ordered = sorted(self._send_rows, key=lambda entry: entry[-1].get_value())
+        return tuple(actions.Assignment(key, self._text(profile), holder.get_selected() or None)
+                     for key, _row, enabled, profile, holder, _order in ordered if enabled.get_active())
+
+    def _refresh_send_groups(self):
+        source = self.imported
+        mode = self._active_send_mode()
+        self.r_send_mode.set_sensitive(source is not None)
+        self.r_colour.set_sensitive(source is not None and mode == "simple" and self.pdf_bundle is None)
+        self.send_groups.set_visible(mode != "simple")
+        profiles = tuple(sorted(presets.all_presets())) if mode != "simple" else ()
+        same_source = self._send_source is source
+        if same_source and self._send_mode == mode and self._send_profiles == profiles:
+            return
+        if same_source:
+            self._send_choices[self._send_mode] = {
+                key: (enabled.get_active(), self._text(profile), holder.get_selected(), order.get_value())
+                for key, _row, enabled, profile, holder, order in self._send_rows}
+        else:
+            self._send_choices.clear()
+        for _, row, *_ in self._send_rows:
+            self.send_groups.remove(row)
+        self._send_rows = []
+        self._send_source, self._send_mode, self._send_profiles = source, mode, profiles
+        if mode == "simple":
+            return
+
+        found = actions.group_paths(source.paths, mode)
+        choices = self._send_choices.get(mode, {})
+        names = [actions.CURRENT_SETTINGS, *profiles]
+        for index, (key, paths) in enumerate(found.items(), 1):
+            active, preset_name, slot, position = choices.get(key, (False, names[0], 0, index))
+            row = Adw.ExpanderRow(title=key, subtitle=f"{len(paths)} path(s)")
+            enabled = _switch("Send this group", active)
+            preset = _combo("Preset", names, names.index(preset_name) if preset_name in names else 0)
+            holder = _combo("Tool Holder", ["Use preset", "1", "2"], slot)
+            order = _spin("Send order", 1, len(found), position)
+            for control, prop in ((enabled, "active"), (preset, "selected"),
+                                  (holder, "selected"), (order, "value")):
+                row.add_row(control)
+                control.connect(f"notify::{prop}", self.on_changed)
+            self.send_groups.add(row)
+            self._send_rows.append((key, row, enabled, preset, holder, order))
 
     def _selected_artwork(self):
         """The imported drawing, narrowed to one line colour if chosen."""
@@ -1054,6 +1119,7 @@ class Window(Adw.ApplicationWindow):
             extension.set_sensitive(corner_capable and self.r_corners.get_active())
         self.r_feed.set_sensitive(self.r_end_position.get_selected() == 0)
         self._update_weed_controls()
+        self._refresh_send_groups()
         self._sheet_token = None
         self.bundle_checked = False
         if self.sheet_report is not None:
@@ -1414,6 +1480,7 @@ class Window(Adw.ApplicationWindow):
         if matching is None:
             self.design.status.set_text('Choose a supported paper size to review cut paths.')
             return
+        from .editor_model import ALL_ACTIONS
         artwork = project.artwork(action)
         if any(path.length_mm() <= 0 for path in artwork.paths):
             self.design.status.set_text('Resize any paths with no length before reviewing.')
@@ -1426,6 +1493,7 @@ class Window(Adw.ApplicationWindow):
             self.r_sheet.set_selected(sorted(geometry.SHEETS).index(sheet.name))
             self.r_orient.set_selected(1 if portrait else 2)
             self.r_mode.set_selected(0)
+            self.r_send_mode.set_selected(list(actions.SEND_MODES).index("layer" if action == ALL_ACTIONS else "simple"))
             self.r_skip.set_text('')
             self.r_register.set_active(project.registration is not None)
             if (marks := project.registration) is not None:
@@ -1860,17 +1928,19 @@ class Window(Adw.ApplicationWindow):
             return
         connection = self._connection()
         if connection[0] == "ble" and not connection[1]:
-            self.toast("Select a Cameo 4 Bluetooth cutter first.")
+            self.toast("Select a Bluetooth cutter first.")
             return
-        body = ("This moves the blade.\n\n"
-                f"{j.grid.describe()}\n"
-                f"{j.preset.name}: force {j.settings.force}, speed "
-                f"{j.settings.speed}, {j.settings.passes} pass(es)\n\n")
+        profiles = ("\n".join(f"{i + 1}. {group.key} · {group.describe()}"
+                              for i, group in enumerate(j.action_groups))
+                    if j.action_groups else
+                    f"{j.preset.name}: force {j.settings.force}, speed "
+                    f"{j.settings.speed}, {j.settings.passes} pass(es)")
         dx, dy = j.offset_mm
-        body += f"Cutter offset: X {dx:+.2f} mm, Y {dy:+.2f} mm.\n\n"
-        if j.preset.origin != "measured":
-            body += ("This preset has never been cut. Run the plain-paper "
-                     "test preset first.\n\n")
+        body = (f"This moves the blade.\n\n{j.grid.describe()}\n{profiles}\n\n"
+                f"Cutter offset: X {dx:+.2f} mm, Y {dy:+.2f} mm.\n\n")
+        used = [group.preset for group in j.action_groups] or [j.preset]
+        if any(preset.origin != "measured" for preset in used):
+            body += "The selected settings need a hardware test on this stock.\n\n"
         body += ("The cutter will search for the printed marks first."
                  if j.registration else "Registration is off; this uses sheet coordinates.")
         if scan_only:

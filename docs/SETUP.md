@@ -352,8 +352,9 @@ is needed and is never printed. Override it with `CUT_PROXIES_GUEST_USER` and
 ## Inkscape Silhouette Print & Cut
 
 1. In Inkscape, put the printed artwork in a layer called **Print** and the
-   cut geometry in **Cut**. Convert cut text to paths, unlink clones and
-   flatten clips. Run **Extensions → Render → Silhouette Regmarks** with
+   cut geometry in **Cut**. Convert cut text to paths and flatten clips.
+   Local SVG clones of paths and groups are supported. Unlink clones that
+   reference external files, symbols, or separate viewports. Run **Extensions → Render → Silhouette Regmarks** with
    the standard three-mark pattern for Cameo 4. Save the Inkscape SVG and
    print the desired page at 100%.
 2. In the desktop app, open that SVG under **Layout → What to cut**, select
@@ -409,3 +410,26 @@ To reopen it, select the same paper and orientation and use **Open project**
 inside the editor. **Use template** loads the geometry into the regular
 checked job. From there, use **Export** for SVG, DXF and the print proof, or
 choose your tool and send the checked job from **Cut**.
+
+## Send by Line, Fill, or Layer
+
+In **Cut → Send by**, choose **Line**, **Fill**, or **Layer**. Expand each
+group you want to send and enable **Send this group**. Choose a preset,
+tool holder, and position in the send order. The cutter scans the
+registration marks once, then runs the enabled groups in order. For a
+Design project, review **All actions** to configure **Cut** and **Score**
+as separate groups in **Layer** mode.
+
+List the available names and build a checked direct-cutter job from the CLI.
+
+```sh
+cut-proxies import design.svg --list-groups line
+cut-proxies cut --from design.svg --send-by line \
+  --group 'blue=2:Pen, no blade' --group 'red=Plain paper test' --dry-run
+```
+
+Groups omitted from the list stay out of the cut. One holder can use
+different force, speed, passes, and automatic depths across groups with
+the same installed tool. A pen and blade need separate holders or sends.
+Group names reflect the source SVG colors and layers. DXF layers are
+available for Layer mode, with explicit DXF entity colors available for Line.

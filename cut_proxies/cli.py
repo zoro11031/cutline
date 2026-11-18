@@ -20,7 +20,7 @@ import dataclasses
 import pathlib
 import sys
 
-from . import (config, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
+from . import (actions, config, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
                template, testcut, toolpath, transport, verify, winboat)
 
 try:
@@ -220,6 +220,12 @@ def advanced_settings(args):
 
 def build_from_args(args, matched=None, bundle_row=None) -> job_mod.Job:
     imported = matched.artwork(bundle_row) if matched else None
+    send_mode = getattr(args, "send_by", "simple")
+    if send_mode != "simple" and getattr(args, "colour", None):
+        fail("--color is available in Simple mode. Assign groups with --group in Line mode.")
+    if send_mode != "simple" and getattr(args, "via", "cutter") == "studio":
+        fail("Grouped Send requires the direct cutter transport.")
+    assignments = tuple(actions.parse_assignment(value) for value in getattr(args, "group", ()))
     source = getattr(args, "source", None)
     svg_page = getattr(args, "svg_page", None)
     if svg_page is not None and (not source or matched):
@@ -244,6 +250,8 @@ def build_from_args(args, matched=None, bundle_row=None) -> job_mod.Job:
             warn(w)
     options = dict(
         imported=imported,
+        send_mode=send_mode,
+        assignments=assignments,
         mat=getattr(args, "mat", "auto"),
         end_position=getattr(args, "end_position", "below"),
         end_feed_mm=getattr(args, "feed_mm", 0.0),
@@ -494,6 +502,9 @@ def cmd_import(args):
     x0, y0, x1, y1 = im.bounds
     say(f"  geometry:      {x1 - x0:.2f} x {y1 - y0:.2f} mm "
         f"at ({x0:.2f}, {y0:.2f})")
+    if group_mode := getattr(args, "list_groups", None):
+        for key, paths in actions.group_paths(im.paths, group_mode).items():
+            say(f"  {actions.SEND_MODES[group_mode]} group {key} ({len(paths)} paths)")
     cols = im.colours()
     if cols:
         say("  colours:       "
@@ -867,9 +878,11 @@ def cmd_cut(args):
         say("\nDry run: everything checks out, nothing sent.", style="bold")
         return 0
 
-    if j.preset.origin not in ("measured",):
-        warn(f"The {j.preset.name} preset has never been cut "
-             f"({j.preset.origin}). Cut the plain-paper test first.")
+    used_presets = (dict.fromkeys(group.preset.name for group in j.action_groups
+                                  if group.preset.origin != "measured")
+                    if j.action_groups else {j.preset.name: None} if j.preset.origin != "measured" else {})
+    for name in used_presets:
+        warn(f"The {name} preset needs a hardware test on this stock.")
 
     try:
         t = transport.open_transport(args.transport, device=j.device,
@@ -1121,6 +1134,8 @@ def main(argv=None):
     im.add_argument("file")
     im.add_argument("--svg-page", type=int, metavar="N",
                     help="select a page in an Inkscape SVG (starting at 1)")
+    im.add_argument("--list-groups", choices=("line", "fill", "layer"),
+                    help="list keys for use with cut --send-by and --group")
     im.add_argument("-v", "--verbose", action="store_true",
                     help="list every path")
     im.set_defaults(func=cmd_import)
@@ -1197,6 +1212,10 @@ def main(argv=None):
     c = sub.add_parser("cut", help="register and cut")
     common_layout_args(c, bundles=True)
     common_cut_args(c)
+    c.add_argument("--send-by", choices=actions.SEND_MODES, default="simple",
+                   help="send everything together or group by line color, fill color, or layer")
+    c.add_argument("--group", action="append", default=[], metavar="GROUP=PRESET",
+                   help="enable a group in send order. Use GROUP=2:PRESET for holder 2")
     c.add_argument("--via", default="cutter", choices=("cutter", "studio"),
                    help="cutter = cut via USB directly; studio = stage DXF "
                         "and open in Silhouette Studio in WinBoat guest")
