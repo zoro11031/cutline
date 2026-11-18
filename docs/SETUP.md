@@ -53,8 +53,10 @@ Turn on Bluetooth on the cutter and make sure BlueZ is running on Linux.
 Install Bleak for **Bluetooth LE**. For **Bluetooth Classic (RFCOMM)**, pair
 the cutter in your system settings first.
 
-In **Send**, choose your connection, click **Find Bluetooth Cutters**, then
-pick the cutter and check its status. You can also type its identifier.
+**Send** looks for USB and Bluetooth cutters automatically. Use **Refresh Cutters**
+and choose your device under **Connected cutter**. For a manual Bluetooth
+connection, open **Send → Advanced Options → Connection**, choose the method,
+then select the detected device or enter its Bluetooth identifier.
 
 ```sh
 silhouette-control-center status --transport ble
@@ -68,8 +70,10 @@ See [Bluetooth testing notes](INKSCAPE_COMPATIBILITY.md) for model coverage.
 ## Printing the sheet
 
 Print at **100%**. Keep the cut file and PDF from the same export. For
-ProxyPress, open its ZIP in **Sheet** and pick the front you printed. For a
-generated layout, use **Layout → Advanced Options → Export** to save the cut files and proof.
+ProxyPress, open its ZIP in **Sheet** and pick the sheet you printed. Use
+**Close File** to clear the print preview or release the matched layout.
+For a generated layout, use **Layout → Advanced Options → Export** to save
+the cut files and proof.
 
 ProxyPress's **Silhouette Card Maker** export can also be cut against the stock
 Studio template named on its PDF. In Control Center, its ZIP keeps the exact
@@ -103,7 +107,7 @@ Under **Send → Advanced Options → Media handling**, select the mat and choos
 stops. **Return to Origin** parks it at the start. **Feed** moves it past the
 last cut.
 
-For imported artwork or a design, **Blade → Advanced Options → Weed Settings** can add a border
+For imported artwork or a design, **Send → Advanced Options → Weed Settings** can add a border
 or lines through open gaps. Look for blue dashed lines in the preview.
 
 ## Finding your blade settings
@@ -137,13 +141,13 @@ If the error changes across the sheet, check the print size first.
 Use **Layout → Advanced Options → Export** for an SVG, DXF, and proof. Use **Sheet → Save Paired
 Cut File** to get the original cut file from a ProxyPress ZIP.
 
-In **Send**, leave **Cutter** on **Auto Detect** or choose a model for
-offline planning. If multiple endpoints appear, select one under
+In **Send**, leave **Cutter model** on **Auto Detect** or choose a model for
+offline planning. If multiple cutters appear, select one under
 **Connected cutter**. Use **Check Status** to see whether the cutter is ready.
 
 Factory materials load from an accessible Studio installation or a local
-import. In **Blade → Advanced Options**, choose **Import Studio Materials**
-for a standalone `condition.csv` or **Import Factory Folder** for the Studio
+import. In **Materials**, choose **Import CSV**
+for a standalone `condition.csv` or **Import Folder** for the Studio
 installation or the folder containing that CSV. A validated local copy stays
 available when the original file moves. **Restore Default Materials** backs
 up edited defaults and keeps personal presets. You can also inspect the CSV

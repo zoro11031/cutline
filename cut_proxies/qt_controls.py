@@ -37,6 +37,8 @@ QGroupBox[role="card"]::title {
     background: palette(base); border-radius: 3px; left: 11px; padding: 1px 5px;
 }
 QGroupBox[role="card"] QLabel { font-weight: normal; }
+QGroupBox[role="card"] QAbstractSpinBox, QGroupBox[role="card"] QComboBox,
+QGroupBox[role="card"] QLineEdit, QGroupBox[role="card"] QPushButton { min-height: 23px; }
 QCheckBox::indicator:unchecked {
     width: 12px; height: 12px; background: palette(base); border: 1px solid palette(mid); border-radius: 3px;
 }
@@ -82,7 +84,9 @@ QSlider[role="cutSlider"]::handle:horizontal:focus,
 QSlider[role="cutSlider"]::handle:horizontal:hover { border: 1px solid palette(window-text); }
 QSlider[role="cutSlider"]::handle:horizontal:disabled,
 QSlider[role="cutSlider"]::sub-page:horizontal:disabled { background: palette(mid); }
-QSplitter::handle { background: transparent; width: 8px; }
+QMenuBar { padding: 2px 4px; }
+QMenuBar::item { padding: 5px 10px; }
+QSplitter::handle { background: transparent; width: 12px; }
 QSplitter::handle:hover { background: palette(midlight); }
 """
 
@@ -257,7 +261,8 @@ class Form(QFormLayout):
         self.addRow(label, field)
         return field
 
-    def number(self, label, value, minimum, maximum, step=1, decimals=0, changed=None, *, slider=False):
+    def number(self, label, value, minimum, maximum, step=1, decimals=0, changed=None, *,
+               slider=False, special_text=""):
         field = QDoubleSpinBox() if decimals else QSpinBox()
         if decimals:
             field.setDecimals(decimals)
@@ -265,6 +270,8 @@ class Form(QFormLayout):
         field.setSingleStep(step)
         field.setValue(value)
         field.setKeyboardTracking(False)
+        if special_text:
+            field.setSpecialValueText(special_text)
         if changed:
             field.valueChanged.connect(lambda: changed())
         if slider:
@@ -283,7 +290,8 @@ class Form(QFormLayout):
             track.valueChanged.connect(field.setValue)
             field.valueChanged.connect(track.setValue)
             content.addWidget(track, 1)
-            field.setFixedWidth(76)
+            field.setMinimumWidth(76)
+            field.setSizePolicy(QSizePolicy.Policy.Fixed, field.sizePolicy().verticalPolicy())
             content.addWidget(field)
             field.slider = track
             self.addRow(label, row)

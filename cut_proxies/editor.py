@@ -66,13 +66,6 @@ class DesignWorkspace:
         header.pack_end(workspace)
         self.view.add_top_bar(header)
         shortcuts = Gtk.ShortcutController(scope=Gtk.ShortcutScope.MANAGED)
-        for trigger, callback in (("<Control>s", self.save), ("<Control><Shift>s", self.save_as)):
-            def invoke(_widget, _arguments, handler=callback):
-                handler(None)
-                return True
-
-            shortcut = Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string(trigger), Gtk.CallbackAction.new(invoke))
-            shortcuts.add_shortcut(shortcut)
         self.view.add_controller(shortcuts)
 
         toolbar = Gtk.Box(spacing=6, margin_start=12, margin_end=12, margin_top=6, margin_bottom=6)
@@ -96,7 +89,6 @@ class DesignWorkspace:
         zoom_in.set_tooltip_text('Zoom in')
         self.button(zoom_controls, 'Fit', self.fit)
 
-        body = Gtk.Box()
         left, objects = panel(174)
         objects.append(Gtk.Label(label='Drawing Tool', xalign=0, css_classes=['heading']))
         self.tools = ("Select", "Point Edit", *KINDS, "Polygon", "Freehand")
@@ -137,9 +129,17 @@ class DesignWorkspace:
             panels[widget.get_selected()][0]))
         right.append(switcher)
         right.append(self.inspector)
-        for child in (left, self.canvas, right):
-            body.append(child)
-        self.view.set_content(body)
+        drawing_panes = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL, wide_handle=True,
+                                  position=180, resize_start_child=False, resize_end_child=True,
+                                  shrink_start_child=False, shrink_end_child=False)
+        drawing_panes.set_start_child(left)
+        drawing_panes.set_end_child(self.canvas)
+        workspace_panes = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL, wide_handle=True,
+                                    resize_start_child=True, resize_end_child=False,
+                                    shrink_start_child=False, shrink_end_child=False)
+        workspace_panes.set_start_child(drawing_panes)
+        workspace_panes.set_end_child(right)
+        self.view.set_content(workspace_panes)
 
         footer = Gtk.Box(spacing=8, margin_start=12, margin_end=12, margin_top=6, margin_bottom=8)
         self.status = Gtk.Label(xalign=0, hexpand=True, wrap=True)
@@ -172,6 +172,7 @@ class DesignWorkspace:
         parent.append(Gtk.Label(label=label, xalign=0, css_classes=['heading'], margin_top=4))
 
     def page_panel(self, inspector):
+        self.page_options = inspector
         self.heading(inspector, 'Media Size')
         self.page_sizes = (*geometry.SHEETS, 'Custom')
         self.page = Gtk.DropDown.new_from_strings(self.page_sizes)
@@ -192,9 +193,8 @@ class DesignWorkspace:
         self.register = Gtk.CheckButton(label='Enable Registration Marks')
         self.register.connect('toggled', self.change_registration)
         inspector.append(self.register)
-        self.show_grid = self.view_toggle(inspector, 'Show Grid', True)
         inspector, self.page_advanced = disclosure(inspector)
-        self.heading(inspector, 'Registration Marks')
+        self.heading(inspector, 'Mark Geometry')
         self.mark_pattern = Gtk.DropDown.new_from_strings(('Type 1 (3 marks)', '4 marks'))
         self.mark_pattern.connect('notify::selected', self.change_registration)
         inspector.append(self.mark_pattern)
@@ -205,7 +205,8 @@ class DesignWorkspace:
                                         regmarks.MAX_THICKNESS_MM, 1, step=0.05)
         for spin in (self.mark_inset, self.mark_length, self.mark_thickness):
             spin.connect('value-changed', self.change_registration)
-        self.heading(inspector, 'Grid Settings')
+        self.heading(inspector, 'Canvas')
+        self.show_grid = self.view_toggle(inspector, 'Show Grid', True)
         self.show_mat = self.view_toggle(inspector, 'Show Cutting Mat', True)
         self.show_cut_border = self.view_toggle(inspector, 'Show Cut Border', True)
         self.print_border = self.view_toggle(inspector, 'Show Print Border')
@@ -272,6 +273,22 @@ class DesignWorkspace:
                 shortcuts.add_shortcut(Gtk.Shortcut.new(
                     Gtk.ShortcutTrigger.parse_string(shortcut), Gtk.NamedAction.new(full_name)))
 
+        files = Gio.Menu()
+        for label, name, shortcut, callback in (
+                ('New', 'new', '<Control>n', self.new_project),
+                ('Open…', 'open', '<Control>o', self.open_project),
+                ('Save', 'save', '<Control>s', self.save),
+                ('Save As…', 'save-as', '<Control><Shift>s', self.save_as),
+                ('Import Artwork…', 'import-artwork', None, self.import_vector)):
+            command(files, label, name, lambda handler=callback: handler(None), shortcut)
+        edit = Gio.Menu()
+        command(edit, 'Undo', 'undo', lambda: self.change_history(self.history.undo))
+        command(edit, 'Redo', 'redo', lambda: self.change_history(self.history.redo))
+        command(edit, 'Select All', 'select-all', lambda: self.set_selection(
+            i for i, shape in enumerate(self.project.shapes) if shape.visible))
+        command(edit, 'Duplicate', 'duplicate', lambda: self.duplicate_shape(None))
+        command(edit, 'Delete', 'delete', lambda: self.delete_shape(None))
+
         view = Gio.Menu()
         zoom = Gio.Menu()
         view.append_submenu('Zoom', zoom)
@@ -288,8 +305,8 @@ class DesignWorkspace:
                 ('Show Print Border', 'print-border', self.print_border),
                 ('Show Cut Border', 'cut-border', self.show_cut_border)):
             command(view, label, name, lambda toggle=field: toggle.set_active(not toggle.get_active()), field=field)
-        command(view, 'Grid Options…', 'grid-options', self.show_page_options)
-        command(view, 'Registration Marks…', 'registration', self.show_page_options)
+        command(view, 'Grid Options…', 'grid-options', lambda: self.show_page_options(self.show_grid))
+        command(view, 'Registration Marks…', 'registration', lambda: self.show_page_options(self.mark_pattern))
         command(view, 'Show Design Page Settings…', 'page-options', lambda: self.panel_switcher.set_selected(0),
                 '<Control>F1')
         command(view, 'Show Send Page', 'send', lambda: self.review_paths(None), '<Control>F2')
@@ -333,12 +350,24 @@ class DesignWorkspace:
         modify = Gio.Menu()
         objects.append_submenu('Modify', modify)
         command(modify, 'Offset…', 'offset', self.offset_selection)
-        for title, menu in (('View', view), ('Panels', panels), ('Object', objects)):
-            toolbar.append(Gtk.MenuButton(label=title, menu_model=menu))
+        menus = Gio.Menu()
+        for title, menu in (('_File', files), ('_Edit', edit), ('_View', view),
+                            ('_Panels', panels), ('_Object', objects)):
+            menus.append_submenu(title, menu)
+        toolbar.append(Gtk.PopoverMenuBar.new_from_model(menus))
 
-    def show_page_options(self):
+    def show_page_options(self, field):
         self.panel_switcher.set_selected(0)
         self.page_advanced.set_expanded(True)
+
+        def reveal():
+            placed, bounds = field.compute_bounds(self.page_options)
+            if placed:
+                scroll = self.inspector.get_child_by_name('Page Setup')
+                scroll.get_vadjustment().set_value(max(0, bounds.get_y() - 12))
+            return GLib.SOURCE_REMOVE
+
+        GLib.idle_add(reveal)
 
     def rotate_page(self, clockwise):
         try:
@@ -565,6 +594,8 @@ class DesignWorkspace:
         self.save_button.set_sensitive(self.dirty or self.project_path is None)
         self.undo_button.set_sensitive(bool(self.history.past))
         self.redo_button.set_sensitive(bool(self.history.future))
+        self.menu_actions.lookup_action('undo').set_enabled(bool(self.history.past))
+        self.menu_actions.lookup_action('redo').set_enabled(bool(self.history.future))
         self.review.set_sensitive(count > 0)
         self.send_workspace.set_sensitive(count > 0)
         self.canvas.queue_draw()
@@ -612,6 +643,8 @@ class DesignWorkspace:
                                  else Gtk.INVALID_LIST_POSITION)
         self.duplicate.set_sensitive(bool(indices))
         self.remove.set_sensitive(bool(indices))
+        self.menu_actions.lookup_action('duplicate').set_enabled(bool(indices))
+        self.menu_actions.lookup_action('delete').set_enabled(bool(indices))
         self.replicate_button.set_sensitive(bool(indices))
         self.group_button.set_sensitive(len(indices) >= 2 and
                                         (shapes[indices[0]].group is None or

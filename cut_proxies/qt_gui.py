@@ -10,19 +10,19 @@ import sys
 from time import monotonic
 import zipfile
 
-from PySide6.QtCore import QEvent, QSignalBlocker, Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QInputDialog, QMenu,
+from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QInputDialog, QMenu, QMenuBar,
                                QMainWindow, QMessageBox, QPlainTextEdit,
                                QSplitter, QStackedWidget, QStyle, QTabWidget, QVBoxLayout, QWidget)
 
 from . import (actions, bluetooth, bundle, config, corner_test, editor_model, geometry, graphtec, importer, job,
                layout_presets, materials, presets, regmarks, starting_guide, template, testcut, toolpath, transport)
-from .desktop_help import CONTROL_HELP, SETUP_STEPS
+from .desktop_help import BLADE_VALUE_TEXT, CONTROL_HELP, SETUP_STEPS
 from .holder_settings import HolderSettings, for_holder
 from .qt_canvas import PREVIEW_MODES, Preview, ZoomControls
 from .qt_controls import (WORKSPACE_STYLE, Form, Page, Tasks, bar, button, set_choices,
-                          styled_label, themed_icon, workspace_switch)
+                          styled_label, workspace_switch)
 
 APP_ID = "org.printing.SilhouetteControlCenter"
 ARTWORK_FILTER = "Cut artwork (*.svg *.SVG *.dxf *.DXF *.studio3 *.STUDIO3)"
@@ -61,6 +61,7 @@ class Window(QMainWindow):
         self.settings = config.load_settings()
         self.job = self.artwork = self.project_shapes = self.design = self.reviewed_design = None
         self.pdf = self.bundle = self.sheet_token = self.report = None
+        self.bundle_row_error = None
         self.bundle_checked = self.busy = self.loading = False
         self.tuning = False
         self.holder_state = HolderSettings()
@@ -78,8 +79,8 @@ class Window(QMainWindow):
         setup.setObjectName("workspace")
         self.workspaces.addWidget(setup)
         content = QVBoxLayout(setup)
-        content.setContentsMargins(14, 12, 14, 10)
-        content.setSpacing(9)
+        content.setContentsMargins(16, 14, 16, 12)
+        content.setSpacing(12)
         header, top = bar(setup)
         top.addWidget(styled_label("Silhouette Control Center", "title"))
         top.addStretch(1)
@@ -92,6 +93,8 @@ class Window(QMainWindow):
         self.send_workspace.setToolTip("Review the cut, loaded material, and cutter connection.")
         top.addWidget(switch)
         content.addWidget(header)
+        self.menu_bar = QMenuBar(setup)
+        content.addWidget(self.menu_bar)
         split = QSplitter(Qt.Orientation.Horizontal)
         split.setChildrenCollapsible(False)
         content.addWidget(split, 1)
@@ -100,6 +103,7 @@ class Window(QMainWindow):
         self.tabs.setMinimumWidth(345)
         self.tabs.setAccessibleName("Cut settings")
         self.tabs.setDocumentMode(True)
+        self.tabs.setUsesScrollButtons(True)
         self.tabs.currentChanged.connect(self.change_page)
 
         preview_panel = QWidget()
@@ -172,8 +176,11 @@ class Window(QMainWindow):
         with self.editing():
             self.layout_page()
             self.sheet_page()
-            self.blade_page()
+            self.materials_page()
             self.send_page()
+            self.load_preset()
+            self.load_materials()
+        self.build_workspace_menus()
         for field, description in CONTROL_HELP.items():
             widget = self.blade.get(field) or self.controls.get(field)
             widget.setToolTip(description)
@@ -195,11 +202,51 @@ class Window(QMainWindow):
         return self.pages[name]
 
     def install_page(self, name, page):
-        icons = {"Layout": ("view-grid", QStyle.StandardPixmap.SP_FileIcon),
-                 "Sheet": ("document-print", QStyle.StandardPixmap.SP_FileDialogDetailedView),
-                 "Blade": ("configure", QStyle.StandardPixmap.SP_FileDialogContentsView),
-                 "Send": ("media-playback-start", QStyle.StandardPixmap.SP_MediaPlay)}
-        self.pages[name] = self.tabs.addTab(page.finish(), themed_icon(self, *icons[name]), name)
+        self.pages[name] = self.tabs.addTab(page.finish(), name)
+
+    def build_workspace_menus(self):
+        def command(menu, title, callback):
+            action = menu.addAction(title)
+            action.triggered.connect(lambda: callback())
+            return action
+
+        files = self.menu_bar.addMenu("&File")
+        command(files, "Open Cut Artwork…", self.open_artwork)
+        command(files, "Open PDF or ZIP…", self.open_print_from_menu)
+        self.close_print_action = command(files, "Close Print File", self.close_printed_sheet)
+        self.paired_cut_action = command(files, "Save Paired Cut File…", self.save_bundle_file)
+        files.addSeparator()
+        command(files, "Export Cut Templates…", self.export_job)
+
+        edit = self.menu_bar.addMenu("&Edit")
+        command(edit, "Edit in Design", self.open_design)
+        self.reset_layout_action = command(edit, "Use Generated Layout", self.reset_artwork)
+
+        view = self.menu_bar.addMenu("&View")
+        for name in self.pages:
+            command(view, name, lambda page=name: self.tabs.setCurrentIndex(self.tab(page)))
+        view.addSeparator()
+        command(view, "Fit Preview", self.preview.fit)
+
+        settings = self.menu_bar.addMenu("&Settings")
+        command(settings, "Cut Settings", self.open_cut_settings)
+        command(settings, "Advanced Send Settings", self.open_send_advanced)
+        command(self.menu_bar.addMenu("&Help"), "Setup Guide", self.show_setup_guide)
+
+    def open_print_from_menu(self):
+        self.tabs.setCurrentIndex(self.tab("Sheet"))
+        self.open_sheet()
+
+    def open_cut_settings(self):
+        self.open_send_workspace()
+        page = self.tabs.widget(self.tab("Send"))
+        QTimer.singleShot(0, self, lambda: page.ensureWidgetVisible(self.controls["preset"]))
+
+    def open_send_advanced(self):
+        self.open_send_workspace()
+        self.send_advanced.disclosure.setChecked(True)
+        page = self.tabs.widget(self.tab("Send"))
+        QTimer.singleShot(0, self, lambda: page.ensureWidgetVisible(self.send_advanced.disclosure))
 
     def choose(self, form, field, label, choices, default=None, changed=None):
         self.controls[field] = form.choice(label, choices, default, changed or self.rebuild)
@@ -251,11 +298,14 @@ class Window(QMainWindow):
         page = Page()
         form = page.group("Printed sheet")
         self.sheet_file = form.note("Open a print PDF or a matched ProxyPress ZIP.")
-        form.push("Open PDF or ZIP…", self.open_sheet)
+        self.close_print = button("Close File", self.close_printed_sheet)
+        form.actions(button("Open PDF or ZIP…", self.open_sheet), self.close_print)
         self.bundle_export = form.push("Save Paired Cut File…", self.save_bundle_file)
         self.bundle_export.hide()
         self.sheet_page_number = form.number("Page", 1, 1, 999, changed=self.change_sheet_page)
-        form.push("Measure Registration Marks", self.measure_sheet)
+        self.sheet_page_label = form.labelForField(self.sheet_page_number)
+        self.measure_button = form.push("Measure Registration Marks", self.measure_sheet)
+        self.update_sheet_controls()
         result = page.group("Registration results")
         self.sheet_result = result.note("Not measured")
         scan = page.group("Last cutter scan")
@@ -268,27 +318,24 @@ class Window(QMainWindow):
         self.sheet_dpi = advanced.group("PDF check").choice("Measurement resolution", (150, 200, 300), 200, self.measure_sheet)
         self.install_page("Sheet", page)
 
-    def blade_page(self):
+    def materials_page(self):
         page = Page()
         profile = page.group("Material preset")
-        self.choose(profile, "preset", "Preset", sorted(presets.all_presets()), config.DEFAULT_PRESET, self.load_preset)
         self.provenance = profile.note()
-        profile.actions(button("Save as New…", self.save_new_preset), button("Dial In a Material…", self.open_material_guide))
-        tool = page.group("Cutter and blade")
-        self.choose(tool, "cutter", "Cutter", DEVICES, "Silhouette Cameo 4", self.change_cutter)
-        tool.setRowVisible(self.controls["cutter"], False)
-        self.blade["holder"] = tool.holders(self.rebuild)
-        for key, label, lo, hi, step, decimals in BLADE_NUMBERS:
-            if key in QUICK_NUMBERS:
-                self.blade[key] = tool.number(label, lo, lo, hi, step, decimals, self.rebuild,
-                                              slider=key in QUICK_NUMBERS)
-        self.blade["depth"].setSpecialValueText("Manual / off")
-        self.blade["acceleration"].setSpecialValueText("Auto")
-        for key, label in BLADE_SWITCHES[1:3]:
-            self.blade[key] = tool.check(label, changed=self.rebuild)
-        self.installed_tools = tool.note("Cutter status not checked.")
-        self.detect_blades = tool.push("Detect Installed Tools", self.check_device)
-        self.blade_advanced = advanced = page.advanced()
+        profile.note("Choose and edit your cut settings in Send, then save them here.")
+        profile.actions(button("Update Preset", self.save_preset),
+                        button("Save as New…", self.save_new_preset))
+        table = page.group("Studio materials")
+        self.divisions = table.choice("Show Cutter Divisions", {False: "Known Cutters", True: "All Cutters"},
+                                     changed=self.load_materials)
+        self.material = table.choice("Factory preset", ())
+        table.actions(button("Import CSV…", self.choose_material_csv),
+                      button("Import Folder…", lambda: self.choose_material_csv(folder=True)))
+        table.push("Apply Material", self.apply_material)
+        page.group("Defaults").push("Restore Default Materials…", self.restore_materials)
+        self.install_page("Materials", page)
+
+    def add_advanced_cut_settings(self, advanced):
         blade_details = advanced.group("Blade details")
         for key, label, lo, hi, step, decimals in BLADE_NUMBERS:
             if key not in self.blade:
@@ -303,47 +350,23 @@ class Window(QMainWindow):
         self.weed_box = weed.parentWidget()
         self.number(weed, "weed_border_mm", "Weed border padding (mm)", 0, 0, 1000, 0.5, 2)
         self.choose(weed, "weed_lines", "Weed Lines", toolpath.WEED_LINES)
-        table = advanced.group("Studio materials")
-        table.note("Import factory materials from Silhouette Studio.")
-        self.divisions = table.choice("Show Cutter Divisions", {False: "Known Cutters", True: "All Cutters"},
-                                     changed=self.load_materials)
-        self.material = table.choice("Material", ())
-        table.actions(button("Import Studio Materials…", self.choose_material_csv),
-                      button("Apply Material", self.apply_material))
-        table.push("Import Factory Folder…", lambda: self.choose_material_csv(folder=True))
-        table.actions(button("Update Preset", self.save_preset),
-                      button("Restore Default Materials…", self.restore_materials))
-        self.install_page("Blade", page)
-        self.load_preset()
-        self.load_materials()
 
     def send_page(self):
         page = Page()
         self.send_normal = normal = page.section()
         cutter = normal.group("Cutter")
-        self.cutter_model = cutter.choice("Cutter", cutters.MODELS, cutters.AUTO, self.change_model)
+        self.choose(cutter, "cutter", "Resolved cutter", DEVICES, "Silhouette Cameo 4", self.change_cutter)
+        cutter.setRowVisible(self.controls["cutter"], False)
+        self.cutter_model = cutter.choice("Cutter model", cutters.MODELS, cutters.AUTO, self.change_model)
         self.wireless_choices = {}
         self.wireless_scanning = False
-        self.link = cutter.choice("Transport", {"auto": "Automatic", **bluetooth.BLUETOOTH_MODES},
-                                  changed=self.change_connection)
-        self.detected = cutter.choice("Connected cutter", {"": "Select a cutter"}, changed=self.device_selected)
-        self.discover = cutter.push("Refresh Cutters", self.find_cutters)
+        self.preferred_endpoint = None
+        self.detected = cutter.choice("Connected cutter", {"": "Select a cutter"}, changed=self.select_detected)
         self.connection_status = cutter.note("Cutter status not checked.")
-        self.refresh_cutter = cutter.push("Check Cutter Status", self.check_device)
-        self.connection_form = cutter
+        self.discover = button("Refresh Cutters", self.find_cutters)
+        self.refresh_cutter = button("Check Status", self.check_device)
+        cutter.actions(self.discover, self.refresh_cutter)
 
-        self.send_advanced = advanced = normal.advanced()
-        connection = advanced.group("Bluetooth")
-        self.advanced_connection_form = connection
-        self.identifier = connection.text("Bluetooth identifier")
-        self.identifier.textChanged.connect(lambda: self.change_target())
-        self.channel = connection.number("RFCOMM channel", 1, 1, 30, changed=self.change_target)
-        mode = advanced.group("Send by")
-        self.group_mode_box = mode.parentWidget()
-        self.choose(mode, "send_mode", "Mode", {**actions.SEND_MODES, "simple": "Standard"},
-                    changed=self.change_group_mode)
-        self.controls["send_mode"].setToolTip(
-            "Standard uses your current settings. Line, Fill and Layer assign settings to groups of paths.")
         groups = normal.group("Cut groups")
         self.group_box = groups.parentWidget()
         self.group_details = QWidget()
@@ -352,18 +375,16 @@ class Window(QMainWindow):
         groups.addRow(self.group_details)
 
         settings = normal.group("Cut Settings")
-        self.send_blade = {"holder": settings.holders(lambda: self.apply_send_control("holder"))}
-        self.send_preset = settings.choice("Material", (), changed=self.apply_send_preset)
+        self.blade["holder"] = settings.holders(self.rebuild)
+        self.choose(settings, "preset", "Material", sorted(presets.all_presets()), config.DEFAULT_PRESET,
+                    self.load_preset)
         for key, label, low, high, step, decimals in BLADE_NUMBERS:
             if key in QUICK_NUMBERS:
-                self.send_blade[key] = settings.number(label, low, low, high, step, decimals,
-                                                        lambda field=key: self.apply_send_control(field),
-                                                        slider=key in QUICK_NUMBERS)
-        self.send_blade["depth"].setSpecialValueText("Manual / off")
-        self.send_blade["acceleration"].setSpecialValueText("Auto")
-        for key, label in (("sharpen_corners", "Line Segment Overcut"), ("track_enhancing", "Track Enhancing")):
-            self.send_blade[key] = settings.check(label, changed=lambda field=key: self.apply_send_control(field))
-        settings.push("Dial In a Material…", self.open_material_guide)
+                self.blade[key] = settings.number(label, low, low, high, step, decimals, self.rebuild,
+                                                  slider=True, special_text=BLADE_VALUE_TEXT.get(key, ""))
+        for key, label in BLADE_SWITCHES[1:3]:
+            self.blade[key] = settings.check(label, changed=self.rebuild)
+        self.material_guide = settings.push("Dial In a Material…", self.open_material_guide)
 
         registration = normal.group("Registration")
         self.check(registration, "registration", "Scan for printed marks", True)
@@ -374,6 +395,23 @@ class Window(QMainWindow):
         self.footer.insertWidget(1, self.scan_button)
         self.footer.insertWidget(2, self.corner_button)
 
+        self.send_advanced = advanced = normal.advanced()
+        connection = advanced.group("Connection")
+        self.advanced_connection_form = connection
+        self.link = connection.choice("Connection method", {"auto": "Automatic", **bluetooth.BLUETOOTH_MODES},
+                                      changed=self.change_connection)
+        self.link.setToolTip("Automatic looks for USB and Bluetooth cutters. Choose a Bluetooth method to connect manually.")
+        self.identifier = connection.text("Bluetooth identifier")
+        self.identifier.textChanged.connect(lambda: self.change_target())
+        self.channel = connection.number("Channel", 1, 1, 30, changed=self.change_target)
+        self.channel.setToolTip("Bluetooth Classic usually uses channel 1.")
+        mode = advanced.group("Send by")
+        self.group_mode_box = mode.parentWidget()
+        self.choose(mode, "send_mode", "Mode", {**actions.SEND_MODES, "simple": "Standard"},
+                    changed=self.change_group_mode)
+        self.controls["send_mode"].setToolTip(
+            "Standard uses your current settings. Line, Fill and Layer assign settings to groups of paths.")
+
         media = advanced.group("Media handling")
         self.choose(media, "mat", "Cutting mat", graphtec.MAT_OPTIONS)
         self.choose(media, "end_position", "Feed Options", graphtec.END_POSITIONS)
@@ -381,19 +419,14 @@ class Window(QMainWindow):
         self.weed_visibility = media.choice("Show Weed Settings", ("Auto", "Always", "Never"),
                                           self.settings.get("show_weed_settings"), self.update_weed_preference)
         self.check(media, "auto_search", "Search automatically", True)
-        paths = advanced.group("Cut paths")
-        self.send_blade["path_order"] = paths.choice("Cut Order Sorting", toolpath.PATH_ORDERS,
-                                                     changed=lambda: self.apply_send_control("path_order"))
-        self.send_blade["interior_first"] = paths.check(
-            "Sort Interior Contours First", changed=lambda: self.apply_send_control("interior_first"))
-        paths.push("More Blade Options…", self.open_advanced_blade)
+        self.add_advanced_cut_settings(advanced)
 
         self.guide_page = page.section()
         guide = self.guide_page.group("Dial In a Material")
         self.guide_box = guide.parentWidget()
         guide.note(starting_guide.GUIDE_TEXT)
         self.guide_apply = button("Use Starting Settings", self.apply_guide_start)
-        self.guide_edit = button("Adjust in Blade", self.adjust_guide_settings)
+        self.guide_edit = button("Adjust Cut Settings", self.adjust_guide_settings)
         self.guide_edit.setToolTip("Choose a material preset or adjust pressure, speed and depth for the next spot.")
         guide.actions(self.guide_apply, self.guide_edit)
         self.guide_status = guide.note()
@@ -426,7 +459,6 @@ class Window(QMainWindow):
         self.test_passes = tests.text("Pass counts", "1,2,3,4")
         self.test_button = tests.push("Test Cut…", self.confirm_test_cut)
         advanced.group("Diagnostics").push("Save Raw Stream…", self.dump_stream)
-        advanced.group("Defaults").push("Restore Default Materials…", self.restore_materials)
         self.install_page("Send", page)
         self.change_connection()
         self.usb_timer = QTimer(self)
@@ -437,12 +469,6 @@ class Window(QMainWindow):
         self.wireless_timer.timeout.connect(self.refresh_wireless)
         self.wireless_timer.start(30000)
         QTimer.singleShot(0, self, self.refresh_wireless)
-
-    def open_advanced_blade(self):
-        self.tabs.setCurrentIndex(self.tab("Blade"))
-        self.blade_advanced.disclosure.setChecked(True)
-        page = self.tabs.widget(self.tab("Blade"))
-        QTimer.singleShot(0, self, lambda: page.ensureWidgetVisible(self.blade_advanced.disclosure))
 
     def show_setup_guide(self):
         dialog = QMessageBox(self)
@@ -456,6 +482,7 @@ class Window(QMainWindow):
             self.open_material_guide()
 
     def open_material_guide(self):
+        self.material_guide.setText("Dial In a Material…")
         index = self.tab("Send")
         self.tabs.setCurrentIndex(index)
         self.tuning = True
@@ -466,7 +493,7 @@ class Window(QMainWindow):
     def open_send_workspace(self):
         if self.tuning:
             self.close_material_guide()
-        self.follow_review()
+        self.tabs.setCurrentIndex(self.tab("Send"))
 
     def close_material_guide(self):
         self.tuning = False
@@ -478,50 +505,11 @@ class Window(QMainWindow):
             self.tuning = False
         self.refresh_send()
 
-    def apply_send_preset(self):
-        self.select("preset", self.send_preset.currentData())
-
-    def apply_send_control(self, field):
-        source = self.send_blade[field]
-        target = self.blade[field]
-        if isinstance(source, QCheckBox):
-            target.setChecked(source.isChecked())
-        elif isinstance(source, QComboBox):
-            target.setCurrentIndex(target.findData(source.currentData()))
-        else:
-            target.setValue(source.value())
-
-    def sync_send_controls(self):
-        catalog = self.controls["preset"]
-        names = tuple(catalog.itemData(index) for index in range(catalog.count()))
-        if names != tuple(self.send_preset.itemData(index) for index in range(self.send_preset.count())):
-            set_choices(self.send_preset, names, catalog.currentData())
-        with QSignalBlocker(self.send_preset):
-            self.send_preset.setCurrentIndex(self.send_preset.findData(catalog.currentData()))
-        for field, target in self.send_blade.items():
-            source = self.blade[field]
-            target.setToolTip(source.toolTip())
-            target.setEnabled(source.isEnabled())
-            with QSignalBlocker(target):
-                if isinstance(target, QCheckBox):
-                    target.setChecked(source.isChecked())
-                elif isinstance(target, QComboBox):
-                    target.setCurrentIndex(target.findData(source.currentData()))
-                else:
-                    target.setValue(source.value())
-            if hasattr(target, "slider"):
-                target.slider.setToolTip(source.toolTip())
-                target.slider.setEnabled(source.isEnabled())
-                with QSignalBlocker(target.slider):
-                    target.slider.setValue(source.value())
-            if hasattr(target, "holders"):
-                target.holders.button(source.value()).setChecked(True)
-                target.holders.button(2).setEnabled(source.isEnabled())
-
     def adjust_guide_settings(self):
         if self.guide.trial:
             self.next_guide_spot()
-        self.tabs.setCurrentIndex(self.tab("Blade"))
+        self.open_cut_settings()
+        self.material_guide.setText("Resume Material Test")
 
     def change_preview(self):
         self.preview.mode = self.preview_mode.currentData()
@@ -560,7 +548,7 @@ class Window(QMainWindow):
         if selected.name != name:
             with self.editing():
                 self.select("preset", selected.name)
-        self.provenance.setText(selected.note)
+        self.provenance.setText(f"{selected.name}\n{selected.note}")
         self.set_blade_settings(for_holder(selected.cut_settings(), slot))
 
     def current_holder_profile(self):
@@ -585,7 +573,7 @@ class Window(QMainWindow):
                 settings = for_holder(preset.cut_settings(), slot)
         with self.editing():
             self.select("preset", preset.name if self.controls["preset"].findData(preset.name) >= 0 else config.DEFAULT_PRESET)
-            self.provenance.setText(preset.note)
+            self.provenance.setText(f"{preset.name}\n{preset.note}")
             self.set_blade_settings(settings)
 
     def set_blade_settings(self, settings):
@@ -660,7 +648,7 @@ class Window(QMainWindow):
     def apply_material(self):
         selected = self.materials.get(self.material.currentData())
         if selected is None:
-            self.message("Import Studio Materials and choose a material first.")
+            self.message("Import Studio materials, then choose a factory preset.")
             return
         name = self.material.currentData()
         if not self.divisions.currentData() and self.controls["preset"].findData(name) >= 0:
@@ -873,14 +861,14 @@ class Window(QMainWindow):
             return
         self.restore_holder()
         self.update_enabled_fields()
-        self.sync_send_controls()
         previous = self.job
         self.job = None
         problems = []
         title = "Layout checked"
         if self.bundle and self.artwork is None:
-            title = "Legacy cut file"
-            summary = "Save the legacy cut file from Sheet. A cut SVG is required for direct cutting."
+            title = "Cut paths unavailable" if self.bundle_row_error else "Legacy cut file"
+            summary = (self.bundle_row_error or
+                       "Save the legacy cut file from Sheet. A cut SVG is required for direct cutting.")
         else:
             try:
                 self.job = job.build(**self.job_options())
@@ -944,10 +932,13 @@ class Window(QMainWindow):
             return "The cutter connection is busy."
         if self.pending_design():
             return "Review the latest edits in Design."
-        if plan is None or self.job is not plan or plan.blocked:
-            return "Review the current job and resolve its checks."
+        if self.bundle and self.artwork is None:
+            return ("Choose another sheet or reopen the ZIP in Sheet." if self.bundle_row_error
+                    else "Save the legacy cut file from Sheet.")
         if self.bundle and not self.bundle_checked:
             return "Check the matching PDF in Sheet."
+        if plan is None or self.job is not plan or plan.blocked:
+            return "Review the current job and resolve its checks."
         if connection != self.connection():
             return "The cutter connection changed. Review the job again."
         refusal = cutters.usb_refusal(connection, plan.device, self.cutter_model.currentData())
@@ -969,9 +960,12 @@ class Window(QMainWindow):
         self.send_normal.setVisible(not self.tuning)
         self.guide_page.setVisible(self.tuning)
         self.review_button.setText(f"Review {target}")
+        self.close_print_action.setEnabled(self.pdf is not None)
+        self.paired_cut_action.setEnabled(self.bundle is not None)
+        self.reset_layout_action.setEnabled(self.artwork is not None or self.bundle is not None)
         self.back_to_send.setVisible(self.tuning)
         self.review_button.setVisible(not self.tuning and (target == "Design" or index != self.tab(target)))
-        at_send = not self.tuning and target == "Send" and index == self.tab("Send")
+        at_send = not self.tuning and index == self.tab("Send")
         for control in (self.send_button, self.scan_button, self.corner_button):
             control.setVisible(at_send)
         reason = self.send_refusal(self.job, self.connection())
@@ -979,9 +973,8 @@ class Window(QMainWindow):
         self.corner_button.setEnabled(not reason)
         self.scan_button.setEnabled(not self.send_refusal(self.job, self.connection(), scan_only=True))
         self.test_button.setEnabled(not self.busy)
-        can_check = not self.busy and (self.connection()[0] == "auto" or bool(self.connection()[1]))
+        can_check = not self.busy and bool(self.connection()[1])
         self.refresh_cutter.setEnabled(can_check)
-        self.detect_blades.setEnabled(can_check)
         if self.bundle and self.report is not None and not self.bundle_checked:
             self.summary_title.setText("PDF registration needs attention")
         self.update_guide()
@@ -1051,15 +1044,34 @@ class Window(QMainWindow):
 
     def clear_bundle(self):
         if self.bundle:
-            self.bundle = self.pdf = None
+            self.bundle = None
             self.bundle_export.hide()
             self.lock_bundle_controls(False)
-            self.invalidate_measurement(clear_image=True)
-            self.sheet_file.setText("Open a print PDF or a matched ProxyPress ZIP.")
-            self.sheet_result.setText("Not measured")
-            with self.editing():
-                self.sheet_page_number.setRange(1, 999)
-                self.sheet_page_number.setValue(1)
+            self.clear_printed_sheet()
+
+    def update_sheet_controls(self):
+        loaded = self.pdf is not None
+        self.close_print.setEnabled(loaded)
+        self.measure_button.setEnabled(loaded and self.bundle_row_error is None)
+        self.sheet_page_label.setText("Sheet in ZIP" if self.bundle else "PDF page")
+        self.sheet_page_number.setEnabled(loaded and (not self.bundle or len(self.bundle.rows) > 1))
+
+    def clear_printed_sheet(self):
+        self.pdf = self.bundle_row_error = None
+        self.invalidate_measurement(clear_image=True)
+        self.sheet_file.setText("Open a print PDF or a matched ProxyPress ZIP.")
+        self.sheet_result.setText("Not measured")
+        with self.editing():
+            self.sheet_page_number.setRange(1, 999)
+            self.sheet_page_number.setValue(1)
+        self.update_sheet_controls()
+
+    def close_printed_sheet(self):
+        if self.bundle:
+            self.reset_artwork()
+        else:
+            self.clear_printed_sheet()
+            self.refresh_send()
 
     def save_bundle_file(self):
         matched, row = self.bundle, self.current_bundle_row()
@@ -1089,6 +1101,7 @@ class Window(QMainWindow):
         self.sheet_file.setText(path.name)
         with self.editing():
             self.sheet_page_number.setValue(1)
+        self.update_sheet_controls()
         self.measure_sheet()
 
     def load_bundle(self, path):
@@ -1105,13 +1118,18 @@ class Window(QMainWindow):
             self.sheet_page_number.setValue(1)
         self.use_bundle_row(row, drawing)
 
-    def use_bundle_row(self, row, drawing):
+    def use_bundle_row(self, row, drawing, error=None):
         self.invalidate_measurement(clear_image=True)
+        self.bundle_row_error = error
         self.sheet_file.setText(
             f"{self.pdf.name} · Sheet {row['sheet']} · PDF front page {row['frontPage']}\n"
             + self.bundle.mat_placement())
         self.use_artwork(drawing, row.get("svg") or row["cutFile"])
-        self.measure_sheet()
+        self.update_sheet_controls()
+        if error:
+            self.sheet_result.setText(error)
+        else:
+            self.measure_sheet()
 
     def current_bundle_row(self):
         return self.bundle.rows[self.sheet_page_number.value() - 1] if self.bundle else None
@@ -1124,17 +1142,15 @@ class Window(QMainWindow):
             try:
                 drawing = self.bundle.artwork(row) if "svg" in row else None
             except (OSError, ValueError) as error:
-                self.invalidate_measurement(clear_image=True)
-                self.sheet_result.setText(str(error))
-                self.refresh_send()
-                return
-            self.use_bundle_row(row, drawing)
+                self.use_bundle_row(row, None, str(error))
+            else:
+                self.use_bundle_row(row, drawing)
         else:
             self.measure_sheet()
 
     def measure_sheet(self):
         path, matched, current = self.pdf, self.bundle, self.job
-        if self.loading or path is None:
+        if self.loading or path is None or self.bundle_row_error:
             return
         if not matched and not current:
             self.message("Check the layout before measuring the sheet.")
@@ -1201,13 +1217,13 @@ class Window(QMainWindow):
         choices = {**cutters.usb_choices(), **self.wireless_choices}
         items = {"": "Select a cutter", **choices}
         if [(self.detected.itemData(i), self.detected.itemText(i)) for i in range(self.detected.count())] != list(items.items()):
-            selected = next(iter(choices)) if len(choices) == 1 else ""
-            if selected and not cutters.auto_model(selected, choices[selected]):
-                selected = ""
-            with QSignalBlocker(self.detected):
-                set_choices(self.detected, items, selected)
+            selected = cutters.detected_choice(choices, self.preferred_endpoint) or ""
+            same_cutter = selected and (selected, choices[selected]) == (
+                self.detected.currentData(), self.detected.currentText())
+            set_choices(self.detected, items, selected)
+            if same_cutter:
+                return
             self.device_selected()
-            self.change_target()
             self.set_cutter_status(choices.get(selected, "Select a cutter." if choices else "No cutter found."))
 
 
@@ -1225,9 +1241,8 @@ class Window(QMainWindow):
 
     def change_connection(self):
         mode = self.link.currentData()
-        for widget in (self.detected, self.discover):
-            self.connection_form.setRowVisible(widget, True)
-        self.advanced_connection_form.parentWidget().setVisible(mode != "auto")
+        self.preferred_endpoint = None
+        self.advanced_connection_form.setRowVisible(self.identifier, mode != "auto")
         self.advanced_connection_form.setRowVisible(self.channel, mode == "bluetooth")
         self.identifier.clear()
         set_choices(self.detected, {"": "Select a cutter"}, "")
@@ -1242,19 +1257,21 @@ class Window(QMainWindow):
 
     def set_cutter_status(self, text):
         self.connection_status.setText(text)
-        self.installed_tools.setText(text)
+
+    def select_detected(self):
+        if self.link.currentData() == "auto":
+            self.preferred_endpoint = self.detected.currentData() or None
+        self.device_selected()
 
     def device_selected(self):
         identifier = self.detected.currentData()
-        if not identifier:
-            return
         if self.link.currentData() == "auto":
-            model = cutters.auto_model(identifier, self.detected.currentText())
+            model = cutters.auto_model(identifier, self.detected.currentText()) if identifier else None
             if model and self.cutter_model.currentData() == cutters.AUTO:
                 self.select("cutter", model.name)
             self.change_target()
             return
-        self.identifier.setText(identifier)
+        self.identifier.setText(identifier or "")
         device = bluetooth.advertised_model(self.detected.currentText().split(" · ")[0])
         if device and self.cutter_model.currentData() == cutters.AUTO:
             self.select("cutter", device.name)
@@ -1438,12 +1455,15 @@ class Window(QMainWindow):
         state = self.guide
         for field in (self.guide_apply, self.guide_edit, self.guide_next, self.guide_reset):
             field.setEnabled(not self.busy)
-        self.guide_send.setEnabled(not self.busy and state.can_cut)
+        connected = starting_guide.has_cutter_endpoint(self.connection())
+        self.guide_send.setEnabled(not self.busy and connected and state.can_cut)
         self.guide_use.setEnabled(not self.busy and state.outcome == "clean" and state.tested_settings is not None)
         self.guide_send.setText("Repeat One Pass…" if state.completed else "Cut One Pass…")
         status = "Waiting for the cutter to finish…" if self.busy else state.status()
         if state.awaiting_result and not self.busy:
             status += "\nLeave the mat loaded and lift a corner to check the sample."
+        elif not connected:
+            status += "\nGo back to Send and select a cutter to run a test pass."
         self.guide_status.setText(status)
         blocked = self.guide_outcome.blockSignals(True)
         self.guide_outcome.setCurrentIndex(self.guide_outcome.findData(state.outcome))
@@ -1488,7 +1508,7 @@ class Window(QMainWindow):
         self.set_guide_blade_values(starting_guide.starting_values(
             device, values["holder"] if device.two_tools else 1, values["blade_diameter_mm"]))
         suffix = "" if self.blade["depth"].value() >= 0 else " Set depth on the blade."
-        self.message("Starting settings applied to Blade." + suffix)
+        self.message("Starting settings applied." + suffix)
 
     def use_guide_settings(self):
         settings = self.guide.tested_settings

@@ -2,8 +2,8 @@
 
 from math import floor
 
-from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QFrame, QGraphicsScene, QGraphicsView, QHBoxLayout, QWidget
 
 from . import toolpath
@@ -58,6 +58,14 @@ def draw_paper(scene, page, shadow=True):
         for shift, alpha in ((2.6, 12), (1.8, 17), (0.9, 24)):
             scene.addRect(page.translated(shift, shift), no_pen, QBrush(QColor(12, 23, 37, alpha)))
     scene.addRect(page, pen("#9aa7b4"), QBrush(Qt.GlobalColor.white))
+
+
+def draw_feed_arrow(scene, width, color):
+    center = width / 2
+    arrow = QPolygonF([QPointF(center + dx, y) for dx, y in (
+        (0, -11), (5, -6), (2, -6), (2, -2), (-2, -2), (-2, -6), (-5, -6))])
+    item = scene.addPolygon(arrow, QPen(Qt.PenStyle.NoPen), QBrush(QColor(color)))
+    item.setToolTip("Feed this edge into the cutter")
 
 
 def crosshair(scene, x, y, color, radius):
@@ -205,6 +213,7 @@ class Preview(SheetView):
             bounds = page.united(QRectF(0, 0, *self.pdf_size))
         refit = self.set_page_bounds(bounds.adjusted(-12, -12, 12, 12))
         draw_paper(scene, page)
+        draw_feed_arrow(scene, width, self.palette().windowText().color())
         if image:
             item = scene.addPixmap(QPixmap.fromImage(self.pdf))
             item.setTransform(item.transform().scale(self.pdf_size[0] / self.pdf.width(),
@@ -218,6 +227,7 @@ class Preview(SheetView):
         page = QRectF(0, 0, trial.placement.width, trial.placement.height)
         refit = self.set_page_bounds(page.adjusted(-12, -12, 12, 12))
         draw_paper(scene, page)
+        draw_feed_arrow(scene, page.width(), self.palette().windowText().color())
         sample = rect(trial.sheet.cells[0].rect)
         scene.addRect(sample, pen("#187289", 0.45), QBrush(QColor(46, 142, 177, 32)))
         text = scene.addSimpleText("Test cut")
