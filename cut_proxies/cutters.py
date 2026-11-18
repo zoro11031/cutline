@@ -94,3 +94,14 @@ def auto_model(endpoint, label):
         return bluetooth.advertised_model(label.split(" · ", 1)[0])
     target = usb_target(endpoint) if endpoint else None
     return target[0] if target else None
+
+
+def detected_choice(choices, preferred):
+    """Keep an explicit choice and only auto-select an unambiguous known cutter."""
+    if preferred is not None:
+        return preferred if preferred in choices else None
+    if len(choices) == 1:
+        endpoint, label = next(iter(choices.items()))
+        if auto_model(endpoint, label):
+            return endpoint
+    return None

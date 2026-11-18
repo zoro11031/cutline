@@ -45,6 +45,24 @@ class TestDesignWorkspace(unittest.TestCase):
             self.assertEqual(win._connection()[1], (1, 3))
             self.assertTrue(win.cut_button.get_sensitive())
 
+    def test_refresh_keeps_an_explicit_cutter_and_does_not_switch_on_disconnect(self):
+        win = self.make_window()
+        device = graphtec.device_by_name("Silhouette Cameo 4")
+        first, other = (1, 2), (1, 3)
+        with mock.patch.object(gui.transport, "usb_endpoints") as detect:
+            detect.return_value = [(device, "", first), (device, "", other)]
+            win.refresh_usb()
+            win.r_bluetooth.set_selected(1)
+            win.connection_status.set_subtitle("Ready")
+            detect.return_value = [(device, "", (1, 4)), (device, "", first), (device, "", other)]
+            win.refresh_usb()
+            self.assertEqual(win._connection()[1], first)
+            self.assertEqual(win.connection_status.get_subtitle(), "Ready")
+            detect.return_value = [(device, "", other)]
+            win.refresh_usb()
+            self.assertIsNone(win._connection()[1])
+            self.assertFalse(win.cut_button.get_sensitive())
+
     def test_design_button_opens_reviews_and_reopens_the_workspace(self):
         win = self.make_window()
         win.design_button.emit('clicked')
@@ -76,6 +94,69 @@ class TestDesignWorkspace(unittest.TestCase):
         win.send_controls['track_enhancing'].set_active(False)
         self.assertFalse(win.r_track.get_active())
         self.assertFalse(win.job.settings.track_enhancing)
+
+    def test_manual_depth_is_readable_in_blade_and_send(self):
+        win = self.make_window()
+        win.send_sliders["depth"].set_value(-1)
+        for entry in (win.r_depth, win.send_controls["depth"]):
+            self.assertEqual(entry.get_text(), "Manual")
+            self.assertGreaterEqual(entry.get_width_chars(), len(entry.get_text()))
+        self.assertIsNone(win.job.settings.depth)
+
+    def test_connection_method_defaults_to_automatic_inside_advanced_options(self):
+        win = self.make_window()
+        self.assertEqual(win._connection_mode(), "auto")
+        self.assertFalse(win.send_advanced.get_expanded())
+        self.assertTrue(win.r_connection.is_ancestor(win.send_advanced.get_child()))
+        self.assertFalse(win.connection_status.is_ancestor(win.send_advanced.get_child()))
+        win.send_advanced.set_expanded(True)
+        self.assertFalse(win.r_bluetooth_id.get_visible())
+        self.assertFalse(win.r_bluetooth_channel.get_visible())
+        win.r_connection.set_selected(1)
+        self.assertEqual(win._connection_mode(), "ble")
+        self.assertTrue(win.r_bluetooth_id.get_visible())
+        self.assertFalse(win.r_bluetooth_channel.get_visible())
+        win.r_connection.set_selected(2)
+        self.assertEqual(win._connection_mode(), "bluetooth")
+        self.assertTrue(win.r_bluetooth_channel.get_visible())
+        win.send_advanced.set_expanded(False)
+        self.assertEqual(win._connection_mode(), "bluetooth")
+
+    def test_invalid_bundle_row_can_be_left_without_switching_to_a_generated_cut(self):
+        from cut_proxies.editor_model import Project, Shape
+
+        win = self.make_window()
+        rows = [dict(sheet=n, frontPage=n, svg=f"sheet-{n}.svg") for n in (1, 2)]
+        drawing = Project(279.4, 215.9, (Shape("Rectangle", 40, 40),)).artwork("Cut")
+        matched = mock.Mock(rows=rows, layout={"sheet": "Letter", "portrait": False})
+        matched.mat_placement.return_value = "Load the print face-up."
+        matched.artwork.side_effect = [drawing, gui.bundle.BundleError("Unreadable SVG"), drawing]
+        with mock.patch.object(gui.bundle, "load", return_value=matched), \
+             mock.patch.object(gui.Gtk, "FileDialog") as chooser, \
+             mock.patch.object(win, "measure_sheet", wraps=win.measure_sheet) as measure, \
+             mock.patch.object(gui.threading, "Thread"):
+            win.on_pick_pdf()
+            dialog = chooser.return_value
+            dialog.open_finish.return_value = gui.Gio.File.new_for_path("/tmp/project.zip")
+            dialog.open.call_args.args[2](dialog, mock.Mock())
+            win.r_sheet_page.set_value(2)
+            self.assertIs(win.pdf_bundle, matched)
+            self.assertIsNone(win.imported)
+            self.assertIsNone(win.job)
+            self.assertEqual(win.sheet_result.get_subtitle(), "Unreadable SVG")
+            win.send_workspace.emit("clicked")
+            self.assertEqual(win.stack.get_visible_child_name(), "cut")
+            self.assertTrue(win.cut_button.get_visible())
+            self.assertFalse(win.cut_button.get_sensitive())
+            win.review_send.emit("clicked")
+            win.r_sheet_page.set_value(1)
+            self.assertIs(win.imported, drawing)
+            self.assertTrue(win._sheet_token)
+            self.assertGreaterEqual(measure.call_count, 2)
+            win.close_print.emit("clicked")
+            self.assertIsNone(win.pdf_path)
+            self.assertIsNone(win.pdf_bundle)
+            self.assertTrue(win.r_sheet.get_sensitive())
 
     def test_material_selection_resolves_the_active_holder_variant(self):
         variants = {f"Sample · Holder {slot}": presets.Preset(
@@ -143,6 +224,11 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertFalse(win.cut_button.get_visible())
         win.guide_next.emit('clicked')
         self.assertFalse(win.preview.trial.sheet.extent().overlaps(first))
+        win.guide_edit.emit('clicked')
+        self.assertEqual(win.stack.get_visible_child_name(), 'blade')
+        self.assertEqual(win.blade_guide.get_label(), 'Resume Material Test')
+        win.blade_guide.emit('clicked')
+        self.assertTrue(win.tuning)
         win.back_to_send.emit('clicked')
         self.assertIsNone(win.preview.trial)
         self.assertTrue(win.cut_button.get_visible())

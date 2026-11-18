@@ -6,7 +6,7 @@ from dataclasses import replace
 from math import dist
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence, QPen, QPolygonF
 from PySide6.QtWidgets import (QAbstractItemView, QColorDialog, QComboBox, QFileDialog, QHBoxLayout, QInputDialog, QListWidget, QMenuBar,
                                QMessageBox, QSplitter, QStyle, QTabWidget, QToolBar, QVBoxLayout, QWidget)
@@ -474,9 +474,8 @@ class Design(QWidget):
         self.mat = media.choice("Cutting mat", graphtec.MAT_OPTIONS, changed=self.change_mat)
         marks = page.group("Registration Marks")
         self.register = marks.check("Enable registration", changed=self.change_marks)
-        self.show_grid = marks.check("Show Grid", True, self.canvas.redraw)
         self.page_advanced = advanced = page.advanced()
-        marks = advanced.group("Registration Marks")
+        marks = advanced.group("Mark Geometry")
         self.pattern = marks.choice("Pattern", {regmarks.THREE: "Type 1 (3 marks)", regmarks.FOUR: "4 marks"},
                                     changed=self.change_marks)
         self.inset = marks.number("Inset (mm)", 10, 2, 40, 0.1, 3, self.change_marks)
@@ -485,6 +484,7 @@ class Design(QWidget):
         self.thickness = marks.number("Thickness (mm)", 1, regmarks.MIN_THICKNESS_MM,
                                      regmarks.MAX_THICKNESS_MM, 0.05, 3, self.change_marks)
         view = advanced.group("Canvas")
+        self.show_grid = view.check("Show Grid", True, self.canvas.redraw)
         self.show_mat = view.check("Show Cutting Mat", True, self.canvas.redraw)
         self.cut_border = view.check("Show Cut Border", True, self.canvas.redraw)
         self.print_border = view.check("Show Print Border", False, self.canvas.redraw)
@@ -571,8 +571,8 @@ class Design(QWidget):
             action.setChecked(field.isChecked())
             action.toggled.connect(field.setChecked)
             field.toggled.connect(action.setChecked)
-        for label in ("Grid Options…", "Registration Marks…"):
-            command(view, label, self.show_page_options)
+        command(view, "Grid Options…", lambda: self.show_page_options(self.show_grid))
+        command(view, "Registration Marks…", lambda: self.show_page_options(self.pattern))
         command(view, "Show Design Page Settings…", lambda: self.inspector.setCurrentIndex(0), "Ctrl+F1")
         command(view, "Show Send Page", lambda: self.review_button.click(), "Ctrl+F2")
 
@@ -610,10 +610,11 @@ class Design(QWidget):
         modify = objects.addMenu("Modify")
         command(modify, "Offset…", self.offset_selection)
 
-    def show_page_options(self):
+    def show_page_options(self, field=None):
         self.inspector.setCurrentIndex(0)
         self.page_advanced.disclosure.setChecked(True)
-        self.inspector.currentWidget().ensureWidgetVisible(self.page_advanced.disclosure)
+        page = self.inspector.currentWidget()
+        QTimer.singleShot(0, self, lambda: page.ensureWidgetVisible(field or self.page_advanced.disclosure))
 
     def rotate_page(self, clockwise):
         try:

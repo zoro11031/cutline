@@ -42,7 +42,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 
 from . import (actions, bluetooth, bundle, config, corner_test, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
                starting_guide, template, testcut, toolpath, transport)  # noqa: E402
-from .desktop_help import CONTROL_HELP, SETUP_STEPS  # noqa: E402
+from .desktop_help import BLADE_VALUE_TEXT, CONTROL_HELP, SETUP_STEPS  # noqa: E402
 from .gtk_controls import disclosure  # noqa: E402
 from .holder_settings import HolderSettings, for_holder  # noqa: E402
 
@@ -123,7 +123,9 @@ def _special_value(row, value, text):
             return True
         return False
 
+    row.set_width_chars(max(row.get_width_chars(), len(text)))
     row.connect("output", display)
+    display(row)
     return row
 
 
@@ -446,6 +448,7 @@ class Window(Adw.ApplicationWindow):
         self.sheet_report = None
         self.pdf_path = None
         self.pdf_bundle = None
+        self.bundle_row_error = None
         self.bundle_checked = False
         self._sheet_token = None
         self.imported = None
@@ -493,7 +496,7 @@ class Window(Adw.ApplicationWindow):
         self.design_button.set_tooltip_text("Draw or edit cut paths.")
         workspace.append(self.design_button)
         self.send_workspace = Gtk.Button(label="Send", css_classes=["suggested-action"])
-        self.send_workspace.connect("clicked", self.on_review_send)
+        self.send_workspace.connect("clicked", self.open_send_workspace)
         self.send_workspace.set_tooltip_text("Review the job and cutter settings.")
         workspace.append(self.send_workspace)
         header.pack_end(workspace)
@@ -622,8 +625,6 @@ class Window(Adw.ApplicationWindow):
         if page != "cut":
             self.tuning = False
         self.update_send_actions()
-        if page == "blade":
-            self.on_refresh_status()
 
     def _send_bar(self):
         bar = Gtk.ActionBar()
@@ -663,6 +664,11 @@ class Window(Adw.ApplicationWindow):
         else:
             self.stack.set_visible_child_name(destination)
 
+    def open_send_workspace(self, *_args):
+        if self.tuning:
+            self.close_material_guide()
+        self.stack.set_visible_child_name("cut")
+
     def update_send_actions(self):
         if not hasattr(self, "send_status"):
             return
@@ -670,7 +676,7 @@ class Window(Adw.ApplicationWindow):
         destination, label = self.send_review_destination()
         self.review_send.set_label(label)
         self.review_send.set_visible(not self.tuning and page != destination)
-        at_send = not self.tuning and page == "cut" and destination == "cut"
+        at_send = not self.tuning and page == "cut"
         for control in (self.cut_button, self.scan_button, self.corner_button):
             control.set_visible(at_send)
         self.send_normal.set_visible(not self.tuning)
@@ -678,11 +684,15 @@ class Window(Adw.ApplicationWindow):
         self.back_to_send.set_visible(self.tuning)
         job = self.job
         mode, identifier, *_ = self._connection()
+        can_check = bool(identifier) and not (self._sending or self._checking_status)
+        self.check_cutter_status.set_sensitive(can_check)
+        self.detect_blades.set_sensitive(can_check)
         reason = (
             "Sending to the cutter…" if self._sending else
             "Checking cutter status…" if self._checking_status else
             "Review the latest edits in Design." if destination == "design" else
-            "This ZIP has a legacy cut file. Save it from Sheet." if self.pdf_bundle and self.imported is None else
+            "Choose another sheet or reopen the ZIP in Sheet." if self.bundle_row_error else
+            "Save the legacy cut file from Sheet." if self.pdf_bundle and self.imported is None else
             "Check the matching PDF in Sheet." if destination == "sheet" else
             "Check this layout before sending." if job is None or job.blocked else
             "Select a Bluetooth cutter." if mode in bluetooth.BLUETOOTH_MODES and not identifier else
@@ -712,6 +722,7 @@ class Window(Adw.ApplicationWindow):
         dialog.present(self)
 
     def open_material_guide(self, *_args):
+        self.blade_guide.set_label("Dial In a Material…")
         self.stack.set_visible_child_name("cut")
         self.tuning = True
         self.update_send_actions()
@@ -736,6 +747,7 @@ class Window(Adw.ApplicationWindow):
     def adjust_guide_settings(self, *_args):
         if self.guide.trial:
             self.on_guide_next()
+        self.blade_guide.set_label("Resume Material Test")
         self.stack.set_visible_child_name("blade")
 
     def update_tuning_preview(self):
@@ -860,14 +872,19 @@ class Window(Adw.ApplicationWindow):
     def _page_sheet(self):
         page = ControlPage()
         g = Adw.PreferencesGroup(title="Printed sheet", description="Open your print file and check its marks.")
-        self.sheet_row = Adw.ActionRow(title="No PDF loaded",
-                                       subtitle="Pick the sheet you printed")
+        self.sheet_row = Adw.ActionRow(title="No print file open",
+                                       subtitle="Open the PDF or ZIP you printed from.")
         self.sheet_row.set_subtitle_lines(0)
-        pick = Gtk.Button(label="Open PDF or ZIP...")
+        pick = Gtk.Button(label="Open PDF or ZIP…")
         pick.set_valign(Gtk.Align.CENTER)
         pick.connect("clicked", self.on_pick_pdf)
-        self.sheet_row.add_suffix(pick)
+        self.close_print = Gtk.Button(label="Close File", valign=Gtk.Align.CENTER)
+        self.close_print.connect("clicked", self.close_printed_sheet)
         g.add(self.sheet_row)
+        file_actions = Gtk.Box(spacing=6, margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
+        file_actions.append(pick)
+        file_actions.append(self.close_print)
+        g.add(Adw.PreferencesRow(child=file_actions, activatable=False, selectable=False))
         self.bundle_export = Adw.ActionRow(title="Paired cut file")
         save = Gtk.Button(label="Save Paired Cut File…", valign=Gtk.Align.CENTER)
         save.connect("clicked", self.on_save_bundle_file)
@@ -875,19 +892,18 @@ class Window(Adw.ApplicationWindow):
         self.bundle_export.set_visible(False)
         g.add(self.bundle_export)
 
-        self.r_sheet_page = _spin("Page", 1, 99, 1)
+        self.r_sheet_page = _spin("PDF page", 1, 99, 1)
         self.r_sheet_dpi = _combo("Preview resolution (dpi)", ["150", "200", "300"], 1)
         g.add(self.r_sheet_page)
-        self.r_sheet_page.connect('notify::value', self.on_sheet_number_changed)
+        self.sheet_page_changed_id = self.r_sheet_page.connect('notify::value', self.on_sheet_number_changed)
         self.r_sheet_dpi.connect('notify::selected', self.on_pdf_page_changed)
 
         remeasure = Adw.ActionRow(
             title="Measure again",
             subtitle="After changing the layout or the mark settings")
-        again = Gtk.Button(label="Measure")
-        again.set_valign(Gtk.Align.CENTER)
-        again.connect("clicked", lambda *_: self.measure_sheet())
-        remeasure.add_suffix(again)
+        self.measure_button = Gtk.Button(label="Measure", valign=Gtk.Align.CENTER)
+        self.measure_button.connect("clicked", lambda *_: self.measure_sheet())
+        remeasure.add_suffix(self.measure_button)
         g.add(remeasure)
         page.add(g)
 
@@ -906,6 +922,7 @@ class Window(Adw.ApplicationWindow):
         pdf_options.add(self.r_sheet_dpi)
         advanced.append(pdf_options)
 
+        self.update_sheet_controls()
         self.stack.add_titled_with_icon(page, "sheet", "Sheet",
                                         "document-print-symbolic")
 
@@ -921,7 +938,7 @@ class Window(Adw.ApplicationWindow):
         self.preset_note = Adw.ActionRow(title="About this preset", subtitle="")
         self.preset_note.set_subtitle_lines(0)
         g.add(self.preset_note)
-        self.guide_button(g, "Dial In a Material…", self.open_material_guide)
+        self.blade_guide = self.guide_button(g, "Dial In a Material…", self.open_material_guide)
         page.add(g)
 
         g2 = Adw.PreferencesGroup(title="Cutter and blade")
@@ -931,9 +948,10 @@ class Window(Adw.ApplicationWindow):
         self.r_force = _spin("Force", 1, 40, 30)
         self.r_speed = _spin("Speed", 1, 30, 3)
         self.r_passes = _spin("Passes", 1, 10, 3)
-        self.r_depth = _special_value(_spin("Blade Depth", -1, 10, 7), -1, "Manual / off")
+        self.r_depth = _special_value(_spin("Blade Depth", -1, 10, 7), -1, BLADE_VALUE_TEXT["depth"])
         self.r_holder = _spin("Tool Holder", 1, 2, 1)
-        self.r_acceleration = _special_value(_spin("Acceleration", -1, 3, -1), -1, "Auto")
+        self.r_acceleration = _special_value(_spin("Acceleration", -1, 3, -1), -1,
+                                            BLADE_VALUE_TEXT["acceleration"])
         self.r_diameter = _spin("Tool Offset (mm)", 0, 2.3, 0.9, 0.05, 2)
         self.r_lift = _switch("Lift head", True)
         self.r_corners = _switch("Line Segment Overcut", False)
@@ -945,9 +963,9 @@ class Window(Adw.ApplicationWindow):
                   self.r_depth, self.r_acceleration, self.r_corners, self.r_track):
             g2.add(r)
         self.tool_row = Adw.ActionRow(title="Installed tools", subtitle="See what is in each holder.")
-        detect = Gtk.Button(label="Detect Installed Tools", valign=Gtk.Align.CENTER)
-        detect.connect("clicked", self.on_refresh_status)
-        self.tool_row.add_suffix(detect)
+        self.detect_blades = Gtk.Button(label="Detect Installed Tools", valign=Gtk.Align.CENTER)
+        self.detect_blades.connect("clicked", self.on_refresh_status)
+        self.tool_row.add_suffix(self.detect_blades)
         g2.add(self.tool_row)
         save_preset = Adw.ActionRow(
             title="Keep these settings",
@@ -1067,40 +1085,44 @@ class Window(Adw.ApplicationWindow):
         self.r_auto.connect("notify::active", self.on_changed)
 
         g2 = Adw.PreferencesGroup(title="Cutter")
-        refresh = Gtk.Button(label="Check Status")
-        refresh.set_valign(Gtk.Align.CENTER)
-        refresh.connect("clicked", self.on_refresh_status)
-        g2.set_header_suffix(refresh)
-        self.r_send_cutter = _combo("Cutter", list(cutters.MODELS.values()))
+        cutter_actions = Gtk.Box(spacing=6)
+        scan = Gtk.Button(label="Refresh Cutters")
+        scan.connect("clicked", self._scan_bluetooth)
+        cutter_actions.append(scan)
+        self.check_cutter_status = Gtk.Button(label="Check Status", valign=Gtk.Align.CENTER)
+        self.check_cutter_status.connect("clicked", self.on_refresh_status)
+        cutter_actions.append(self.check_cutter_status)
+        g2.set_header_suffix(cutter_actions)
+        self.r_send_cutter = _combo("Cutter model", list(cutters.MODELS.values()))
         self.r_send_cutter.connect("notify::selected", self.on_send_cutter)
         g2.add(self.r_send_cutter)
         normal.prepend(g2)
-        self.r_connection = _combo("Connection", ["Automatic", *bluetooth.BLUETOOTH_MODES.values()],
-                                   subtitle="Status not checked")
-        self.r_connection.set_subtitle_lines(0)
+        self.r_connection = _combo("Connection method", ["Automatic", *bluetooth.BLUETOOTH_MODES.values()])
+        self.r_connection.set_tooltip_text(
+            "Automatic looks for USB and Bluetooth cutters. Choose a Bluetooth method to connect manually.")
         self.r_bluetooth = _combo("Connected cutter", ["Select a cutter"])
         self.r_bluetooth_id = Adw.EntryRow(title="Bluetooth identifier")
-        self.r_bluetooth_channel = _spin("RFCOMM channel", 1, 30, 1, 1, 0)
+        self.r_bluetooth_channel = _spin("Channel", 1, 30, 1, 1, 0)
+        self.r_bluetooth_channel.set_tooltip_text("Bluetooth Classic usually uses channel 1.")
         self._bluetooth_devices = []
         self._usb_devices = {}
         self._wireless_choices = {}
         self._wireless_scanning = False
-        self.r_bluetooth.connect("notify::selected", self.on_bluetooth_selected)
-        scan = Gtk.Button(label="Refresh Cutters")
-        scan.connect("clicked", self._scan_bluetooth)
-        self.r_bluetooth.add_suffix(scan)
-        g2.add(self.r_connection)
+        self.preferred_endpoint = None
+        self.endpoint_changed_id = self.r_bluetooth.connect("notify::selected", self.select_detected)
         g2.add(self.r_bluetooth)
+        self.connection_status = Adw.ActionRow(title="Cutter status")
+        self.connection_status.set_subtitle_lines(0)
+        g2.add(self.connection_status)
         self.r_connection.connect("notify::selected", self.on_connection_changed)
         self.on_connection_changed()
         self.r_bluetooth_id.connect("changed", self.on_connection_target_changed)
         self.r_bluetooth_channel.connect("notify::value", self.on_connection_target_changed)
         advanced, self.send_advanced = disclosure(normal)
-        bluetooth_options = Adw.PreferencesGroup(title="Bluetooth")
+        bluetooth_options = Adw.PreferencesGroup(title="Connection")
+        bluetooth_options.add(self.r_connection)
         bluetooth_options.add(self.r_bluetooth_id)
         bluetooth_options.add(self.r_bluetooth_channel)
-        self.advanced_bluetooth = bluetooth_options
-        bluetooth_options.set_visible(False)
         advanced.append(bluetooth_options)
         advanced.append(self.send_modes)
         normal.append(self.send_groups)
@@ -1236,17 +1258,18 @@ class Window(Adw.ApplicationWindow):
         self.send_controls = {}
         self.send_sliders = {}
         for field, source in (("force", self.r_force), ("speed", self.r_speed), ("passes", self.r_passes),
-                              ("acceleration", self.r_acceleration), ("depth", self.r_depth)):
+                              ("depth", self.r_depth), ("acceleration", self.r_acceleration)):
             row = Adw.ActionRow(title=source.get_title())
             pieces = Gtk.Box(spacing=8, valign=Gtk.Align.CENTER)
             adjustment = source.get_adjustment()
             slider = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=adjustment,
                                draw_value=False, hexpand=True, width_request=110)
             slider.update_property([Gtk.AccessibleProperty.LABEL], [source.get_title()])
-            precision = Gtk.SpinButton(adjustment=adjustment, digits=source.get_digits(), width_chars=4)
+            precision = Gtk.SpinButton(adjustment=adjustment, digits=source.get_digits(),
+                                       width_chars=len(BLADE_VALUE_TEXT["depth"]))
             precision.update_property([Gtk.AccessibleProperty.LABEL], [f"{source.get_title()} value"])
-            if field in ("acceleration", "depth"):
-                _special_value(precision, -1, "Auto" if field == "acceleration" else "Manual")
+            if field in BLADE_VALUE_TEXT:
+                _special_value(precision, -1, BLADE_VALUE_TEXT[field])
             source.bind_property("sensitive", row, "sensitive", GObject.BindingFlags.SYNC_CREATE)
             pieces.append(slider)
             pieces.append(precision)
@@ -1491,7 +1514,7 @@ class Window(Adw.ApplicationWindow):
         self.job = None
         self.cut_button.set_sensitive(False)
         self.rebuild()
-        if self.pdf_bundle and self._sheet_token is None:
+        if self.pdf_bundle and not self.bundle_row_error and self._sheet_token is None:
             self.measure_sheet()
         elif self.pdf_path and not self.pdf_bundle and (
                 (previous.marks if previous else None) != (self.job.marks if self.job else None)):
@@ -1643,10 +1666,11 @@ class Window(Adw.ApplicationWindow):
             self.job = None
             self.preview.set_job(None)
             self.summary_icon.set_from_icon_name('document-open-symbolic')
-            self.summary_title.set_label('Legacy cut file')
-            self.summary_layout.set_label('Use Sheet → Save Paired Cut File.')
+            self.summary_title.set_label('Cut paths unavailable' if self.bundle_row_error else 'Legacy cut file')
+            self.summary_layout.set_label(self.bundle_row_error or 'Use Sheet → Save Paired Cut File.')
             self.summary_material.set_label('')
-            self.summary_note.set_label('A newer ProxyPress ZIP includes SVG paths for direct cutting.')
+            self.summary_note.set_label('' if self.bundle_row_error else
+                                        'A newer ProxyPress ZIP includes SVG paths for direct cutting.')
             self.checks.set_text('')
             self.update_send_actions()
             self.banner.set_revealed(False)
@@ -1794,8 +1818,11 @@ class Window(Adw.ApplicationWindow):
                 gfile = d.open_finish(result)
             except GLib.Error:
                 return
-            path = pathlib.Path(gfile.get_path())
-            self.load_artwork_file(path)
+            filename = gfile.get_path()
+            if filename is None:
+                self.toast("Choose a local cut file.")
+                return
+            self.load_artwork_file(pathlib.Path(filename))
 
         dialog.open(self, None, done)
 
@@ -1973,35 +2000,59 @@ class Window(Adw.ApplicationWindow):
         self.pdf_bundle = None
         self.bundle_export.set_visible(False)
         self.lock_bundle_layout(False)
+        self.clear_printed_sheet()
+
+    def update_sheet_controls(self):
+        loaded = self.pdf_path is not None
+        self.close_print.set_sensitive(loaded)
+        self.measure_button.set_sensitive(loaded and self.bundle_row_error is None)
+        self.r_sheet_page.set_sensitive(loaded and (not self.pdf_bundle or len(self.pdf_bundle.rows) > 1))
+
+    def clear_printed_sheet(self):
         self.bundle_checked = False
+        self.bundle_row_error = None
         self.pdf_path = None
         self._sheet_token = None
         self.sheet_report = None
         self.preview.set_sheet(None)
         self.preview.set_pdf()
-        self.sheet_row.set_title('No PDF loaded')
-        self.sheet_row.set_subtitle('Pick the sheet you printed')
+        self.sheet_row.set_title('No print file open')
+        self.sheet_row.set_subtitle('Open the PDF or ZIP you printed from.')
         self.sheet_result.set_title('Not measured')
         self.sheet_result.set_subtitle('')
         self.scan_result.set_visible(False)
-        self.r_sheet_page.set_title('Page')
-        self.r_sheet_page.set_subtitle('which page of the PDF to measure')
+        self.r_sheet_page.set_title('PDF page')
+        self.r_sheet_page.set_subtitle('')
+        self.r_sheet_page.set_value(1)
         self.r_sheet_page.get_adjustment().set_upper(99)
+        self.update_sheet_controls()
+
+    def close_printed_sheet(self, *_args):
+        if self.pdf_bundle:
+            self.on_clear_artwork()
+        else:
+            self.clear_printed_sheet()
+            self.rebuild()
 
     def select_bundle_sheet(self):
         row = self.pdf_bundle.rows[int(self.r_sheet_page.get_value())-1]
+        self.bundle_row_error = None
         try:
             artwork = self.pdf_bundle.artwork(row) if 'svg' in row else None
         except bundle.BundleError as exc:
-            self.on_clear_artwork()
-            self.toast(str(exc))
-            return
+            self.bundle_row_error = str(exc)
+            artwork = None
         self.describe_bundle_sheet(row)
         self.bundle_checked = False
         self._sheet_token = self.sheet_report = None
         self.preview.set_sheet(None)
         self.preview.set_pdf()
+        self.scan_result.set_visible(False)
+        self.update_sheet_controls()
         self.set_artwork(artwork, row.get('svg') or row['cutFile'])
+        if self.bundle_row_error:
+            self.sheet_result.set_title("Could not open cut paths")
+            self.sheet_result.set_subtitle(self.bundle_row_error)
 
     def describe_bundle_sheet(self, row):
         self.sheet_row.set_subtitle(
@@ -2081,14 +2132,18 @@ class Window(Adw.ApplicationWindow):
                 self.r_sheet_page.set_value(1)
                 self._suppress = False
                 self.describe_bundle_sheet(row)
+                self.update_sheet_controls()
                 self.set_artwork(artwork, row.get('svg') or row['cutFile'])
                 return
             if self.pdf_bundle:
                 self.on_clear_artwork()
             self.pdf_path = path
             self.preview.set_pdf()
+            with self.r_sheet_page.handler_block(self.sheet_page_changed_id):
+                self.r_sheet_page.set_value(1)
             self.sheet_row.set_title(self.pdf_path.name)
             self.sheet_row.set_subtitle(str(self.pdf_path.parent))
+            self.update_sheet_controls()
             self.measure_sheet()
 
         dialog.open(self, None, done)
@@ -2107,6 +2162,8 @@ class Window(Adw.ApplicationWindow):
             self.on_pdf_page_changed()
 
     def measure_sheet(self):
+        if self.bundle_row_error:
+            return
         path = getattr(self, "pdf_path", None)
         matched = self.pdf_bundle
         if path is None or (self.job is None and not matched):
@@ -2302,7 +2359,8 @@ class Window(Adw.ApplicationWindow):
         for field in (self.guide_apply, self.guide_edit, self.guide_next, self.guide_reset):
             field.set_sensitive(not busy)
         state = self.guide
-        self.guide_send.set_sensitive(not busy and state.can_cut)
+        connected = bool(self._connection()[1])
+        self.guide_send.set_sensitive(not busy and connected and state.can_cut)
         self.guide_use.set_sensitive(not busy and state.outcome == "clean" and state.tested_settings is not None)
         for button in (self.guide_send, self.guide_use):
             if button.get_sensitive():
@@ -2315,6 +2373,8 @@ class Window(Adw.ApplicationWindow):
         self.guide_status.set_title(title)
         if state.awaiting_result and not busy:
             body += "\nLeave the mat loaded and lift a corner to check the sample."
+        elif not connected:
+            body += "\nGo back to Send and select a cutter to run a test pass."
         self.guide_status.set_subtitle("Waiting for the cutter to finish…" if self._sending else body)
         inspecting = state.completed > 0 and not state.interrupted
         self.guide_outcome.set_visible(inspecting)
@@ -2554,12 +2614,17 @@ class Window(Adw.ApplicationWindow):
             return False
         devices = {**cutters.usb_choices(), **self._wireless_choices}
         if devices != self._usb_devices:
+            selected = cutters.detected_choice(devices, self.preferred_endpoint)
+            same_cutter = (selected is not None and selected == self._automatic_endpoint() and
+                           devices[selected] == self._usb_devices.get(selected))
             self._usb_devices = devices
-            self.r_bluetooth.set_model(Gtk.StringList.new(["Select a cutter", *devices.values()]))
-            selected = next(iter(devices)) if len(devices) == 1 and cutters.auto_model(next(iter(devices)), next(iter(devices.values()))) else None
-            self.r_bluetooth.set_selected(list(devices).index(selected) + 1 if selected else 0)
+            with self.r_bluetooth.handler_block(self.endpoint_changed_id):
+                self.r_bluetooth.set_model(Gtk.StringList.new(["Select a cutter", *devices.values()]))
+                self.r_bluetooth.set_selected(list(devices).index(selected) + 1 if selected else 0)
+            if same_cutter:
+                return False
             self.on_bluetooth_selected()
-            self.r_connection.set_subtitle(devices.get(selected, "Select a cutter." if devices else "No cutter found."))
+            self.connection_status.set_subtitle(devices.get(selected, "Select a cutter." if devices else "No cutter found."))
         return False
 
     def refresh_wireless(self):
@@ -2592,23 +2657,24 @@ class Window(Adw.ApplicationWindow):
 
     def on_connection_changed(self, *_args):
         mode = self._connection_mode()
+        self.preferred_endpoint = None
         self._bluetooth_devices = []
-        self.r_bluetooth.set_model(Gtk.StringList.new(["Select a cutter"]))
-        self.r_bluetooth.set_selected(0)
+        with self.r_bluetooth.handler_block(self.endpoint_changed_id):
+            self.r_bluetooth.set_model(Gtk.StringList.new(["Select a cutter"]))
+            self.r_bluetooth.set_selected(0)
         self.r_bluetooth_id.set_text("")
         self._usb_devices = {}
         self.r_bluetooth.set_visible(True)
         if mode == "auto":
             GLib.idle_add(self.refresh_usb)
-        if hasattr(self, "advanced_bluetooth"):
-            self.advanced_bluetooth.set_visible(mode != "auto")
         self.r_bluetooth_id.set_visible(mode != "auto")
         self.r_bluetooth_channel.set_visible(mode == "bluetooth")
         self.on_connection_target_changed()
 
     def on_connection_target_changed(self, *_args):
-        self.r_connection.set_subtitle("Status not checked")
+        self.connection_status.set_subtitle("Not checked")
         self.tool_row.set_subtitle("Not checked")
+        self.scan_result.set_visible(False)
         self.update_send_actions()
 
     def _scan_bluetooth(self, button):
@@ -2644,6 +2710,11 @@ class Window(Adw.ApplicationWindow):
         button.set_sensitive(False)
         threading.Thread(target=work, daemon=True).start()
 
+    def select_detected(self, *_args):
+        if self._connection_mode() == "auto":
+            self.preferred_endpoint = self._automatic_endpoint()
+        self.on_bluetooth_selected()
+
     def on_bluetooth_selected(self, *_args):
         index = self.r_bluetooth.get_selected() - 1
         if self._connection_mode() == "auto":
@@ -2651,7 +2722,7 @@ class Window(Adw.ApplicationWindow):
             model = cutters.auto_model(endpoint, self._usb_devices.get(endpoint, ""))
             if model and self.selected_cutter() == cutters.AUTO:
                 self.r_cutter.set_selected(graphtec.DEVICES.index(model))
-            self.update_send_actions()
+            self.on_connection_target_changed()
             return
         if 0 <= index < len(self._bluetooth_devices):
             identifier, name = self._bluetooth_devices[index]
@@ -2677,13 +2748,13 @@ class Window(Adw.ApplicationWindow):
             return
         connection = self._connection()
         mode = connection[0]
-        if mode in bluetooth.BLUETOOTH_MODES and not connection[1]:
-            self.r_connection.set_subtitle("Select a Bluetooth cutter.")
-            self.tool_row.set_subtitle("Select a Bluetooth cutter.")
+        if not connection[1]:
+            self.connection_status.set_subtitle("Select a cutter.")
+            self.tool_row.set_subtitle("Select a cutter.")
             return
         self._checking_status = True
         self.update_send_actions()
-        self.r_connection.set_subtitle("Checking…")
+        self.connection_status.set_subtitle("Checking…")
         self.tool_row.set_subtitle("Checking…")
 
         def done(text, device):
@@ -2691,7 +2762,7 @@ class Window(Adw.ApplicationWindow):
             self.update_send_actions()
             if connection != self._connection():
                 return
-            self.r_connection.set_subtitle(text)
+            self.connection_status.set_subtitle(text)
             self.tool_row.set_subtitle(text)
             if device is not None and self.selected_cutter() == cutters.AUTO:
                 self.r_cutter.set_selected(graphtec.DEVICES.index(device))

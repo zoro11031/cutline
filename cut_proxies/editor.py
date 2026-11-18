@@ -172,6 +172,7 @@ class DesignWorkspace:
         parent.append(Gtk.Label(label=label, xalign=0, css_classes=['heading'], margin_top=4))
 
     def page_panel(self, inspector):
+        self.page_options = inspector
         self.heading(inspector, 'Media Size')
         self.page_sizes = (*geometry.SHEETS, 'Custom')
         self.page = Gtk.DropDown.new_from_strings(self.page_sizes)
@@ -192,9 +193,8 @@ class DesignWorkspace:
         self.register = Gtk.CheckButton(label='Enable Registration Marks')
         self.register.connect('toggled', self.change_registration)
         inspector.append(self.register)
-        self.show_grid = self.view_toggle(inspector, 'Show Grid', True)
         inspector, self.page_advanced = disclosure(inspector)
-        self.heading(inspector, 'Registration Marks')
+        self.heading(inspector, 'Mark Geometry')
         self.mark_pattern = Gtk.DropDown.new_from_strings(('Type 1 (3 marks)', '4 marks'))
         self.mark_pattern.connect('notify::selected', self.change_registration)
         inspector.append(self.mark_pattern)
@@ -205,7 +205,8 @@ class DesignWorkspace:
                                         regmarks.MAX_THICKNESS_MM, 1, step=0.05)
         for spin in (self.mark_inset, self.mark_length, self.mark_thickness):
             spin.connect('value-changed', self.change_registration)
-        self.heading(inspector, 'Grid Settings')
+        self.heading(inspector, 'Canvas')
+        self.show_grid = self.view_toggle(inspector, 'Show Grid', True)
         self.show_mat = self.view_toggle(inspector, 'Show Cutting Mat', True)
         self.show_cut_border = self.view_toggle(inspector, 'Show Cut Border', True)
         self.print_border = self.view_toggle(inspector, 'Show Print Border')
@@ -288,8 +289,8 @@ class DesignWorkspace:
                 ('Show Print Border', 'print-border', self.print_border),
                 ('Show Cut Border', 'cut-border', self.show_cut_border)):
             command(view, label, name, lambda toggle=field: toggle.set_active(not toggle.get_active()), field=field)
-        command(view, 'Grid Options…', 'grid-options', self.show_page_options)
-        command(view, 'Registration Marks…', 'registration', self.show_page_options)
+        command(view, 'Grid Options…', 'grid-options', lambda: self.show_page_options(self.show_grid))
+        command(view, 'Registration Marks…', 'registration', lambda: self.show_page_options(self.mark_pattern))
         command(view, 'Show Design Page Settings…', 'page-options', lambda: self.panel_switcher.set_selected(0),
                 '<Control>F1')
         command(view, 'Show Send Page', 'send', lambda: self.review_paths(None), '<Control>F2')
@@ -336,9 +337,18 @@ class DesignWorkspace:
         for title, menu in (('View', view), ('Panels', panels), ('Object', objects)):
             toolbar.append(Gtk.MenuButton(label=title, menu_model=menu))
 
-    def show_page_options(self):
+    def show_page_options(self, field):
         self.panel_switcher.set_selected(0)
         self.page_advanced.set_expanded(True)
+
+        def reveal():
+            placed, bounds = field.compute_bounds(self.page_options)
+            if placed:
+                scroll = self.inspector.get_child_by_name('Page Setup')
+                scroll.get_vadjustment().set_value(max(0, bounds.get_y() - 12))
+            return GLib.SOURCE_REMOVE
+
+        GLib.idle_add(reveal)
 
     def rotate_page(self, clockwise):
         try:

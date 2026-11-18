@@ -147,7 +147,8 @@ uses the selected holder. To use both, assign selected shapes under
 | Cutting mat, Feed, Return to Origin | **Send → Advanced Options → Media handling** |
 | Installed tools | **Blade → Detect Installed Tools** or check cutter status in **Send** |
 
-For a manual blade, choose **Manual / off** and set the depth on the tool.
+For a manual blade, set the depth on the tool. If **Blade Depth** is available,
+choose **Manual** to leave the depth as set.
 Rotary tool actions still need Silhouette Studio.
 
 ## Calibration

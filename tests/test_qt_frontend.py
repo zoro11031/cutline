@@ -53,6 +53,24 @@ class TestQtFrontend(unittest.TestCase):
             self.assertEqual(window.connection()[1], (1, 3))
             self.assertTrue(window.send_button.isEnabled())
 
+    def test_refresh_keeps_an_explicit_cutter_and_does_not_switch_on_disconnect(self):
+        window = self.window
+        device = qt_gui.graphtec.device_by_name("Silhouette Cameo 4")
+        first, other = (1, 2), (1, 3)
+        with mock.patch.object(transport, "usb_endpoints") as detect:
+            detect.return_value = [(device, "", first), (device, "", other)]
+            window.refresh_usb()
+            window.detected.setCurrentIndex(window.detected.findData(first))
+            window.set_cutter_status("Ready")
+            detect.return_value.reverse()
+            window.refresh_usb()
+            self.assertEqual(window.connection()[1], first)
+            self.assertEqual(window.connection_status.text(), "Ready")
+            detect.return_value = [(device, "", other)]
+            window.refresh_usb()
+            self.assertIsNone(window.connection()[1])
+            self.assertFalse(window.send_button.isEnabled())
+
     def test_default_and_advanced_settings_use_the_shared_verified_plans(self):
         window = self.window
         expected = job.build(radius_mm=3.2)
@@ -83,6 +101,79 @@ class TestQtFrontend(unittest.TestCase):
         window.send_blade["track_enhancing"].setChecked(False)
         self.assertFalse(window.blade["track_enhancing"].isChecked())
         self.assertFalse(window.job.settings.track_enhancing)
+
+    def test_manual_depth_fits_in_both_tabs_with_a_large_font(self):
+        window = self.window
+        font = self.app.font()
+        font.setPointSize(18)
+        window.resize(980, 760)
+        window.show()
+        window.blade["depth"].setValue(-1)
+        for tab, fields in (("Blade", window.blade), ("Send", window.send_blade)):
+            with self.subTest(tab=tab):
+                window.tabs.setCurrentIndex(window.tab(tab))
+                field = fields["depth"]
+                entry = field.lineEdit()
+                field.setFont(font)
+                entry.setFont(font)
+                self.app.processEvents()
+                self.assertEqual(entry.text(), "Manual")
+                self.assertEqual(entry.font().pointSize(), 18)
+                self.assertGreaterEqual(entry.contentsRect().width(),
+                                        entry.fontMetrics().horizontalAdvance(entry.text()) + 4)
+        self.assertIsNone(window.job.settings.depth)
+
+    def test_connection_method_defaults_to_automatic_inside_advanced_options(self):
+        window = self.window
+        window.show()
+        window.send_workspace.click()
+        self.assertEqual(window.link.currentData(), "auto")
+        self.assertFalse(window.link.isVisible())
+        self.assertTrue(window.detected.isVisible())
+        toggle = window.send_advanced.disclosure
+        toggle.click()
+        self.assertTrue(window.link.isVisible())
+        self.assertFalse(window.identifier.isVisible())
+        self.assertFalse(window.channel.isVisible())
+        window.link.setCurrentIndex(window.link.findData("ble"))
+        self.assertTrue(window.identifier.isVisible())
+        self.assertFalse(window.channel.isVisible())
+        window.link.setCurrentIndex(window.link.findData("bluetooth"))
+        self.assertTrue(window.channel.isVisible())
+        toggle.click()
+        self.assertFalse(window.link.isVisible())
+        self.assertEqual(window.link.currentData(), "bluetooth")
+
+    def test_sheet_failure_keeps_send_actions_visible_and_previous_paths_out_of_the_job(self):
+        window = self.window
+        window.show()
+        rows = [dict(sheet=n, frontPage=n, svg=f"sheet-{n}.svg") for n in (1, 2)]
+        project = editor_model.Project(279.4, 215.9, (editor_model.Shape("Rectangle", 40, 40),))
+        matched = mock.Mock(rows=rows, layout={"sheet": "Letter", "portrait": False})
+        matched.mat_placement.return_value = "Load the print face-up."
+        matched.artwork.side_effect = [project.artwork("Cut"), qt_gui.bundle.BundleError("Unreadable SVG"),
+                                       project.artwork("Cut")]
+        with mock.patch.object(qt_gui.bundle, "load", return_value=matched), \
+             mock.patch.object(window, "measure_sheet") as measure:
+            window.load_bundle(Path("project.zip"))
+            window.sheet_page_number.setValue(2)
+            self.assertIs(window.bundle, matched)
+            self.assertIsNone(window.artwork)
+            self.assertIsNone(window.job)
+            self.assertEqual(window.sheet_result.text(), "Unreadable SVG")
+            window.send_workspace.click()
+            self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
+            self.assertTrue(window.send_button.isVisible())
+            self.assertFalse(window.send_button.isEnabled())
+            self.assertEqual(window.review_button.text(), "Review Sheet")
+            window.review_button.click()
+            window.sheet_page_number.setValue(1)
+            self.assertIsNotNone(window.artwork)
+            self.assertEqual(measure.call_count, 2)
+            window.close_print.click()
+            self.assertIsNone(window.pdf)
+            self.assertIsNone(window.bundle)
+            self.assertTrue(window.controls["sheet"].isEnabled())
 
     def test_material_selection_resolves_the_active_holder_variant(self):
         variants = {f"Sample · Holder {slot}": presets.Preset(
@@ -347,6 +438,11 @@ class TestQtFrontend(unittest.TestCase):
         self.assertFalse(window.send_button.isVisible())
         window.guide_next.click()
         self.assertFalse(window.preview.trial.sheet.extent().overlaps(first))
+        window.guide_edit.click()
+        self.assertEqual(window.tabs.currentIndex(), window.tab("Blade"))
+        self.assertEqual(window.blade_guide.text(), "Resume Material Test")
+        window.blade_guide.click()
+        self.assertTrue(window.tuning)
         window.back_to_send.click()
         self.assertIsNone(window.preview.trial)
         self.assertTrue(window.send_button.isVisible())
