@@ -11,7 +11,7 @@ import pathlib
 import struct
 import unittest
 
-from cut_proxies import studio3
+from cut_proxies import importer, studio3
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "studio3"
 
@@ -23,6 +23,19 @@ KNOWN = {
     "a4-standard-v5": dict(cards=8, w=63.0, h=88.0, page=(296.9, 210.1)),
     "a4-bridge-v4": dict(cards=9, w=57.15, h=88.9, page=(210.1, 296.9)),
 }
+
+
+class TestNativeImport(unittest.TestCase):
+    def test_imports_card_maker_templates_in_native_page_coordinates(self):
+        for name, spec in KNOWN.items():
+            with self.subTest(template=name):
+                art = importer.load(FIXTURES / f"{name}.studio3")
+                self.assertEqual(len(art.paths), spec["cards"])
+                for path in art.paths:
+                    xs, ys = zip(*path.points)
+                    self.assertTrue(path.closed)
+                    self.assertAlmostEqual(max(xs) - min(xs), spec["w"], delta=0.02)
+                    self.assertAlmostEqual(max(ys) - min(ys), spec["h"], delta=0.02)
 
 
 def load(name):

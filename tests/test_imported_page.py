@@ -22,16 +22,16 @@ class ImportedPage(unittest.TestCase):
         self.assertFalse(job.build(**self.options, imported=self.art).blocked)
         wrong = dict(self.options, sheet='A4')
         built = job.build(**wrong, imported=self.art)
-        self.assertTrue(any('SVG page' in e for e in built.blocked), built.blocked)
+        self.assertTrue(any('Imported page' in e for e in built.blocked), built.blocked)
         portrait = dict(self.options, portrait=True)
-        self.assertTrue(any('SVG page' in e for e in job.build(**portrait, imported=self.art).blocked))
+        self.assertTrue(any('Imported page' in e for e in job.build(**portrait, imported=self.art).blocked))
 
     def test_tolerance_and_unspecified_page(self):
         for size in ((279.45, 215.95), None):
             art = dataclasses.replace(self.art, page_size_mm=size)
             self.assertFalse(job.build(**self.options, imported=art).blocked)
         art = dataclasses.replace(self.art, page_size_mm=(279.6, 215.9))
-        self.assertTrue(any('SVG page' in e for e in job.build(**self.options, imported=art).blocked))
+        self.assertTrue(any('Imported page' in e for e in job.build(**self.options, imported=art).blocked))
 
     def test_svg_without_viewport_does_not_claim_a_page(self):
         path = Path(self.tmp.name) / 'unitless.svg'

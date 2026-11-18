@@ -235,11 +235,38 @@ the wrong scale — no offset can correct that.
 | `Plain paper test` | proofing alignment, costs nothing | from the recovered media table |
 | `Pen, no blade` | draw the cut instead of cutting it | from the recovered media table |
 
-In **Blade**, select a preset, edit force, speed, depth or passes, and click
-**Save preset**. The local preset is available the next time you open the app
+In **Blade**, select a preset, edit its blade and tool settings, and click
+**Save preset**. To keep this combination under its own name, fill in
+**New preset name** and click **Save as new preset**. The local preset is available the next time you open the app
 and when you select the same preset from the CLI. The device limit still
 applies at send time. Control Center sends force 33 on a Cameo 4 when the
 saved value is 35.
+
+### Studio cutting settings on the Cameo 4
+
+| Studio setting | Control Center |
+|---|---|
+| Force, speed, passes | **Blade** or `cut --force N --speed N --passes N`. Studio material values come from the installed material database. |
+| Blade depth | **AutoBlade depth** or `--depth 0…10`. Zero retracts the AutoBlade. Choose −1 for a physically adjusted blade. |
+| Material, action, tool holder | Apply a Studio material on **Blade**, review Cut or Score from **Design**, and choose the tool holder on **Blade** or with `--holder`. |
+| Detected tool | Opening **Blade** reads both holders. Click **Detect blades** after swapping tools. The terminal equivalent is `cut-proxies status`. |
+| Blade offset | **Blade diameter (mm)** or `--blade-diameter-mm`. Applying a Studio material also applies its tool offset. |
+| Line Segment Overcut | Control Center exposes recovered head lift and corner start/end extensions. Equivalence to Studio’s sharp-corner toolpath still needs a matched Studio trace. |
+| Track Enhancing, specialty-tool actions | Available through the Studio bridge. The native registered-cut path has no verified roller pre-feed sequence or specialty-tool path planner. |
+
+Acceleration, head lift and corner extensions are also saved in the preset.
+Use `cut --help` for their switches. The extensions are independent start
+and end distances in tenths of a millimetre. [Recovered command implementation](https://github.com/fablabnbg/inkscape-silhouette/blob/master/silhouette/Graphtec.py)
+
+On the Cameo 4, a live job that requests automatic depth checks holder 1
+before motion. The cutter reads a metal strip on the tool or adapter. For a
+third-party holder the displayed identity depends on that strip. Adjust a
+manual blade physically and select depth −1. Detection alone does not
+establish suitable material settings. [Cameo 4 manual](https://www.silhcdn.com/m/d/user-guides/cameo-4-en.pdf)
+
+Studio describes Track Enhancing and Line Segment Overcut under Edit Materials.
+Its rotary tool action also generates extra geometry to orient the blade.
+[Silhouette Handbook, page 146](https://www.silhcdn.com/m/d/silhouette-handbook.pdf) · [Studio rotary blade guide](https://www.silhouetteamerica.com/pub/media/wysiwyg/rotary-blade-guide.pdf)
 
 Force and speed are unitless machine indices, the same numbers Studio shows.
 **The Cameo 4 and 5 take speed 1–30; every earlier Cameo takes 1–10**, so a

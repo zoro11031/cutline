@@ -47,6 +47,14 @@ class NotFound(TransportError):
     pass
 
 
+def check_autoblade(codes):
+    if not codes or codes[0] != 2:
+        detected = graphtec.tool_name(codes[0]) if codes else "Unavailable"
+        raise TransportError(f"Holder 1 reports {detected}. Automatic depth requires an "
+                             "AutoBlade. For a manual blade, set its physical depth "
+                             "and choose depth -1, then review the job again.")
+
+
 class Transport:
     """What every transport has to provide."""
 
@@ -72,6 +80,13 @@ class Transport:
     # ---- the shared run loop ----------------------------------------
     def run(self, steps, log=lambda m: None) -> int:
         """Execute a `CutJob` plan, stopping on the first failed expectation."""
+        steps = tuple(steps)
+        # Query before motion, once for the whole job (including test matrices).
+        # A depth command is always a complete ETX-delimited TF command.
+        if self.device and self.device.detects_tools and any(
+                cmd.startswith(b"TF") for step in steps if step.kind == "write"
+                for cmd in step.data.split(graphtec.CMD_ETX)):
+            check_autoblade(self.tool_codes())
         sent = 0
         for step in steps:
             if step.kind == "write":
@@ -89,6 +104,30 @@ class Transport:
                 if step.note:
                     log(f"{step.note}: ok")
         return sent
+
+    def tool_codes(self) -> tuple[int, ...]:
+        """Query the installed holders (inkscape-silhouette Graphtec.py 927–941)."""
+        if self.device is None or not self.device.detects_tools:
+            return ()
+        self.write(graphtec.CMD_ESC + graphtec.ESC_NAK)
+        reply = self.read(timeout_ms=1000)
+        fields = [part.strip() for part in reply[:-1].split(b",")]
+        if (not reply.endswith(graphtec.CMD_ETX) or len(fields) > 2
+                or (self.device.two_tools and len(fields) != 2)
+                or not all(f.isdigit() and int(f) <= 255 for f in fields)):
+            raise TransportError(f"Unexpected tool detection reply {reply!r}")
+        return tuple(int(f) for f in fields)
+
+    def status_with_tools(self) -> str:
+        state = self.status()
+        if state not in ("ready", "unloaded"):
+            return state
+        codes = self.tool_codes()
+        if not codes:
+            return f"{state} · tool detection unavailable on this model"
+        holders = [f"Holder {i}: {graphtec.tool_name(code)}"
+                   for i, code in enumerate(codes, 1)]
+        return " · ".join([state, *holders])
 
     def status(self) -> str:
         """'ready', 'moving', 'unloaded', or whatever came back."""

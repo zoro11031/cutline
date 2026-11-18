@@ -435,6 +435,51 @@ class FakeTransport(transport.Transport):
         return self.replies.pop(0)
 
 
+class TestInstalledTools(unittest.TestCase):
+    def cutter(self, *replies):
+        cutter = FakeTransport(replies)
+        cutter.device = graphtec.device_by_name("Silhouette Cameo 4")
+        return cutter
+
+    def test_requires_detected_autoblade_before_any_depth_job_motion(self):
+        plan = [Step("write", b"M0,0\x03"), Step("write", b"FX1,1\x03TF0,1\x03")]
+        for reply in (b" 0, 0\x03", b" 4, 2\x03", b"255,0\x03", b"29,0\x03",
+                      b"2,0", b"2,x\x03", b"2\x03", b"2,256\x03"):
+            with self.subTest(reply=reply):
+                cutter = self.cutter(reply)
+                with self.assertRaises(transport.TransportError):
+                    cutter.run(plan)
+                self.assertEqual(cutter.written, [b"\x1b\x15"])
+        cutter = self.cutter(b" 2, 0\x03")
+        cutter.run(plan)
+        self.assertEqual(cutter.written, [b"\x1b\x15"] + [step.data for step in plan])
+
+    def test_manual_depth_and_scan_only_use_original_writes(self):
+        cutter = self.cutter()
+        for data in (b"FX20,1\x03M0,0\x03", b"TB123,3918,5188,118,118\x03"):
+            cutter.run([Step("write", data)])
+        self.assertEqual(len(cutter.written), 2)
+        self.assertNotIn(b"\x1b\x15", cutter.written)
+
+    def test_status_preserves_unknown_ids_and_labels_each_holder(self):
+        for raw, labels in ((b" 2, 0\x03", ("AutoBlade", "Empty")),
+                            (b" 3, 4\x03", ("Deep-cut blade", "Kraft blade")),
+                            (b"77,255\x03", ("Unknown tool (ID 77)", "Detection error"))):
+            cutter = self.cutter(b"2\x03", raw)
+            self.assertEqual(cutter.status_with_tools(),
+                             f"unloaded · Holder 1: {labels[0]} · Holder 2: {labels[1]}")
+        old = self.cutter(b"0\x03")
+        old.device = graphtec.device_by_name("Silhouette Cameo 3")
+        self.assertIn("unavailable", old.status_with_tools())
+        self.assertEqual(old.written, [b"\x1b\x05"])
+
+    def test_only_dual_carriage_models_accept_holder_two(self):
+        settings = CutSettings(holder=2)
+        self.assertEqual(settings.clamped(self.cutter().device).holder, 2)
+        with self.assertRaisesRegex(ValueError, "holder 2"):
+            settings.clamped(graphtec.device_by_name("Silhouette Portrait 3"))
+
+
 class TestTransportRunFires(unittest.TestCase):
     """The expectation check between writing and cutting."""
 

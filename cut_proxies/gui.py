@@ -48,7 +48,7 @@ APP_ID = "org.printing.SilhouetteControlCenter"
 def cut_refusal(current, confirmed, sending):
     """Recheck the job at confirmation, including changes while a dialog is open."""
     if sending:
-        return 'A cut is already being sent.'
+        return 'The cutter connection is busy.'
     if confirmed is None or current is not confirmed:
         return 'The job changed. Check and confirm the current job again.'
     if confirmed.blocked:
@@ -321,6 +321,7 @@ class Window(Adw.ApplicationWindow):
         self._close_confirmed = False
         self._building = False
         self._sending = False
+        self._checking_status = False
         self._suppress = True        # don't rebuild while constructing rows
 
         self.toasts = Adw.ToastOverlay()
@@ -422,7 +423,12 @@ class Window(Adw.ApplicationWindow):
         self._page_studio()
 
         self._suppress = False
-        self.rebuild()
+        self.on_changed()
+        self.stack.connect("notify::visible-child-name", self.on_page_changed)
+
+    def on_page_changed(self, stack, _param):
+        if stack.get_visible_child_name() == "blade":
+            self.on_refresh_status()
 
     # ---- pages -------------------------------------------------------
     def _page_layout(self):
@@ -607,7 +613,7 @@ class Window(Adw.ApplicationWindow):
             description="Every number below is an index the machine uses, not "
                         "grams or mm per second. The mapping is not published.")
         self.r_preset = _combo("Preset", names, default)
-        self.r_preset.connect("notify::selected", self.on_preset)
+        self.preset_changed_id = self.r_preset.connect("notify::selected", self.on_preset)
         g.add(self.r_preset)
         self.preset_note = Adw.ActionRow(title="Provenance", subtitle="")
         self.preset_note.set_subtitle_lines(0)
@@ -630,20 +636,41 @@ class Window(Adw.ApplicationWindow):
                                       "10; the community guide uses 25")
         self.r_passes = _spin("Passes", 1, 10, 3, 1, 0,
                               subtitle="tune this first, before force")
-        self.r_depth = _spin("AutoBlade depth", 0, 10, 7, 1, 0,
-                             subtitle="0 means do not send a depth. A "
+        self.r_depth = _spin("AutoBlade depth", -1, 10, 7, 1, 0,
+                             subtitle="-1 leaves the blade alone; 0 retracts it. A "
                                       "ceiling, not a cut amount.")
+        self.r_holder = _spin("Tool holder", 1, 2, 1, subtitle="Holder 2 requires a dual-carriage cutter")
+        self.r_acceleration = _spin("Acceleration", -1, 3, -1,
+                                    subtitle="-1 uses the automatic acceleration sequence")
+        self.r_diameter = _spin("Blade diameter (mm)", 0, 2.3, 0.9, 0.05, 2,
+                                subtitle="Cutter offset from the tool setting; 0 for a pen")
+        self.r_lift = _switch("Lift head", True)
+        self.r_corners = _switch("Sharpen corners", False)
+        self.r_corner_start = _spin("Corner start extension (mm)", 0.1, 0.9, 0.1, 0.1, 1)
+        self.r_corner_end = _spin("Corner end extension (mm)", 0.1, 0.9, 0.1, 0.1, 1)
         for r in (self.r_cutter, self.r_force, self.r_speed, self.r_passes,
-                  self.r_depth):
+                  self.r_depth, self.r_holder, self.r_acceleration, self.r_diameter,
+                  self.r_lift, self.r_corners, self.r_corner_start, self.r_corner_end):
             g2.add(r)
+        self.tool_row = Adw.ActionRow(title="Installed tools", subtitle="Read the tool IDs from the connected cutter")
+        detect = Gtk.Button(label="Detect blades", valign=Gtk.Align.CENTER)
+        detect.connect("clicked", self.on_refresh_status)
+        self.tool_row.add_suffix(detect)
+        g2.add(self.tool_row)
         save_preset = Adw.ActionRow(
             title="Keep these settings",
-            subtitle="Save force, speed, depth and passes to the selected preset.")
+            subtitle="Save the blade and tool settings to the selected preset.")
         self.save_preset_btn = Gtk.Button(label="Save preset")
         self.save_preset_btn.set_valign(Gtk.Align.CENTER)
         self.save_preset_btn.connect("clicked", self.on_save_blade_preset)
         save_preset.add_suffix(self.save_preset_btn)
         g2.add(save_preset)
+        self.new_preset_name = Adw.EntryRow(title="New preset name")
+        create = Gtk.Button(label="Save as new preset", valign=Gtk.Align.CENTER)
+        create.connect("clicked", lambda *_: self.on_save_blade_preset(
+            new_name=self.new_preset_name.get_text()))
+        self.new_preset_name.add_suffix(create)
+        g2.add(self.new_preset_name)
         page.add(g2)
 
         g3 = Adw.PreferencesGroup(
@@ -654,7 +681,7 @@ class Window(Adw.ApplicationWindow):
         self.r_material = _combo("Material", ["(none loaded)"])
         apply_row = Adw.ActionRow(
             title="Apply the selected material",
-            subtitle="Overwrites force, speed, passes and depth")
+            subtitle="Load blade settings from the selected Studio material")
         apply_btn = Gtk.Button(label="Apply")
         apply_btn.set_valign(Gtk.Align.CENTER)
         apply_btn.connect("clicked", self.on_apply_material)
@@ -665,7 +692,10 @@ class Window(Adw.ApplicationWindow):
         self._load_materials()
 
         self.r_cutter.connect("notify::selected", self.on_changed)
-        for r in (self.r_force, self.r_speed, self.r_passes, self.r_depth):
+        for r in (self.r_lift, self.r_corners):
+            r.connect("notify::active", self.on_changed)
+        for r in (self.r_force, self.r_speed, self.r_passes, self.r_depth, self.r_holder,
+                  self.r_acceleration, self.r_diameter, self.r_corner_start, self.r_corner_end):
             r.connect("notify::value", self.on_changed)
 
         self.stack.add_titled_with_icon(page, "blade", "Blade",
@@ -910,7 +940,8 @@ class Window(Adw.ApplicationWindow):
             speed=int(self.r_speed.get_value()),
             passes=int(self.r_passes.get_value()),
             depth=(int(self.r_depth.get_value())
-                   if self.r_depth.get_value() > 0 else None),
+                   if self.r_depth.get_sensitive() and self.r_depth.get_value() >= 0 else None),
+            blade_options=self._blade_options(),
             bleed_mm=self.r_bleed.get_value(),
             registration=self.r_register.get_active(),
             auto_search=self.r_auto.get_active(),
@@ -945,6 +976,14 @@ class Window(Adw.ApplicationWindow):
     def on_changed(self, *_a):
         if self._suppress:
             return
+        device = graphtec.device_by_name(self._text(self.r_cutter))
+        self.r_holder.set_sensitive(device.two_tools)
+        self.r_depth.set_sensitive(device.autoblade and (not device.two_tools or self.r_holder.get_value() == 1))
+        self.r_acceleration.set_sensitive(device.detects_tools)
+        self.r_lift.set_sensitive(device.cameo3_on)
+        self.r_corners.set_sensitive(device.cameo3_on)
+        for extension in (self.r_corner_start, self.r_corner_end):
+            extension.set_sensitive(device.cameo3_on and self.r_corners.get_active())
         self._sheet_token = None
         self.bundle_checked = False
         if self.sheet_report is not None:
@@ -959,18 +998,49 @@ class Window(Adw.ApplicationWindow):
         if self.pdf_bundle:
             self.measure_sheet()
 
-    def on_save_blade_preset(self, *_a):
+    def _blade_options(self):
+        acceleration = int(self.r_acceleration.get_value())
+        return dict(holder=int(self.r_holder.get_value()) if self.r_holder.get_sensitive() else 1,
+                    acceleration=acceleration if acceleration >= 0 else None,
+                    blade_diameter_mm=round(self.r_diameter.get_value(), 2),
+                    lift_head=self.r_lift.get_active(), sharpen_corners=self.r_corners.get_active(),
+                    corner_start_mm=round(self.r_corner_start.get_value(), 1),
+                    corner_end_mm=round(self.r_corner_end.get_value(), 1))
+
+    def _load_blade_settings(self, settings):
+        self.r_force.set_value(settings.force)
+        self.r_speed.set_value(settings.speed)
+        self.r_passes.set_value(settings.passes)
+        self.r_depth.set_value(-1 if settings.depth is None else settings.depth)
+        self.r_holder.set_value(settings.holder)
+        self.r_acceleration.set_value(-1 if settings.acceleration is None else settings.acceleration)
+        self.r_diameter.set_value(settings.blade_diameter_mm)
+        self.r_lift.set_active(settings.lift_head)
+        self.r_corners.set_active(settings.sharpen_corners)
+        self.r_corner_start.set_value(settings.corner_start_mm)
+        self.r_corner_end.set_value(settings.corner_end_mm)
+
+    def on_save_blade_preset(self, *_a, new_name=None):
         name = self._text(self.r_preset)
         try:
             saved = presets.save_blade_settings(
                 name, force=int(self.r_force.get_value()), speed=int(self.r_speed.get_value()),
-                depth=int(self.r_depth.get_value()) or None, passes=int(self.r_passes.get_value()))
-        except OSError as exc:
+                depth=int(self.r_depth.get_value()) if self.r_depth.get_value() >= 0 else None,
+                passes=int(self.r_passes.get_value()), blade_options=self._blade_options(),
+                new_name=new_name)
+        except (OSError, ValueError) as exc:
             self.toast(f"Could not save preset: {exc}")
             return
         if saved is None:
             self.toast("Preset settings are already saved.")
             return
+        if new_name is not None:
+            name = new_name.strip()
+            names = sorted(presets.all_presets())
+            with self.r_preset.handler_block(self.preset_changed_id):
+                self.r_preset.set_model(Gtk.StringList.new(names))
+                self.r_preset.set_selected(names.index(name))
+            self.new_preset_name.set_text("")
         self.on_preset()
         self.toast(f"Saved {name}.")
 
@@ -984,10 +1054,7 @@ class Window(Adw.ApplicationWindow):
         self.preset_note.set_subtitle(f"{flag}\n\n{p.note}")
         was = self._suppress
         self._suppress = True
-        self.r_force.set_value(p.settings.get("force", 20))
-        self.r_speed.set_value(p.settings.get("speed", 5))
-        self.r_passes.set_value(p.settings.get("passes", 1))
-        self.r_depth.set_value(p.settings.get("depth") or 0)
+        self._load_blade_settings(p.cut_settings())
         self._suppress = was
         self.on_changed()
 
@@ -1141,9 +1208,11 @@ class Window(Adw.ApplicationWindow):
     def on_open_artwork(self, *_a):
         dialog = Gtk.FileDialog(title="Open artwork to cut")
         filt = Gtk.FileFilter()
-        filt.set_name("Cuttable vector (SVG, DXF)")
+        filt.set_name("Cut templates (SVG, DXF, Studio3)")
         filt.add_pattern("*.svg")
         filt.add_pattern("*.dxf")
+        filt.add_pattern("*.studio3")
+        filt.add_pattern("*.STUDIO3")
         filters = Gio.ListStore.new(Gtk.FileFilter)
         filters.append(filt)
         dialog.set_filters(filters)
@@ -1480,7 +1549,8 @@ class Window(Adw.ApplicationWindow):
         self.r_force.set_value(m.force)
         self.r_speed.set_value(m.speed)
         self.r_passes.set_value(m.passes)
-        self.r_depth.set_value(m.autoblade_depth or 0)
+        self.r_depth.set_value(-1 if m.autoblade_depth is None else m.autoblade_depth)
+        self.r_diameter.set_value(m.blade_diameter_mm)
         self._suppress = was
         self.toast(f"{name}: {m.describe()}")
         self.on_changed()
@@ -1499,7 +1569,10 @@ class Window(Adw.ApplicationWindow):
             return
         from . import testcut
         device = graphtec.device_by_name(self._text(self.r_cutter))
-        base = presets.get(self._text(self.r_preset)).cut_settings()
+        opts = self.options()
+        base = graphtec.CutSettings(force=opts["force"], speed=opts["speed"],
+                                    passes=opts["passes"], depth=opts["depth"],
+                                    **opts["blade_options"])
         try:
             ts = testcut.build(
                 device, base,
@@ -1527,14 +1600,20 @@ class Window(Adw.ApplicationWindow):
     def _test_cut_response(self, _dialog, response, ts):
         if response != "cut":
             return
+        if self._sending or self._checking_status:
+            self.toast("The cutter connection is busy.")
+            return
+        self._sending = True
 
         def work():
             try:
-                with transport.open_transport("auto") as tr:
+                with transport.open_transport("auto", device=ts.device) as tr:
                     sent = tr.run(ts.steps)
                 GLib.idle_add(self.toast, f"Test cut sent: {sent:,} bytes")
             except Exception as exc:              # noqa: BLE001
                 GLib.idle_add(self.toast, f"Send failed: {exc}")
+            finally:
+                GLib.idle_add(self._send_done)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -1572,33 +1651,26 @@ class Window(Adw.ApplicationWindow):
         return "ble", None
 
     def on_refresh_status(self, *_a):
-        if self._sending:
+        if self._sending or self._checking_status:
             return
-        self.status_row.set_subtitle("checking...")
         mode, address = self._connection()
+        self._checking_status = True
+        self.status_row.set_subtitle("Checking…")
+        self.tool_row.set_subtitle("Checking…")
+
+        def done(text):
+            self._checking_status = False
+            self.status_row.set_subtitle(text)
+            self.tool_row.set_subtitle(text)
 
         def work():
-            if mode == "ble":
-                try:
-                    with transport.open_transport(mode, bluetooth_id=address) as cutter:
-                        text = f"{cutter.device.name} ({address}): {cutter.status()}"
-                except transport.TransportError as exc:
-                    text = str(exc)
-                GLib.idle_add(self.status_row.set_subtitle, text)
-                return
-            found = transport.find_devices()
-            if not found:
-                text = ("no Silhouette cutter on the USB bus; "
-                        "--dry-run and Studio still work")
-            else:
-                dev, how = found[0]
-                text = f"{dev.name} ({dev.usb_id}) - {how}"
-                try:
-                    with transport.open_transport("auto") as t:
-                        text += f"; {t.name} says {t.status()}"
-                except transport.TransportError as exc:
-                    text += f"; cannot open it: {exc}"
-            GLib.idle_add(self.status_row.set_subtitle, text)
+            try:
+                options = {"bluetooth_id": address} if mode == "ble" else {}
+                with transport.open_transport(mode, **options) as cutter:
+                    text = f"{cutter.device.name} · {cutter.status_with_tools()}"
+            except Exception as exc:
+                text = f"Tool detection unavailable · {exc}"
+            GLib.idle_add(done, text)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -1607,7 +1679,7 @@ class Window(Adw.ApplicationWindow):
             self.toast('Check the matched PDF before cutting this sheet.')
             return
         j = self.job
-        refusal = cut_refusal(j, j, self._sending)
+        refusal = cut_refusal(j, j, self._sending or self._checking_status)
         if refusal:
             self.toast(refusal)
             return
@@ -1647,7 +1719,7 @@ class Window(Adw.ApplicationWindow):
         if self.pdf_bundle and not self.bundle_checked:
             self.toast('Check the matched PDF before cutting this sheet.')
             return
-        refusal = cut_refusal(self.job, j, self._sending)
+        refusal = cut_refusal(self.job, j, self._sending or self._checking_status)
         if refusal:
             self.toast(refusal)
             return

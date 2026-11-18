@@ -1,5 +1,6 @@
 """Settings and offset configuration safety."""
 
+import argparse
 import json
 import math
 import tempfile
@@ -7,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from cut_proxies import config, job, presets, verify
+from cut_proxies import cli, config, job, presets, verify
 
 
 class TestConfig(unittest.TestCase):
@@ -90,6 +91,21 @@ class TestBladePresets(unittest.TestCase):
                     self.assertEqual((decoded.force, decoded.speed, decoded.depth,
                                       len(decoded.paths)), (force, 25, 7, len(cut.paths) * 4))
                 self.assertEqual(presets.get(name).cut_settings().force, 35)
+
+    def test_cli_overrides_reach_selected_holder_in_checked_stream(self):
+        parser = argparse.ArgumentParser()
+        cli.common_layout_args(parser)
+        cli.common_cut_args(parser)
+        args = parser.parse_args("--holder 2 --depth -1 --speed 8 --force 19 --passes 2 "
+                                 "--blade-diameter-mm 0.65 --no-lift-head --sharpen-corners "
+                                 "--corner-start-mm 0.4 --corner-end-mm 0.7 --acceleration -1".split())
+        checked = cli.build_from_args(args)
+        self.assertFalse(checked.blocked)
+        commands = verify.decode(checked.stream).commands
+        for expected in ("J2", "FX19,2", "!8,2", "FC13,1,2", "FE0,2", "FF4,7,2", "TJ0", "TJ3"):
+            self.assertIn(expected, commands)
+        self.assertIsNone(verify.decode(checked.stream).depth)
+        self.assertEqual(len(verify.decode(checked.stream).paths), 2 * len(checked.paths))
 
     def test_edits_reload_and_preserve_other_settings_and_custom_filename(self):
         name = "330 gsm black-core"

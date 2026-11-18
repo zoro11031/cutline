@@ -75,7 +75,7 @@ class TestCliCheckedPlan(unittest.TestCase):
 @unittest.skipUnless(gui is not None, 'PyGObject is not installed')
 class TestGuiCheckedPlan(unittest.TestCase):
     def send(self, checked, scan_only=False):
-        window = types.SimpleNamespace(job=checked, _sending=False, pdf_bundle=None,
+        window = types.SimpleNamespace(job=checked, _sending=False, _checking_status=False, pdf_bundle=None,
             cut_button=mock.Mock(), scan_button=mock.Mock(), scan_result=mock.Mock(),
             r_auto=mock.Mock(), toast=mock.Mock(),
             rebuild=mock.Mock(), _send_done=mock.Mock())

@@ -21,7 +21,7 @@ cheap: nine sub-suites of a few tests each.
 import io
 import unittest
 
-from cut_proxies import job, regmarks, verify, winboat
+from cut_proxies import graphtec, job, regmarks, transport, verify, winboat
 
 
 def _run(class_paths):
@@ -45,7 +45,19 @@ def _force_verification_row(label, allowed):
     return force
 
 
+def refuse_depth(codes):
+    raise transport.TransportError("refused")
+
+
 CASES = (
+    (graphtec.Device, "supports_holder", lambda *a: True, "every holder accepted",
+     ["tests.test_guards.TestInstalledTools"]),
+    (graphtec.Device, "supports_holder", lambda *a: False, "every holder refused",
+     ["tests.test_guards.TestInstalledTools"]),
+    (transport, "check_autoblade", lambda codes: None, "depth always allowed",
+     ["tests.test_guards.TestInstalledTools"]),
+    (transport, "check_autoblade", refuse_depth, "depth always refused",
+     ["tests.test_guards.TestInstalledTools"]),
     (job, "inkscape_registration_errors", lambda *a: [],
      "Inkscape registration always allows",
      ["tests.test_inkscape_import.TestInkscapeImport"]),

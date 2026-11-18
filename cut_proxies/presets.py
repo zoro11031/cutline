@@ -291,11 +291,19 @@ def get(name: str) -> Preset:
 
 
 def save_blade_settings(name: str, *, force: int, speed: int, depth: int | None,
-                        passes: int) -> pathlib.Path | None:
-    """Save the four visible blade settings while retaining the other options."""
+                        passes: int, blade_options=None, new_name: str | None = None) -> pathlib.Path | None:
+    """Save edited blade settings, retaining any unspecified preset options."""
     preset = get(name)
     settings = dict(preset.settings, force=force, speed=speed, depth=depth, passes=passes)
-    if settings == preset.settings:
+    settings.update(blade_options or {})
+    if new_name is not None:
+        new_name = new_name.strip()
+        if not new_name:
+            raise ValueError("Enter a preset name.")
+        if any(new_name.casefold() == name.casefold() for name in all_presets()):
+            raise ValueError("A preset with that name already exists.")
+        preset = dataclasses.replace(preset, name=new_name)
+    elif CutSettings(**settings) == preset.cut_settings():
         return None
     return save(dataclasses.replace(
         preset, origin="derived", settings=settings, description="Locally edited preset.",

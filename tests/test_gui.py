@@ -51,17 +51,39 @@ class TestDesignWorkspace(unittest.TestCase):
             self.assertEqual(win.r_force.get_value(), 35)
             win.r_force.set_value(32)
             win.r_speed.set_value(21)
-            win.r_depth.set_value(0)
+            win.r_depth.set_value(-1)
             win.r_passes.set_value(5)
+            win.r_diameter.set_value(0.65)
+            win.r_corners.set_active(True)
+            win.r_corner_start.set_value(0.4)
+            win.r_corner_end.set_value(0.7)
+            win.r_lift.set_active(False)
             win.save_preset_btn.emit("clicked")
             win.r_preset.set_selected(0)
             names = sorted(presets.all_presets())
             win.r_preset.set_selected(names.index(config.DEFAULT_PRESET))
             self.assertEqual((win.r_force.get_value(), win.r_speed.get_value(),
                               win.r_depth.get_value(), win.r_passes.get_value()),
-                             (32, 21, 0, 5))
+                             (32, 21, -1, 5))
             self.assertIsNone(win.job.settings.depth)
             self.assertEqual(win.job.settings.passes, 5)
+            for cmd in (b"FC13,1,1", b"FE0,1", b"FF4,7,1"):
+                self.assertIn(cmd, win.job.stream.split(b"\x03"))
+
+    def test_save_as_new_selects_a_distinct_preset(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             mock.patch.object(config, "CONFIG_DIR", Path(folder)):
+            win = self.make_window()
+            win.r_force.set_value(18)
+            win.r_depth.set_value(-1)
+            win.on_save_blade_preset(new_name=" Green holder ")
+            self.assertEqual(win._text(win.r_preset), "Green holder")
+            self.assertEqual(presets.get("Green holder").cut_settings().force, 18)
+            self.assertIsNone(presets.get("Green holder").cut_settings().depth)
+            self.assertEqual(presets.get(config.DEFAULT_PRESET).cut_settings().force, 35)
+            win.r_force.set_value(19)
+            win.on_save_blade_preset(new_name="GREEN HOLDER")
+            self.assertEqual(presets.get("Green holder").cut_settings().force, 18)
 
     def test_registration_failure_opens_named_mark_diagnostics(self):
         win = self.make_window()
@@ -144,7 +166,7 @@ class TestOpenDialogs(unittest.TestCase):
         dialog.return_value.open.assert_called_once()
         filters = dialog.return_value.set_filters.call_args.args[0]
         self.assertEqual(filters.get_n_items(), 1)
-        self.assertEqual(filters.get_item(0).get_name(), 'Cuttable vector (SVG, DXF)')
+        self.assertEqual(filters.get_item(0).get_name(), 'Cut templates (SVG, DXF, Studio3)')
 
     def test_pdf_button_opens_a_filtered_file_dialog(self):
         window = mock.Mock()

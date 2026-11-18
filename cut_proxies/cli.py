@@ -16,6 +16,7 @@ Subcommands, in the order a sheet goes through them:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import pathlib
 import sys
 
@@ -137,7 +138,7 @@ def common_layout_args(p, bundles=False):
                    help="bleed around each card, for the collision check")
     p.add_argument("--from", dest="source", metavar="FILE",
                    help="use paths from " + ("an SVG, DXF or matched ProxyPress ZIP"
-                                             if bundles else "an SVG or DXF"))
+                                             if bundles else "an SVG, DXF or Studio3 template"))
     p.add_argument("--color", "--colour", dest="colour", metavar="COLOUR",
                    help="cut only the paths with this stroke colour, the "
                         "way Studio selects by line colour (e.g. red, "
@@ -156,6 +157,30 @@ def common_cut_args(p):
     p.add_argument("--force", type=int, default=None)
     p.add_argument("--speed", type=int, default=None)
     p.add_argument("--passes", type=int, default=None)
+
+    p.add_argument("--depth", type=int, choices=range(-1, 11), help="AutoBlade depth 0–10; -1 leaves it unset")
+    advanced_cut_args(p)
+
+
+def advanced_cut_args(p):
+    p.add_argument("--holder", type=int, choices=(1, 2))
+    p.add_argument("--acceleration", type=int, choices=range(-1, 4), help="-1 uses the automatic TJ sequence")
+    p.add_argument("--blade-diameter-mm", type=float, choices=[i / 20 for i in range(47)], metavar="MM")
+    p.add_argument("--lift-head", action=argparse.BooleanOptionalAction, default=None)
+    p.add_argument("--sharpen-corners", action=argparse.BooleanOptionalAction, default=None)
+    for flag in ("--corner-start-mm", "--corner-end-mm"):
+        p.add_argument(flag, type=float, choices=[i / 10 for i in range(1, 10)], metavar="MM",
+                       help="corner extension from 0.1 to 0.9 mm")
+
+
+def advanced_settings(args):
+    options = {key: getattr(args, key) for key in
+               ("holder", "acceleration", "blade_diameter_mm", "lift_head",
+                "sharpen_corners", "corner_start_mm", "corner_end_mm")
+               if getattr(args, key, None) is not None}
+    if options.get("acceleration") == -1:
+        options["acceleration"] = None
+    return options
 
 
 def build_from_args(args, matched=None, bundle_row=None) -> job_mod.Job:
@@ -196,6 +221,9 @@ def build_from_args(args, matched=None, bundle_row=None) -> job_mod.Job:
         auto_search=not getattr(args, "manual_registration", False),
         skip=tuple(getattr(args, "skip", []) or ()),
     )
+    options["blade_options"] = advanced_settings(args)
+    if getattr(args, "depth", None) is not None:
+        options["depth"] = None if args.depth == -1 else args.depth
     selected = getattr(args, 'layout_preset', None)
     if selected:
         options.update(layout_presets.BUILTIN[selected].options())
@@ -211,7 +239,7 @@ def build_from_args(args, matched=None, bundle_row=None) -> job_mod.Job:
 def cmd_template(args):
     try:
         j = build_from_args(args)
-    except geometry.LayoutImpossible as exc:
+    except ValueError as exc:
         fail(str(exc))
     show_summary(j)
     show_checks(j)
@@ -471,7 +499,7 @@ def cmd_check_sheet(args):
             j = build_from_args(args)
             marks = j.marks
             report = sheet_mod.measure(path, marks, page=args.page, dpi=args.dpi)
-    except (geometry.LayoutImpossible, sheet_mod.SheetError, bundle.BundleError) as exc:
+    except (ValueError, sheet_mod.SheetError, bundle.BundleError) as exc:
         fail(str(exc))
 
     say("PDF geometry only; measure the physical print separately.", style="dim")
@@ -508,7 +536,7 @@ def cmd_check_sheet(args):
 def cmd_testcut(args):
     from . import testcut
     device = graphtec.device_by_name(args.cutter)
-    base = presets.get(args.preset).cut_settings()
+    base = dataclasses.replace(presets.get(args.preset).cut_settings(), **advanced_settings(args))
     sheet = geometry.sheet(args.sheet)
     w, h = sheet.size(portrait=not args.landscape)
     try:
@@ -554,7 +582,7 @@ def cmd_testcut(args):
         return 0
 
     try:
-        tr = transport.open_transport(args.transport)
+        tr = transport.open_transport(args.transport, device=ts.device)
     except transport.TransportError as exc:
         say(f"\n{exc}", style="bold red")
         fail("No way to reach the cutter. Use --dry-run.")
@@ -666,7 +694,7 @@ def cmd_status(args):
         try:
             if args.bluetooth_id:
                 with transport.open_transport("ble", bluetooth_id=args.bluetooth_id) as cutter:
-                    say(f"{cutter.device.name}: {cutter.status()}")
+                    say(f"{cutter.device.name}: {cutter.status_with_tools()}")
             else:
                 devices = ble.discover()
                 for address, name in devices:
@@ -704,7 +732,7 @@ def cmd_status(args):
         say("\nLive status", style="bold")
         try:
             with transport.open_transport("auto") as t:
-                say(f"  {t.name}: {t.status()}")
+                say(f"  {t.name}: {t.status_with_tools()}")
         except transport.TransportError as exc:
             say(f"  could not open the cutter: {exc}", style="yellow")
 
@@ -754,7 +782,7 @@ def cmd_cut(args):
                 say(matched.mat_placement())
         else:
             j = build_from_args(args)
-    except (geometry.LayoutImpossible, bundle.BundleError) as exc:
+    except (ValueError, bundle.BundleError) as exc:
         fail(str(exc))
     show_summary(j)
     show_checks(j)
@@ -966,7 +994,7 @@ def cmd_studio(args):
     # No file: generate and stage DXF for the requested layout
     try:
         j = build_from_args(args)
-    except geometry.LayoutImpossible as exc:
+    except ValueError as exc:
         fail(str(exc))
     show_summary(j)
     show_checks(j)
@@ -1042,7 +1070,7 @@ def main(argv=None):
     pps.set_defaults(func=cmd_proxypress)
 
     im = sub.add_parser("import",
-                        help="read an SVG or DXF and report what is in it")
+                        help="read an SVG, DXF or Studio3 template and report what is in it")
     im.add_argument("file")
     im.add_argument("-v", "--verbose", action="store_true",
                     help="list every path")
@@ -1074,6 +1102,7 @@ def main(argv=None):
     tc.add_argument("--force", help="comma-separated, e.g. 25,29,33")
     tc.add_argument("--speed", help="comma-separated")
     tc.add_argument("--passes", help="comma-separated")
+    advanced_cut_args(tc)
     tc.add_argument("--depth", help="comma-separated, AutoBlade only")
     tc.add_argument("--size", type=float, default=15.0, metavar="MM")
     tc.add_argument("--gap", type=float, default=5.0, metavar="MM")

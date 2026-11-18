@@ -104,6 +104,15 @@ class Job:
 
     def summary(self) -> list[tuple[str, str]]:
         mk = self.marks
+        s = self.settings
+        tool = [f"holder {s.holder}"]
+        if self.device.cameo3_on:
+            tool.append("head lift on" if s.lift_head else "head lift off")
+            tool.append(f"corner extensions {s.corner_start_mm:g}/{s.corner_end_mm:g} mm"
+                        if s.sharpen_corners else "corner extensions off")
+        if self.device.detects_tools:
+            tool.append("automatic acceleration" if s.acceleration is None
+                        else f"acceleration {s.acceleration}")
         return [
             ("Cutter", f"{self.device.name} "
                        f"({self.device.width_mm:g} mm cuttable)"),
@@ -126,6 +135,7 @@ class Job:
                       f"pass(es), blade {self.settings.blade_diameter_mm:g} mm"
                       + (f", depth {self.settings.depth}"
                          if self.settings.depth is not None else "")),
+            ("Tool setup", ", ".join(tool)),
             ("Cut mode", self.mode),
             ("Calibration", "none"
              if tuple(self.offset_mm) == (0.0, 0.0)
@@ -164,7 +174,7 @@ def build(sheet: str = config.DEFAULT_SHEET,
           auto_search: bool = True,
           skip: tuple[int, ...] = (),
           offset_mm: tuple[float, float] | None = None,
-          imported=None) -> Job:
+          imported=None, blade_options=None) -> Job:
     """Build and check a job.  Raises only on things that cannot be reported."""
     device = graphtec.device_by_name(cutter)
 
@@ -182,10 +192,6 @@ def build(sheet: str = config.DEFAULT_SHEET,
                  else float(marks_cfg["regInset"]))
         # 0 means auto in Proxy Press and None means auto here.
         length = mark_length_mm
-        if length is None and proxypress is None and not portrait:
-            preset = layout_presets.BUILTIN.get(f"mtg-cameo-{sheet.lower()}")
-            if preset is not None:
-                length = preset.arm_mm
         thickness = (mark_thickness_mm if mark_thickness_mm is not None
                      else float(marks_cfg["regThickness"]))
         # Both layout engines use the same standard registration patterns.
@@ -196,6 +202,13 @@ def build(sheet: str = config.DEFAULT_SHEET,
         length = mark_length_mm
         thickness = (mark_thickness_mm if mark_thickness_mm is not None
                      else config.DEFAULT_MARK_THICKNESS_MM)
+
+    # Stock landscape jobs and bare cut files share the printed paper preset.
+    if (length is None and not grid.portrait and card == "standard"
+            and inset == 10 and proxypress is None and pattern == regmarks.THREE):
+        preset = layout_presets.BUILTIN.get(f"mtg-cameo-{sheet.lower()}")
+        if preset is not None:
+            length = preset.arm_mm
 
     # 2. the marks
     mk = regmarks.for_grid(grid, inset_mm=inset, length_mm=length,
@@ -247,7 +260,7 @@ def build(sheet: str = config.DEFAULT_SHEET,
 
     # 4. the settings and the stream
     preset = presets.get(preset_name)
-    cut = preset.cut_settings()
+    cut = dataclasses.replace(preset.cut_settings(), **(blade_options or {}))
     if passes is not None:
         cut.passes = passes
     if force is not None:
@@ -324,7 +337,7 @@ def imported_page_errors(imported, grid) -> list[str]:
     w, h = imported.page_size_mm
     if abs(w - grid.sheet_w_mm) <= 0.1 and abs(h - grid.sheet_h_mm) <= 0.1:
         return []
-    return [f"SVG page is {w:g} x {h:g} mm; selected sheet is "
+    return [f"Imported page is {w:g} x {h:g} mm; selected sheet is "
             f"{grid.sheet_w_mm:g} x {grid.sheet_h_mm:g} mm. "
             "Select the matching sheet size and orientation, or export again "
             "for the selected sheet."]

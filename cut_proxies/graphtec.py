@@ -41,6 +41,15 @@ ESC_EOT = b"\x04"           # escape: initialise the device
 ESC_ENQ = b"\x05"           # escape: return status
 ESC_NAK = b"\x15"           # escape: return tool setup (Cameo 4 and later)
 
+# inkscape-silhouette Graphtec.py 198-205, identifiers returned by ESC NAK.
+TOOL_NAMES = {0: "Empty", 1: "Ratchet blade", 2: "AutoBlade", 3: "Deep-cut blade",
+              4: "Kraft blade", 5: "Rotary blade", 7: "Pen", 255: "Detection error"}
+
+
+def tool_name(code: int) -> str:
+    return TOOL_NAMES.get(code, f"Unknown tool (ID {code})")
+
+
 QUERY_FIRMWARE_VERSION = b"FG"
 
 RESP_READY = b"0"
@@ -98,6 +107,18 @@ class Device:
     max_speed: int = 10             # 30 on the Cameo 4 line, see below
     two_tools: bool = False
     cameo3_on: bool = False         # the newer command dialect
+
+    @property
+    def detects_tools(self) -> bool:
+        # PRODUCT_LINE_CAMEO4 in inkscape-silhouette Graphtec.py 151-169.
+        return self.max_speed == 30
+
+    def supports_holder(self, holder: int) -> bool:
+        return holder == 1 or (holder == 2 and self.two_tools)
+
+    @property
+    def autoblade(self) -> bool:
+        return self.cameo3_on or self.product_id == 0x1132
 
     @property
     def usb_id(self) -> str:
@@ -356,8 +377,14 @@ class CutSettings:
     sharpen_corners: bool = False
     media: int | None = None            # advisory; no command carries it
 
+    # inkscape-silhouette Graphtec.py 1191-1196: FF takes tenths of a mm.
+    corner_start_mm: float = 0.1
+    corner_end_mm: float = 0.1
+
     def clamped(self, device: Device) -> "CutSettings":
         out = dataclasses.replace(self)
+        if not device.supports_holder(self.holder):
+            raise ValueError(f"{device.name} has no tool holder {self.holder}")
         out.force = max(1, min(self.force, device.max_pressure))
         out.speed = max(1, min(self.speed, device.max_speed))
         if out.depth is not None:
@@ -418,6 +445,9 @@ class CutJob:
         dev = self.device
         tool = Tool(s.holder)
         cmds: list[str] = []
+        start = round(s.corner_start_mm * 10) if s.sharpen_corners else 0
+        end = round(s.corner_end_mm * 10) if s.sharpen_corners else 0
+        corners = tool.sharpen_corners(start, end)
         if dev.two_tools:
             cmds.append(tool.select())
 
@@ -428,24 +458,31 @@ class CutJob:
             cmds.append(tool.speed(s.speed))
             cmds.append(tool.cutter_offset(0, 0.05))
             cmds.append(tool.lift(s.lift_head))
-            if s.sharpen_corners:
-                cmds.extend(tool.sharpen_corners(1, 1))
-            else:
-                cmds.extend(tool.sharpen_corners(0, 0))
+            cmds.extend(corners)
             # Upstream sends the pressure twice, with an acceleration change
             # between, and notes it does not know why.  Reproduced.
             cmds.append(tool.pressure(s.force))
             cmds.append(acceleration(s.acceleration
                                      if s.acceleration is not None else 3))
             cmds.append(tool.cutter_offset(s.blade_diameter_mm, 0.05))
-            if s.depth is not None and s.holder == 1:
-                cmds.append(tool.depth(s.depth))
         else:
             cmds.append(tool.speed(s.speed) if dev.cameo3_on
                         else f"!{s.speed}")
             cmds.append(tool.pressure(s.force))
-            cmds.append(blade_diameter(s.blade_diameter_mm))
-            cmds.append("FE0,0")
+            if dev.cameo3_on:
+                # Cameo 3 setup, upstream Graphtec.py 1240–1262.
+                cmds.append(tool.lift(s.lift_head))
+                cmds.extend(corners)
+                cmds.append(tool.cutter_offset(0, 0.05))
+                cmds.append(tool.cutter_offset(s.blade_diameter_mm, 0.05))
+            else:
+                cmds.append(blade_diameter(s.blade_diameter_mm))
+                cmds.append("FE0,0")
+        if dev.autoblade and s.depth is not None and s.holder == 1:
+            if dev.product_id == 0x1132:
+                # Portrait 2 needs J1 immediately before TF, upstream line 1279.
+                cmds.append(tool.select())
+            cmds.append(tool.depth(s.depth))
         return cmds
 
     def _regmark_steps(self) -> list[Step]:

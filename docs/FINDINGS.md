@@ -1620,7 +1620,22 @@ The stock ProxyPress engine also previously substituted a 20 mm arm.
 It now uses the existing Letter and A4 printed-sheet presets. Explicit
 mark lengths remain available.
 
+Stock landscape jobs now share the ProxyPress printed-sheet arm lengths
+across layout engines, including when a bare DXF supplies the cut paths.
+A dry run of the Bolas Lands DXF now sends the same 8.0264 mm arm setting
+as the Letter Studio template (`TB51,161`). A bundle supplies its own
+printed dimensions, and an explicit arm length still takes precedence.
+
 The standalone DXF and stock ProxyPress plans passed stream verification
 offline. There is no USB capture of the reported Bolas Lands-5 failure,
 and the cutter was disconnected during this investigation. The earlier
 physical success applies to the New deck sheet.
+
+### Cameo 4 tool detection over USB, 2026-11-18
+
+On firmware 1.20 the unloaded Cameo 4 answered the ESC NAK tool query
+with the ASCII fields ` 2, 0` and an ETX terminator on three successive
+reads with the AutoBlade installed. An earlier query returned ` 0, 0`.
+The first field identifies holder 1 and the second identifies holder 2.
+The detection test sent only queries. The Kraft blade and aftermarket
+green holder were unavailable for physical identification.

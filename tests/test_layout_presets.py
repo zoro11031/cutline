@@ -28,6 +28,14 @@ class TestProxyPressCameoPreset(unittest.TestCase):
         self.assertEqual(j.marks.thickness_mm, 1.0)
         self.assertFalse(j.blocked)
 
+    def test_stock_landscape_defaults_share_the_printed_arm(self):
+        for preset in layout_presets.BUILTIN.values():
+            for engine in ("scm", "proxypress"):
+                with self.subTest(sheet=preset.sheet, engine=engine):
+                    checked = job.build(sheet=preset.sheet, engine=engine)
+                    self.assertEqual(checked.marks.length_mm, preset.arm_mm)
+                    self.assertFalse(checked.blocked)
+
     def test_cli_applies_geometry_without_changing_blade_settings(self):
         build = job.build
         with mock.patch.object(cli.job_mod, 'build', wraps=build) as checked, \
