@@ -21,7 +21,9 @@ actually established and what was not.
 | `cut_proxies/sheet.py` | Measures the registration marks on a printed PDF, optically. |
 | `cut_proxies/job.py` | Composes all of the above into one checked job. Both front ends go through it. |
 | `cut_proxies/winboat.py` | The Silhouette Studio fallback in the Windows guest. |
-| `cut_proxies/cli.py`, `gui.py` | Terminal and GTK4/libadwaita front ends. |
+| `cut_proxies/cli.py` | Terminal frontend and desktop toolkit selection. |
+| `cut_proxies/qt_gui.py`, `qt_design.py` | Qt Widgets workspace and editor. |
+| `cut_proxies/gui.py`, `editor.py` | GTK4/libadwaita workspace and editor. |
 
 ## Ground rules
 
