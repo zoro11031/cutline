@@ -53,6 +53,7 @@ class Job:
     # ends must not reconstruct a different plan from current widget state.
     steps: tuple = ()
     registration: bool = True
+    auto_search: bool = True
 
     # ---- reporting ---------------------------------------------------
     @property
@@ -233,7 +234,7 @@ def build(sheet: str = config.DEFAULT_SHEET,
         if inkscape_marks:
             mk = regmarks.marks(grid.sheet_w_mm, grid.sheet_h_mm,
                                 inkscape_marks.inset_mm, inkscape_marks.length_mm,
-                                pattern=inkscape_marks.pattern)
+                                pattern=inkscape_marks.pattern, window_mm=inkscape_marks.window_mm)
             # The plugin prints thinner strokes than the SCM presets.
             thickness = inkscape_marks.thickness_mm
             mk = dataclasses.replace(mk, thickness_mm=thickness,
@@ -280,13 +281,15 @@ def build(sheet: str = config.DEFAULT_SHEET,
         reg_width_mm=mk.reg_width_mm, reg_length_mm=mk.reg_length_mm,
         registration=registration, auto_search=auto_search,
         quad=window["quad"], offset_mm=offset,
-        mark_shape_mm=(mk.length_mm, mk.thickness_mm))
+        mark_shape_mm=(mk.length_mm, mk.thickness_mm),
+        sheet_size_mm=(grid.sheet_w_mm, grid.sheet_h_mm))
     steps = tuple(job.plan(paths))
     stream = b''.join(step.data for step in steps if step.kind == 'write')
 
     # 5. take it apart again
     verify_mode = mode if imported is None else "rounded"
-    check_options = dict(cards=cut_cards, offset_mm=offset, registration=registration)
+    check_options = dict(cards=cut_cards, offset_mm=offset, registration=registration,
+                         auto_search=auto_search)
     if imported is not None:
         check_options["expected_paths"] = paths
     ok, rows = verify.expectations_met(stream, grid, mk, cut, device, verify_mode,
@@ -310,7 +313,8 @@ def build(sheet: str = config.DEFAULT_SHEET,
                preset=preset, mode=mode, stream=stream, rows=rows, ok=ok,
                collisions=collisions, off_sheet=off, warnings=warnings,
                skip=skip, mask_hints=hints, offset_mm=offset,
-               liveness_failures=liveness, steps=steps, registration=registration)
+               liveness_failures=liveness, steps=steps, registration=registration,
+               auto_search=auto_search)
 
 
 def imported_mode_errors(imported, mode: str) -> list[str]:

@@ -5,7 +5,7 @@ from pathlib import Path
 import unittest
 import types
 from unittest import mock
-from cut_proxies import config, job, presets
+from cut_proxies import config, importer, job, presets
 
 try:
     from cut_proxies import gui
@@ -205,6 +205,7 @@ class TestOpenDialogs(unittest.TestCase):
     def test_a_failed_import_keeps_the_previous_artwork_and_job(self):
         previous = object()
         window = types.SimpleNamespace(imported=previous, toast=mock.Mock(), clear_bundle=mock.Mock())
+        window.load_artwork_file = types.MethodType(gui.Window.load_artwork_file, window)
         with mock.patch.object(gui.Gtk, 'FileDialog') as dialog, \
              mock.patch('cut_proxies.importer.load', side_effect=ValueError('bad file')):
             gui.Window.on_open_artwork(window)
@@ -213,6 +214,23 @@ class TestOpenDialogs(unittest.TestCase):
             callback(dialog.return_value, mock.Mock())
         self.assertIs(window.imported, previous)
         window.toast.assert_called_once()
+
+    def test_multipage_svg_prompts_then_loads_the_selected_page(self):
+        path = Path("/tmp/multipage.svg")
+        artwork = mock.Mock()
+        window = types.SimpleNamespace(clear_bundle=mock.Mock(), set_artwork=mock.Mock())
+        window.load_artwork_file = types.MethodType(gui.Window.load_artwork_file, window)
+        with mock.patch.object(gui.Adw, "AlertDialog") as dialog, \
+             mock.patch.object(gui.Gtk, "SpinButton") as spin, \
+             mock.patch.object(importer, "load", side_effect=[importer.InkscapePageRequired(3),
+                                                            artwork]) as load:
+            window.load_artwork_file(path)
+            spin.new_with_range.assert_called_once_with(1, 3, 1)
+            window.set_artwork.assert_not_called()
+            spin.new_with_range.return_value.get_value_as_int.return_value = 2
+            dialog.return_value.connect.call_args.args[1](dialog.return_value, "open")
+        self.assertEqual(load.call_args_list, [mock.call(path, page=None), mock.call(path, page=2)])
+        window.set_artwork.assert_called_once_with(artwork, "multipage.svg · Page 2")
 
     def test_colorblind_preference_preserves_calibration(self):
         window = types.SimpleNamespace(preview=mock.Mock(), toast=mock.Mock())

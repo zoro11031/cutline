@@ -113,17 +113,21 @@ class Marks:
         every cut coordinate is measured from this point, not from the paper
         corner.
         """
-        return (self.inset_mm, self.inset_mm)
+        if self.square is not None:
+            return self.square.x, self.square.y
+        return self.ells[0].corner_x, self.ells[0].corner_y
 
     @property
     def reg_width_mm(self) -> float:
         """Distance from the top-left mark to the top-right mark, in x."""
-        return self.sheet_w_mm - 2 * self.inset_mm
+        top_right = self.ells[0] if self.square is not None else self.ells[1]
+        return top_right.corner_x - self.origin_mm[0]
 
     @property
     def reg_length_mm(self) -> float:
         """Distance from the top-left mark to the bottom-left mark, in y."""
-        return self.sheet_h_mm - 2 * self.inset_mm
+        bottom_left = self.ells[1] if self.square is not None else self.ells[2]
+        return bottom_left.corner_y - self.origin_mm[1]
 
     def bboxes(self) -> tuple[Rect, ...]:
         """The actual ink of each mark, for drawing it."""
@@ -159,11 +163,12 @@ class Marks:
 
     def describe(self) -> str:
         n = len(self.ells) + (1 if self.square else 0)
-        return (f"{self.pattern}: {n} marks, inset {self.inset_mm:g} mm, "
+        x, y = self.origin_mm
+        return (f"{self.pattern}: {n} marks, "
                 f"arm {self.length_mm:g} mm, line {self.thickness_mm:g} mm; "
                 f"scan window {self.reg_width_mm:.2f} x "
                 f"{self.reg_length_mm:.2f} mm from "
-                f"({self.inset_mm:g}, {self.inset_mm:g})")
+                f"({x:g}, {y:g}) mm")
 
 
 def clamp(inset_mm: float, length_mm: float,
@@ -185,7 +190,8 @@ def marks(sheet_w_mm: float, sheet_h_mm: float,
           inset_mm: float = DEFAULT_INSET_MM,
           length_mm: float = MIN_LENGTH_MM,
           thickness_mm: float = DEFAULT_THICKNESS_MM,
-          pattern: str = THREE) -> Marks:
+          pattern: str = THREE, *,
+          window_mm: tuple[float, float, float, float] | None = None) -> Marks:
     """Build the marks for one sheet.
 
     Corner assignment follows SCM exactly:
@@ -200,12 +206,15 @@ def marks(sheet_w_mm: float, sheet_h_mm: float,
     inset, length, thickness = clamp(inset_mm, length_mm, thickness_mm)
     W, H = sheet_w_mm, sheet_h_mm
 
-    tl = Ell(inset, inset, +1, +1, length, thickness)
-    tr = Ell(W - inset, inset, -1, +1, length, thickness)
-    bl = Ell(inset, H - inset, +1, -1, length, thickness)
-    br = Ell(W - inset, H - inset, -1, -1, length, thickness)
+    # Generated sheets have equal insets. Imported Inkscape marks can
+    # provide all four window edges independently.
+    left, top, right, bottom = window_mm or (inset, inset, W - inset, H - inset)
+    tl = Ell(left, top, +1, +1, length, thickness)
+    tr = Ell(right, top, -1, +1, length, thickness)
+    bl = Ell(left, bottom, +1, -1, length, thickness)
+    br = Ell(right, bottom, -1, -1, length, thickness)
 
-    square = Rect(inset, inset, SQUARE_MM, SQUARE_MM)
+    square = Rect(left, top, SQUARE_MM, SQUARE_MM)
 
     if pattern == FOUR:
         return Marks(pattern, W, H, inset, length, thickness,

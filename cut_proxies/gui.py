@@ -1223,17 +1223,40 @@ class Window(Adw.ApplicationWindow):
             except GLib.Error:
                 return
             path = pathlib.Path(gfile.get_path())
-            from . import importer
-            try:
-                artwork = importer.load(path)
-            except Exception as exc:              # noqa: BLE001
-                self.toast(f"Could not read {path.name}: {exc}")
-                return
-            self.clear_bundle()
-            self.template_shapes = ()
-            self.set_artwork(artwork, path.name)
+            self.load_artwork_file(path)
 
         dialog.open(self, None, done)
+
+    def load_artwork_file(self, path, page=None):
+        from . import importer
+        try:
+            artwork = importer.load(path, page=page)
+        except importer.InkscapePageRequired as exc:
+            dialog = Adw.AlertDialog(heading="Choose an Inkscape page",
+                                     body=f"{path.name} contains {exc.count} pages.")
+            selector = Gtk.SpinButton.new_with_range(1, exc.count, 1)
+            selector.set_tooltip_text("Page number")
+            selector.set_halign(Gtk.Align.CENTER)
+            dialog.set_extra_child(selector)
+            dialog.add_response("cancel", "Cancel")
+            dialog.add_response("open", "Open page")
+            dialog.set_default_response("open")
+            dialog.set_close_response("cancel")
+
+            def selected(_dialog, response):
+                if response == "open":
+                    self.load_artwork_file(path, selector.get_value_as_int())
+
+            dialog.connect("response", selected)
+            dialog.present(self)
+            return
+        except Exception as exc:              # noqa: BLE001
+            self.toast(f"Could not read {path.name}: {exc}")
+            return
+        self.clear_bundle()
+        self.template_shapes = ()
+        name = f"{path.name} · Page {page}" if page is not None else path.name
+        self.set_artwork(artwork, name)
 
     def on_edit_template(self, *_args):
         if self.pdf_bundle:
@@ -1699,7 +1722,9 @@ class Window(Adw.ApplicationWindow):
         body += ("The cutter will search for the printed marks first."
                  if j.registration else "Registration is off; this uses sheet coordinates.")
         if scan_only:
-            body = "The cutter will scan the marks. No cutting paths will be sent."
+            body = "This test ends after the cutter reports the scan result."
+        if j.registration and not j.auto_search:
+            body += "\n\nPosition the cutter head over the first mark before starting the scan."
         if self.pdf_bundle:
             body += "\n\n" + self.pdf_bundle.mat_placement()
         dialog = Adw.AlertDialog(heading="Test registration?" if scan_only else "Send this cut?", body=body)

@@ -4,7 +4,7 @@ import types
 import unittest
 from unittest import mock
 
-from cut_proxies import cli, graphtec, job
+from cut_proxies import cli, graphtec, job, verify
 
 try:
     from cut_proxies import gui
@@ -36,6 +36,40 @@ class TestRegistrationOnly(unittest.TestCase):
         self.assertEqual(steps[-1].expect, graphtec.RESP_REGMARK_OK)
         self.assertFalse(any(step.note == "cut paths" for step in steps))
         self.assertEqual(job.build(registration=False).registration_steps(), ())
+
+    def test_manual_registration_is_checked_and_waits_for_the_scan_result(self):
+        checked = job.build(auto_search=False, offset_mm=(0, 0))
+        self.assertEqual(checked.blocked, [])
+        self.assertIn(b"TB23,3918,5188\x03", checked.stream)
+        self.assertEqual(checked.registration_steps()[-1].expect, graphtec.RESP_REGMARK_OK)
+        self.assertNotIn(b"TB123,", writes(checked.registration_steps()))
+        self.assertNotIn(b"TB124,", writes(checked.registration_steps()))
+        broken = checked.stream.replace(b"TB23,", b"TB123,")
+        ok, rows = verify.expectations_met(
+            broken, checked.grid, checked.marks, checked.settings, checked.device,
+            auto_search=False)
+        self.assertFalse(ok)
+        self.assertIn("scan command", {row.label for row in rows if not row.ok})
+
+    def test_search_start_is_verified_against_the_captured_letter_window(self):
+        checked = job.build(offset_mm=(0, 0))
+        self.assertEqual(checked.blocked, [])
+        self.assertIn(b"TB123,3918,5188,118,118\x03", checked.stream)
+        broken = checked.stream.replace(b"TB123,3918,5188,118,118", b"TB123,3918,5188,118,218")
+        ok, rows = verify.expectations_met(
+            broken, checked.grid, checked.marks, checked.settings, checked.device)
+        self.assertFalse(ok)
+        self.assertIn("scan search start", {row.label for row in rows if not row.ok})
+
+    def test_legacy_force_and_full_sheet_window_work_without_registration(self):
+        checked = job.build(cutter="Silhouette Cameo 2", registration=False,
+                            offset_mm=(0, 0))
+        self.assertEqual(checked.blocked, [])
+        self.assertIn(graphtec.frame("FX33"), checked.stream)
+        self.assertNotIn(graphtec.frame("FX33,1"), checked.stream)
+        self.assertIn(graphtec.frame(("FN0", "TB50,0")), checked.stream)
+        self.assertIn(graphtec.frame("Z4318,5588"), checked.stream)
+        self.assertIsNone(checked.settings.depth)
 
     def test_report_prints_the_exact_captured_registration_writes(self):
         checked = job.build(sheet="Letter", portrait=False, mark_inset_mm=10,

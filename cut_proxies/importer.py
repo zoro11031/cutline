@@ -49,6 +49,7 @@ class InkscapeMarks:
     pattern: str
     length_mm: float = 20.0
     thickness_mm: float = 0.3
+    window_mm: tuple[float, float, float, float] | None = None
 
 # CSS px per inch, which is what an SVG user unit means when nothing else
 # says otherwise.
@@ -70,6 +71,13 @@ _NUM = re.compile(r"[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?")
 
 class ImportError_(ValueError):
     """Raised rather than cutting something we only half understand."""
+
+
+class InkscapePageRequired(ImportError_):
+    def __init__(self, count: int):
+        self.count = count
+        super().__init__(f"Select an Inkscape page from 1 to {count} with --svg-page, "
+                         "or export separate SVG files.")
 
 
 @dataclasses.dataclass
@@ -462,16 +470,6 @@ def normalise_colour(value: str | None) -> str:
     return v
 
 
-def _inherited_stroke(el, inherited: str) -> str:
-    """This element's stroke, falling back to the group's."""
-    own = el.get("stroke")
-    if own is None:
-        style = el.get("style") or ""
-        m = re.search(r"(?:^|;)\s*stroke\s*:\s*([^;]+)", style)
-        own = m.group(1) if m else None
-    return normalise_colour(own) if own else inherited
-
-
 def _shape_subpaths(el, tolerance):
     """A shape element to subpaths in user units."""
     name = _tag(el)
@@ -519,36 +517,46 @@ UNSUPPORTED = {"text", "tspan", "image", "use", "clipPath", "mask", "pattern",
 
 
 def _inkscape_marks(mark_paths, page_size):
-    """Recognize symmetric marks from rendered coordinates, including transforms."""
+    """Measure the rendered corners used by render_silhouette_regmarks.py."""
     if page_size is None:
         raise ImportError_("Inkscape registration requires an explicit SVG page size.")
-    w, h = page_size
-    tl = mark_paths.get("regmark-tl", ())
-    if not tl:
-        raise ImportError_("The Inkscape Regmarks layer is missing its top-left mark.")
-    inset = round(min(x for x, _ in tl), 6)
+    width, height = page_size
+    corners = len(INKSCAPE_MARK_IDS) if "regmark-br" in mark_paths else 3
+    four = corners == 4
     length = 20
-    four = "regmark-br" in mark_paths
-    corners = [(inset, inset, 1, 1), (w - inset, inset, -1, 1),
-               (inset, h - inset, 1, -1), (w - inset, h - inset, -1, -1)]
-    if not 0 < inset <= 86.36 or min(w, h) - 2 * inset < 2 * length:
+    marks = [mark_paths.get(marker, ((), False)) for marker in INKSCAPE_MARK_IDS[:corners]]
+    for index, (points, closed) in enumerate(marks):
+        square = index == 0 and not four
+        if len(points) != (4 if square else 3) or closed != square:
+            raise ImportError_("Inkscape registration requires a complete set of "
+                               "standard square and L-shaped marks.")
+    tl, tr, bl = (points for points, _ in marks[:3])
+    x = tl[1][0] if four else min(p[0] for p in tl)
+    y = tl[1][1] if four else min(p[1] for p in tl)
+    right = tr[1][0]
+    bottom = bl[1][1]
+    if not (0 < x < right < width and 0 < y < bottom < height
+            and min(right - x, bottom - y) >= 2 * length):
         raise ImportError_("Inkscape registration marks do not fit the page.")
-    for index, (x, y, dx, dy) in enumerate(corners[:4 if four else 3]):
-        expected = [(x + dx * length, y), (x, y), (x, y + dy * length)]
+    specs = [(x, y, 1, 1), (right, y, -1, 1), (x, bottom, 1, -1),
+             (right, bottom, -1, -1)]
+    for index, ((points, _), (cx, cy, dx, dy)) in enumerate(zip(marks, specs)):
         if index == 0 and not four:
             expected = [(x, y), (x + 5, y), (x + 5, y + 5), (x, y + 5)]
-        points = mark_paths.get(INKSCAPE_MARK_IDS[index], ())
-        if (len(points) != len(expected)
-                or any(not any(math.dist(p, q) <= 0.05 for q in points)
-                       for p in expected)
-                or (len(expected) == 3 and math.dist(points[1], (x, y)) > 0.05)):
-            raise ImportError_(
-                "Inkscape registration marks must match the plugin's standard "
-                "geometry with equal insets on all edges.")
-    return InkscapeMarks(inset, "four" if four else "three")
+            matches = all(any(math.dist(p, q) <= 0.05 for q in points) for p in expected)
+        else:
+            expected = [(cx + dx * length, cy), (cx, cy), (cx, cy + dy * length)]
+            matches = (all(math.dist(p, q) <= 0.05 for p, q in zip(points, expected))
+                       or all(math.dist(p, q) <= 0.05 for p, q in zip(reversed(points), expected)))
+        if not matches:
+            raise ImportError_("Inkscape registration marks must match the plugin's "
+                               "standard geometry and align in rows and columns.")
+    window = tuple(round(v, 6) for v in (x, y, right, bottom))
+    return InkscapeMarks(window[0], "four" if four else "three", window_mm=window)
 
 
-def load_svg(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
+def load_svg(path, tolerance: float = CHORD_TOLERANCE_MM, *,
+             page: int | None = None) -> Imported:
     """Read an SVG into cut paths in millimetres."""
     try:
         tree = ET.parse(path if hasattr(path, 'read') else str(path))
@@ -558,8 +566,11 @@ def load_svg(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
     if _tag(root) != "svg":
         raise ImportError_("the root element is not <svg>")
 
-    if len(root.findall(f".//{{{INKSCAPE_NS}}}page")) > 1:
-        raise ImportError_("Export each Inkscape page to a separate SVG before cutting.")
+    pages = root.findall(f".//{{{INKSCAPE_NS}}}page")
+    if len(pages) > 1 and page is None:
+        raise InkscapePageRequired(len(pages))
+    if page is not None and not 1 <= page <= max(len(pages), 1):
+        raise ImportError_(f"Inkscape page {page} does not exist in this SVG.")
 
     vb = root.get("viewBox")
     vb_nums = [float(n) for n in _NUM.findall(vb)] if vb else None
@@ -612,6 +623,23 @@ def load_svg(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
             sx = sy = scale
         note += f"; preserveAspectRatio {' '.join(aspect)}"
     base = _matmul((sx, 0, 0, sy, tx, ty), pre)
+    selected_bounds = None
+    if len(pages) > 1:
+        selected = pages[page - 1]
+        try:
+            x, y, width, height = (float(selected.get(key, "0"))
+                                   for key in ("x", "y", "width", "height"))
+        except ValueError:
+            raise ImportError_(f"Inkscape page {page} has invalid coordinates.") from None
+        if not all(math.isfinite(v) for v in (x, y, width, height)) or min(width, height) <= 0:
+            raise ImportError_(f"Inkscape page {page} has invalid bounds.")
+        left, top = apply(base, x, y)
+        w_mm, h_mm = width * sx, height * sy
+        page_size = (w_mm, h_mm)
+        selected_bounds = Rect(0, 0, w_mm, h_mm)
+        base = _matmul((1, 0, 0, 1, -left, -top), base)
+        note += f"; Inkscape page {page} of {len(pages)}"
+
     paths: list[CutPath] = []
     warnings: list[str] = []
     seen_unsupported: set[str] = set()
@@ -620,53 +648,92 @@ def load_svg(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
     has_inkscape_marks = False
     ignored_layers = []
 
-    def walk(el, mat, stroke, in_marks=False):
+    def walk(el, mat, stroke, visibility="visible", in_marks=False):
         nonlocal has_inkscape_marks
-        mat = _matmul(mat, parse_transform(el.get("transform")))
-        stroke = _inherited_stroke(el, stroke)
         name = _tag(el)
-        if name == "svg" and el is not root:
-            raise ImportError_("nested SVG viewports are unsupported; flatten the drawing before cutting")
-        style = dict(field.split(":", 1) for field in (el.get("style") or "").split(";")
-                     if ":" in field)
-        if (name in {"defs", "metadata", "namedview"}
-                or el.get("display") == "none"
-                or any(k.strip() == "display" and v.strip() == "none"
-                       for k, v in style.items())):
+        if name in {"defs", "metadata", "namedview"}:
             return
         label = el.get(INKSCAPE_LABEL, "") if name == "g" else ""
-        if not in_marks and label and any(
-                word in label.lower() for word in ("print", "cuttingmat", "regmark")):
-            ignored_layers.append(label)
-            if "regmark" not in label.lower():
+        marker_group = name == "g" and (el.get("id") == "regmark"
+                                        or "regmark" in label.lower())
+        if not in_marks and (marker_group or any(
+                word in label.lower() for word in ("print", "cuttingmat"))):
+            ignored_layers.append(label or el.get("id"))
+            if not marker_group:
                 return
             has_inkscape_marks = in_marks = True
+
+        # The reference sender skips display:none and zero-opacity subtrees,
+        # then handles inherited visibility when collecting geometry.
+        style = {key.strip(): re.sub(r"\s*!\s*important$", "", val.strip(), flags=re.I)
+                 for key, val in (field.split(":", 1)
+                                  for field in (el.get("style") or "").split(";") if ":" in field)}
+        if style.get("display", el.get("display")) == "none":
+            return
+        opacity = style.get("opacity", el.get("opacity", "1")).removesuffix("%")
+        if _NUM.fullmatch(opacity) and float(opacity) <= 0:
+            return
+        own_visibility = style.get("visibility", el.get("visibility"))
+        if own_visibility in ("visible", "hidden", "collapse"):
+            visibility = own_visibility
+
+        if name == "svg" and el is not root:
+            raise ImportError_("nested SVG viewports are unsupported; flatten the drawing before cutting")
+        mat = _matmul(mat, parse_transform(el.get("transform")))
+        own_stroke = style.get("stroke", el.get("stroke"))
+        if own_stroke and own_stroke != "inherit":
+            stroke = normalise_colour(own_stroke)
         if in_marks:
-            marker = el.get("id")
-            if marker in INKSCAPE_MARK_IDS:
+            marker = el.get("id", "")
+            stem, suffix, index = marker.partition("-page-")
+            if suffix and index.isdigit() and (selected_bounds is None or int(index) == page):
+                marker = stem
+            elif selected_bounds is not None:
+                marker = ""
+            if marker in INKSCAPE_MARK_IDS and visibility == "visible":
                 parts = _shape_subpaths(el, tolerance)
-                mark_paths[marker] = (tuple(apply(mat, x, y) for x, y in parts[0][0])
-                                      if len(parts) == 1 and marker not in mark_paths else ())
+                if len(parts) == 1 and marker not in mark_paths:
+                    points, closed = parts[0]
+                    mark_paths[marker] = tuple(apply(mat, x, y) for x, y in points), closed
+                else:
+                    mark_paths[marker] = (), False
             for child in el:
-                walk(child, mat, stroke, in_marks=True)
+                walk(child, mat, stroke, visibility, in_marks=True)
             return
         if name in UNSUPPORTED:
-            seen_unsupported.add(name)
+            if visibility == "visible":
+                seen_unsupported.add(name)
             return
         # Largest singular value bounds error after every parent transform,
         # including unequal scales and shear. Flatten in final millimetres.
         a, b, c, d = mat[:4]
         norm2 = a*a + b*b + c*c + d*d
         stretch = math.sqrt((norm2 + math.sqrt(max(0.0, norm2*norm2 - 4*(a*d-b*c)**2))) / 2)
-        for sub, closed in _shape_subpaths(el, tolerance / max(stretch, 1e-9)):
+        subpaths = (_shape_subpaths(el, tolerance / max(stretch, 1e-9))
+                    if visibility == "visible" else ())
+        for sub, closed in subpaths:
             pts = tuple(apply(mat, x, y) for x, y in sub)
             if len(pts) > 1:
+                if selected_bounds is not None:
+                    x_min, y_min = map(min, zip(*pts))
+                    x_max, y_max = map(max, zip(*pts))
+                    fuzz = 1e-6
+                    if (x_max < -fuzz or y_max < -fuzz
+                            or x_min > selected_bounds.x2 + fuzz
+                            or y_min > selected_bounds.y2 + fuzz):
+                        continue
+                    if (x_min < -fuzz or y_min < -fuzz
+                            or x_max > selected_bounds.x2 + fuzz
+                            or y_max > selected_bounds.y2 + fuzz):
+                        raise ImportError_(f"A cut path crosses the edge of Inkscape page {page}. "
+                                           "Split it at the page edge before importing.")
+                    pts = tuple((min(w_mm, max(0, x)), min(h_mm, max(0, y))) for x, y in pts)
                 # The colour rides in the label so the whole pipeline can
                 # carry it without a second channel.
                 tag = f"{name}|{stroke}" if stroke else name
                 paths.append(CutPath(pts, closed=closed, label=tag))
         for child in el:
-            walk(child, mat, stroke)
+            walk(child, mat, stroke, visibility)
 
     walk(root, base, "")
     inkscape_marks = None
@@ -682,7 +749,8 @@ def load_svg(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
         else:
             warnings.append(
                 f"Inkscape registration: {inkscape_marks.pattern} marks, "
-                f"{inkscape_marks.inset_mm:g} mm inset, 20 mm arms.")
+                f"origin ({inkscape_marks.window_mm[0]:g}, "
+                f"{inkscape_marks.window_mm[1]:g}) mm, 20 mm arms.")
 
     if seen_unsupported:
         warnings.append(
@@ -961,11 +1029,14 @@ def load_studio3(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
                     page_size_mm=page)
 
 
-def load(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
+def load(path, tolerance: float = CHORD_TOLERANCE_MM, *,
+         page: int | None = None) -> Imported:
     """Read an SVG, DXF or Studio3 template, chosen by extension."""
     name = str(path).lower()
     if name.endswith(".svg"):
-        return load_svg(path, tolerance)
+        return load_svg(path, tolerance, page=page)
+    if page is not None:
+        raise ImportError_("Page selection requires an Inkscape SVG.")
     if name.endswith(".dxf"):
         return load_dxf(path, tolerance)
     if name.endswith(".studio3"):

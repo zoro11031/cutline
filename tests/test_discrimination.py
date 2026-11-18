@@ -123,6 +123,17 @@ CASES += tuple(
     for allowed in (True, False)
 )
 
+CASES += tuple(
+    (verify, "expectations_met", _force_verification_row(label, allowed),
+     f"{label} always {'allows' if allowed else 'refuses'}",
+     [f"tests.test_send.TestRegistrationOnly.{test}"])
+    for label, test in (
+        ("scan command", "test_manual_registration_is_checked_and_waits_for_the_scan_result"),
+        ("scan search start", "test_search_start_is_verified_against_the_captured_letter_window"),
+    )
+    for allowed in (True, False)
+)
+
 try:
     from cut_proxies import gui
 except ImportError:

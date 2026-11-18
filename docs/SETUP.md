@@ -311,12 +311,12 @@ is needed and is never printed. Override it with `CUT_PROXIES_GUEST_USER` and
 1. In Inkscape, put the printed artwork in a layer called **Print** and the
    cut geometry in **Cut**. Convert cut text to paths, unlink clones and
    flatten clips. Run **Extensions → Render → Silhouette Regmarks** with
-   the standard three-mark pattern for Cameo 4 and the same inset on every
-   edge. Save each page as its own Inkscape SVG and print it at 100%.
+   the standard three-mark pattern for Cameo 4. Save the Inkscape SVG and
+   print the desired page at 100%.
 2. In the desktop app, open that SVG under **Layout → What to cut**, select
-   the matching paper and orientation, and review the cut preview. The
-   importer excludes groups labelled Print, CuttingMat and Regmarks using
-   the extension's naming convention. It derives the registration origin
+   the page if prompted, then choose the matching paper and orientation
+   and review the cut preview. The importer excludes groups labelled Print,
+   CuttingMat and Regmarks using the extension's naming convention. It derives the registration origin
    and window from the marker shapes on the page. Cut by stroke colour
    when several cut colours are present.
 3. Choose the **Plain paper test** preset for the first proof. With a
@@ -331,10 +331,17 @@ is needed and is never printed. Override it with `CUT_PROXIES_GUEST_USER` and
      --preset 'Plain paper test' --transport pyusb
    ```
 
-The registration import checks the plugin's original 5 mm square and 20 mm
-L-mark geometry in page coordinates. A mismatched page, asymmetric marks, or
-four marks on a Cameo 4 block the registered job. For an unprinted blank
-sheet, turn off registration and review the sheet-coordinate paths.
+The registration import checks the plugin's 5 mm square and 20 mm L marks
+in page coordinates. Separate top and left offsets and custom mark spacing
+are read from the SVG. For a multipage SVG, add `--svg-page 2` to select
+page 2 for both `import` and `cut`. Split cut paths that cross page edges
+in Inkscape before importing. A mismatched page, distorted marks, or four
+marks on a Cameo 4 block the registered job. For an unprinted blank sheet,
+turn off registration and review the sheet-coordinate paths.
+
+To start a scan with the head positioned over the first mark, turn off
+**Search automatically** or pass `cut --manual-registration`. The cutter
+still has to report a successful scan before any cut paths are sent.
 
 The plugin's command transcript is useful for offline protocol comparison.
 For a cut job, hand off the SVG so the suite can rebuild and verify its
