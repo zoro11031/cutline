@@ -133,7 +133,9 @@ class ExportedBundles(unittest.TestCase):
             matched = bundle.load(file)
             for row in matched.rows:
                 with self.subTest(file=file.name, sheet=row['sheet']):
-                    j = job.build(**matched.layout, imported=matched.artwork(row), offset_mm=(0, 0))
+                    cutter = 'Silhouette Cameo 4 Pro' if matched.mat_size[0] > 304.8 else 'Silhouette Cameo 4'
+                    j = job.build(**matched.layout, imported=matched.artwork(row), offset_mm=(0, 0),
+                                  cutter=cutter)
                     self.assertFalse(j.blocked)
                     self.assertEqual(len(j.paths), row['cards'])
                     report, _ = matched.measure(row, j.marks, sheet.DEFAULT_DPI)

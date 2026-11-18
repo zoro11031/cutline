@@ -102,6 +102,7 @@ SHEETS: dict[str, Sheet] = {
     # because the Cameo can cut it and someone may print elsewhere.
     "Tabloid": Sheet("Tabloid", 279.4, 431.8, printable=False),
     "A3": Sheet("A3", 297.0, 420.0, printable=False),
+    "Arch B": Sheet("Arch B", 304.8, 457.2, printable=False),
 }
 
 
