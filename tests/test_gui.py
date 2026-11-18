@@ -28,11 +28,11 @@ class TestOpenDialogs(unittest.TestCase):
         dialog.return_value.open.assert_called_once()
         filters = dialog.return_value.set_filters.call_args.args[0]
         self.assertEqual(filters.get_n_items(), 1)
-        self.assertEqual(filters.get_item(0).get_name(), 'PDF')
+        self.assertEqual(filters.get_item(0).get_name(), 'PDF or matched ProxyPress ZIP')
 
     def test_a_failed_import_keeps_the_previous_artwork_and_job(self):
         previous = object()
-        window = types.SimpleNamespace(imported=previous, toast=mock.Mock())
+        window = types.SimpleNamespace(imported=previous, toast=mock.Mock(), clear_bundle=mock.Mock())
         with mock.patch.object(gui.Gtk, 'FileDialog') as dialog, \
              mock.patch('cut_proxies.importer.load', side_effect=ValueError('bad file')):
             gui.Window.on_open_artwork(window)
@@ -82,7 +82,7 @@ class TestCutConfirmationGuard(unittest.TestCase):
 @unittest.skipUnless(gui is not None, 'PyGObject is not installed')
 class TestSheetRequestGuard(unittest.TestCase):
     def make_window(self, token):
-        return types.SimpleNamespace(_sheet_token=token, preview=mock.Mock(),
+        return types.SimpleNamespace(_sheet_token=token, pdf_bundle=None, preview=mock.Mock(),
             sheet_result=mock.Mock(), adopt_btn=mock.Mock(), rebuild=mock.Mock())
 
     def test_current_result_updates_artwork_and_measurement(self):

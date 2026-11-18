@@ -36,7 +36,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
-from . import (config, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
+from . import (bundle, config, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
                template, transport, winboat)  # noqa: E402
 
 APP_ID = "org.printing.SilhouetteControlCenter"
@@ -305,6 +305,8 @@ class Window(Adw.ApplicationWindow):
         self.job = None
         self.sheet_report = None
         self.pdf_path = None
+        self.pdf_bundle = None
+        self.bundle_checked = False
         self._sheet_token = None
         self.imported = None
         self.template_shapes = ()
@@ -540,7 +542,7 @@ class Window(Adw.ApplicationWindow):
         self.sheet_row = Adw.ActionRow(title="No PDF loaded",
                                        subtitle="Pick the sheet you printed")
         self.sheet_row.set_subtitle_lines(0)
-        pick = Gtk.Button(label="Open PDF...")
+        pick = Gtk.Button(label="Open PDF or ZIP...")
         pick.set_valign(Gtk.Align.CENTER)
         pick.connect("clicked", self.on_pick_pdf)
         self.sheet_row.add_suffix(pick)
@@ -553,7 +555,7 @@ class Window(Adw.ApplicationWindow):
                                            "accurate")
         g.add(self.r_sheet_page)
         g.add(self.r_sheet_dpi)
-        self.r_sheet_page.connect('notify::value', self.on_pdf_page_changed)
+        self.r_sheet_page.connect('notify::value', self.on_sheet_number_changed)
         self.r_sheet_dpi.connect('notify::selected', self.on_pdf_page_changed)
 
         remeasure = Adw.ActionRow(
@@ -827,6 +829,7 @@ class Window(Adw.ApplicationWindow):
         if selected == 0:
             return
         profile = list(layout_presets.BUILTIN.values())[selected - 1]
+        self.clear_bundle()
         options = profile.options()
         was, self._suppress = self._suppress, True
         self.imported = None
@@ -863,7 +866,7 @@ class Window(Adw.ApplicationWindow):
         engine = "scm" if self._text(self.r_engine) == "Silhouette Card Maker" \
             else "proxypress"
         length = self.r_length.get_value()
-        return dict(
+        options = dict(
             sheet=self._text(self.r_sheet),
             card=self._text(self.r_card),
             portrait=portrait,
@@ -888,6 +891,10 @@ class Window(Adw.ApplicationWindow):
             offset_mm=(self.r_cal_x.get_value(), self.r_cal_y.get_value()),
             imported=self._selected_artwork(),
         )
+        if self.pdf_bundle:
+            options.update(self.pdf_bundle.layout, engine='scm', mode=template.ROUNDED,
+                           bleed_mm=0, registration=True, skip=(), imported=self.imported)
+        return options
 
     def _selected_artwork(self):
         """The imported drawing, narrowed to one line colour if chosen."""
@@ -912,6 +919,7 @@ class Window(Adw.ApplicationWindow):
         if self._suppress:
             return
         self._sheet_token = None
+        self.bundle_checked = False
         if self.sheet_report is not None:
             self.sheet_report = None
             self.preview.set_sheet(None)
@@ -922,6 +930,8 @@ class Window(Adw.ApplicationWindow):
         self.job = None
         self.cut_button.set_sensitive(False)
         self.rebuild()
+        if self.pdf_bundle:
+            self.measure_sheet()
 
     def on_preset(self, *_a):
         p = presets.get(self._text(self.r_preset))
@@ -1017,7 +1027,7 @@ class Window(Adw.ApplicationWindow):
         if blocked:
             self.banner.set_title(f"{len(blocked)} problem(s): {blocked[0]}")
             self.banner.set_revealed(True)
-        elif not self.r_register.get_active():
+        elif not j.registration:
             self.banner.set_title(
                 "Registration is OFF: blade will cut in sheet coordinates (for blank sheets only)")
             self.banner.set_revealed(True)
@@ -1030,7 +1040,8 @@ class Window(Adw.ApplicationWindow):
         else:
             self.banner.set_revealed(False)
 
-        self.cut_button.set_sensitive(not blocked and not self._sending and j.settings.passes > 0)
+        self.cut_button.set_sensitive(not blocked and not self._sending and j.settings.passes > 0
+                                      and (not self.pdf_bundle or self.bundle_checked))
         self._building = False
 
     # ---- actions ------------------------------------------------------
@@ -1091,12 +1102,16 @@ class Window(Adw.ApplicationWindow):
             except Exception as exc:              # noqa: BLE001
                 self.toast(f"Could not read {path.name}: {exc}")
                 return
+            self.clear_bundle()
             self.template_shapes = ()
             self.set_artwork(artwork, path.name)
 
         dialog.open(self, None, done)
 
     def on_edit_template(self, *_args):
+        if self.pdf_bundle:
+            self.toast('Clear the matched job before editing its paths.')
+            return
         if self.job is None:
             self.toast("Select a sheet before opening the template editor.")
             return
@@ -1130,6 +1145,7 @@ class Window(Adw.ApplicationWindow):
     def on_clear_artwork(self, *_a):
         if self.imported is None:
             return
+        self.clear_bundle()
         self.imported = None
         self.template_shapes = ()
         was, self._suppress = self._suppress, True
@@ -1142,11 +1158,51 @@ class Window(Adw.ApplicationWindow):
         self.on_changed()
 
     # ---- the printed sheet -------------------------------------------
+    def lock_bundle_layout(self, locked):
+        for widget in (self.r_layout_preset, self.r_sheet, self.r_orient, self.r_engine,
+                       self.r_card, self.r_pattern, self.r_inset, self.r_length,
+                       self.r_thickness, self.r_bleed, self.r_register, self.r_mode,
+                       self.r_radius, self.r_skip, self.r_colour):
+            widget.set_sensitive(not locked)
+
+    def clear_bundle(self):
+        if not self.pdf_bundle:
+            return
+        self.pdf_bundle = None
+        self.lock_bundle_layout(False)
+        self.bundle_checked = False
+        self.pdf_path = None
+        self._sheet_token = None
+        self.sheet_report = None
+        self.preview.set_sheet(None)
+        self.preview.set_pdf()
+        self.sheet_row.set_title('No PDF loaded')
+        self.sheet_row.set_subtitle('Pick the sheet you printed')
+        self.sheet_result.set_title('Not measured')
+        self.sheet_result.set_subtitle('')
+        self.r_sheet_page.set_title('Page')
+        self.r_sheet_page.set_subtitle('which page of the PDF to measure')
+        self.r_sheet_page.get_adjustment().set_upper(99)
+        self.adopt_btn.set_sensitive(False)
+
+    def select_bundle_sheet(self):
+        row = self.pdf_bundle.rows[int(self.r_sheet_page.get_value())-1]
+        try:
+            artwork = self.pdf_bundle.artwork(row)
+        except bundle.BundleError as exc:
+            self.on_clear_artwork()
+            self.toast(str(exc))
+            return
+        self.sheet_row.set_subtitle(f'Sheet {row["sheet"]} · PDF front page {row["frontPage"]}')
+        self.set_artwork(artwork, row['svg'])
+
     def on_pick_pdf(self, *_a):
         dialog = Gtk.FileDialog(title="Open the printed sheet")
         filt = Gtk.FileFilter()
-        filt.set_name("PDF")
+        filt.set_name("PDF or matched ProxyPress ZIP")
         filt.add_mime_type("application/pdf")
+        filt.add_pattern("*.zip")
+        filt.add_pattern("*.ZIP")
         filters = Gio.ListStore.new(Gtk.FileFilter)
         filters.append(filt)
         dialog.set_filters(filters)
@@ -1156,7 +1212,33 @@ class Window(Adw.ApplicationWindow):
                 gfile = d.open_finish(result)
             except GLib.Error:
                 return
-            self.pdf_path = pathlib.Path(gfile.get_path())
+            path = pathlib.Path(gfile.get_path())
+            if path.suffix.lower() == '.zip':
+                try:
+                    matched = bundle.load(path)
+                    artwork = matched.artwork(matched.rows[0])
+                except bundle.BundleError as exc:
+                    self.toast(str(exc))
+                    return
+                self.clear_bundle()
+                self.pdf_bundle = matched
+                self.lock_bundle_layout(True)
+                self.pdf_path = path
+                self.preview.set_pdf()
+                self.sheet_row.set_title(path.name)
+                self._suppress = True
+                self.r_sheet_page.set_title('Sheet in ZIP')
+                self.r_sheet_page.set_subtitle('which matched sheet to check and cut')
+                self.r_sheet_page.get_adjustment().set_upper(len(matched.rows))
+                self.r_sheet_page.set_value(1)
+                self._suppress = False
+                row = matched.rows[0]
+                self.sheet_row.set_subtitle(f'Sheet {row["sheet"]} · PDF front page {row["frontPage"]}')
+                self.set_artwork(artwork, row['svg'])
+                return
+            if self.pdf_bundle:
+                self.on_clear_artwork()
+            self.pdf_path = path
             self.preview.set_pdf()
             self.sheet_row.set_title(self.pdf_path.name)
             self.sheet_row.set_subtitle(str(self.pdf_path.parent))
@@ -1171,6 +1253,12 @@ class Window(Adw.ApplicationWindow):
         self.preview.set_pdf()
         self.measure_sheet()
 
+    def on_sheet_number_changed(self, *_a):
+        if self.pdf_bundle and not self._suppress:
+            self.select_bundle_sheet()
+        else:
+            self.on_pdf_page_changed()
+
     def measure_sheet(self):
         path = getattr(self, "pdf_path", None)
         if path is None or self.job is None:
@@ -1181,6 +1269,11 @@ class Window(Adw.ApplicationWindow):
         marks = self.job.marks
         grid = self.job.grid
         page = int(self.r_sheet_page.get_value())
+        matched = self.pdf_bundle
+        if matched:
+            row = matched.rows[page-1]
+            self.bundle_checked = False
+            self.cut_button.set_sensitive(False)
         dpi = int(self._text(self.r_sheet_dpi))
         token = self._sheet_token = object()
         self.sheet_report = None
@@ -1190,8 +1283,11 @@ class Window(Adw.ApplicationWindow):
         def work():
             from . import sheet as sheet_mod
             try:
-                image = sheet_mod.render(path, page=page, dpi=dpi, colour=True)
-                report = sheet_mod.measure(path, marks, page=page, dpi=dpi, image=image)
+                if matched:
+                    report, image = matched.measure(row, marks, dpi)
+                else:
+                    image = sheet_mod.render(path, page=page, dpi=dpi, colour=True)
+                    report = sheet_mod.measure(path, marks, page=page, dpi=dpi, image=image)
                 png = io.BytesIO()
                 image.save(png, format='PNG')
             except Exception as exc:              # noqa: BLE001
@@ -1217,6 +1313,7 @@ class Window(Adw.ApplicationWindow):
         if not sheet_request_current(self._sheet_token, token):
             return
         self.sheet_report = report
+        self.bundle_checked = bool(self.pdf_bundle) and not problems
         self.preview.set_sheet(report)
         self.preview.set_pdf(png, report.page_w_mm, report.page_h_mm)
         lines = [m.describe() for m in report.marks]
@@ -1230,7 +1327,7 @@ class Window(Adw.ApplicationWindow):
         self.sheet_result.set_subtitle("\n".join(lines))
         # Only a uniform displacement can be fixed with an offset.
         self.adopt_btn.set_sensitive(
-            bool(report.found) and "correctable" in report.diagnosis())
+            self.pdf_bundle is None and bool(report.found) and "correctable" in report.diagnosis())
         self.rebuild()
 
     def on_adopt_offset(self, *_a):
@@ -1391,6 +1488,9 @@ class Window(Adw.ApplicationWindow):
         threading.Thread(target=work, daemon=True).start()
 
     def on_cut(self, *_a):
+        if self.pdf_bundle and not self.bundle_checked:
+            self.toast('Check the matched PDF before cutting this sheet.')
+            return
         j = self.job
         refusal = cut_refusal(j, j, self._sending)
         if refusal:
@@ -1422,6 +1522,9 @@ class Window(Adw.ApplicationWindow):
 
     def _cut_response(self, _dialog, response, j, connection=("auto", None)):
         if response != "cut":
+            return
+        if self.pdf_bundle and not self.bundle_checked:
+            self.toast('Check the matched PDF before cutting this sheet.')
             return
         refusal = cut_refusal(self.job, j, self._sending)
         if refusal:

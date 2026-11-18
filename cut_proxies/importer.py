@@ -550,7 +550,7 @@ def _inkscape_marks(mark_paths, page_size):
 def load_svg(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
     """Read an SVG into cut paths in millimetres."""
     try:
-        tree = ET.parse(str(path))
+        tree = ET.parse(path if hasattr(path, 'read') else str(path))
     except ET.ParseError as exc:
         raise ImportError_(f"not a readable SVG: {exc}") from None
     root = tree.getroot()

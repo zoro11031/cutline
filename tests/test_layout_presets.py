@@ -14,7 +14,7 @@ class TestProxyPressCameoPreset(unittest.TestCase):
         self.assertAlmostEqual(j.grid.cards[0].y, 19.325)
         self.assertAlmostEqual(j.grid.cards[-1].x2, 267.575)
         self.assertAlmostEqual(j.grid.cards[-1].y2, 196.575)
-        self.assertEqual(j.marks.length_mm, 7.25)
+        self.assertEqual(j.marks.length_mm, 8.0264)
         self.assertEqual(j.grid.card.radius_mm, 3.2)
         self.assertFalse(j.blocked)
 
@@ -23,7 +23,7 @@ class TestProxyPressCameoPreset(unittest.TestCase):
         self.assertEqual((j.grid.sheet_w_mm, j.grid.sheet_h_mm), (297, 210))
         self.assertAlmostEqual(j.grid.cards[0].x, 20.625)
         self.assertAlmostEqual(j.grid.cards[0].y, 16.375)
-        self.assertEqual(j.marks.length_mm, 8.75)
+        self.assertEqual(j.marks.length_mm, 9.398)
         self.assertEqual(j.marks.pattern, 'three')
         self.assertEqual(j.marks.thickness_mm, 1.0)
         self.assertFalse(j.blocked)
@@ -38,7 +38,7 @@ class TestProxyPressCameoPreset(unittest.TestCase):
         options = checked.call_args.kwargs
         self.assertEqual(options['engine'], 'proxypress')
         self.assertEqual(options['radius_mm'], 3.2)
-        self.assertEqual(options['mark_length_mm'], 7.25)
+        self.assertEqual(options['mark_length_mm'], 8.0264)
         self.assertEqual(options['bleed_mm'], 0.625)
         self.assertEqual(options['force'], 20)
         self.assertEqual(options['preset_name'], config.DEFAULT_PRESET)

@@ -353,9 +353,11 @@ def best_blob(blobs: list[Rect], size_mm: float,
 
 
 def measure(pdf, mk: Marks, page: int = 1, dpi: int = DEFAULT_DPI,
-            search_mm: float = SEARCH_MM, image=None) -> SheetReport:
+            search_mm: float = SEARCH_MM, image=None, swap_page_axes=False) -> SheetReport:
     """Find each expected mark on the page and say where it actually is."""
     page_w, page_h, pages = page_size_mm(pdf)
+    if swap_page_axes:
+        page_w, page_h = page_h, page_w
     if page < 1 or page > pages:
         raise SheetError(f"page {page} is outside the PDF's 1..{pages}")
     image = render(pdf, page, dpi) if image is None else image.convert('L')
@@ -371,11 +373,17 @@ def measure(pdf, mk: Marks, page: int = 1, dpi: int = DEFAULT_DPI,
         window = s.grown(search_mm)
         box = best_blob(ink_blobs(image, window, dpi), s.w,
                         SHAPE_TOLERANCE_MM)
+        # ProxyPress fills a 5 mm square; Card Maker also strokes its border.
+        # Identify the footprint by size alone so actual displacement still
+        # appears in the report for either renderer.
+        weight = mk.thickness_mm
+        edged = box is not None and min(box.w, box.h) > s.w + weight/2
+        pad = weight/2 if edged else 0
         found.append(FoundMark(
             name=corner_name(s.x, s.y) + " square",
             expected=(s.x, s.y),
-            measured=(box.x, box.y) if box else None,
-            ink_box=box, kind="square", expected_size_mm=s.w))
+            measured=(box.x+pad, box.y+pad) if box else None,
+            ink_box=box, kind="square", expected_size_mm=s.w+2*pad))
 
     for ell in mk.ells:
         cx, cy = ell.corner_x, ell.corner_y
@@ -396,8 +404,7 @@ def measure(pdf, mk: Marks, page: int = 1, dpi: int = DEFAULT_DPI,
             # outside. Taking the raw ink edge reports every correct sheet
             # as displaced outward by exactly half a line width - 0.47 mm
             # on a 1 mm line, which sits just inside the 0.5 mm tolerance
-            # and so would have passed while being wrong. The square has no
-            # such bias: it is a fill, not a stroke.
+            # and so would have passed while being wrong.
             half = ell.thickness / 2.0
             measured = ((box.x + half) if ell.dx > 0 else (box.x2 - half),
                         (box.y + half) if ell.dy > 0 else (box.y2 - half))

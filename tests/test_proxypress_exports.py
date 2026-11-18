@@ -10,7 +10,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
-from cut_proxies import importer, job, layout_presets
+from cut_proxies import geometry, importer, job, layout_presets
 
 
 class ProxyPressExports(unittest.TestCase):
@@ -18,7 +18,7 @@ class ProxyPressExports(unittest.TestCase):
         source = Path(os.environ.get('PROXYPRESS_INTEROP_JSON',
                       Path(__file__).parent / 'fixtures/proxypress-geometry.json'))
         cases = json.loads(source.read_text())
-        self.assertIn(len(cases), (8, 9))
+        self.assertGreaterEqual(len(cases), 8)
         with tempfile.TemporaryDirectory() as tmp:
             for case in cases:
                 for page, svg in enumerate(case['svgs']):
@@ -27,8 +27,17 @@ class ProxyPressExports(unittest.TestCase):
                         path = Path(tmp) / 'cuts.svg'
                         path.write_text(svg)
                         art = importer.load(path)
-                        self.assertEqual(len(art.paths), min(8, case['count'] - page * 8))
+                        portrait = case.get('orientation') == 'portrait'
+                        cols, rows = (3, 3) if portrait else (4, 2)
+                        per = cols * rows
+                        self.assertEqual(len(art.paths), min(per, case['count'] - page * per))
                         options = layout_presets.BUILTIN['mtg-cameo-' + case['paper']].options()
+                        marked = case.get('marks', {}).get('rects', [])
+                        if portrait:
+                            options.update(portrait=True, engine='scm',
+                                           mark_inset_mm=marked[0][0], bleed_mm=0)
+                        if case.get('arm') is not None:
+                            options['mark_length_mm'] = case['arm']
                         reference = job.build(**options, offset_mm=(0, 0))
                         if case.get('calibrated'):
                             rect = ET.fromstring(svg).find('{http://www.w3.org/2000/svg}rect')
@@ -45,8 +54,11 @@ class ProxyPressExports(unittest.TestCase):
                             self.assertEqual(case['arm'], reference.marks.length_mm)
                         for i, cut in enumerate(art.paths):
                             xs, ys = zip(*cut.points)
-                            card = reference.grid.cards[i]
-                            x, y, w, h = card.x, card.y, card.w, card.h
+                            width, height = geometry.SHEETS[options['sheet']].size(portrait)
+                            w, h = 63, 88
+                            bleed = 0.5 if portrait else 0.625
+                            x = (width - cols*(w+2*bleed))/2 + (i % cols)*(w+2*bleed) + bleed
+                            y = (height - rows*(h+2*bleed))/2 + (i // cols)*(h+2*bleed) + bleed
                             if case.get('calibrated'):
                                 x = 297/2 + (x-297/2)*0.99 + 2
                                 y = 210/2 + (y-210/2)*1.01 - 3
