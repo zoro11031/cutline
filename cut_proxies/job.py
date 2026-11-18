@@ -346,6 +346,10 @@ def build(sheet: str = config.DEFAULT_SHEET,
              if h["index"] not in set(skip)]
 
     off += cutting_mat_errors(device, mat, grid.sheet_w_mm, grid.sheet_h_mm)
+    if grid.sheet_h_mm > device.length_mm:
+        off.append(f"The sheet exceeds the {device.length_mm:g} mm cutter length.")
+    if registration and mk.pattern == regmarks.FOUR and not device.quad_regmarks:
+        off.append("This cutter does not support four-mark registration.")
 
     # 4. the settings and the stream
     if groups:

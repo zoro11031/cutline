@@ -23,12 +23,13 @@ class BundleRules(unittest.TestCase):
                              registration=dict(pattern=3, inset=10, armLength=8.0264, thickness=1),
                              sheets=[dict(sheet=2, frontPage=1, backPage=2, cards=1, svg='sheet-2.svg')])
 
-    def write(self):
+    def write(self, svg_size=(279.4, 215.9)):
+        w, h = svg_size
         with zipfile.ZipFile(self.path, 'w') as z:
             z.writestr('registration.json', json.dumps(self.manifest))
             z.writestr('cards.pdf', b'%PDF-1.4')
             z.writestr('sheet-2.svg', '<svg xmlns="http://www.w3.org/2000/svg" '
-                       'width="279.4mm" height="215.9mm" viewBox="0 0 279.4 215.9">'
+                       f'width="{w}mm" height="{h}mm" viewBox="0 0 {w} {h}">'
                        '<rect x="20" y="22" width="63" height="88"/></svg>')
 
     def test_uses_project_sheet_number_and_actual_pdf_page(self):
@@ -51,6 +52,42 @@ class BundleRules(unittest.TestCase):
         self.write()
         with self.assertRaisesRegex(bundle.BundleError, 'PDF page'):
             bundle.load(self.path)
+
+    def test_pdf_page_count_must_match_the_full_bundle_mapping(self):
+        image = mock.Mock(size=(2200, 1700))
+        for back_page, page_count in ((None, 1), (2, 2), (2, 1), (2, 3)):
+            with self.subTest(back_page=back_page, page_count=page_count):
+                self.manifest['sheets'][0]['backPage'] = back_page
+                self.write()
+                matched = bundle.load(self.path)
+                with mock.patch.object(sheet, 'render', return_value=image), \
+                     mock.patch.object(sheet, 'page_size_mm',
+                                       return_value=(279.4, 215.9, page_count)), \
+                     mock.patch.object(sheet, 'ink_blobs', return_value=[]):
+                    if page_count == (back_page or 1):
+                        report, _ = matched.measure(matched.row(), matched.marks(), 200)
+                        self.assertEqual(report.page, 1)
+                    else:
+                        with self.assertRaisesRegex(bundle.BundleError,
+                                                    rf'contains {page_count} page\(s\).*maps {back_page}'):
+                            matched.measure(matched.row(), matched.marks(), 200)
+
+    def test_uses_the_exact_scm_a4_frame_and_rejects_unmatched_svg(self):
+        size = 3507 * 25.4 / 300, 2480 * 25.4 / 300
+        for section in ['pdfPage', 'mat']:
+            self.manifest[section].update(width=size[0], height=size[1])
+        self.write()
+        matched = bundle.load(self.path)
+        self.assertEqual(matched.layout['sheet'], 'A4')
+        with self.assertRaisesRegex(bundle.BundleError, 'SVG does not match'):
+            matched.artwork(matched.row())
+        self.write(size)
+        matched = bundle.load(self.path)
+        plan = job.build(**matched.layout, imported=matched.artwork(matched.row()))
+        self.assertFalse(plan.blocked)
+        for marks in [matched.marks(), plan.marks]:
+            self.assertAlmostEqual(marks.sheet_w_mm, size[0])
+            self.assertAlmostEqual(marks.sheet_h_mm, size[1])
 
     def test_unversioned_studio_zip_still_loads_its_pdf_and_studio_template(self):
         del self.manifest['format']
@@ -115,7 +152,9 @@ class ExportedBundles(unittest.TestCase):
             matched = bundle.load(file)
             for row in matched.rows:
                 with self.subTest(file=file.name, sheet=row['sheet']):
-                    j = job.build(**matched.layout, imported=matched.artwork(row), offset_mm=(0, 0))
+                    cutter = 'Silhouette Cameo 4 Pro' if matched.mat_size[0] > 304.8 else 'Silhouette Cameo 4'
+                    j = job.build(**matched.layout, imported=matched.artwork(row), offset_mm=(0, 0),
+                                  cutter=cutter)
                     self.assertFalse(j.blocked)
                     self.assertEqual(len(j.paths), row['cards'])
                     report, _ = matched.measure(row, j.marks, sheet.DEFAULT_DPI)

@@ -26,7 +26,24 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertTrue(app.register(None))
         win = gui.Window(app)
         self.addCleanup(win.destroy)
+        device = graphtec.device_by_name("Silhouette Cameo 4")
+        patcher = mock.patch.object(gui.transport, "usb_endpoints", return_value=[(device, "", (1, 2))])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        win.refresh_usb()
         return win
+
+    def test_multiple_usb_cutters_require_an_endpoint_choice(self):
+        win = self.make_window()
+        device = graphtec.device_by_name("Silhouette Cameo 4")
+        with mock.patch.object(gui.transport, "usb_endpoints",
+                               return_value=[(device, "", (1, 2)), (device, "", (1, 3))]):
+            win.refresh_usb()
+            self.assertIsNone(win._connection()[1])
+            self.assertFalse(win.cut_button.get_sensitive())
+            win.r_bluetooth.set_selected(2)
+            self.assertEqual(win._connection()[1], (1, 3))
+            self.assertTrue(win.cut_button.get_sensitive())
 
     def test_design_button_opens_reviews_and_reopens_the_workspace(self):
         win = self.make_window()
@@ -49,8 +66,7 @@ class TestDesignWorkspace(unittest.TestCase):
         win.send_workspace.emit('clicked')
         self.assertEqual(win.stack.get_visible_child_name(), 'cut')
         self.assertEqual(win._text(win.r_send_preset), presets.STARTING_NAME)
-        win.r_send_preset.set_selected(sorted(presets.all_presets()).index('Coverstock'))
-        self.assertEqual(win._text(win.r_preset), 'Coverstock')
+        self.assertEqual(win._text(win.r_preset), presets.STARTING_NAME)
         win.send_controls['passes'].set_value(3)
         win.r_force.set_value(22)
         self.assertEqual(win.r_passes.get_value(), 3)
@@ -60,6 +76,22 @@ class TestDesignWorkspace(unittest.TestCase):
         win.send_controls['track_enhancing'].set_active(False)
         self.assertFalse(win.r_track.get_active())
         self.assertFalse(win.job.settings.track_enhancing)
+
+    def test_material_selection_resolves_the_active_holder_variant(self):
+        variants = {f"Sample · Holder {slot}": presets.Preset(
+            f"Sample · Holder {slot}", "", "silhouette", {"force": force},
+            factory_id=str(slot), factory_group="sample", factory_holder=slot)
+            for slot, force in ((1, 12), (2, 21))}
+        win = self.make_window()
+        with mock.patch.object(presets, "factory_presets", return_value=variants):
+            win.refresh_preset_choices()
+            win.send_holder_buttons[2].set_active(True)
+            names = win.r_send_preset.get_model()
+            win.r_send_preset.set_selected(next(i for i in range(names.get_n_items())
+                                               if names.get_string(i) == "Sample · Holder 1"))
+            self.assertEqual(win._text(win.r_preset), "Sample · Holder 2")
+            self.assertEqual(win.job.settings.force, 21)
+            self.assertEqual(win.job.settings.holder, 2)
 
     def test_advanced_controls_and_tool_profiles_are_independent(self):
         from cut_proxies.editor_model import Shape

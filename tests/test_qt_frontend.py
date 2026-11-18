@@ -33,8 +33,25 @@ class TestQtFrontend(unittest.TestCase):
         patcher = mock.patch.object(qt_gui.config, "CONFIG_DIR", self.config_path)
         patcher.start()
         self.addCleanup(patcher.stop)
+        device = qt_gui.graphtec.device_by_name("Silhouette Cameo 4")
+        endpoint = mock.patch.object(transport, "usb_endpoints", return_value=[(device, "", (1, 2))])
+        endpoint.start()
+        self.addCleanup(endpoint.stop)
         self.window = qt_gui.Window()
+        self.window.refresh_usb()
         self.addCleanup(self.window.deleteLater)
+
+    def test_multiple_usb_cutters_require_an_endpoint_choice(self):
+        window = self.window
+        device = qt_gui.graphtec.device_by_name("Silhouette Cameo 4")
+        with mock.patch.object(transport, "usb_endpoints",
+                               return_value=[(device, "", (1, 2)), (device, "", (1, 3))]):
+            window.refresh_usb()
+            self.assertIsNone(window.connection()[1])
+            self.assertFalse(window.send_button.isEnabled())
+            window.detected.setCurrentIndex(window.detected.findData((1, 3)))
+            self.assertEqual(window.connection()[1], (1, 3))
+            self.assertTrue(window.send_button.isEnabled())
 
     def test_default_and_advanced_settings_use_the_shared_verified_plans(self):
         window = self.window
@@ -57,8 +74,7 @@ class TestQtFrontend(unittest.TestCase):
         window.send_workspace.click()
         self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
         self.assertEqual(window.send_preset.currentData(), presets.STARTING_NAME)
-        window.send_preset.setCurrentIndex(window.send_preset.findData("Coverstock"))
-        self.assertEqual(window.choice("preset"), "Coverstock")
+        self.assertEqual(window.choice("preset"), presets.STARTING_NAME)
         window.send_blade["passes"].setValue(3)
         window.blade["force"].setValue(22)
         self.assertEqual(window.send_blade["force"].value(), 22)
@@ -67,6 +83,20 @@ class TestQtFrontend(unittest.TestCase):
         window.send_blade["track_enhancing"].setChecked(False)
         self.assertFalse(window.blade["track_enhancing"].isChecked())
         self.assertFalse(window.job.settings.track_enhancing)
+
+    def test_material_selection_resolves_the_active_holder_variant(self):
+        variants = {f"Sample · Holder {slot}": presets.Preset(
+            f"Sample · Holder {slot}", "", "silhouette", {"force": force},
+            factory_id=str(slot), factory_group="sample", factory_holder=slot)
+            for slot, force in ((1, 12), (2, 21))}
+        window = self.window
+        with mock.patch.object(presets, "factory_presets", return_value=variants):
+            window.refresh_preset_choices()
+            window.send_blade["holder"].holders.button(2).click()
+            window.send_preset.setCurrentIndex(window.send_preset.findData("Sample · Holder 1"))
+            self.assertEqual(window.choice("preset"), "Sample · Holder 2")
+            self.assertEqual(window.job.settings.force, 21)
+            self.assertEqual(window.job.settings.holder, 2)
 
     def test_advanced_controls_and_tool_profiles_are_independent(self):
         window = self.window
@@ -230,7 +260,7 @@ class TestQtFrontend(unittest.TestCase):
                           "leaf,l,g,,16,8,0.3\n")
         with mock.patch.object(window, "select_open", return_value=source):
             window.choose_material_csv()
-        self.assertEqual(materials.find_condition_csv(), source)
+        self.assertEqual(materials.find_condition_csv().read_bytes(), source.read_bytes())
         self.assertGreaterEqual(window.controls["preset"].findData("Sample vinyl"), 0)
         window.material.setCurrentIndex(window.material.findData("Sample vinyl"))
         window.apply_material()
@@ -242,7 +272,7 @@ class TestQtFrontend(unittest.TestCase):
                            "group,g,,Sample vinyl,,\n")
         with mock.patch.object(window, "select_open", return_value=invalid):
             window.choose_material_csv()
-        self.assertEqual(materials.find_condition_csv(), source)
+        self.assertEqual(materials.find_condition_csv().read_bytes(), source.read_bytes())
 
     def test_starting_guide_repeats_one_confirmed_pass_and_applies_the_count(self):
         window = self.window

@@ -25,6 +25,7 @@ class Bundle:
     rows: tuple[dict, ...]
     layout: dict
     turned: bool
+    mat_size: tuple[float, float]
 
     def row(self, number=None):
         if number is None and len(self.rows) == 1:
@@ -44,14 +45,15 @@ class Bundle:
                 imported = importer.load_svg(io.BytesIO(archive.read(row['svg'])))
         except (OSError, ValueError, KeyError, zipfile.BadZipFile, importer.ImportError_) as exc:
             raise BundleError(f'Could not read sheet {row["sheet"]} SVG: {exc}') from exc
-        if len(imported.paths) != row['cards'] or not imported.page_size_mm:
+        if (len(imported.paths) != row['cards'] or not imported.page_size_mm
+                or any(abs(actual - expected) > 0.01
+                       for actual, expected in zip(imported.page_size_mm, self.mat_size))):
             raise BundleError(f'Sheet {row["sheet"]} SVG does not match the export.')
         return imported
 
     def marks(self):
         opts = self.layout
-        size = geometry.SHEETS[opts['sheet']].size(opts['portrait'])
-        return regmarks.marks(*size, opts['mark_inset_mm'], opts['mark_length_mm'],
+        return regmarks.marks(*self.mat_size, opts['mark_inset_mm'], opts['mark_length_mm'],
                               opts['mark_thickness_mm'], opts['pattern'])
 
     def mat_placement(self):
@@ -108,6 +110,8 @@ class Bundle:
 
     def measure(self, row, marks, dpi):
         self.check_current()
+        last = self.rows[-1]
+        expected_pages = last['backPage'] or last['frontPage']
         try:
             with zipfile.ZipFile(self.path) as archive, \
                  archive.open(self.pdf) as src, tempfile.TemporaryDirectory() as tmp:
@@ -122,7 +126,8 @@ class Bundle:
                 if any(abs(px - mm*dpi/25.4) > 1.5 for px, mm in zip(image.size, size)):
                     raise BundleError('The PDF front page size does not match the cutter sheet.')
                 report = sheet.measure(pdf, marks, page=row['frontPage'], dpi=dpi,
-                                       image=image, swap_page_axes=self.turned)
+                                       image=image, swap_page_axes=self.turned,
+                                       expected_pages=expected_pages)
         except (OSError, ValueError, KeyError, zipfile.BadZipFile, sheet.SheetError) as exc:
             raise BundleError(f'Could not measure {self.pdf}: {exc}') from exc
         return dataclasses.replace(report, pdf=self.pdf), image
@@ -160,11 +165,12 @@ def load(path):
                 any(not math.isclose(float(page[k]), value, abs_tol=0.01)
                     for k, value in zip(('width', 'height'), expected))):
             raise BundleError('The PDF and cutter orientations do not match the sheet dimensions.')
-        paper = next((paper.name for paper in geometry.SHEETS.values()
-                      if math.isclose(paper.portrait_width_mm, min(width, height), abs_tol=0.01)
-                      and math.isclose(paper.portrait_height_mm, max(width, height), abs_tol=0.01)), None)
-        if paper is None:
+        # SCM's raster page can be one layout pixel smaller than nominal paper.
+        # Recognize the paper name while retaining the PDF and SVG's frame.
+        matched_sheet = geometry.match_sheet((width, height))
+        if matched_sheet is None:
             raise BundleError('This paper size is unavailable in Control Center.')
+        paper, _ = matched_sheet
         pattern = {3: regmarks.THREE, 4: regmarks.FOUR}[reg['pattern']]
         inset, arm, weight = (float(reg[k]) for k in ('inset', 'armLength', 'thickness'))
         if (not (0 < inset < min(width, height)/2) or
@@ -195,6 +201,6 @@ def load(path):
         raise BundleError(f'The ZIP is missing a required registration field ({exc.args[0]}).') from exc
     except (AttributeError, OSError, TypeError, ValueError) as exc:
         raise BundleError(f'Could not read the ProxyPress ZIP: {exc}') from exc
-    layout = dict(sheet=paper, portrait=portrait, mark_inset_mm=inset,
+    layout = dict(sheet=paper, portrait=portrait, use_document_page=not legacy, mark_inset_mm=inset,
                   mark_length_mm=arm, mark_thickness_mm=weight, pattern=pattern)
-    return Bundle(path, signature, pdf, tuple(rows), layout, turned)
+    return Bundle(path, signature, pdf, tuple(rows), layout, turned, (width, height))

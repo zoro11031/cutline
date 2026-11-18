@@ -79,14 +79,15 @@ class TestClassic(unittest.TestCase):
     def test_linux_discovery_prefers_paired_models_and_deduplicates(self):
         def commands(args):
             output = {("devices", "Paired"): f"Device {self.address} Cameo 4",
+                      ("info", self.address): "UUID: 00001101-0000-1000-8000-00805f9b34fb",
                       ("devices",): f"Device {self.address} Silhouette Cameo 4\n"
                                      "Device 22:23:45:AB:CD:EF Headset"}
             return output.get(tuple(args[1:]), "")
 
         with mock.patch.object(rfcomm.sys, "platform", "linux"), \
              mock.patch.object(rfcomm, "_run", side_effect=commands):
-            self.assertEqual(rfcomm.discover(), [(self.address, "Silhouette Cameo 4")])
-            self.assertEqual(len(rfcomm.discover(include_all=True)), 2)
+            self.assertEqual(rfcomm.discover(), [(self.address, "Cameo 4")])
+            self.assertEqual(len(rfcomm.discover(include_all=True)), 1)
 
 
 class TestDiagnostics(unittest.TestCase):

@@ -26,6 +26,8 @@ from .qt_controls import (WORKSPACE_STYLE, Form, Page, Tasks, bar, button, set_c
 
 APP_ID = "org.printing.SilhouetteControlCenter"
 ARTWORK_FILTER = "Cut artwork (*.svg *.SVG *.dxf *.DXF *.studio3 *.STUDIO3)"
+from . import cutters
+
 DEVICES = {device.name: device.name.removeprefix("Silhouette ") for device in graphtec.DEVICES}
 
 # Qt widgets use the same field names and units as the job builder.
@@ -274,6 +276,7 @@ class Window(QMainWindow):
         profile.actions(button("Save as New…", self.save_new_preset), button("Dial In a Material…", self.open_material_guide))
         tool = page.group("Cutter and blade")
         self.choose(tool, "cutter", "Cutter", DEVICES, "Silhouette Cameo 4", self.change_cutter)
+        tool.setRowVisible(self.controls["cutter"], False)
         self.blade["holder"] = tool.holders(self.rebuild)
         for key, label, lo, hi, step, decimals in BLADE_NUMBERS:
             if key in QUICK_NUMBERS:
@@ -301,12 +304,13 @@ class Window(QMainWindow):
         self.number(weed, "weed_border_mm", "Weed border padding (mm)", 0, 0, 1000, 0.5, 2)
         self.choose(weed, "weed_lines", "Weed Lines", toolpath.WEED_LINES)
         table = advanced.group("Studio materials")
-        table.note("Import Studio’s condition.csv for the complete factory material list for your cutter.")
+        table.note("Import factory materials from Silhouette Studio.")
         self.divisions = table.choice("Show Cutter Divisions", {False: "Known Cutters", True: "All Cutters"},
                                      changed=self.load_materials)
         self.material = table.choice("Material", ())
         table.actions(button("Import Studio Materials…", self.choose_material_csv),
                       button("Apply Material", self.apply_material))
+        table.push("Import Factory Folder…", lambda: self.choose_material_csv(folder=True))
         table.actions(button("Update Preset", self.save_preset),
                       button("Restore Default Materials…", self.restore_materials))
         self.install_page("Blade", page)
@@ -317,10 +321,13 @@ class Window(QMainWindow):
         page = Page()
         self.send_normal = normal = page.section()
         cutter = normal.group("Cutter")
-        self.link = cutter.choice("Transport", {"auto": "USB", **bluetooth.BLUETOOTH_MODES},
+        self.cutter_model = cutter.choice("Cutter", cutters.MODELS, cutters.AUTO, self.change_model)
+        self.wireless_choices = {}
+        self.wireless_scanning = False
+        self.link = cutter.choice("Transport", {"auto": "Automatic", **bluetooth.BLUETOOTH_MODES},
                                   changed=self.change_connection)
-        self.detected = cutter.choice("Bluetooth devices", {"": "Select a cutter"}, changed=self.device_selected)
-        self.discover = cutter.push("Find Bluetooth Cutters", self.find_cutters)
+        self.detected = cutter.choice("Connected cutter", {"": "Select a cutter"}, changed=self.device_selected)
+        self.discover = cutter.push("Refresh Cutters", self.find_cutters)
         self.connection_status = cutter.note("Cutter status not checked.")
         self.refresh_cutter = cutter.push("Check Cutter Status", self.check_device)
         self.connection_form = cutter
@@ -422,6 +429,14 @@ class Window(QMainWindow):
         advanced.group("Defaults").push("Restore Default Materials…", self.restore_materials)
         self.install_page("Send", page)
         self.change_connection()
+        self.usb_timer = QTimer(self)
+        self.usb_timer.timeout.connect(self.refresh_usb)
+        self.usb_timer.start(2000)
+        QTimer.singleShot(0, self, self.refresh_usb)
+        self.wireless_timer = QTimer(self)
+        self.wireless_timer.timeout.connect(self.refresh_wireless)
+        self.wireless_timer.start(30000)
+        QTimer.singleShot(0, self, self.refresh_wireless)
 
     def open_advanced_blade(self):
         self.tabs.setCurrentIndex(self.tab("Blade"))
@@ -535,9 +550,18 @@ class Window(QMainWindow):
 
     def load_preset(self):
         cutter = self.choice("cutter")
-        selected = presets.get(self.choice("preset"), cutter)
+        name, slot = self.choice("preset"), self.holder_state.active
+        selected = presets.get(name, cutter)
+        try:
+            selected = presets.for_context(selected, cutter, slot)
+        except ValueError as error:
+            self.message(str(error))
+            selected = presets.get(presets.STARTING_NAME, cutter)
+        if selected.name != name:
+            with self.editing():
+                self.select("preset", selected.name)
         self.provenance.setText(selected.note)
-        self.set_blade_settings(for_holder(selected.cut_settings(), self.holder_state.active))
+        self.set_blade_settings(for_holder(selected.cut_settings(), slot))
 
     def current_holder_profile(self):
         preset = presets.get(self.choice("preset"), self.choice("cutter"))
@@ -550,7 +574,15 @@ class Window(QMainWindow):
         holder.holders.button(2).setEnabled(device.two_tools)
         if slot == self.holder_state.active:
             return
+        fresh = slot not in self.holder_state.drafts
         preset, settings = self.holder_state.switch(slot, *self.current_holder_profile())
+        if fresh and preset.factory_group:
+            try:
+                preset = presets.for_context(preset, device.name, slot)
+                settings = for_holder(preset.cut_settings(), slot)
+            except ValueError:
+                preset = presets.get(presets.STARTING_NAME, device.name)
+                settings = for_holder(preset.cut_settings(), slot)
         with self.editing():
             self.select("preset", preset.name if self.controls["preset"].findData(preset.name) >= 0 else config.DEFAULT_PRESET)
             self.provenance.setText(preset.note)
@@ -603,8 +635,9 @@ class Window(QMainWindow):
         if self.group_rows:
             self.change_group_mode()
 
-    def choose_material_csv(self):
-        path = self.select_open("Choose Silhouette condition.csv", "CSV files (*.csv *.CSV)")
+    def choose_material_csv(self, *, folder=False):
+        path = (QFileDialog.getExistingDirectory(self, "Choose Studio factory folder") if folder
+                else self.select_open("Choose Silhouette condition.csv", "CSV files (*.csv *.CSV)"))
         if path:
             try:
                 materials.select_condition_csv(path)
@@ -629,17 +662,13 @@ class Window(QMainWindow):
         if selected is None:
             self.message("Import Studio Materials and choose a material first.")
             return
-        name = selected.name
+        name = self.material.currentData()
         if not self.divisions.currentData() and self.controls["preset"].findData(name) >= 0:
             self.select("preset", name)
             self.load_preset()
             return
         with self.editing():
-            self.blade["force"].setValue(selected.force)
-            self.blade["speed"].setValue(selected.speed)
-            self.blade["passes"].setValue(selected.passes)
-            self.blade["depth"].setValue(-1 if selected.autoblade_depth is None else selected.autoblade_depth)
-            self.blade["blade_diameter_mm"].setValue(selected.blade_diameter_mm)
+            self.set_blade_settings(for_holder(selected.cut_settings(), self.holder_state.active))
         self.rebuild()
 
     def restore_materials(self):
@@ -808,7 +837,7 @@ class Window(QMainWindow):
             options["weed_lines"] = self.choice("weed_lines") if options["weed_border_mm"] else "none"
         if self.bundle:
             options.update(self.bundle.layout, engine="scm", mode=template.ROUNDED, bleed_mm=0, registration=True,
-                           skip=(), use_document_page=False, imported=self.artwork)
+                           skip=(), imported=self.artwork)
         return options
 
     def update_enabled_fields(self):
@@ -921,8 +950,11 @@ class Window(QMainWindow):
             return "Check the matching PDF in Sheet."
         if connection != self.connection():
             return "The cutter connection changed. Review the job again."
-        if connection[0] != "auto" and not connection[1]:
-            return "Select a Bluetooth cutter."
+        refusal = cutters.usb_refusal(connection, plan.device, self.cutter_model.currentData())
+        if refusal:
+            return refusal
+        if not connection[1]:
+            return "Select a cutter."
         if scan_only and not plan.registration_steps():
             return "Enable registration to test the scan."
         if not scan_only and plan.settings.passes <= 0:
@@ -1147,23 +1179,61 @@ class Window(QMainWindow):
     def connection(self):
         mode = self.link.currentData()
         if mode == "auto":
-            return mode, None, None
+            endpoint = self.detected.currentData() or None
+            if endpoint and endpoint[0] in bluetooth.BLUETOOTH_MODES:
+                return endpoint[0], endpoint[1], None
+            return mode, endpoint, None
         return mode, self.identifier.text().strip() or None, self.channel.value() if mode == "bluetooth" else None
 
-    @staticmethod
-    def open_link(connection, device=None):
-        mode, identifier, channel = connection
-        return transport.open_transport(mode, device=device, bluetooth_id=identifier, bluetooth_channel=channel)
+    open_link = staticmethod(cutters.open_link)
+
+    def change_model(self):
+        model = self.cutter_model.currentData()
+        if model in DEVICES:
+            self.select("cutter", model)
+        elif model == cutters.AUTO:
+            self.device_selected()
+        self.change_target()
+
+    def refresh_usb(self):
+        if self.busy or self.link.currentData() != "auto":
+            return
+        choices = {**cutters.usb_choices(), **self.wireless_choices}
+        items = {"": "Select a cutter", **choices}
+        if [(self.detected.itemData(i), self.detected.itemText(i)) for i in range(self.detected.count())] != list(items.items()):
+            selected = next(iter(choices)) if len(choices) == 1 else ""
+            if selected and not cutters.auto_model(selected, choices[selected]):
+                selected = ""
+            with QSignalBlocker(self.detected):
+                set_choices(self.detected, items, selected)
+            self.device_selected()
+            self.change_target()
+            self.set_cutter_status(choices.get(selected, "Select a cutter." if choices else "No cutter found."))
+
+
+    def refresh_wireless(self):
+        if self.busy or self.wireless_scanning or self.link.currentData() != "auto":
+            return
+        self.wireless_scanning = True
+
+        def done(value, error):
+            self.wireless_scanning = False
+            self.wireless_choices = value if not error else {}
+            self.refresh_usb()
+
+        self.tasks.run(cutters.wireless_choices, done)
 
     def change_connection(self):
         mode = self.link.currentData()
         for widget in (self.detected, self.discover):
-            self.connection_form.setRowVisible(widget, mode != "auto")
+            self.connection_form.setRowVisible(widget, True)
         self.advanced_connection_form.parentWidget().setVisible(mode != "auto")
         self.advanced_connection_form.setRowVisible(self.channel, mode == "bluetooth")
         self.identifier.clear()
         set_choices(self.detected, {"": "Select a cutter"}, "")
         self.change_target()
+        if mode == "auto":
+            self.refresh_usb()
 
     def change_target(self):
         self.set_cutter_status("Cutter status not checked.")
@@ -1178,15 +1248,25 @@ class Window(QMainWindow):
         identifier = self.detected.currentData()
         if not identifier:
             return
+        if self.link.currentData() == "auto":
+            model = cutters.auto_model(identifier, self.detected.currentText())
+            if model and self.cutter_model.currentData() == cutters.AUTO:
+                self.select("cutter", model.name)
+            self.change_target()
+            return
         self.identifier.setText(identifier)
         device = bluetooth.advertised_model(self.detected.currentText().split(" · ")[0])
-        if device:
+        if device and self.cutter_model.currentData() == cutters.AUTO:
             self.select("cutter", device.name)
 
     def find_cutters(self):
         from . import ble, rfcomm
 
         mode = self.link.currentData()
+        if mode == "auto":
+            self.refresh_usb()
+            self.refresh_wireless()
+            return
         scanner = ble if mode == "ble" else rfcomm
         self.discover.setEnabled(False)
         self.connection_status.setText("Searching for Bluetooth cutters…")
@@ -1224,7 +1304,7 @@ class Window(QMainWindow):
             self.busy = False
             if connection == self.connection():
                 self.set_cutter_status(f"Cutter detection unavailable. {error}" if error else value[1])
-                if not error and connection[0] != "auto":
+                if not error and self.cutter_model.currentData() == cutters.AUTO:
                     self.select("cutter", value[0].name)
             self.refresh_send()
 
@@ -1257,7 +1337,7 @@ class Window(QMainWindow):
         elif not plan.registration:
             prompt += "\nRegistration is off. The cutter uses sheet coordinates."
         if connection[1]:
-            prompt += f"\nBluetooth: {connection[1]}"
+            prompt += f"\nConnection: {connection[1]}"
         title = "Test Registration?" if scan_only else "Send to Cutter?"
         if self.confirm(title, prompt):
             self.start_send(plan, connection, scan_only=scan_only)
@@ -1324,6 +1404,10 @@ class Window(QMainWindow):
 
     def send_steps(self, device, connection, steps, success, *, on_registration_failure=None,
                    on_success=None, test=False, wait_done=False):
+        refusal = cutters.usb_refusal(connection, device, self.cutter_model.currentData())
+        if refusal:
+            self.message(refusal)
+            return
         self.guide.invalidate()
         self.busy = True
         self.clear_scan_result()
