@@ -43,6 +43,27 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertEqual(win.workspaces.get_visible_child_name(), 'tools')
         self.assertIsNone(win.design)
 
+    def test_registration_failure_opens_named_mark_diagnostics(self):
+        win = self.make_window()
+        report = mock.Mock()
+        report.problems.return_value = ["top-right L: no ink found in the search window"]
+        matched = mock.Mock()
+        matched.near_marks.return_value = ("bottom-left L",)
+        matched.mat_placement.return_value = "Align with the top-left of the mat grid."
+        from cut_proxies.transport import RegistrationFailed
+        with mock.patch.object(gui.Adw, 'AlertDialog') as dialog:
+            win.show_registration_failure(str(RegistrationFailed()), win.job, matched,
+                                          {"sheet": 2}, report)
+        self.assertTrue(win.scan_result.get_visible())
+        self.assertEqual(win.scan_result.get_title(), "Sheet 2 registration failed")
+        body = dialog.call_args.kwargs["body"]
+        self.assertIn("did not report which mark", body)
+        self.assertIn("PDF check: top-right L", body)
+        self.assertIn("Check for nearby artwork at bottom-left L", body)
+        callback = dialog.return_value.connect.call_args.args[1]
+        callback()
+        self.assertEqual(win.stack.get_visible_child_name(), "sheet")
+
     @unittest.skipUnless(os.environ.get('PROXYPRESS_BUNDLE_DIR'), 'generate a ProxyPress bundle first')
     def test_selecting_a_real_zip_opens_its_paths_and_its_paired_studio_file(self):
         win = self.make_window()

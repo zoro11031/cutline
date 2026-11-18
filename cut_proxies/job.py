@@ -69,6 +69,32 @@ class Job:
     def cut_length_mm(self) -> float:
         return template.total_length_mm(self.paths) * self.settings.passes
 
+    def registration_steps(self) -> tuple:
+        """Use the verified plan, stopping at the sensor's reply before paths."""
+        for i, step in enumerate(self.steps):
+            if step.kind == "expect" and step.expect == graphtec.RESP_REGMARK_OK:
+                return self.steps[:i+1]
+        return ()
+
+    def registration_notes(self, report=None, near_marks=None) -> list[str]:
+        """PDF and layout observations available after a hardware scan fails."""
+        notes = []
+        if report is not None:
+            problems = report.problems(self.marks.sheet_w_mm, self.marks.sheet_h_mm)
+            if problems:
+                notes.append("PDF check: " + "\n".join(problems))
+            else:
+                names = ", ".join(mark.name for mark in report.found)
+                notes.append(f"PDF check found all expected marks: {names}.")
+        if near_marks is None:
+            corners = {hint["mark"] for hint in self.mask_hints}
+            near_marks = [f"{corner} {'square' if corner == 'top-left' and self.marks.square else 'L'}"
+                          for corner in sorted(corners)]
+        if near_marks:
+            notes.append("Check for nearby artwork at " + ", ".join(near_marks)
+                         + " (mat view).")
+        return notes
+
     def summary(self) -> list[tuple[str, str]]:
         mk = self.marks
         return [
@@ -228,7 +254,8 @@ def build(sheet: str = config.DEFAULT_SHEET,
         device, cut, origin_mm=mk.origin_mm,
         reg_width_mm=mk.reg_width_mm, reg_length_mm=mk.reg_length_mm,
         registration=registration, auto_search=auto_search,
-        quad=window["quad"], offset_mm=offset)
+        quad=window["quad"], offset_mm=offset,
+        mark_shape_mm=(mk.length_mm, mk.thickness_mm))
     steps = tuple(job.plan(paths))
     stream = b''.join(step.data for step in steps if step.kind == 'write')
 

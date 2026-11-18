@@ -50,8 +50,8 @@ RESP_DECODING = {RESP_READY: "ready", RESP_MOVING: "moving",
                  RESP_UNLOADED: "unloaded"}
 
 # The reply a successful registration scan sends back: four spaces, a zero and
-# an ETX (Graphtec.py ~1574).  Anything else means the marks were not found.
-# In particular, '    1\x03' is the failure reply when the sensor cannot find marks.
+# an ETX (Graphtec.py ~1574). The sensor failure reply reports the overall
+# result with no mark index. An unexpected reply is a separate transport error.
 RESP_REGMARK_OK = b"    0\x03"
 RESP_REGMARK_FAIL = b"    1\x03"
 
@@ -252,20 +252,36 @@ def manual_regmark_mm(length_mm: float, width_mm: float) -> str:
     return f"TB23,{su(length_mm)},{su(width_mm)}"
 
 
-# The fixed preamble to any registration scan (Graphtec.py 1549-1555).
-# TB51 and TB53 are sent as the literal constants Silhouette Studio sends;
-# they are described upstream as the mark length and width, but in units that
-# were never pinned down, so they are passed through unchanged rather than
-# derived from our own mark geometry.  If a scan fails on marks that are
-# visibly correct, these two are the first thing to question.
+# The reference registration preamble (Graphtec.py 1549-1555). Use the
+# recovered constants except on the Cameo 4, for which the reference docs
+# also show a geometry-specific TB51/TB53 pair.
 REGMARK_PREAMBLE = (
     "TB50,0",       # 0 = portrait mode.  With registration it is always 0.
     "TB99",         # undocumented upstream; always sent before a scan
     "TB52,2",       # mark type: 0 = original/SD, 2 = Cameo/Portrait
-    "TB51,400",     # "length of regmarks", magic constant
-    "TB53,10",      # "width of regmarks", magic constant
+    "TB51,400",     # default arm length, copied from the reference driver
+    "TB53,10",      # default stroke width, copied from the reference driver
     "TB55,1",       # undocumented upstream
 )
+
+def registration_mat_commands(device: Device, width_mm: float, height_mm: float) -> tuple[str, ...]:
+    """Standard Cameo mat setup, from Graphtec.py set_cutting_mat."""
+    short, long = 304.8, 609.6
+    if not device.cameo3_on or device.width_mm < short or width_mm > short or height_mm > long:
+        return ()
+    mat, height = ("TG1", short) if height_mm <= short else ("TG2", long)
+    return (mat, "FN0", "TB50,0", upper_left_mm(0, 0), lower_right_mm(short, height))
+
+
+def registration_preamble(device: Device, mark_shape_mm: tuple[float, float] | None) -> tuple[str, ...]:
+    # docs/cameo4-usbprint-observations.md: Cameo 4 uses 200 and 20 for
+    # 10 mm arms and 1 mm strokes. Keep the recovered defaults on other models.
+    if device.product_id != 0x1137 or mark_shape_mm is None:
+        return REGMARK_PREAMBLE
+    arm, stroke = mark_shape_mm
+    return (*REGMARK_PREAMBLE[:3], f"TB51,{su(arm)}", f"TB53,{su(stroke)}",
+            REGMARK_PREAMBLE[-1])
+
 
 
 # --------------------------------------------------------------------------
@@ -367,7 +383,8 @@ class CutJob:
                  reg_width_mm: float = 0.0, reg_length_mm: float = 0.0,
                  registration: bool = True, auto_search: bool = True,
                  search_mm: float = 10.0, quad: bool = False,
-                 offset_mm: tuple[float, float] = (0.0, 0.0)):
+                 offset_mm: tuple[float, float] = (0.0, 0.0),
+                 mark_shape_mm: tuple[float, float] | None = None):
         self.device = device
         self.settings = settings.clamped(device)
         self.origin_mm = origin_mm
@@ -381,6 +398,7 @@ class CutJob:
         self.registration = registration
         self.auto_search = auto_search
         self.search_mm = search_mm
+        self.mark_shape_mm = mark_shape_mm
         # A four-mark scan only exists on hardware that has it.
         self.quad = quad and device.quad_regmarks
 
@@ -425,7 +443,7 @@ class CutJob:
         if not self.registration:
             return []
         ox, oy = self.origin_mm
-        steps = [Step("write", frame(list(REGMARK_PREAMBLE)),
+        steps = [Step("write", frame(registration_preamble(self.device, self.mark_shape_mm)),
                       note="registration preamble")]
         if self.auto_search:
             fn = (auto_quad_regmark_search_mm if self.quad
@@ -480,10 +498,18 @@ class CutJob:
         return [move_mm(0.0, max_y), "SO0"]
 
     # ---- assembly ----------------------------------------------------
+    def _initial_steps(self) -> list[Step]:
+        steps = [Step("write", CMD_ESC + ESC_EOT, note="initialise the device")]
+        if self.registration:
+            x, y = self.origin_mm
+            commands = registration_mat_commands(
+                self.device, self.reg_width_mm + 2*x, self.reg_length_mm + 2*y)
+            if commands:
+                steps.append(Step("write", frame(commands), note="set up the Cameo cutting mat"))
+        return steps
+
     def plan(self, paths) -> list[Step]:
-        steps: list[Step] = []
-        steps.append(Step("write", CMD_ESC + ESC_EOT,
-                          note="initialise the device"))
+        steps = self._initial_steps()
         steps.append(Step("write", frame(self._setup_commands()),
                           note="blade settings"))
         steps.extend(self._regmark_steps())
@@ -512,9 +538,7 @@ class CutJob:
         that reached the blade by a different route would not be testing the
         thing you are about to cut with.
         """
-        steps: list[Step] = []
-        steps.append(Step("write", CMD_ESC + ESC_EOT,
-                          note="initialise the device"))
+        steps = self._initial_steps()
         if groups:
             steps.append(Step("write", frame(self._setup_commands(groups[0][0])),
                               note="blade settings"))

@@ -577,12 +577,17 @@ class Window(Adw.ApplicationWindow):
         page.add(g)
 
         g2 = Adw.PreferencesGroup(
-            title="Result",
-            description="Green boxes in the preview are marks found where "
-                        "the template expects them; red are not.")
+            title="PDF registration check",
+            description="Each row in the result names the mark and its measured "
+                        "position. This checks the PDF. The cutter runs its own scan "
+                        "on the printed sheet.")
         self.sheet_result = Adw.ActionRow(title="Not measured", subtitle="")
         self.sheet_result.set_subtitle_lines(0)
         g2.add(self.sheet_result)
+        self.scan_result = Adw.ActionRow(title="Last cutter scan")
+        self.scan_result.set_subtitle_lines(0)
+        self.scan_result.set_visible(False)
+        g2.add(self.scan_result)
 
         adopt = Adw.ActionRow(
             title="Use the measured offset as calibration",
@@ -681,6 +686,13 @@ class Window(Adw.ApplicationWindow):
                      "yourself")
         g.add(self.r_register)
         g.add(self.r_auto)
+        test_scan = Adw.ActionRow(title="Test registration",
+                                  subtitle="Moves the mat to scan the marks without cutting")
+        self.scan_button = Gtk.Button(label="Test scan")
+        self.scan_button.set_valign(Gtk.Align.CENTER)
+        self.scan_button.connect("clicked", lambda *_: self.on_cut(scan_only=True))
+        test_scan.add_suffix(self.scan_button)
+        g.add(test_scan)
         page.add(g)
         self.r_register.connect("notify::active", self.on_changed)
         self.r_auto.connect("notify::active", self.on_changed)
@@ -966,6 +978,7 @@ class Window(Adw.ApplicationWindow):
     def rebuild(self):
         if self._suppress or self._building:
             return
+        self.scan_button.set_sensitive(False)
         if self.pdf_bundle and self.imported is None:
             self.job = None
             self.preview.set_job(None)
@@ -1013,9 +1026,12 @@ class Window(Adw.ApplicationWindow):
 
         self.job = j
         self.preview.set_job(j)
+        failed_pdf = self.pdf_bundle and self.sheet_report is not None and not self.bundle_checked
         self.summary_icon.set_from_icon_name(
-            'dialog-error-symbolic' if j.blocked else 'emblem-default-symbolic')
-        self.summary_title.set_label('Layout needs attention' if j.blocked else 'Layout checked')
+            'dialog-error-symbolic' if j.blocked or failed_pdf else 'emblem-default-symbolic')
+        self.summary_title.set_label(
+            'Layout needs attention' if j.blocked else
+            'PDF registration needs attention' if failed_pdf else 'Layout checked')
         orientation = 'portrait' if j.grid.portrait else 'landscape'
         self.summary_layout.set_label(
             f'{len(j.paths)} cut shapes · {j.grid.sheet_name} {orientation}\n'
@@ -1026,6 +1042,7 @@ class Window(Adw.ApplicationWindow):
             f'{"pass" if j.settings.passes == 1 else "passes"}')
         self.summary_note.set_label(
             j.blocked[0] if j.blocked else
+            'Open Sheet to see which marks failed the PDF check.' if failed_pdf else
             ('Starting settings — test on an offcut first.'
              if j.preset.origin == 'derived' else 'Geometry checks passed.'))
 
@@ -1044,8 +1061,7 @@ class Window(Adw.ApplicationWindow):
             lines.append("NEAR REGISTRATION MARKS (conservative proximity check):")
             for h in j.mask_hints:
                 lines.append(f"  {h['text']}")
-            lines.append(regmarks.MASK_GUIDANCE)
-            lines.append("Proximity alone does not mean every nearby card needs covering.")
+            lines.append("Use Test scan to see whether the cutter can read the printed marks.")
         self.checks.set_text("\n".join(lines))
 
         blocked = j.blocked
@@ -1060,13 +1076,14 @@ class Window(Adw.ApplicationWindow):
             self.banner.set_title(j.warnings[0])
             self.banner.set_revealed(True)
         elif j.mask_hints:
-            self.banner.set_title(regmarks.MASK_GUIDANCE)
+            self.banner.set_title("Artwork may be close to a registration mark. Check the sheet.")
             self.banner.set_revealed(True)
         else:
             self.banner.set_revealed(False)
 
-        self.cut_button.set_sensitive(not blocked and not self._sending and j.settings.passes > 0
-                                      and (not self.pdf_bundle or self.bundle_checked))
+        ready = not blocked and not self._sending and (not self.pdf_bundle or self.bundle_checked)
+        self.cut_button.set_sensitive(ready and j.settings.passes > 0)
+        self.scan_button.set_sensitive(ready and bool(j.registration_steps()))
         self._building = False
 
     # ---- actions ------------------------------------------------------
@@ -1263,6 +1280,7 @@ class Window(Adw.ApplicationWindow):
         self.sheet_row.set_subtitle('Pick the sheet you printed')
         self.sheet_result.set_title('Not measured')
         self.sheet_result.set_subtitle('')
+        self.scan_result.set_visible(False)
         self.r_sheet_page.set_title('Page')
         self.r_sheet_page.set_subtitle('which page of the PDF to measure')
         self.r_sheet_page.get_adjustment().set_upper(99)
@@ -1276,9 +1294,14 @@ class Window(Adw.ApplicationWindow):
             self.on_clear_artwork()
             self.toast(str(exc))
             return
-        self.sheet_row.set_subtitle(f'Sheet {row["sheet"]} · PDF front page {row["frontPage"]}')
+        self.describe_bundle_sheet(row)
         self.preview.set_pdf()
         self.set_artwork(artwork, row.get('svg') or row['cutFile'])
+
+    def describe_bundle_sheet(self, row):
+        self.sheet_row.set_subtitle(
+            f'Sheet {row["sheet"]} · PDF front page {row["frontPage"]}\n'
+            + self.pdf_bundle.mat_placement())
 
     def on_pick_pdf(self, *_a):
         dialog = Gtk.FileDialog(title="Open the printed sheet")
@@ -1325,7 +1348,7 @@ class Window(Adw.ApplicationWindow):
                 self.r_sheet_page.get_adjustment().set_upper(len(matched.rows))
                 self.r_sheet_page.set_value(1)
                 self._suppress = False
-                self.sheet_row.set_subtitle(f'Sheet {row["sheet"]} · PDF front page {row["frontPage"]}')
+                self.describe_bundle_sheet(row)
                 self.set_artwork(artwork, row.get('svg') or row['cutFile'])
                 return
             if self.pdf_bundle:
@@ -1357,6 +1380,7 @@ class Window(Adw.ApplicationWindow):
         if path is None or (self.job is None and not matched):
             self.toast("Load a PDF and fix the layout first.")
             return
+        self.scan_result.set_visible(False)
         self.sheet_result.set_title("Measuring...")
         self.sheet_result.set_subtitle("")
         marks = matched.marks() if matched else self.job.marks
@@ -1365,6 +1389,7 @@ class Window(Adw.ApplicationWindow):
             row = matched.rows[page-1]
             self.bundle_checked = False
             self.cut_button.set_sensitive(False)
+            self.scan_button.set_sensitive(False)
         dpi = int(self._text(self.r_sheet_dpi))
         token = self._sheet_token = object()
         self.sheet_report = None
@@ -1578,7 +1603,7 @@ class Window(Adw.ApplicationWindow):
 
         threading.Thread(target=work, daemon=True).start()
 
-    def on_cut(self, *_a):
+    def on_cut(self, *_a, scan_only=False):
         if self.pdf_bundle and not self.bundle_checked:
             self.toast('Check the matched PDF before cutting this sheet.')
             return
@@ -1600,18 +1625,22 @@ class Window(Adw.ApplicationWindow):
                      "test preset first.\n\n")
         body += ("The cutter will search for the printed marks first."
                  if j.registration else "Registration is off; this uses sheet coordinates.")
-        dialog = Adw.AlertDialog(heading="Send this cut?", body=body)
+        if scan_only:
+            body = "The cutter will scan the marks. No cutting paths will be sent."
+        if self.pdf_bundle:
+            body += "\n\n" + self.pdf_bundle.mat_placement()
+        dialog = Adw.AlertDialog(heading="Test registration?" if scan_only else "Send this cut?", body=body)
         dialog.add_response("cancel", "Cancel")
-        dialog.add_response("cut", "Cut")
-        dialog.set_response_appearance("cut",
-                                       Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.add_response("cut", "Scan" if scan_only else "Cut")
+        dialog.set_response_appearance("cut", Adw.ResponseAppearance.SUGGESTED
+                                       if scan_only else Adw.ResponseAppearance.DESTRUCTIVE)
         dialog.set_default_response("cancel")
         if connection[1]:
             dialog.set_body(f"{body}\n\nBluetooth target: {j.device.name} ({connection[1]})")
-        dialog.connect("response", self._cut_response, j, connection)
+        dialog.connect("response", self._cut_response, j, connection, scan_only)
         dialog.present(self)
 
-    def _cut_response(self, _dialog, response, j, connection=("auto", None)):
+    def _cut_response(self, _dialog, response, j, connection=("auto", None), scan_only=False):
         if response != "cut":
             return
         if self.pdf_bundle and not self.bundle_checked:
@@ -1621,8 +1650,17 @@ class Window(Adw.ApplicationWindow):
         if refusal:
             self.toast(refusal)
             return
+        steps = j.registration_steps() if scan_only else j.steps
+        if not steps:
+            self.toast("This job does not use registration.")
+            return
         self._sending = True
         self.cut_button.set_sensitive(False)
+        self.scan_button.set_sensitive(False)
+        self.scan_result.set_visible(False)
+        matched = self.pdf_bundle
+        row = matched.rows[int(self.r_sheet_page.get_value()) - 1] if matched else None
+        report = self.sheet_report if matched else None
 
         def work():
             try:
@@ -1639,15 +1677,37 @@ class Window(Adw.ApplicationWindow):
                         if state == "moving":
                             raise transport.TransportError(
                                 "the cutter is busy")
-                    sent = t.run(j.steps)
-                GLib.idle_add(self.toast, f"Cut sent: {sent:,} bytes")
-            except transport.TransportError as exc:
-                GLib.idle_add(self.toast, f"Send failed: {exc}")
+                    sent = t.run(steps)
+                GLib.idle_add(self.toast, "Registration scan passed. No cut paths were sent."
+                              if scan_only else f"Cut sent: {sent:,} bytes")
+            except transport.RegistrationFailed as exc:
+                GLib.idle_add(self.show_registration_failure, str(exc), j, matched, row, report)
             except Exception as exc:              # noqa: BLE001
                 GLib.idle_add(self.toast, f"Send failed: {exc}")
             GLib.idle_add(self._send_done)
 
         threading.Thread(target=work, daemon=True).start()
+
+    def show_registration_failure(self, message, j, matched, row, report):
+        heading = f'Sheet {row["sheet"]} registration failed' if row else 'Registration failed'
+        notes = j.registration_notes(report, matched.near_marks(row) if matched else None)
+        if report is None:
+            notes.insert(0, "In Sheet, open the print PDF to check each mark by name.")
+        if matched:
+            notes.append(matched.mat_placement())
+        notes.append("Check the printed front at 100% scale. Keep all marks uncovered "
+                     "and check for glare at the corners.")
+        detail = "\n\n".join([message, *notes])
+        self.scan_result.set_title(heading)
+        self.scan_result.set_subtitle(detail)
+        self.scan_result.set_visible(True)
+        dialog = Adw.AlertDialog(heading=heading, body=detail)
+        dialog.add_response("close", "Close")
+        dialog.add_response("sheet", "Review marks")
+        dialog.set_default_response("sheet")
+        dialog.set_close_response("close")
+        dialog.connect("response::sheet", lambda *_: self.stack.set_visible_child_name("sheet"))
+        dialog.present(self)
 
     def _send_done(self):
         self._sending = False

@@ -78,6 +78,7 @@ class FoundMark:
     ink_box: Rect | None
     kind: str                       # "square" or "ell"
     expected_size_mm: float = 0.0   # the mark's footprint, w and h
+    shape_matches: bool = True      # correct silhouette within that footprint
 
     @property
     def shape_error_mm(self) -> float | None:
@@ -111,12 +112,14 @@ class FoundMark:
     def is_credible(self) -> bool:
         """Whether the ink found looks like the mark we were looking for."""
         err = self.shape_error_mm
-        return self.measured is not None and (
+        return self.measured is not None and self.shape_matches and (
             err is None or err <= SHAPE_TOLERANCE_MM)
 
     def describe(self) -> str:
         if self.measured is None:
             return f"{self.name}: no ink found in the search window"
+        if not self.shape_matches and self.shape_error_mm <= SHAPE_TOLERANCE_MM:
+            return f"{self.name}: nearby ink does not have the expected mark shape"
         if not self.is_credible:
             b = self.ink_box
             return (f"{self.name}: found ink {b.w:.1f} x {b.h:.1f} mm where "
@@ -171,11 +174,8 @@ class SheetReport:
                 "no registration marks were found anywhere this template "
                 "expects them. If this sheet came from Proxy Press, its "
                 "Silhouette option was probably off when it was exported.")
-            for m in self.wrong_shape:
-                out.append(m.describe())
-            return out
         for m in self.missing:
-            out.append(f"no mark found at the {m.name} corner")
+            out.append(m.describe())
         for m in self.wrong_shape:
             out.append(m.describe())
         for m in self.found:
@@ -329,7 +329,7 @@ def ink_blobs(image, window: Rect, dpi: int,
 
 
 def best_blob(blobs: list[Rect], size_mm: float,
-              tolerance_mm: float) -> Rect | None:
+              tolerance_mm: float, shape_matches=lambda box: True) -> Rect | None:
     """The patch of ink that best matches a mark of this footprint.
 
     Matched on size rather than on proximity, because the nearest ink to a
@@ -340,14 +340,41 @@ def best_blob(blobs: list[Rect], size_mm: float,
     scored = []
     for b in blobs:
         err = max(abs(b.w - size_mm), abs(b.h - size_mm))
-        scored.append((err, b))
+        plausible = err <= tolerance_mm and shape_matches(b)
+        scored.append((not plausible, err, b))
     if not scored:
         return None
-    scored.sort(key=lambda s: s[0])
-    err, box = scored[0]
+    scored.sort(key=lambda entry: entry[:2])
+    _, _, box = scored[0]
     # Still return the best candidate when nothing fits: the caller reports
     # "found ink of the wrong shape", which is more useful than silence.
     return box
+
+
+def mark_ink_matches(image, box: Rect, dpi: int, ell=None) -> bool:
+    """Distinguish the filled square and oriented L from same-size artwork."""
+    pixels = dpi / 25.4
+    crop = image.crop(tuple(round(mm * pixels) for mm in (box.x, box.y, box.x2, box.y2)))
+    width, height = crop.size
+
+    def filled(region):
+        histogram = crop.crop(region).histogram()
+        return sum(histogram[:INK_THRESHOLD]) / max(sum(histogram), 1)
+
+    if ell is None:
+        return filled((0, 0, width, height)) >= 0.8
+    band = max(1, round(ell.thickness * pixels) + 2)
+    x = 0 if ell.dx > 0 else width - band
+    y = 0 if ell.dy > 0 else height - band
+    inner_x0, inner_x1 = (band, width) if ell.dx > 0 else (0, width-band)
+    inner_y0, inner_y1 = (band, height) if ell.dy > 0 else (0, height-band)
+    if inner_x1 <= inner_x0 or inner_y1 <= inner_y0:
+        return False
+    # Allow small print rotations and antialiasing while requiring both arms
+    # at the outside of the corner and a mostly white interior.
+    return (filled((0, y, width, y+band)) >= 0.35
+            and filled((x, 0, x+band, height)) >= 0.35
+            and filled((inner_x0, inner_y0, inner_x1, inner_y1)) <= 0.25)
 
 
 def measure(pdf, mk: Marks, page: int = 1, dpi: int = DEFAULT_DPI,
@@ -369,8 +396,9 @@ def measure(pdf, mk: Marks, page: int = 1, dpi: int = DEFAULT_DPI,
     if mk.square is not None:
         s = mk.square
         window = s.grown(search_mm)
+        square_shape = lambda box: mark_ink_matches(image, box, dpi)
         box = best_blob(ink_blobs(image, window, dpi), s.w,
-                        SHAPE_TOLERANCE_MM)
+                        SHAPE_TOLERANCE_MM, square_shape)
         # ProxyPress fills a 5 mm square; Card Maker also strokes its border.
         # Identify the footprint by size alone so actual displacement still
         # appears in the report for either renderer.
@@ -381,7 +409,8 @@ def measure(pdf, mk: Marks, page: int = 1, dpi: int = DEFAULT_DPI,
             name=corner_name(s.x, s.y) + " square",
             expected=(s.x, s.y),
             measured=(box.x+pad, box.y+pad) if box else None,
-            ink_box=box, kind="square", expected_size_mm=s.w+2*pad))
+            ink_box=box, kind="square", expected_size_mm=s.w+2*pad,
+            shape_matches=box is None or square_shape(box)))
 
     for ell in mk.ells:
         cx, cy = ell.corner_x, ell.corner_y
@@ -390,8 +419,9 @@ def measure(pdf, mk: Marks, page: int = 1, dpi: int = DEFAULT_DPI,
         x0 = min(cx, cx + ell.dx * ell.length)
         y0 = min(cy, cy + ell.dy * ell.length)
         window = Rect(x0, y0, ell.length, ell.length).grown(search_mm)
+        ell_shape = lambda box: mark_ink_matches(image, box, dpi, ell)
         box = best_blob(ink_blobs(image, window, dpi), ell.length,
-                        SHAPE_TOLERANCE_MM)
+                        SHAPE_TOLERANCE_MM, ell_shape)
         measured = None
         if box is not None:
             # The corner is the end of the box facing the paper edge, pulled
@@ -409,7 +439,7 @@ def measure(pdf, mk: Marks, page: int = 1, dpi: int = DEFAULT_DPI,
         found.append(FoundMark(
             name=corner_name(cx, cy) + " L",
             expected=(cx, cy), measured=measured, ink_box=box, kind="ell",
-            expected_size_mm=ell.length))
+            expected_size_mm=ell.length, shape_matches=box is None or ell_shape(box)))
 
     return SheetReport(pdf=str(pdf), page=page, page_w_mm=page_w,
                        page_h_mm=page_h, dpi=dpi, marks=found)

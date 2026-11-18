@@ -101,8 +101,7 @@ def show_checks(j):
         say("Near registration marks (conservative proximity check):", style="bold yellow")
         for h in j.mask_hints:
             say(f"  - {h['text']}")
-        say(regmarks.MASK_GUIDANCE, style="dim")
-        say("Proximity alone does not mean every nearby card needs covering.", style="dim")
+        say("Use Control Center's Test scan to check the printed marks without cutting.", style="dim")
 
 
 def common_layout_args(p, bundles=False):
@@ -738,6 +737,7 @@ def cmd_status(args):
 
 def cmd_cut(args):
     from . import bundle, sheet as sheet_mod
+    matched = row = report = None
     try:
         if args.source and pathlib.Path(args.source).suffix.lower() == '.zip':
             if args.no_registration:
@@ -750,6 +750,8 @@ def cmd_cut(args):
             if problems:
                 fail('PDF registration check failed. Nothing was sent.\n' + '\n'.join(problems))
             say(f"Matched sheet {row['sheet']} with PDF front page {row['frontPage']}.")
+            if args.transport != "studio":
+                say(matched.mat_placement())
         else:
             j = build_from_args(args)
     except (geometry.LayoutImpossible, bundle.BundleError) as exc:
@@ -829,11 +831,12 @@ def cmd_cut(args):
             sent = t.run(
                 _plan(j),
                 log=lambda m: say("  " + m))
+        except transport.RegistrationFailed as exc:
+            notes = j.registration_notes(report, matched.near_marks(row) if matched else None)
+            notes.append("Check that the printed front is at 100% scale and all marks are visible.")
+            fail("\n".join([str(exc), *notes]))
         except transport.TransportError as exc:
-            fail(f"{exc}\n\nIf the marks were not found: check that the "
-                 f"printed marks match --mark-inset and --mark-length, that "
-                 f"the sheet is square on the mat, and that the mat is "
-                 f"loaded to the guide line.")
+            fail(str(exc))
         say(f"Sent {sent:,} bytes.", style="bold green")
     return 0
 

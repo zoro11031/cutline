@@ -54,6 +54,21 @@ class Bundle:
         return regmarks.marks(*size, opts['mark_inset_mm'], opts['mark_length_mm'],
                               opts['mark_thickness_mm'], opts['pattern'])
 
+    def mat_placement(self):
+        orientation = 'portrait' if self.layout['portrait'] else 'landscape'
+        square = ' The black square goes at the top-left.' if self.layout['pattern'] == regmarks.THREE else ''
+        return (f"Load the printed front face-up in {orientation}, aligned with "
+                f"the top-left of the mat grid.{square}")
+
+    def near_marks(self, row):
+        hints = row.get('nearMarks')
+        if not isinstance(hints, list):
+            return None
+        names = (('top-left square', 'top-right L', 'bottom-left L')
+                 if self.layout['pattern'] == regmarks.THREE else
+                 ('top-left L', 'top-right L', 'bottom-left L', 'bottom-right L'))
+        return tuple(name for name in names if name in hints)
+
     def studio_file(self, row, folder):
         """Copy the paired Studio file or DXF into a caller-owned directory."""
         self.check_current()

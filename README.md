@@ -127,7 +127,17 @@ the matched ZIP. Select a sheet inside the ZIP to load its cut paths and
 check the matching PDF front page. Its page size, orientation and mark
 settings come from the export. The Linux cutter uses the physical SVG
 coordinates, including the printer correction already applied by ProxyPress.
-Blade and cutter calibration are set locally.
+Blade and cutter calibration are set locally. For a direct cut, load the
+front face-up with the paper aligned to the top-left of the mat grid. The
+placement for Studio's padded canvas can differ and is listed in the ZIP.
+
+**Cut → Test scan** runs the cutter's registration check before you send
+any cut paths. If the scan fails, **Review marks** opens the PDF check. It
+identifies missing, misshaped, or displaced PDF marks by corner. The Cameo's
+scan response gives an overall result, so the dialog lists nearby artwork
+as a separate observation. On a standard 12-inch Cameo mat, Control Center
+sets the mat before scanning. On Cameo 4, it also sends the arm length and
+stroke from the job.
 
 ```sh
 silhouette-control-center check-sheet cards-print-and-cut.zip --bundle-sheet 2

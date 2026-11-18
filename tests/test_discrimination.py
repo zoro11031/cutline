@@ -103,6 +103,14 @@ CASES += tuple(
     for allowed in (True, False)
 )
 
+CASES += tuple(
+    (verify, "expectations_met", _force_verification_row(label, allowed),
+     f"{label} always {'allows' if allowed else 'refuses'}",
+     ["tests.test_templates.TestVerificationRefuses.test_cameo_4_sets_the_standard_mat_before_searching_for_marks"])
+    for label in ("registration mat setup", "registration mark dimensions")
+    for allowed in (True, False)
+)
+
 try:
     from cut_proxies import gui
 except ImportError:

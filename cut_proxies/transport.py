@@ -35,6 +35,14 @@ class TransportError(RuntimeError):
     pass
 
 
+class RegistrationFailed(TransportError):
+    """The cutter rejected the whole scan without a per-mark result."""
+
+    def __init__(self):
+        super().__init__("Registration scan failed. The cutter did not report which "
+                         "mark it missed. No cut paths were sent.")
+
+
 class NotFound(TransportError):
     pass
 
@@ -73,10 +81,8 @@ class Transport:
             elif step.kind == "expect":
                 got = self.read(timeout_ms=step.timeout_ms)
                 if got != step.expect:
-                    if step.expect == graphtec.RESP_REGMARK_OK and got.strip() == b"1\x03":
-                        raise TransportError(
-                            f"{step.note or 'marks found'}: cutter could not detect marks "
-                            f"({got!r}). Cover crowded cards (e.g. bottom-left) and check alignment.")
+                    if step.expect == graphtec.RESP_REGMARK_OK and got == graphtec.RESP_REGMARK_FAIL:
+                        raise RegistrationFailed()
                     raise TransportError(
                         f"{step.note or 'expected reply'}: wanted "
                         f"{step.expect!r}, got {got!r}")

@@ -454,10 +454,10 @@ class TestTransportRunFires(unittest.TestCase):
     def test_a_bad_reply_stops_before_the_cut(self):
         # The whole point: marks not found must not be followed by cutting.
         t = FakeTransport([b"    1\x03"])
-        with self.assertRaises(transport.TransportError) as ctx:
+        with self.assertRaises(transport.RegistrationFailed) as ctx:
             t.run(self._steps())
-        self.assertIn("marks found", str(ctx.exception))
-        self.assertIn("could not detect marks", str(ctx.exception))
+        self.assertIn("did not report which mark", str(ctx.exception))
+        self.assertIn("No cut paths were sent", str(ctx.exception))
         self.assertEqual(len(t.written), 1)
 
     def test_silence_stops_before_the_cut_too(self):
