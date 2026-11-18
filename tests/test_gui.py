@@ -213,7 +213,7 @@ class TestCutConfirmationGuard(unittest.TestCase):
 class TestSheetRequestGuard(unittest.TestCase):
     def make_window(self, token):
         return types.SimpleNamespace(_sheet_token=token, pdf_bundle=None, preview=mock.Mock(),
-            sheet_result=mock.Mock(), adopt_btn=mock.Mock(), rebuild=mock.Mock())
+            sheet_result=mock.Mock(), rebuild=mock.Mock())
 
     def test_current_result_updates_artwork_and_measurement(self):
         token = object()

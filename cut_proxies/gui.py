@@ -235,7 +235,9 @@ class Preview(Gtk.DrawingArea):
             cr.rectangle(rect.x, rect.y, rect.w, rect.h)
             cr.fill()
 
-        # the cut paths, as flattened: this is what gets streamed
+        # The physical placement includes the same correction as the stream.
+        cr.save()
+        cr.translate(*j.offset_mm)
         bad = bool(j.blocked)
         cr.set_source_rgb(*(bad_color if bad else good_color))
         cr.set_line_width(max(hair, 0.25))
@@ -250,7 +252,7 @@ class Preview(Gtk.DrawingArea):
             if p.closed:
                 cr.close_path()
             cr.stroke()
-        cr.set_dash([])
+        cr.restore()
 
         # where the marks actually are on a loaded PDF, against where the
         # template wants them. This is the whole alignment question, visible.
@@ -580,8 +582,8 @@ class Window(Adw.ApplicationWindow):
         g2 = Adw.PreferencesGroup(
             title="PDF registration check",
             description="Each row in the result names the mark and its measured "
-                        "position. This checks the PDF. The cutter runs its own scan "
-                        "on the printed sheet.")
+                        "position in the PDF. Use Cut → Calibration for a "
+                        "correction measured on a physical pen test.")
         self.sheet_result = Adw.ActionRow(title="Not measured", subtitle="")
         self.sheet_result.set_subtitle_lines(0)
         g2.add(self.sheet_result)
@@ -590,15 +592,6 @@ class Window(Adw.ApplicationWindow):
         self.scan_result.set_visible(False)
         g2.add(self.scan_result)
 
-        adopt = Adw.ActionRow(
-            title="Use the measured offset as calibration",
-            subtitle="Only for a sheet whose marks are displaced together")
-        self.adopt_btn = Gtk.Button(label="Adopt")
-        self.adopt_btn.set_valign(Gtk.Align.CENTER)
-        self.adopt_btn.set_sensitive(False)
-        self.adopt_btn.connect("clicked", self.on_adopt_offset)
-        adopt.add_suffix(self.adopt_btn)
-        g2.add(adopt)
         page.add(g2)
 
         self.stack.add_titled_with_icon(page, "sheet", "Sheet",
@@ -719,8 +712,8 @@ class Window(Adw.ApplicationWindow):
             title="Calibration",
             description="The standing error between where the sensor sees "
                         "the marks and where the tool lands. Measure it once "
-                        "with the pen preset, or adopt it from a measured "
-                        "sheet.")
+                        "with a pen test on a registered physical print. "
+                        "Enter the correction in millimetres.")
         dx, dy = config.cut_offset()
         self.r_cal_x = _spin("Offset X", -5, 5, dx, 0.05, 2,
                              subtitle="mm, positive is right")
@@ -949,7 +942,6 @@ class Window(Adw.ApplicationWindow):
         if self.sheet_report is not None:
             self.sheet_report = None
             self.preview.set_sheet(None)
-            self.adopt_btn.set_sensitive(False)
             self.sheet_result.set_title('Layout changed — measure again')
         # Any change invalidates the checked job, so the Cut button has to go
         # back to insensitive before anything else happens.
@@ -1285,7 +1277,6 @@ class Window(Adw.ApplicationWindow):
         self.r_sheet_page.set_title('Page')
         self.r_sheet_page.set_subtitle('which page of the PDF to measure')
         self.r_sheet_page.get_adjustment().set_upper(99)
-        self.adopt_btn.set_sensitive(False)
 
     def select_bundle_sheet(self):
         row = self.pdf_bundle.rows[int(self.r_sheet_page.get_value())-1]
@@ -1395,7 +1386,6 @@ class Window(Adw.ApplicationWindow):
         token = self._sheet_token = object()
         self.sheet_report = None
         self.preview.set_sheet(None)
-        self.adopt_btn.set_sensitive(False)
 
         def work():
             from . import sheet as sheet_mod
@@ -1423,7 +1413,6 @@ class Window(Adw.ApplicationWindow):
         self.preview.set_pdf()
         self.sheet_result.set_title("Could not measure")
         self.sheet_result.set_subtitle(message)
-        self.adopt_btn.set_sensitive(False)
         self.rebuild()
 
     def _sheet_done(self, report, problems, png, token):
@@ -1442,20 +1431,6 @@ class Window(Adw.ApplicationWindow):
             "Sheet matches the template" if not problems
             else f"{len(problems)} problem(s)")
         self.sheet_result.set_subtitle("\n".join(lines))
-        # Only a uniform displacement can be fixed with an offset.
-        self.adopt_btn.set_sensitive(
-            self.pdf_bundle is None and bool(report.found) and "correctable" in report.diagnosis())
-        self.rebuild()
-
-    def on_adopt_offset(self, *_a):
-        r = getattr(self, "sheet_report", None)
-        if r is None or not r.found:
-            return
-        dx = sum(m.delta_mm[0] for m in r.found) / len(r.found)
-        dy = sum(m.delta_mm[1] for m in r.found) / len(r.found)
-        # The cut must move the way the print moved.
-        config.save_cut_offset(round(dx, 3), round(dy, 3))
-        self.toast(f"Calibration set to {dx:+.2f}, {dy:+.2f} mm")
         self.rebuild()
 
     # ---- Silhouette's own materials ----------------------------------
@@ -1621,6 +1596,8 @@ class Window(Adw.ApplicationWindow):
                 f"{j.grid.describe()}\n"
                 f"{j.preset.name}: force {j.settings.force}, speed "
                 f"{j.settings.speed}, {j.settings.passes} pass(es)\n\n")
+        dx, dy = j.offset_mm
+        body += f"Cutter offset: X {dx:+.2f} mm, Y {dy:+.2f} mm.\n\n"
         if j.preset.origin != "measured":
             body += ("This preset has never been cut. Run the plain-paper "
                      "test preset first.\n\n")
