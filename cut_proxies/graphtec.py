@@ -350,11 +350,12 @@ MEDIA_BY_ID = {m.id: m for m in MEDIA}
 class Step:
     """One thing to do: write bytes, or read and check them."""
 
-    kind: str                   # "write" | "expect" | "status"
+    kind: str                   # "write" | "expect"
     data: bytes = b""
     expect: bytes = b""
     timeout_ms: int = 10000
     note: str = ""
+    pace: bool = False          # long path blocks use command-aligned batches
 
 
 @dataclasses.dataclass
@@ -387,7 +388,9 @@ class CutSettings:
             raise ValueError(f"{device.name} has no tool holder {self.holder}")
         out.force = max(1, min(self.force, device.max_pressure))
         out.speed = max(1, min(self.speed, device.max_speed))
-        if out.depth is not None:
+        if not device.autoblade or self.holder != 1:
+            out.depth = None
+        elif out.depth is not None:
             out.depth = max(0, min(out.depth, 10))
         out.passes = max(1, min(self.passes, 10))
         return out
@@ -400,7 +403,10 @@ class CutSettings:
         if self.speed > device.max_speed:
             out.append(f"speed {self.speed} is above the {device.name} "
                        f"maximum of {device.max_speed}; it will be clamped")
-        if self.depth is not None and self.holder != 1:
+        if self.depth is not None and not device.autoblade:
+            out.append(f"{device.name} does not support automatic depth. "
+                       "Set the blade depth on the tool.")
+        elif self.depth is not None and self.holder != 1:
             out.append("AutoBlade depth only applies to tool holder 1; it "
                        "will not be sent")
         return out
@@ -420,7 +426,8 @@ class CutJob:
                  registration: bool = True, auto_search: bool = True,
                  search_mm: float | None = None, quad: bool = False,
                  offset_mm: tuple[float, float] = (0.0, 0.0),
-                 mark_shape_mm: tuple[float, float] | None = None):
+                 mark_shape_mm: tuple[float, float] | None = None,
+                 sheet_size_mm: tuple[float, float] | None = None):
         self.device = device
         self.settings = settings.clamped(device)
         self.origin_mm = origin_mm
@@ -435,6 +442,8 @@ class CutJob:
         self.auto_search = auto_search
         self.search_mm = search_mm
         self.mark_shape_mm = mark_shape_mm
+        x, y = origin_mm
+        self.sheet_size_mm = sheet_size_mm or (reg_width_mm + 2*x, reg_length_mm + 2*y)
         # A four-mark scan only exists on hardware that has it.
         self.quad = quad and device.quad_regmarks
 
@@ -468,7 +477,9 @@ class CutJob:
         else:
             cmds.append(tool.speed(s.speed) if dev.cameo3_on
                         else f"!{s.speed}")
-            cmds.append(tool.pressure(s.force))
+            # Older firmware takes bare FX; only Cameo 3 uses a holder here.
+            # inkscape-silhouette Graphtec.py, setup().
+            cmds.append(tool.pressure(s.force) if dev.cameo3_on else f"FX{s.force}")
             if dev.cameo3_on:
                 # Cameo 3 setup, upstream Graphtec.py 1240–1262.
                 cmds.append(tool.lift(s.lift_head))
@@ -546,10 +557,12 @@ class CutJob:
     # ---- assembly ----------------------------------------------------
     def _initial_steps(self) -> list[Step]:
         steps = [Step("write", CMD_ESC + ESC_EOT, note="initialise the device")]
+        if not self.device.cameo3_on and not self.registration:
+            # The reference setup selects portrait coordinates on legacy units.
+            # This is also our wire orientation for landscape SVGs.
+            steps.append(Step("write", frame(("FN0", "TB50,0")), note="set up legacy cutter"))
         if self.registration:
-            x, y = self.origin_mm
-            commands = registration_mat_commands(
-                self.device, self.reg_width_mm + 2*x, self.reg_length_mm + 2*y)
+            commands = registration_mat_commands(self.device, *self.sheet_size_mm)
             if commands:
                 steps.append(Step("write", frame(commands), note="set up the Cameo cutting mat"))
         return steps
@@ -578,16 +591,22 @@ class CutJob:
         steps.extend(self._regmark_steps())
         return steps
 
+    def _legacy_cut_window(self) -> list[Step]:
+        if self.device.cameo3_on:
+            return []
+        # Graphtec.py plot(): use mark-relative dimensions after a scan,
+        # and the full media dimensions for an unregistered cut.
+        width, length = ((self.reg_width_mm, self.reg_length_mm)
+                         if self.registration else self.sheet_size_mm)
+        return [Step("write", frame([upper_left_mm(0, 0),
+                                    lower_right_mm(width, length),
+                                    "L0", "FE0,0", "FF0,0,0"]), note="cut window")]
+
     def plan(self, paths) -> list[Step]:
         steps = self._registered_setup(self.settings)
-        if not self.device.cameo3_on:
-            # The older dialect wants the cut window stated explicitly.
-            steps.append(Step("write", frame([
-                upper_left_mm(0, 0),
-                lower_right_mm(self.reg_width_mm, self.reg_length_mm),
-                "L0", "FE0,0", "FF0,0,0"]), note="cut window"))
+        steps.extend(self._legacy_cut_window())
         steps.append(Step("write", frame(self._path_commands(paths)),
-                          note="cut paths"))
+                          note="cut paths", pace=True))
         steps.append(Step("write", frame(self._trailer_commands(paths)),
                           note="park the head"))
         return steps
@@ -606,11 +625,7 @@ class CutJob:
         thing you are about to cut with.
         """
         steps = self._registered_setup(groups[0][0] if groups else None)
-        if not self.device.cameo3_on:
-            steps.append(Step("write", frame([
-                upper_left_mm(0, 0),
-                lower_right_mm(self.reg_width_mm, self.reg_length_mm),
-                "L0", "FE0,0", "FF0,0,0"]), note="cut window"))
+        steps.extend(self._legacy_cut_window())
         all_paths = []
         for settings, paths in groups:
             s = settings.clamped(self.device)
@@ -621,7 +636,7 @@ class CutJob:
                                        if s.depth is not None else ""))))
             steps.append(Step("write",
                               frame(self._path_commands(paths, s.passes)),
-                              note=f"{len(paths)} path(s)"))
+                              note=f"{len(paths)} path(s)", pace=True))
             all_paths.extend(paths)
         steps.append(Step("write", frame(self._trailer_commands(all_paths)),
                           note="park the head"))

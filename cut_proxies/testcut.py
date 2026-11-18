@@ -182,7 +182,8 @@ def build(device: graphtec.Device, base: CutSettings, forces=None,
         else (0.0, 0.0),
         reg_width_mm=sheet_w_mm - 2 * margin_mm,
         reg_length_mm=sheet_h_mm - 2 * margin_mm,
-        registration=registration, offset_mm=offset_mm)
+        registration=registration, offset_mm=offset_mm,
+        sheet_size_mm=(sheet_w_mm, sheet_h_mm))
     groups = [(c.settings, [_square(c.rect)]) for c in cells]
     steps = job.plan_matrix(groups)
     stream = b"".join(s.data for s in steps if s.kind == "write")

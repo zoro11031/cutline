@@ -139,6 +139,8 @@ def common_layout_args(p, bundles=False):
     p.add_argument("--from", dest="source", metavar="FILE",
                    help="use paths from " + ("an SVG, DXF or matched ProxyPress ZIP"
                                              if bundles else "an SVG, DXF or Studio3 template"))
+    p.add_argument("--svg-page", type=int, metavar="N",
+                   help="select a page in an Inkscape SVG (starting at 1)")
     p.add_argument("--color", "--colour", dest="colour", metavar="COLOUR",
                    help="cut only the paths with this stroke colour, the "
                         "way Studio selects by line colour (e.g. red, "
@@ -186,10 +188,13 @@ def advanced_settings(args):
 def build_from_args(args, matched=None, bundle_row=None) -> job_mod.Job:
     imported = matched.artwork(bundle_row) if matched else None
     source = getattr(args, "source", None)
+    svg_page = getattr(args, "svg_page", None)
+    if svg_page is not None and (not source or matched):
+        fail("--svg-page requires --from an Inkscape SVG.")
     if source and matched is None:
         from . import importer
         try:
-            imported = importer.load(source)
+            imported = importer.load(source, page=svg_page)
         except (importer.ImportError_, OSError) as exc:
             fail(str(exc))
         colour = getattr(args, "colour", None)
@@ -442,7 +447,7 @@ def cmd_proxypress(args):
 def cmd_import(args):
     from . import importer
     try:
-        im = importer.load(args.file)
+        im = importer.load(args.file, page=getattr(args, "svg_page", None))
     except (importer.ImportError_, OSError) as exc:
         fail(str(exc))
     say(f"\n{pathlib.Path(args.file).name}", style="bold")
@@ -850,8 +855,10 @@ def cmd_cut(args):
                 fail(f"The Bluetooth cutter is not ready ({state}).")
             elif state == "moving":
                 fail("The cutter is busy.")
-        if not args.yes and not ask_yes(
-                "\nEverything checks out. Register and cut now?", "n"):
+        if j.registration and not j.auto_search:
+            say("\nPosition the cutter head over the first mark before starting the scan.")
+        prompt = "Register and cut now?" if j.registration else "Cut now?"
+        if not args.yes and not ask_yes(f"\n{prompt}", "n"):
             say("Cancelled. Nothing cut.")
             return 0
         say("\nRunning...", style="bold")
@@ -1072,6 +1079,8 @@ def main(argv=None):
     im = sub.add_parser("import",
                         help="read an SVG, DXF or Studio3 template and report what is in it")
     im.add_argument("file")
+    im.add_argument("--svg-page", type=int, metavar="N",
+                    help="select a page in an Inkscape SVG (starting at 1)")
     im.add_argument("-v", "--verbose", action="store_true",
                     help="list every path")
     im.set_defaults(func=cmd_import)

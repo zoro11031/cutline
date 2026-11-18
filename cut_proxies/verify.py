@@ -158,9 +158,9 @@ def _corrupt_force(stream: bytes) -> bytes | None:
     head, cmds = _split(stream)
     for i, c in enumerate(cmds):
         if c.startswith(b"FX"):
-            force, _, rest = c[2:].partition(b",")
+            force, separator, rest = c[2:].partition(b",")
             new = max(1, (int(force) % 33) + 1)
-            cmds[i] = b"FX%d,%s" % (new, rest)
+            cmds[i] = b"FX%d%s%s" % (new, separator, rest)
             return _rejoin(head, cmds)
     return None
 
@@ -299,24 +299,32 @@ def _corrupt_mark_arm(stream: bytes) -> bytes | None:
     return None
 
 
-def _corrupt_scan_window(stream: bytes) -> bytes | None:
+def _corrupt_scan_command(stream: bytes) -> bytes | None:
     head, cmds = _split(stream)
-    for i, c in enumerate(cmds):
-        if c.startswith((b"TB123,", b"TB124,")):
-            name, _, args = c.partition(b",")
-            parts = args.split(b",")
-            parts[0] = b"%d" % (int(parts[0]) + graphtec.su(5.0))
-            cmds[i] = name + b"," + b",".join(parts)
+    for i, command in enumerate(cmds):
+        if command.startswith((b"TB123,", b"TB124,", b"TB23,")):
+            name, _, args = command.partition(b",")
+            swapped = b"TB123" if name == b"TB23" else b"TB23"
+            cmds[i] = swapped + b"," + args
             return _rejoin(head, cmds)
     return None
 
 
-# Each probe breaks the stream in one specific way that a named check is
-# supposed to catch. The label is the check that must reject it.
+def _corrupt_scan_argument(stream: bytes, index: int) -> bytes | None:
+    head, cmds = _split(stream)
+    for i, command in enumerate(cmds):
+        if command.startswith((b"TB123,", b"TB124,", b"TB23,")):
+            name, _, args = command.partition(b",")
+            parts = args.split(b",")
+            if index < len(parts):
+                parts[index] = b"%d" % (int(parts[index]) + graphtec.su(5.0))
+                cmds[i] = name + b"," + b",".join(parts)
+                return _rejoin(head, cmds)
+    return None
+
+
 # Each probe breaks the stream in one way and names the check that must
-# object. A probe may trip others too - some checks are genuinely entangled,
-# and a cut pushed off the sheet is also in the wrong place - but the named
-# one has to be among them, or it is still unproven.
+# object, even if other checks also fail.
 def _corrupt_last_position(stream: bytes) -> bytes | None:
     return _corrupt_position(stream, last=True)
 
@@ -332,7 +340,10 @@ PROBES = (
     ("registration preamble", _drop_preamble),
     ("registration mark dimensions", _corrupt_mark_arm),
     ("registration mat setup", _drop_mat_setup),
-    ("scan window length", _corrupt_scan_window),
+    ("scan command", _corrupt_scan_command),
+    ("scan window length", lambda stream: _corrupt_scan_argument(stream, 0)),
+    ("scan window width", lambda stream: _corrupt_scan_argument(stream, 1)),
+    ("scan search start", lambda stream: _corrupt_scan_argument(stream, 2)),
 )
 
 
@@ -470,7 +481,8 @@ class Row:
 def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
                      mode: str = "rounded", cards=None,
                      offset_mm: tuple[float, float] = (0.0, 0.0),
-                     registration: bool = True, expected_paths=None
+                     registration: bool = True, expected_paths=None,
+                     auto_search: bool = True
                      ) -> tuple[bool, list[Row]]:
     """Check a stream against the grid, marks and blade settings.
 
@@ -497,8 +509,9 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
     row("speed", s.speed,
         ", ".join(str(v) for v in d.speeds) or "missing",
         bool(d.speeds) and set(d.speeds) == {s.speed})
-    row("tool holder", s.holder, d.holder, d.holder == s.holder)
-    if s.depth is not None and s.holder == 1:
+    holder = 1 if d.holder is None and not device.cameo3_on else d.holder
+    row("tool holder", s.holder, holder, holder == s.holder)
+    if device.autoblade and s.depth is not None and s.holder == 1:
         row("autoblade depth", s.depth, d.depth, d.depth == s.depth)
 
     # Registration. An unregistered job has none of this by design - it
@@ -521,9 +534,10 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
         before_scan = d.commands[:scan_at]
         mat = graphtec.registration_mat_commands(device, mk.sheet_w_mm, mk.sheet_h_mm)
         mat_commands = before_scan
-        if d.scan_command == "TB123" and graphtec.captured_letter_scan(
+        captured = auto_search and graphtec.captured_letter_scan(
                 device, mk.reg_length_mm, mk.reg_width_mm, mk.origin_mm,
-                (mk.length_mm, mk.thickness_mm)):
+                (mk.length_mm, mk.thickness_mm))
+        if captured:
             mat = ("TG1", "FN0", "TB50,0", "TB99", "TB52,2", f"TB51,{graphtec.su(mk.length_mm)}", "TB53,20",
                    "TB55,1", "TB123,3918,5188,118,118", "TB99")
             mat_commands = d.commands
@@ -535,20 +549,32 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
         sent_shape = tuple(command for command in before_scan if command.startswith(("TB51,", "TB53,")))
         row("registration mark dimensions", " ".join(shape),
             " ".join(sent_shape) or "missing", sent_shape == shape)
-        want_cmd = "TB124" if (mk.pattern == "four" and device.quad_regmarks) \
-            else "TB123"
-        row("scan command", want_cmd, d.scan_command or "missing",
-            d.scan_command == want_cmd)
-        if d.scan_args_mm and len(d.scan_args_mm) >= 2:
-            got_len, got_wid = d.scan_args_mm[0], d.scan_args_mm[1]
-            ok_len = abs(got_len - mk.reg_length_mm) <= 0.05
-            ok_wid = abs(got_wid - mk.reg_width_mm) <= 0.05
+        want_cmd = "TB23"
+        if auto_search:
+            want_cmd = "TB124" if mk.pattern == "four" and device.quad_regmarks else "TB123"
+        scan_commands = [command.partition(",")[0] for command in d.commands
+                         if command.startswith(("TB123,", "TB124,", "TB23,"))]
+        row("scan command", want_cmd, ", ".join(scan_commands) or "missing",
+            scan_commands == [want_cmd])
+        args = d.scan_args_mm or ()
+        if len(args) == (4 if auto_search else 2):
+            got_len, got_wid = args[:2]
+            ok_len = graphtec.su(got_len) == graphtec.su(mk.reg_length_mm)
+            ok_wid = graphtec.su(got_wid) == graphtec.su(mk.reg_width_mm)
             row("scan window length", f"{mk.reg_length_mm:.2f} mm",
                 f"{got_len:.2f} mm", ok_len)
             row("scan window width", f"{mk.reg_width_mm:.2f} mm",
                 f"{got_wid:.2f} mm", ok_wid)
         else:
-            row("scan window", "length and width", "missing", False)
+            row("scan window", "length, width and search point" if auto_search
+                else "length and width", args or "missing", False)
+        if auto_search:
+            x, y = mk.origin_mm
+            start = (5.9, 5.9) if captured else (max(y - 10, 0), max(x - 10, 0))
+            want_start = tuple(graphtec.su(value) for value in start)
+            got_start = tuple(graphtec.su(value) for value in args[2:])
+            row("scan search start", want_start, got_start or "missing",
+                got_start == want_start)
 
     # Geometry: the check that actually protects the stock.
     passes = max(1, s.passes)
