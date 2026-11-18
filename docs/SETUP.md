@@ -10,6 +10,7 @@ From the repository folder, try the app first.
 
 Install PySide6 for Qt, or GTK 4, libadwaita, PyGObject, and the Python Cairo
 binding for GTK. Use `gui --frontend qt` or `gui --frontend gtk` to pick one.
+Filled path editing uses GEOS 3.10 or later. Editable text uses Pango and Cairo.
 PDF checks also use Pillow and Poppler. For a packaged install, see
 [the RPM, Arch, and AppImage recipes](../packaging/README.md).
 
@@ -112,11 +113,15 @@ or lines through open gaps. Look for blue dashed lines in the preview.
 
 ## Finding your blade settings
 
-Choose **Send → Dial In a Material** and load a blank sheet of the same
-material. After one pass, leave the mat loaded, lift a corner, and report
-what you see. The guide suggests a repeat or a change. Try new settings
-on a fresh spot. Once the edge looks good, save the tested settings as
-a material preset.
+Choose **Send → Dial In a Material** and load a sheet of the same material.
+The first spot is at the bottom-left. Leave the mat loaded and use
+**Repeat One Pass** as needed. The preview counts confirmed passes by spot,
+and **Use Tested Settings** applies the current spot’s pass count.
+
+If you want to reload the sheet later, turn on **Test Options → Use
+Registration Marks** and save the marked test sheet before printing it at
+actual size. Every pass scans the marks. Reload the same sheet to resume,
+including after reopening the app. Choose **New Test Sheet** for fresh stock.
 
 Use **Corner Test Cut** for a 3 mm square on the current sheet. Use
 **Test-Cut Matrix** to try several combinations on one blank sheet.

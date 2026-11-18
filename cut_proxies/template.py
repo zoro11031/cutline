@@ -221,7 +221,7 @@ def _svg_rounded_path(rect: Rect, radius: float) -> str:
 def write_svg(path, grid: Grid, paths, mode: str = ROUNDED,
               radius_mm: float | None = None, mk: Marks | None = None,
               proof: bool = False, note: str = "",
-              skip: "frozenset[int] | tuple[int, ...]" = ()) -> str:
+              skip: "frozenset[int] | tuple[int, ...]" = (), *, page_outline: bool = True) -> str:
     """Write the cut template as SVG.
 
     With `proof=True` the registration marks and a page outline are drawn as
@@ -251,10 +251,10 @@ def write_svg(path, grid: Grid, paths, mode: str = ROUNDED,
         d.replace("&", "&amp;").replace("<", "&lt;") for d in desc) + '</desc>')
 
     if proof:
-        out.append(f'  <g id="page" fill="none" stroke="#bbbbbb" '
-                   f'stroke-width="0.2">')
-        out.append(f'    <rect x="0" y="0" width="{_n(W)}" height="{_n(H)}"/>')
-        out.append('  </g>')
+        if page_outline:
+            out.append('  <g id="page" fill="none" stroke="#bbbbbb" stroke-width="0.2">')
+            out.append(f'    <rect x="0" y="0" width="{_n(W)}" height="{_n(H)}"/>')
+            out.append('  </g>')
         if mk is not None:
             out.append('  <g id="registration-marks-DO-NOT-CUT" fill="#000000">')
             if mk.square is not None:

@@ -1,6 +1,6 @@
 """Small native controls shared by the GTK workspaces."""
 
-from gi.repository import Adw, Gtk
+from gi.repository import Adw, Gdk, Gtk
 
 
 def workspace_header(design, send, *, active):
@@ -35,6 +35,29 @@ def zoom_controls(zoom_by, fit):
         box.append(widget)
     box.insert_child_after(level, box.get_first_child())
     return box, level
+
+
+def protect_settings_wheel(widget):
+    if isinstance(widget, (Gtk.SpinButton, Gtk.Scale, Gtk.DropDown, Adw.SpinRow, Adw.ComboRow)):
+        controller = Gtk.EventControllerScroll.new(Gtk.EventControllerScrollFlags.VERTICAL)
+        controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        controller.set_propagation_limit(Gtk.PropagationLimit.SAME_NATIVE)
+        controller.connect("scroll", _scroll_settings_pane)
+        widget.add_controller(controller)
+        return
+    child = widget.get_first_child()
+    while child is not None:
+        protect_settings_wheel(child)
+        child = child.get_next_sibling()
+
+
+def _scroll_settings_pane(controller, _dx, delta):
+    pane = controller.get_widget().get_ancestor(Gtk.ScrolledWindow)
+    if pane is not None:
+        adjustment = pane.get_vadjustment()
+        step = adjustment.get_step_increment() if controller.get_unit() == Gdk.ScrollUnit.WHEEL else 1
+        adjustment.set_value(adjustment.get_value() + delta * step)
+    return True
 
 
 def disclosure(parent, title="Advanced Options"):

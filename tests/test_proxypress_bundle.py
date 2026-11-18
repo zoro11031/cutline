@@ -8,7 +8,7 @@ import unittest
 from unittest import mock
 import zipfile
 
-from cut_proxies import bundle, cli, job, sheet
+from cut_proxies import bundle, cli, graphtec, job, sheet
 
 
 class BundleRules(unittest.TestCase):
@@ -71,6 +71,26 @@ class BundleRules(unittest.TestCase):
                         with self.assertRaisesRegex(bundle.BundleError,
                                                     rf'contains {page_count} page\(s\).*maps {back_page}'):
                             matched.measure(matched.row(), matched.marks(), 200)
+
+    def test_scm_letter_bundle_keeps_captured_cameo4_registration_with_track_selected(self):
+        # Standard Letter exported by Proxy Press uses the SCM 8.04 mm arm.
+        self.manifest['registration']['armLength'] = 8.04
+        self.write()
+        matched = bundle.load(self.path)
+        options = dict(**matched.layout, imported=matched.artwork(matched.row()),
+                       cutter='Silhouette Cameo 4', offset_mm=(0, 0))
+        selected = job.build(**options, blade_options={'track_enhancing': True})
+        off = job.build(**options, blade_options={'track_enhancing': False})
+        self.assertFalse(selected.blocked)
+        self.assertTrue(selected.settings.track_enhancing)
+        roller, = [step for step in selected.steps if step.data == graphtec.frame('FY0')]
+        self.assertTrue(roller.wait_ready)
+        self.assertEqual(selected.steps[selected.steps.index(roller) + 1:], off.steps)
+        self.assertNotIn(graphtec.frame('FY0'), off.stream)
+        scan = next(step for step in selected.steps if step.note.startswith('scan for marks'))
+        self.assertIn(b'TB123,3918,5188,118,118\x03', scan.data)
+        reply = next(i for i, step in enumerate(selected.steps) if step.kind == 'expect')
+        self.assertEqual(selected.steps[reply + 1].note, 'registered cut window')
 
     def test_uses_the_exact_scm_a4_frame_and_rejects_unmatched_svg(self):
         size = 3507 * 25.4 / 300, 2480 * 25.4 / 300

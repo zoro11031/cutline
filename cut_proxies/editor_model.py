@@ -6,7 +6,8 @@ import math
 import re
 import tempfile
 
-from . import actions, geometry, graphtec, importer, regmarks, template, toolpath
+from . import actions, geometry, graphtec, importer, regmarks, template, toolpath, vector_regions
+from .sticker_assets import Sticker
 
 
 KINDS = ("Rectangle", "Rounded rectangle", "Ellipse", "Line")
@@ -19,6 +20,22 @@ ALIGNMENTS = ("Align Left", "Center Horizontally", "Align Right",
               "Space Horizontally", "Space Vertically")
 SHAPE_LIMIT = 1000
 _COLOR = re.compile(r"#[0-9a-fA-F]{6}")
+MULTI_CONTOUR_KINDS = ("Compound", "Text", "Sticker")
+POINT_EDIT_KINDS = ("Line", "Path", "Compound")
+PATH_OPERATIONS = ("Make Compound Path", "Release Compound Path", "Weld", "Subtract", "Intersect")
+
+
+@dataclass(frozen=True)
+class TextSpec:
+    value: str
+    family: str
+    size_mm: float
+
+
+def valid_text(spec):
+    return (isinstance(spec.value, str) and 1 <= len(spec.value) <= 2048 and bool(spec.value.strip())
+            and "\0" not in spec.value and isinstance(spec.family, str) and 1 <= len(spec.family) <= 200
+            and "\0" not in spec.family and _number(spec.size_mm, 1, 100))
 
 
 @dataclass(frozen=True)
@@ -42,8 +59,19 @@ class Shape:
     holder: int | None = None
     line_style: str = "solid"
     line_width_mm: float = 0.0
+    contours: tuple[tuple[tuple[float, float], ...], ...] = ()
+    text: TextSpec | None = None
+    sticker: Sticker | None = None
+
+    def paths(self):
+        if self.kind not in MULTI_CONTOUR_KINDS:
+            return (self.path(),)
+        return tuple(self._cut_path(tuple((self.x + x * self.width, self.y + y * self.height)
+                                          for x, y in ring), closed=True) for ring in self.contours)
 
     def path(self):
+        if self.kind in MULTI_CONTOUR_KINDS:
+            raise ValueError("Use paths() to retrieve every contour of a compound object.")
         rect = geometry.Rect(self.x, self.y, self.width, self.height)
         if self.kind == "Path":
             points = tuple((self.x + x * self.width, self.y + y * self.height)
@@ -60,6 +88,15 @@ class Shape:
         else:
             radius = self.radius if self.kind == "Rounded rectangle" else 0
             points = template.rounded_rect_points(rect, radius)
+        closed = self.closed if self.kind == "Path" else self.kind != "Line"
+        return self._cut_path(points, closed)
+
+    def frame(self):
+        """Transformed image frame in top-left, top-right, bottom-right, bottom-left order."""
+        x, y, w, h = self.x, self.y, self.width, self.height
+        return self._cut_path(((x, y), (x + w, y), (x + w, y + h), (x, y + h)), True)
+
+    def _cut_path(self, points, closed):
         if self.rotation or self.flip_x or self.flip_y:
             cx, cy = self.x + self.width/2, self.y + self.height/2
             r = math.radians(self.rotation)
@@ -67,7 +104,6 @@ class Shape:
             fx, fy = (-1 if self.flip_x else 1), (-1 if self.flip_y else 1)
             points = tuple((cx+c*fx*(x-cx)-s*fy*(y-cy), cy+s*fx*(x-cx)+c*fy*(y-cy))
                            for x, y in points)
-        closed = self.closed if self.kind == "Path" else self.kind != "Line"
         return template.CutPath(points, closed=closed,
                                 label=f"{self.kind}|{self.stroke}" if self.stroke else self.kind,
                                 fill=self.fill)
@@ -75,22 +111,27 @@ class Shape:
 
 def bounds(shapes):
     """Bounds of the actual transformed paths."""
-    xs, ys = zip(*(point for shape in shapes for point in shape.path().points))
+    xs, ys = zip(*(point for shape in shapes for path in _selection_paths(shape) for point in path.points))
     return geometry.Rect(min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
 
 
 def hit(shape, point, tolerance):
-    path = shape.path()
-    edges = toolpath._edges(path.points, path.closed)
-    if path.closed and toolpath._inside(point, edges):
+    paths = _selection_paths(shape)
+    closed_edges = [edge for path in paths if path.closed for edge in toolpath._edges(path.points, True)]
+    if toolpath._inside(point, closed_edges):
         return True
-    for a, b in edges:
+    open_edges = [edge for path in paths if not path.closed for edge in toolpath._edges(path.points, False)]
+    for a, b in (*closed_edges, *open_edges):
         dx, dy = b[0] - a[0], b[1] - a[1]
         t = ((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / (dx*dx + dy*dy) if a != b else 0
         t = max(0, min(1, t))
         if math.dist(point, (a[0] + t*dx, a[1] + t*dy)) <= tolerance:
             return True
     return False
+
+
+def _selection_paths(shape):
+    return (shape.frame(),) if shape.sticker else shape.paths()
 
 
 def move(shapes, indices, dx, dy):
@@ -165,7 +206,16 @@ def matching_color(shapes, indices, field):
 
 
 def convert_path(shape, simplify=False):
-    path = shape.path()
+    if shape.sticker:
+        if not shape.contours:
+            raise ValueError("Trace the sticker before converting its outlines to paths.")
+        if simplify:
+            raise ValueError("Convert the sticker’s outlines to paths before simplifying them.")
+    paths = tuple(_simplify_path(path) if simplify else path for path in shape.paths())
+    return styled_contours(paths, shape)
+
+
+def _simplify_path(path):
     points = path.points
     if simplify and len(points) > (3 if path.closed else 2):
         if path.closed:
@@ -177,48 +227,53 @@ def convert_path(shape, simplify=False):
                 points = reduced
         else:
             points = _simplify_line(points, 0.1)
-    converted = shape_from_path(replace(path, points=points))
-    return replace(converted, stroke=shape.stroke, fill=shape.fill, visible=shape.visible,
-                   action=shape.action, group=shape.group, holder=shape.holder,
-                   line_style=shape.line_style, line_width_mm=shape.line_width_mm)
+    return replace(path, points=points)
 
 
 def offset_shape(shape, distance):
-    path = shape.path()
-    points = path.points
-    if not path.closed or len(points) < 3 or not math.isfinite(distance) or distance == 0:
-        raise ValueError("Choose a closed shape and a nonzero offset.")
-    edges = [(a, b) for a, b in toolpath._edges(points, True) if math.dist(a, b) > 1e-8]
-    area = sum(a[0] * b[1] - b[0] * a[1] for a, b in edges)
-    if len(edges) < 3 or abs(area) < 1e-8:
-        raise ValueError("The shape has no area to offset.")
-    side = math.copysign(1, area)
-    directions = [(b[0] - a[0], b[1] - a[1]) for a, b in edges]
-    normal = [(side * dy / math.hypot(dx, dy), -side * dx / math.hypot(dx, dy))
-              for dx, dy in directions]
-    result = []
-    winding = 0.0
-    for i, ((x, y), _) in enumerate(edges):
-        dx, dy = directions[i]
-        previous = directions[i - 1]
-        turn = previous[0] * dy - previous[1] * dx
-        if side * turn < -1e-8:
-            raise ValueError("Offset works with closed shapes without inward corners.")
-        winding += math.atan2(side * turn, previous[0] * dx + previous[1] * dy)
-        nx, ny = normal[i]
-        px, py = normal[i - 1]
-        dot = 1 + nx * px + ny * py
-        if dot < 1e-8:
-            raise ValueError("A corner is too sharp to offset.")
-        result.append((x + distance * (nx + px) / dot, y + distance * (ny + py) / dot))
-    if not math.isclose(winding, math.tau, abs_tol=1e-6):
-        raise ValueError("Offset works with simple closed shapes.")
-    for ((a, b), (dx, dy)) in zip(toolpath._edges(tuple(result), True), directions):
-        if (b[0] - a[0]) * dx + (b[1] - a[1]) * dy <= 1e-8:
-            raise ValueError("This inset is too large for the shape.")
-    box = shape_from_path(replace(path, points=tuple(result)))
-    return replace(box, stroke=shape.stroke, fill=shape.fill, visible=shape.visible, action=shape.action,
-                   holder=shape.holder, line_style=shape.line_style, line_width_mm=shape.line_width_mm)
+    if not math.isfinite(distance) or not distance:
+        raise ValueError("Enter a nonzero offset distance.")
+    result = vector_regions.modify("Offset", (_closed_contours(shape),), distance=distance)
+    if not result:
+        raise ValueError("This inset is too large and leaves no cut area.")
+    return replace(styled_contours(tuple(template.CutPath(ring, True) for ring in result), shape), group=None)
+
+
+def _closed_contours(shape):
+    paths = shape.paths()
+    if not paths:
+        raise ValueError("Trace the sticker before working with its cut outline.")
+    if any(not path.closed for path in paths):
+        raise ValueError("Choose a closed shape. Open lines have no filled area.")
+    return tuple(path.points for path in paths)
+
+
+def modify_selection(shapes, indices, operation):
+    indices = tuple(sorted(indices))
+    if operation == "Release Compound Path":
+        if len(indices) != 1 or shapes[indices[0]].kind != "Compound":
+            raise ValueError("Select one compound path to release its contours.")
+        start = indices[0]
+        shape = shapes[start]
+        replacement = tuple(styled_contours((path,), shape) for path in shape.paths())
+    else:
+        if len(indices) < 2:
+            raise ValueError(f"Select at least two closed objects for {operation.lower()}.")
+        start = indices[0]
+        if any(shapes[i].sticker for i in indices):
+            raise ValueError("Convert sticker outlines to paths before combining them with other objects.")
+        selected = tuple(_closed_contours(shapes[i]) for i in indices)
+        if operation == "Make Compound Path":
+            rings = vector_regions.outlines(tuple(ring for contours in selected for ring in contours), nonzero=False)
+        else:
+            rings = vector_regions.modify(operation, selected)
+        if not rings:
+            raise ValueError("This operation leaves no cut area. Adjust the selected objects.")
+        result = styled_contours(tuple(template.CutPath(ring, True) for ring in rings), shapes[start],
+                                 compound=operation == "Make Compound Path")
+        replacement = (replace(result, group=None),)
+    remaining = tuple(shape for i, shape in enumerate(shapes) if i not in indices)
+    return remaining[:start] + replacement + remaining[start:], range(start, start + len(replacement))
 
 
 def _simplify_line(points, tolerance):
@@ -353,10 +408,10 @@ def stroke_color(value):
 
 
 def artwork(shapes, width, height, action="Cut"):
-    paths = tuple(replace(shape.path(), layer=((shape.action, actions.HOLDER_SETTINGS[shape.holder])
+    paths = tuple(replace(path, layer=((shape.action, actions.HOLDER_SETTINGS[shape.holder])
                                               if shape.holder else (shape.action,))) for shape in shapes
                   if shape.visible and shape.action != "None"
-                  and action in (shape.action, ALL_ACTIONS))
+                  and action in (shape.action, ALL_ACTIONS) for path in shape.paths())
     return importer.Imported(paths, width, height,
                              "Template editor", "editor coordinates in millimetres",
                              page_size_mm=(width, height), use_document_page=True)
@@ -426,11 +481,16 @@ def save_project(path, project):
     objects = []
     for shape in project.shapes:
         fields = asdict(shape)
-        for name, default in (("holder", None), ("line_style", "solid"), ("line_width_mm", 0.0)):
+        for name, default in (("holder", None), ("line_style", "solid"), ("line_width_mm", 0.0),
+                              ("text", None), ("contours", ()), ("sticker", None)):
             if fields[name] == default:
                 del fields[name]
         objects.append(fields)
-    document = {"version": 2, "page_mm": [project.width, project.height],
+    if any(shape.sticker for shape in project.shapes):
+        version = 4
+    else:
+        version = 3 if any(shape.kind in MULTI_CONTOUR_KINDS for shape in project.shapes) else 2
+    document = {"version": version, "page_mm": [project.width, project.height],
                 "registration": asdict(project.registration) if project.registration else None,
                 "mat": project.mat, "objects": objects}
     content = json.dumps(document, indent=2, allow_nan=False) + "\n"
@@ -481,17 +541,44 @@ def shapes_from_paths(paths):
     return tuple(shape_from_path(contour) for contour in paths)
 
 
+def styled_contours(paths, original, *, compound=False):
+    if len(paths) == 1 and not compound:
+        converted = shape_from_path(paths[0])
+    else:
+        converted = compound_shape(tuple(path.points for path in paths))
+    return replace(converted, stroke=original.stroke, fill=original.fill, visible=original.visible,
+                   action=original.action, group=original.group, holder=original.holder,
+                   line_style=original.line_style, line_width_mm=original.line_width_mm)
+
+
+def compound_shape(rings, *, text=None):
+    if not rings or any(len(set(ring)) < 3 for ring in rings):
+        raise ValueError("The object needs at least one closed contour with an area.")
+    xs, ys = zip(*(point for ring in rings for point in ring))
+    x, y = min(xs), min(ys)
+    w, h = max(xs) - x, max(ys) - y
+    if not _number(x) or not _number(y) or not all(_number(n, 0.1) for n in (w, h)):
+        raise ValueError("The contours are outside the editable range or smaller than 0.1 mm.")
+    normalized = tuple(tuple(((u-x)/w, (v-y)/h) for u, v in ring) for ring in rings)
+    return Shape("Text" if text else "Compound", x, y, w, h, contours=normalized, text=text)
+
+
+def nearest_vertex(shape, pointer):
+    return min((math.dist(pointer, point), (i, j)) for i, path in enumerate(shape.paths())
+               for j, point in enumerate(path.points))
+
+
 def move_vertex(shape, index, position):
-    path = shape.path()
-    points = path.points[:index] + (position,) + path.points[index+1:]
-    edited = shape_from_path(replace(path, points=points))
-    return replace(edited, action=shape.action, visible=shape.visible, group=shape.group, holder=shape.holder,
-                   line_style=shape.line_style, line_width_mm=shape.line_width_mm)
+    contour, vertex = (0, index) if isinstance(index, int) else index
+    paths = list(shape.paths())
+    path = paths[contour]
+    paths[contour] = replace(path, points=path.points[:vertex] + (position,) + path.points[vertex+1:])
+    return styled_contours(paths, shape)
 
 
 def load_project(path, legacy_registration=None):
     document = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(document, dict) or document.get("version") not in (1, 2):
+    if not isinstance(document, dict) or document.get("version") not in (1, 2, 3, 4):
         raise ValueError("Unsupported template project version.")
     page = document.get("page_mm")
     if not isinstance(page, list) or len(page) != 2 or not all(_number(v, 1) for v in page):
@@ -518,12 +605,18 @@ def load_project(path, legacy_registration=None):
     for item in shapes:
         try:
             fields = {"kind", "x", "y", "width", "height", "radius"} if legacy else Shape.__dataclass_fields__.keys()
-            required = fields if legacy else fields - {"stroke", "fill", "group", "holder", "line_style", "line_width_mm"}
+            required = fields if legacy else fields - {"stroke", "fill", "group", "holder", "line_style",
+                                                        "line_width_mm", "contours", "text", "sticker"}
             if not isinstance(item, dict) or not required <= item.keys() <= fields:
                 raise TypeError("incomplete shape")
             shape = Shape(**item)
             numbers = (shape.x, shape.y, shape.width, shape.height, shape.radius)
-            valid = (shape.kind in (KINDS if legacy else (*KINDS, "Path")) and
+            kinds = KINDS if legacy else (*KINDS, "Path")
+            if document["version"] >= 3:
+                kinds += ("Compound", "Text")
+            if document["version"] == 4:
+                kinds += ("Sticker",)
+            valid = (shape.kind in kinds and
                      all(_number(v) for v in numbers) and shape.radius >= 0 and
                      _number(shape.rotation, -360, 360) and shape.action in ACTIONS and
                      (shape.holder is None or (type(shape.holder) is int and shape.holder in (1, 2))) and
@@ -540,6 +633,22 @@ def load_project(path, legacy_registration=None):
                 valid = (valid and not shape.points and
                          (shape.kind == "Line" or min(shape.width, shape.height) >= 0.1))
                 shape = replace(shape, points=())
+            if shape.kind in MULTI_CONTOUR_KINDS:
+                rings = tuple(tuple(tuple(point) for point in ring) for ring in shape.contours)
+                valid = (valid and shape.closed and (bool(rings) or shape.kind == "Sticker") and all(
+                    len(set(ring)) >= 3 and all(len(point) == 2 and all(_number(v, 0, 1) for v in point)
+                                                for point in ring) for ring in rings))
+                spec = TextSpec(**shape.text) if shape.kind == "Text" else None
+                valid = valid and (valid_text(spec) if spec else shape.text is None)
+                shape = replace(shape, contours=rings, text=spec)
+            else:
+                valid = valid and not shape.contours and shape.text is None
+            if shape.kind == "Sticker" and valid:
+                sticker = Sticker(**shape.sticker)
+                sticker.validate()
+                shape = replace(shape, sticker=sticker)
+            else:
+                valid = valid and shape.sticker is None
         except (TypeError, ValueError, OverflowError, AttributeError):
             valid = False
         if not valid:

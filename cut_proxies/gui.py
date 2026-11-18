@@ -43,8 +43,8 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 from . import (actions, bluetooth, bundle, config, corner_test, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
                starting_guide, template, testcut, toolpath, transport)  # noqa: E402
 from .desktop_help import BLADE_VALUE_TEXT, CONTROL_HELP, SETUP_STEPS  # noqa: E402
-from .editor_canvas import draw_feed_arrow  # noqa: E402
-from .gtk_controls import disclosure, workspace_header, workspace_tools, zoom_controls  # noqa: E402
+from .editor_canvas import DesignCanvas, draw_feed_arrow  # noqa: E402
+from .gtk_controls import disclosure, protect_settings_wheel, workspace_header, workspace_tools, zoom_controls  # noqa: E402
 from .holder_settings import HolderSettings, for_holder  # noqa: E402
 
 APP_ID = "org.printing.SilhouetteControlCenter"
@@ -56,6 +56,13 @@ _CUT_SETTINGS_CSS = """
 .scc-cut-settings spinbutton button { min-width: 16px; min-height: 25px; padding: 0 3px; }
 .scc-cut-settings .holder-tabs { padding: 5px 8px; }
 .scc-cut-settings .cut-toggles { padding: 5px 12px; }
+.scc-workspace button:disabled {
+    opacity: 1;
+    filter: none;
+    color: mix(@window_fg_color, @window_bg_color, 0.25);
+    background: alpha(@window_fg_color, 0.10);
+    box-shadow: none;
+}
 """
 
 
@@ -166,6 +173,8 @@ class Preview(Gtk.DrawingArea):
         self.mode = "Overlay"
         self.job = None
         self.trial = None
+        self.test_placement = None
+        self.test_spots = ()
         self.zoom = 1.0
         self.pan = self.pan_start = (0, 0)
         self.sheet = None          # a sheet.SheetReport, when a PDF is loaded
@@ -192,17 +201,18 @@ class Preview(Gtk.DrawingArea):
             self.fit()
         self.queue_draw()
 
-    def set_trial(self, trial):
-        if trial != self.trial:
+    def set_trial(self, trial, spots=(), placement=None):
+        placement = trial.placement if trial else placement
+        if (trial, spots, placement) != (self.trial, self.test_spots, self.test_placement):
             previous = self.page_size()
-            self.trial = trial
+            self.trial, self.test_spots, self.test_placement = trial, spots, placement
             if self.page_size() != previous:
                 self.fit()
             self.queue_draw()
 
     def page_size(self):
-        if self.trial:
-            return self.trial.placement.width, self.trial.placement.height
+        if self.test_placement:
+            return self.test_placement.width, self.test_placement.height
         if self.job:
             return self.job.grid.sheet_w_mm, self.job.grid.sheet_h_mm
         return self.pdf_size_mm
@@ -275,16 +285,33 @@ class Preview(Gtk.DrawingArea):
         cr.set_source_rgb(0.55, 0.62, 0.68)
         cr.stroke()
         self.draw_orientation(cr, sheet_w, scale)
-        sample = self.trial.sheet.cells[0].rect
-        cr.rectangle(sample.x, sample.y, sample.w, sample.h)
-        cr.set_source_rgba(0.18, 0.56, 0.69, 0.17)
-        cr.fill_preserve()
-        cr.set_source_rgb(0.10, 0.43, 0.53)
-        cr.stroke()
+        marks = self.test_placement.marks
+        if marks:
+            DesignCanvas.draw_marks(cr, marks, scale)
+        active = self.trial.sheet.cells[0] if self.trial else None
+        cr.set_line_width(0.45)
         cr.select_font_face("Sans")
-        cr.set_font_size(max(3, 11 / scale))
-        cr.move_to(sample.x2 + 2, sample.y + 5)
-        cr.show_text("Test cut")
+        cr.set_font_size(min(6, max(4, 11 / scale)))
+        if active:
+            sample = active.rect
+            cr.rectangle(sample.x, sample.y, sample.w, sample.h)
+            cr.set_source_rgba(0.18, 0.56, 0.69, 0.17)
+            cr.fill_preserve()
+            cr.set_source_rgb(0.10, 0.43, 0.53)
+            cr.stroke()
+            if all(spot.number != active.index + 1 for spot in self.test_spots):
+                cr.move_to(sample.x + 1, sample.y + 6)
+                cr.show_text(str(active.index + 1))
+        for spot in self.test_spots:
+            box = spot.rect
+            color = (0.60, 0.30, 0.07) if spot.uncertain else (0.09, 0.39, 0.34)
+            cr.rectangle(box.x, box.y, box.w, box.h)
+            cr.set_source_rgba(*color, 0.12)
+            cr.fill_preserve()
+            cr.set_source_rgb(*color)
+            cr.stroke()
+            cr.move_to(box.x + 1, box.y + 6)
+            cr.show_text(f"{spot.number}: {spot.passes}{'?' if spot.uncertain else ''}")
 
     @staticmethod
     def draw_orientation(cr, width, scale):
@@ -297,7 +324,7 @@ class Preview(Gtk.DrawingArea):
         bg = (0.14, 0.15, 0.17) if dark else (0.89, 0.90, 0.92)
         cr.set_source_rgb(*bg)
         cr.paint()
-        if self.trial:
+        if self.test_placement:
             self.draw_trial(cr, width, height)
             return
 
@@ -474,16 +501,18 @@ class Window(Adw.ApplicationWindow):
         self._close_confirmed = False
         self._building = False
         self._sending = False
+        self.cut_control = None
         self._checking_status = False
         self.tuning = False
         self.holder_state = HolderSettings()
-        self.guide = starting_guide.Guide()
+        self.guide = starting_guide.Guide(config.CONFIG_DIR / "material-test.json")
         self._suppress = True        # don't rebuild while constructing rows
 
         self.toasts = Adw.ToastOverlay()
         self.set_content(self.toasts)
 
         outer = Adw.ToolbarView()
+        outer.add_css_class("scc-workspace")
         self.workspaces = Gtk.Stack(hhomogeneous=False, vhomogeneous=False)
         self.workspaces.add_named(outer, 'tools')
         self.toasts.set_child(self.workspaces)
@@ -599,6 +628,7 @@ class Window(Adw.ApplicationWindow):
         self.menu_bar = self.workspace_menu_bar()
         header.pack_start(self.menu_bar)
         outer.add_bottom_bar(self._send_bar())
+        protect_settings_wheel(outer)
 
         self._suppress = False
         self.on_changed()
@@ -675,6 +705,12 @@ class Window(Adw.ApplicationWindow):
         self.cut_button.add_css_class("destructive-action")
         self.cut_button.connect("clicked", self.on_cut)
         bar.pack_end(self.cut_button)
+        self.cancel_cut = Gtk.Button(label="Cancel Cut")
+        self.cancel_cut.connect("clicked", lambda *_: self.cut_control.cancel())
+        bar.pack_end(self.cancel_cut)
+        self.pause_cut = Gtk.Button(label="Pause Cut")
+        self.pause_cut.connect("clicked", lambda *_: self.cut_control.toggle_pause())
+        bar.pack_end(self.pause_cut)
         bar.pack_end(self.corner_button)
         bar.pack_end(self.scan_button)
         self.back_to_send = Gtk.Button(label="Back to Send", css_classes=["suggested-action"])
@@ -718,9 +754,15 @@ class Window(Adw.ApplicationWindow):
         self.reset_layout_action.set_enabled(can_reset_layout)
         self.use_generated.set_sensitive(can_reset_layout)
         self.review_send.set_visible(not self.tuning and page != destination)
-        at_send = not self.tuning and page == "cut"
+        at_send = not self.tuning and page == "cut" and self.cut_control is None
         for control in (self.cut_button, self.scan_button, self.corner_button):
             control.set_visible(at_send)
+        control = self.cut_control
+        for button in (self.pause_cut, self.cancel_cut):
+            button.set_visible(control is not None)
+            button.set_sensitive(control is not None and control.state not in ("cancelling", "finishing"))
+        if control is not None:
+            self.pause_cut.set_label("Resume Cut" if control.state in ("pausing", "paused") else "Pause Cut")
         self.send_normal.set_visible(not self.tuning)
         self.guide_view.set_visible(self.tuning)
         self.back_to_send.set_visible(self.tuning)
@@ -729,6 +771,7 @@ class Window(Adw.ApplicationWindow):
         can_check = bool(identifier) and not (self._sending or self._checking_status)
         self.check_cutter_status.set_sensitive(can_check)
         reason = (
+            control.status_text if control is not None else
             "Sending to the cutter…" if self._sending else
             "Checking cutter status…" if self._checking_status else
             "Review the latest edits in Design." if destination == "design" else
@@ -746,10 +789,11 @@ class Window(Adw.ApplicationWindow):
             reason = "Set at least one pass to send cut paths."
         self.cut_button.set_sensitive(not reason)
         self.corner_button.set_sensitive(not reason)
-        status = ("Blank test stock · Registration off for samples" if self.tuning else reason or
-                  f"{len(job.paths)} paths · {job.device.name} · {'Registration on' if job.registration else 'Registration off'}")
-        self.send_status.set_label(status)
-        self.send_status.set_tooltip_text(status)
+        if not self.tuning:
+            status = reason or (
+                f"{len(job.paths)} paths · {job.device.name} · {'Registration on' if job.registration else 'Registration off'}")
+            self.send_status.set_label(status)
+            self.send_status.set_tooltip_text(status)
         self.update_guide()
         self.update_tuning_preview()
 
@@ -796,8 +840,9 @@ class Window(Adw.ApplicationWindow):
                     trial = self.guide_proposal()
                 except (ValueError, KeyError):
                     pass
-        self.preview.set_trial(trial)
-        self.preview_title.set_label("Material test sheet" if trial else "Sheet preview")
+        placement = self.guide.placement if self.tuning else None
+        self.preview.set_trial(trial, self.guide.spots if self.tuning else (), placement)
+        self.preview_title.set_label("Material test sheet" if self.preview.test_placement else "Sheet preview")
         self.preview_mode.set_visible(not self.tuning and self.preview.pdf_surface is not None)
         self.summary_card.set_visible(not self.tuning)
         self.preview_options.set_visible(not self.tuning)
@@ -811,7 +856,7 @@ class Window(Adw.ApplicationWindow):
             title='Printed-sheet preset',
             description='Choose the layout you printed.')
         self.r_layout_preset = _combo(
-            'Layout preset', ['Custom'] + [p.name for p in layout_presets.BUILTIN.values()])
+            'Layout preset', ['Custom'] + [p.name for p in layout_presets.available().values()])
         self.r_layout_preset.connect('notify::selected', self.on_layout_preset)
         group.add(self.r_layout_preset)
         page.add(group)
@@ -922,10 +967,13 @@ class Window(Adw.ApplicationWindow):
         file_actions.append(pick)
         file_actions.append(self.close_print)
         g.add(Adw.PreferencesRow(child=file_actions, activatable=False, selectable=False))
-        self.bundle_export = Adw.ActionRow(title="Paired cut file")
-        save = Gtk.Button(label="Save Paired Cut File…", valign=Gtk.Align.CENTER)
-        save.connect("clicked", self.on_save_bundle_file)
-        self.bundle_export.add_suffix(save)
+        save_actions = Gtk.Box(spacing=6, margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
+        for label, callback in (("Save Print PDF…", self.on_save_bundle_print),
+                                ("Save Paired Cut File…", self.on_save_bundle_file)):
+            save = Gtk.Button(label=label)
+            save.connect("clicked", callback)
+            save_actions.append(save)
+        self.bundle_export = Adw.PreferencesRow(child=save_actions, activatable=False, selectable=False)
         self.bundle_export.set_visible(False)
         g.add(self.bundle_export)
 
@@ -1159,23 +1207,33 @@ class Window(Adw.ApplicationWindow):
         self.guide_status = Adw.ActionRow(title="Test spot 1")
         self.guide_status.set_subtitle_lines(0)
         guide.add(self.guide_status)
-        self.guide_outcome = _combo("How did the cut look?", list(starting_guide.OUTCOMES.values()))
-        self.guide_outcome.connect("notify::selected", self.on_guide_outcome)
-        guide.add(self.guide_outcome)
-        self.guide_advice = Adw.ActionRow(title="What to try next")
-        self.guide_advice.set_subtitle_lines(0)
-        guide.add(self.guide_advice)
         self.guide_send, self.guide_use = self.guide_buttons(
             guide, ("Cut One Pass…", self.on_guide_pass), ("Use Tested Settings…", self.on_guide_use))
+        self.guide_send.add_css_class("suggested-action")
         self.guide_next = self.guide_button(guide, "Next Test Spot", self.on_guide_next)
         self.guide_view.append(guide)
         extras, self.guide_advanced = disclosure(self.guide_view, "Test Options")
         tips = Adw.PreferencesGroup(title="Test sheet")
+        self.guide_registration = Adw.SwitchRow(title="Use Registration Marks", active=self.guide.registered)
+        self.guide_registration.connect("notify::active", self.change_guide_registration)
+        tips.add(self.guide_registration)
+        self.guide_marked_sheet = self.guide_button(tips, "Save Marked Test Sheet…", self.save_guide_marked_sheet)
         self.guide_reset = self.guide_button(tips, "New Test Sheet", self.on_guide_reset)
+        self.guide_history = Adw.ActionRow(title="Pass counts by spot")
+        self.guide_history.set_subtitle_lines(0)
+        tips.add(self.guide_history)
+        extras.append(tips)
+        help_group = Adw.PreferencesGroup(title="Troubleshooting")
+        self.guide_outcome = _combo("Optional symptom", list(starting_guide.OUTCOMES.values()))
+        self.guide_outcome.connect("notify::selected", self.on_guide_outcome)
+        help_group.add(self.guide_outcome)
+        self.guide_advice = Adw.ActionRow(title="What to try next")
+        self.guide_advice.set_subtitle_lines(0)
+        help_group.add(self.guide_advice)
         detail = Adw.ActionRow(title="One change at a time", subtitle=starting_guide.TUNING_TIPS)
         detail.set_subtitle_lines(0)
-        tips.add(detail)
-        extras.append(tips)
+        help_group.add(detail)
+        extras.append(help_group)
 
         gcal = Adw.PreferencesGroup(
             title="Calibration", description="Use a pen test to measure how far to shift the cut.")
@@ -1319,10 +1377,14 @@ class Window(Adw.ApplicationWindow):
             self.toast(f'Could not save colorblind preference: {exc}')
 
     def on_layout_preset(self, *_a):
+        if self._suppress:
+            return
         selected = self.r_layout_preset.get_selected()
         if selected == 0:
+            if layout_presets.is_published(self.imported):
+                self.on_clear_artwork()
             return
-        profile = list(layout_presets.BUILTIN.values())[selected - 1]
+        profile = tuple(layout_presets.available().values())[selected - 1]
         self.clear_bundle()
         options = profile.options()
         was, self._suppress = self._suppress, True
@@ -1333,10 +1395,10 @@ class Window(Adw.ApplicationWindow):
         self.import_row.set_subtitle('Using the sheet and card settings below')
         self.r_colour.set_model(Gtk.StringList.new(['all colours']))
         self.r_colour.set_selected(0)
-        self.r_engine.set_selected(1)
+        self.r_engine.set_selected(0 if options['engine'] == 'scm' else 1)
         self.r_sheet.set_selected(sorted(geometry.SHEETS).index(options['sheet']))
-        self.r_card.set_selected(sorted(geometry.CARDS).index('standard'))
-        self.r_orient.set_selected(2)
+        self.r_card.set_selected(sorted(geometry.CARDS).index(options['card']))
+        self.r_orient.set_selected(1 if options['portrait'] else 2)
         self.r_mode.set_selected(0)
         self.r_radius.set_value(options['radius_mm'])
         self.r_pattern.set_selected(0)
@@ -1348,7 +1410,11 @@ class Window(Adw.ApplicationWindow):
         self.r_register.set_active(True)
         self.r_auto.set_active(True)
         self._suppress = was
-        self.on_changed()
+        if isinstance(profile, layout_presets.PublishedTemplate):
+            self.set_artwork(profile.artwork(), profile.name)
+        else:
+            self._update_document_sheet(None)
+            self.on_changed()
 
     def _text(self, row):
         model = row.get_model()
@@ -1452,6 +1518,7 @@ class Window(Adw.ApplicationWindow):
                                   (holder, "selected"), (order, "value")):
                 row.add_row(control)
                 control.connect(f"notify::{prop}", self.on_changed)
+                protect_settings_wheel(control)
             self.send_groups.add(row)
             self._send_rows.append((key, row, enabled, preset, holder, order))
 
@@ -1477,6 +1544,9 @@ class Window(Adw.ApplicationWindow):
     def on_changed(self, *_a):
         if self._suppress:
             return
+        fixed_layout = self.pdf_bundle or layout_presets.is_published(self.imported)
+        for control in (self.r_sheet, self.r_orient, self.r_engine, self.r_card, self.r_mode, self.r_radius):
+            control.set_sensitive(not fixed_layout)
         device = graphtec.device_by_name(self._text(self.r_cutter))
         self.restore_holder(device)
         self.r_holder.set_sensitive(device.two_tools)
@@ -1884,6 +1954,9 @@ class Window(Adw.ApplicationWindow):
         self.design.confirm_discard(discard)
 
     def confirm_window_close(self, *_args):
+        if self._sending:
+            self.toast("Finish or cancel the cutter operation before closing.")
+            return True
         if self._close_confirmed or self.design is None or not self.design.dirty:
             return False
 
@@ -1897,8 +1970,8 @@ class Window(Adw.ApplicationWindow):
     def review_design(self, project, action):
         from .editor_model import ALL_ACTIONS, holder_defaults
         artwork = project.artwork(action)
-        if any(path.length_mm() <= 0 for path in artwork.paths):
-            self.design.status.set_text('Resize any paths with no length before reviewing.')
+        if not artwork.paths or any(path.length_mm() <= 0 for path in artwork.paths):
+            self.design.status.set_text('Draw or resize the paths before reviewing.')
             return
         self.tuning = False
         group_defaults = holder_defaults(artwork)
@@ -1931,6 +2004,8 @@ class Window(Adw.ApplicationWindow):
         lines = [artwork.describe(), *artwork.warnings] if artwork else ['Cut template for Silhouette Studio']
         self.import_row.set_subtitle("\n".join(lines))
         was, self._suppress = self._suppress, True
+        if not layout_presets.is_published(artwork):
+            self.r_layout_preset.set_selected(0)
         self._update_document_sheet(artwork)
         self.r_colour.set_model(Gtk.StringList.new(["all colours", *(artwork.colours() if artwork else ())]))
         self.r_colour.set_selected(0)
@@ -1959,6 +2034,7 @@ class Window(Adw.ApplicationWindow):
         self.imported = None
         self.template_shapes = ()
         was, self._suppress = self._suppress, True
+        self.r_layout_preset.set_selected(0)
         self._update_document_sheet(None)
         self.r_colour.set_model(Gtk.StringList.new(["all colours"]))
         self.r_colour.set_selected(0)
@@ -2051,13 +2127,21 @@ class Window(Adw.ApplicationWindow):
         except bundle.BundleError as error:
             self.toast(str(error))
             return
-        dialog = Gtk.FileDialog(title="Save Paired Cut File", initial_name=name)
+        self.save_bundle_member("Save Paired Cut File", name, lambda path: matched.save_cut_file(row, path))
+
+    def on_save_bundle_print(self, *_args):
+        matched = self.pdf_bundle
+        if matched:
+            self.save_bundle_member("Save Print PDF", pathlib.Path(matched.pdf).name, matched.save_print_pdf)
+
+    def save_bundle_member(self, title, name, save):
+        dialog = Gtk.FileDialog(title=title, initial_name=name)
 
         def done(chooser, result):
             try:
                 path = chooser.save_finish(result).get_path()
                 if path is not None:
-                    self.toast(f"Saved {matched.save_cut_file(row, path).name}.")
+                    self.toast(f"Saved {save(path).name}.")
             except GLib.Error:
                 return
             except bundle.BundleError as error:
@@ -2087,7 +2171,7 @@ class Window(Adw.ApplicationWindow):
                 return
             filename = gfile.get_path()
             if filename is None:
-                self.toast('Choose a local PDF or ProxyPress ZIP.')
+                self.toast('Choose a local PDF or a matched Print & Cut ZIP.')
                 return
             path = pathlib.Path(filename)
             if path.suffix.lower() == '.zip' or zipfile.is_zipfile(path):
@@ -2163,6 +2247,7 @@ class Window(Adw.ApplicationWindow):
             self.bundle_checked = False
             self.update_send_actions()
         dpi = int(self._text(self.r_sheet_dpi))
+        orient_scm = layout_presets.is_published(self.imported)
         token = self._sheet_token = object()
         self.sheet_report = None
         self.preview.set_sheet(None)
@@ -2173,8 +2258,7 @@ class Window(Adw.ApplicationWindow):
                 if matched:
                     report, image = matched.measure(row, marks, dpi)
                 else:
-                    image = sheet_mod.render(path, page=page, dpi=dpi, colour=True)
-                    report = sheet_mod.measure(path, marks, page=page, dpi=dpi, image=image)
+                    report, image = sheet_mod.measure_preview(path, marks, page, dpi, orient_scm=orient_scm)
                 png = io.BytesIO()
                 image.save(png, format='PNG')
             except Exception as exc:              # noqa: BLE001
@@ -2203,6 +2287,8 @@ class Window(Adw.ApplicationWindow):
         self.preview.set_sheet(report)
         self.preview.set_pdf(png, report.page_w_mm, report.page_h_mm)
         lines = [m.describe() for m in report.marks]
+        if getattr(report, 'preview_rotation', 0) in (90, 270):
+            lines.insert(0, 'Load the printed sheet face-up in the orientation shown in the preview.')
         lines.append("")
         lines.append(report.diagnosis())
         for pr in problems:
@@ -2347,26 +2433,25 @@ class Window(Adw.ApplicationWindow):
         state = self.guide
         connected = starting_guide.has_cutter_endpoint(self._connection())
         self.guide_send.set_sensitive(not busy and connected and state.can_cut)
-        self.guide_use.set_sensitive(not busy and state.outcome == "clean" and state.tested_settings is not None)
-        for button in (self.guide_send, self.guide_use):
-            if button.get_sensitive():
-                button.add_css_class("suggested-action")
-            else:
-                button.remove_css_class("suggested-action")
-        label = "Repeat One Pass…" if self.guide.completed else "Cut One Pass…"
+        self.guide_use.set_sensitive(not busy and state.tested_settings is not None)
+        self.guide_registration.set_sensitive(not busy and state.placement is None)
+        self.guide_marked_sheet.set_sensitive(not busy and state.registered)
+        if self.tuning:
+            self.send_status.set_label(state.sheet_status)
+            self.send_status.set_tooltip_text(state.sheet_status)
+        label = "Repeat One Pass" if state.completed else "Cut One Pass…"
         self.guide_send.set_label(label)
         title, _, body = self.guide.status().partition("\n")
         self.guide_status.set_title(title)
-        if state.awaiting_result and not busy:
-            body += "\nLeave the mat loaded and lift a corner to check the sample."
-        elif not connected:
-            body += "\nGo back to Send and select a cutter to run a test pass."
+        if not connected:
+            body = "\n".join(filter(None, (body, "Go back to Send and select a cutter to run a test pass.")))
+        if state.resume_error:
+            body = "\n".join(filter(None, (body, state.resume_error)))
         self.guide_status.set_subtitle("Waiting for the cutter to finish…" if self._sending else body)
-        inspecting = state.completed > 0 and not state.interrupted
-        self.guide_outcome.set_visible(inspecting)
+        self.guide_history.set_subtitle(state.history_text() or "Completed passes appear here.")
         self.guide_outcome.set_sensitive(not busy)
         self.guide_outcome.set_selected(tuple(starting_guide.OUTCOMES).index(state.outcome))
-        advice = state.advice() if inspecting else ""
+        advice = state.advice()
         self.guide_advice.set_subtitle(advice)
         self.guide_advice.set_visible(bool(advice))
 
@@ -2386,7 +2471,7 @@ class Window(Adw.ApplicationWindow):
 
     def on_guide_start(self, *_args):
         if self.guide.trial:
-            self.guide.next_spot()
+            self.on_guide_next()
         device = graphtec.device_by_name(self._text(self.r_cutter))
         opts = self._blade_options()
         self.set_guide_blade_values(starting_guide.starting_values(device, opts["holder"], opts["blade_diameter_mm"]))
@@ -2395,7 +2480,7 @@ class Window(Adw.ApplicationWindow):
 
     def on_guide_use(self, *_args):
         settings = self.guide.tested_settings
-        if settings is None or self.guide.outcome != "clean":
+        if self._sending or self._checking_status or settings is None:
             return
         device = graphtec.device_by_name(self._text(self.r_cutter))
         if device != self.guide.trial.sheet.device or settings.holder != self._blade_options()["holder"]:
@@ -2438,13 +2523,16 @@ class Window(Adw.ApplicationWindow):
         dialog.present(self)
 
     def on_guide_next(self, *_args):
+        if self._sending or self._checking_status:
+            return
         self.guide.next_spot()
+        self.persist_guide()
         self.update_guide()
         self.update_tuning_preview()
 
     def on_guide_reset(self, *_args):
         dialog = Adw.AlertDialog(heading="Start a New Test Sheet?",
-                                 body="Load a fresh blank sheet to start at the first spot.")
+                                 body="Load a fresh test sheet to start at the first spot.")
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("new", "New Sheet")
         dialog.set_default_response("cancel")
@@ -2453,11 +2541,45 @@ class Window(Adw.ApplicationWindow):
         def reset(_dialog, response):
             if response == "new" and not (self._sending or self._checking_status):
                 self.guide.reset()
+                self.persist_guide()
                 self.update_guide()
                 self.update_tuning_preview()
 
         dialog.connect("response", reset)
         dialog.present(self)
+
+    def persist_guide(self):
+        try:
+            self.guide.persist()
+        except OSError as error:
+            self.toast(f"Could not save the marked test sheet history. {error}")
+            return False
+        return True
+
+    def change_guide_registration(self, row, *_args):
+        self.guide.registered = row.get_active()
+        self.update_guide()
+        self.update_tuning_preview()
+
+    def save_guide_marked_sheet(self, *_args):
+        dialog = Gtk.FileDialog(title="Save Marked Test Sheet", initial_name="material-test.svg")
+
+        def chosen(chooser, result):
+            try:
+                path = chooser.save_finish(result).get_path()
+                if path is None:
+                    return
+                self.guide.write_marked_sheet(path, self.job, self.options())
+            except GLib.Error:
+                return
+            except (OSError, ValueError, KeyError) as error:
+                self.toast(str(error))
+            else:
+                self.toast("Saved the marked test sheet. Print at actual size.")
+            self.update_guide()
+            self.update_tuning_preview()
+
+        dialog.save(self, None, chosen)
 
     def guide_proposal(self):
         return self.guide.prepare(self._connection(), self.options(), self.job, "square")
@@ -2470,8 +2592,10 @@ class Window(Adw.ApplicationWindow):
         except (ValueError, KeyError) as error:
             self.toast(str(error))
             return
-        prompt = self.guide.prompt(trial)
-        dialog = Adw.AlertDialog(heading="Send One Test Pass?", body=prompt)
+        if self.guide.completed:
+            self._guide_pass_response(None, "cut", trial)
+            return
+        dialog = Adw.AlertDialog(heading="Send One Test Pass?", body=self.guide.prompt(trial))
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("cut", "Cut")
         dialog.set_response_appearance("cut", Adw.ResponseAppearance.DESTRUCTIVE)
@@ -2495,13 +2619,20 @@ class Window(Adw.ApplicationWindow):
         if refusal:
             self.toast(refusal)
             return
+        if trial.placement.registered:
+            try:
+                self.guide.persist(pending=trial)
+            except OSError as error:
+                self.toast(f"Could not save the marked test sheet history. {error}")
+                return
         self._sending = True
         self.update_send_actions()
 
         def done(error=None):
             self.guide.record(trial, error)
             self._send_done()
-            self.toast(str(error) if error else "Pass complete. Keep the mat loaded and lift a corner.")
+            if self.persist_guide():
+                self.toast(str(error) if error else "Pass complete.")
 
         def work():
             try:
@@ -2557,7 +2688,7 @@ class Window(Adw.ApplicationWindow):
         if self._sending or self._checking_status:
             self.toast("The cutter connection is busy.")
             return
-        self.guide.invalidate()
+        self.guide.moved()
         refusal = cutters.usb_refusal(connection, ts.device, self.selected_cutter())
         if refusal:
             self.toast(refusal)
@@ -2861,7 +2992,9 @@ class Window(Adw.ApplicationWindow):
         if not steps:
             self.toast("This job does not use registration.")
             return
-        self.guide.invalidate()
+        self.guide.moved()
+        control = self.cut_control = (transport.CutControl(lambda: GLib.idle_add(self.update_send_actions))
+                                      if not scan_only and corner is None else None)
         self._sending = True
         self.cut_button.set_sensitive(False)
         self.scan_button.set_sensitive(False)
@@ -2886,13 +3019,18 @@ class Window(Adw.ApplicationWindow):
                             raise transport.TransportError(
                                 "the cutter is busy")
                     started = time.monotonic()
-                    sent = t.run(steps, wait_done=True) if corner and t.can_read else t.run(steps)
+                    if control is not None:
+                        sent = t.run(steps, wait_done=True, control=control)
+                    else:
+                        sent = t.run(steps, wait_done=True) if corner and t.can_read else t.run(steps)
                 message = ("Corner test sent." if corner else "Registration scan passed. No cut paths were sent."
                            if scan_only else f"Cut sent: {sent:,} bytes")
                 GLib.idle_add(self.toast, message)
             except transport.RegistrationFailed as exc:
                 GLib.idle_add(self.show_registration_failure, str(exc), j, matched, row, report,
                               mode, time.monotonic() - started)
+            except transport.CutCancelled as exc:
+                GLib.idle_add(self.toast, str(exc))
             except Exception as exc:              # noqa: BLE001
                 GLib.idle_add(self.toast, f"Send failed: {exc}")
             GLib.idle_add(self._send_done)
@@ -2932,6 +3070,7 @@ class Window(Adw.ApplicationWindow):
         dialog.present(self)
 
     def _send_done(self):
+        self.cut_control = None
         self._sending = False
         self.rebuild()
 

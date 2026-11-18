@@ -3,21 +3,30 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from functools import lru_cache
 from math import dist
 from pathlib import Path
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
-from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence
-from PySide6.QtWidgets import (QAbstractItemView, QColorDialog, QComboBox, QFileDialog, QInputDialog, QListWidget,
-                               QMessageBox, QSizePolicy, QSplitter, QTabWidget, QWidget)
+from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence, QPixmap, QTransform
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
+                               QFileDialog, QFormLayout, QInputDialog, QLabel, QListWidget, QMessageBox,
+                               QPlainTextEdit, QSizePolicy, QSpinBox, QSplitter, QTabWidget, QWidget)
 
-from . import editor_model as model, geometry, graphtec, importer, regmarks, template
-from .qt_canvas import SheetView, ZoomControls, draw_feed_arrow, draw_marks, draw_paper, draw_path, pen, rect
-from .qt_controls import (Page, bar, button, set_choices, styled_label, workspace_header,
+from . import design_text, editor_model as model, geometry, graphtec, importer, regmarks, sticker_assets, sticker_print, sticker_trace, template
+from .qt_canvas import SheetView, ZoomControls, draw_contours, draw_feed_arrow, draw_marks, draw_paper, draw_path, pen, rect
+from .qt_controls import (Page, Tasks, bar, button, set_choices, styled_label, workspace_header,
                           workspace_layout, workspace_tool_button, workspace_tools)
 
 DESIGN_FILTER = "Design projects (*.scc-template);;Cut artwork (*.svg *.SVG *.dxf *.DXF *.studio3 *.STUDIO3)"
 TOOLS = ("Select", "Point Edit", *model.KINDS, "Polygon", "Freehand")
+
+
+@lru_cache(maxsize=4)
+def _sticker_pixmap(png):
+    pixmap = QPixmap()
+    pixmap.loadFromData(png, "PNG")
+    return pixmap
 
 
 class Canvas(SheetView):
@@ -73,18 +82,28 @@ class Canvas(SheetView):
         for index, shape in enumerate(project.shapes):
             if not shape.visible:
                 continue
+            if shape.sticker:
+                pixmap = _sticker_pixmap(shape.sticker.png_bytes())
+                (x, y), (rx, ry), _, (bx, by) = shape.frame().points
+                item = scene.addPixmap(pixmap)
+                item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
+                item.setTransform(QTransform((rx - x) / pixmap.width(), (ry - y) / pixmap.width(),
+                                             (bx - x) / pixmap.height(), (by - y) / pixmap.height(), x, y))
+                if index in selection:
+                    draw_path(scene, shape.frame(), pen("#2264aa", dashed=True))
             color = "#3c70c5" if index in selection else shape.stroke or {1: "#b2323a", 2: "#244b9a"}.get(shape.holder, "#313945")
             fill = QColor(shape.fill) if shape.closed and shape.fill else Qt.BrushStyle.NoBrush
             line = pen(color, shape.line_width_mm, dashed=shape.action == "Score" or shape.line_style == "dashed")
             if shape.line_style == "dotted":
                 line.setStyle(Qt.PenStyle.DotLine)
-            draw_path(scene, shape.path(), line, fill)
+            draw_contours(scene, shape.paths(), line, fill)
         if editor.tool.currentData() == "Point Edit" and len(selection) == 1:
             shape = project.shapes[selection[0]]
-            if shape.kind in ("Line", "Path") and shape.visible:
+            if shape.kind in model.POINT_EDIT_KINDS and shape.visible:
                 dot = min(2.5, 4 / max(0.02, self.transform().m11()))
-                for x, y in shape.path().points:
-                    scene.addEllipse(x-dot/2, y-dot/2, dot, dot, pen("#2264aa"), QBrush(Qt.GlobalColor.white))
+                for path in shape.paths():
+                    for x, y in path.points:
+                        scene.addEllipse(x-dot/2, y-dot/2, dot, dot, pen("#2264aa"), QBrush(Qt.GlobalColor.white))
         if self.polygon:
             draw_path(scene, template.CutPath(tuple(self.polygon), closed=False), pen("#2264aa", dashed=True))
         if self.marquee:
@@ -128,7 +147,7 @@ class Canvas(SheetView):
         tolerance = 5 / max(0.02, self.transform().m11())
         for index in range(len(shapes) - 1, -1, -1):
             shape = shapes[index]
-            if shape.visible and (group or shape.kind in ("Line", "Path")) and model.hit(
+            if shape.visible and (group or shape.kind in model.POINT_EDIT_KINDS) and model.hit(
                     shape, (position.x(), position.y()), tolerance):
                 members = set(model.group_members(shapes, index)) if group else {index}
                 selected = set(self.design.selection())
@@ -179,10 +198,8 @@ class Canvas(SheetView):
         if len(selected) == 1:
             index = selected[0]
             shape = editor.project.shapes[index]
-            if shape.visible and shape.kind in ("Path", "Line"):
-                nodes = shape.path().points
-                distance, vertex = min((dist((self.start.x(), self.start.y()), point), i)
-                                       for i, point in enumerate(nodes))
+            if shape.visible and shape.kind in model.POINT_EDIT_KINDS:
+                distance, vertex = model.nearest_vertex(shape, (self.start.x(), self.start.y()))
                 if distance <= 7 / self.transform().m11():
                     self.active = (index, vertex)
                     self.edit = "point"
@@ -362,6 +379,11 @@ class Design(QWidget):
         self.tool = palette.choice("Tool", TOOLS, changed=self.change_tool)
         self.tool.setToolTip("Drag to draw or move objects. Shift-click extends the selection. Middle-drag pans the canvas.")
         palette.push("Add Shape", self.add_default)
+        self.text_button = palette.push("Add Text…", self.text_dialog)
+        palette.push("Place Image…", self.place_sticker)
+        self.trace_button = palette.push("Trace and Bleed…", self.trace_sticker)
+        self.export_tasks = Tasks(self)
+        self.exporting_stickers = False
         objects = left.group("Objects")
         self.objects = QListWidget()
         self.objects.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -404,7 +426,7 @@ class Design(QWidget):
         self.action_picker.setAccessibleName("Design Send action")
         self.action_picker.currentIndexChanged.connect(lambda: self.refresh_status())
         footer.addWidget(self.action_picker)
-        self.review_button = button("Review in Send", lambda: review(self.project, self.action_picker.currentData()),
+        self.review_button = button("Review in Send", lambda: self.review_paths(review),
                                     primary=True)
         footer.addWidget(self.review_button)
         body.addWidget(footer_bar)
@@ -538,6 +560,8 @@ class Design(QWidget):
 
         files = self.menu_bar.addMenu("&File")
         files.addActions(file_actions)
+        command(files, "Place Image…", self.place_sticker)
+        command(files, "Export Print && Cut ZIP…", self.export_stickers)
         edit = self.menu_bar.addMenu("&Edit")
         edit.addActions((self.undo_action, self.redo_action))
         edit.addSeparator()
@@ -604,6 +628,10 @@ class Design(QWidget):
         command(objects, "Simplify", lambda: self.convert_selection(True), "Ctrl+J")
         modify = objects.addMenu("Modify")
         command(modify, "Offset…", self.offset_selection)
+        for operation in model.PATH_OPERATIONS:
+            command(modify, operation, lambda name=operation: self.modify_shapes(name))
+        command(objects, "Add or Edit Text…", self.text_dialog)
+        self.trace_action = command(objects, "Trace and Bleed…", self.trace_sticker)
 
     def show_page_options(self, field=None):
         self.inspector.setCurrentIndex(0)
@@ -659,8 +687,146 @@ class Design(QWidget):
             else:
                 self.commit_shapes(before + copies, range(len(before), len(before) + len(copies)))
 
+    def modify_shapes(self, operation):
+        try:
+            shapes, selected = model.modify_selection(self.project.shapes, self.selection(), operation)
+        except ValueError as error:
+            self.message(str(error))
+        else:
+            self.commit_shapes(shapes, selected)
+
+    def text_dialog(self):
+        selection = self.selection()
+        shape = self.project.shapes[selection[0]] if len(selection) == 1 else None
+        spec = shape.text if shape else None
+        try:
+            families, family, notice = design_text.font_choices(spec)
+        except ValueError as error:
+            self.message(str(error))
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Edit Text" if spec else "Add Text")
+        form = QFormLayout(dialog)
+        value = QPlainTextEdit(spec.value if spec else "")
+        value.setFixedHeight(92)
+        font = QComboBox()
+        set_choices(font, families, family)
+        size = QDoubleSpinBox()
+        size.setRange(1, 100)
+        size.setValue(spec.size_mm if spec else 10)
+        form.addRow("&Text", value)
+        form.addRow("&Font", font)
+        form.addRow("&Size (mm)", size)
+        status = QLabel(notice, wordWrap=True)
+        font.currentIndexChanged.connect(status.clear)
+        form.addRow(status)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        form.addRow(buttons)
+
+        def apply():
+            updated = model.TextSpec(value.toPlainText(), font.currentData(), size.value())
+            try:
+                shapes, selected = design_text.edit(self.project, updated, selection[0] if spec else None)
+            except ValueError as error:
+                status.setText(str(error))
+            else:
+                self.commit_shapes(shapes, selected)
+                dialog.accept()
+
+        buttons.accepted.connect(apply)
+        buttons.rejected.connect(dialog.reject)
+        value.setFocus()
+        dialog.exec()
+
     def message(self, text):
         self.status.setText(text)
+
+    def place_sticker(self):
+        name, _ = QFileDialog.getOpenFileName(self, "Place Sticker Image", "",
+                                             "Images (*.png *.PNG *.jpg *.JPG *.jpeg *.JPEG *.webp *.WEBP)")
+        if not name:
+            return
+        project = self.project
+        try:
+            shape = sticker_trace.place(Path(name), project.width, project.height)
+        except (OSError, ValueError) as error:
+            self.message(str(error))
+        else:
+            self.commit_shapes((*project.shapes, shape), (len(project.shapes),))
+            self.message("Select Trace and Bleed to create the cut outline.")
+
+    def trace_sticker(self):
+        selection = self.selection()
+        if len(selection) != 1:
+            return
+        shape = self.project.shapes[selection[0]]
+        settings = shape.sticker
+        if settings is None:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Trace and Bleed")
+        form = QFormLayout(dialog)
+        source = QComboBox()
+        set_choices(source, sticker_assets.SOURCES, settings.trace_source)
+        threshold = QSpinBox()
+        threshold.setRange(1, 254)
+        threshold.setValue(settings.threshold)
+        holes = QCheckBox("Include interior holes")
+        holes.setChecked(settings.keep_holes)
+        bleed = QDoubleSpinBox()
+        bleed.setRange(0, 5)
+        bleed.setSingleStep(0.25)
+        bleed.setValue(settings.bleed_mm)
+        form.addRow("Trace from", source)
+        form.addRow("Threshold", threshold)
+        form.addRow(holes)
+        form.addRow("Print bleed (mm)", bleed)
+        status = QLabel(wordWrap=True)
+        form.addRow(status)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Trace")
+        form.addRow(buttons)
+
+        def apply():
+            try:
+                traced = sticker_trace.trace(shape, source=source.currentData(), threshold=threshold.value(),
+                                             keep_holes=holes.isChecked(), bleed_mm=bleed.value())
+            except ValueError as error:
+                status.setText(str(error))
+            else:
+                self.change_selected(contours=traced.contours, sticker=traced.sticker)
+                dialog.accept()
+
+        buttons.accepted.connect(apply)
+        buttons.rejected.connect(dialog.reject)
+        dialog.exec()
+
+    def export_stickers(self):
+        if self.exporting_stickers:
+            return
+        name, _ = QFileDialog.getSaveFileName(self, "Export Print & Cut", "stickers.zip", "Matched ZIP (*.zip)")
+        if not name:
+            return
+        try:
+            target = sticker_print.destination(Path(name))
+        except ValueError as error:
+            self.message(str(error))
+            return
+        project, cutter = self.project, self.device.name
+        self.exporting_stickers = True
+        self.message("Exporting Print & Cut…")
+
+        def done(path, error):
+            self.exporting_stickers = False
+            self.message(str(error) if error else f"Saved {path.name}. Open it in Send → Sheet.")
+
+        self.export_tasks.run(lambda: sticker_print.export(target, project, cutter=cutter), done)
+
+    def review_paths(self, review):
+        if any(shape.visible and shape.sticker for shape in self.project.shapes):
+            self.export_stickers()
+        else:
+            review(self.project, self.action_picker.currentData())
 
     def selection(self):
         return tuple(sorted(index.row() for index in self.objects.selectedIndexes()))
@@ -718,6 +884,10 @@ class Design(QWidget):
         indices = self.selection()
         shapes = self.project.shapes
         shape = shapes[indices[0]] if len(indices) == 1 else None
+        self.text_button.setText("Edit Text…" if shape and shape.text else "Add Text…")
+        can_trace = bool(shape and shape.sticker)
+        self.trace_button.setEnabled(can_trace)
+        self.trace_action.setEnabled(can_trace)
         for key, field in self.fields.items():
             field.setEnabled(shape is not None and (key != "radius" or shape.kind == "Rounded rectangle"))
             if shape is not None:
@@ -757,7 +927,10 @@ class Design(QWidget):
         project = self.project
         action = self.action_picker.currentData()
         count = len(project.artwork(action).paths)
-        self.review_button.setEnabled(count > 0)
+        has_stickers = any(shape.visible and shape.sticker for shape in project.shapes)
+        self.review_button.setText("Export Print && Cut…" if has_stickers else "Review in Send")
+        self.review_button.setEnabled(count > 0 or has_stickers)
+        self.action_picker.setEnabled(not has_stickers)
         self.undo_action.setEnabled(bool(self.history.past))
         self.redo_action.setEnabled(bool(self.history.future))
         self.save_action.setEnabled(self.path is None or self.saved != project)
@@ -964,8 +1137,9 @@ class Design(QWidget):
             return
         if self.may_replace():
             self.replace_document(project, path if native else None, path.name)
-            if details:
-                self.message(details)
+            notice = design_text.unavailable_fonts(project) or details
+            if notice:
+                self.message(notice)
 
     def import_art(self):
         value, _ = QFileDialog.getOpenFileName(self, "Import Artwork", "", DESIGN_FILTER.split(";;")[-1])

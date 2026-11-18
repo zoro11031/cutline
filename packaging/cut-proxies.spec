@@ -13,6 +13,8 @@ Requires:       python3 >= 3.10
 Requires:       python3-pyside6 >= 6.4
 Requires:       python3-pillow
 Requires:       poppler-utils
+Requires:       geos >= 3.10
+Requires:       pango
 Recommends:     python3-pyusb
 Recommends:     libusb1
 

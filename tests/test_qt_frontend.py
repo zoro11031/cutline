@@ -8,12 +8,14 @@ import unittest
 from unittest import mock
 
 from cut_proxies import cli, corner_test, editor_model, job, materials, presets, transport
+from tests.test_vector_editing import compound_project
+from tests.test_sticker_print import make_image
 
 try:
-    from PySide6.QtCore import Qt
-    from PySide6.QtGui import QImage
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QColor, QImage, QPalette, QWheelEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QFileDialog
+    from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QFileDialog, QPlainTextEdit
     from cut_proxies import qt_gui
 except ImportError:
     qt_gui = None
@@ -102,6 +104,122 @@ class TestQtFrontend(unittest.TestCase):
         materials = window.tabs.widget(window.tab("Materials"))
         self.assertFalse(materials.isAncestorOf(window.controls["preset"]))
         self.assertFalse(materials.isAncestorOf(window.blade["force"]))
+
+    def test_published_template_is_selected_in_layout_and_can_be_cleared(self):
+        window = self.window
+        window.select("layout_preset", "scm-a4-standard-borderless")
+        self.assertEqual(len(window.job.paths), 9)
+        self.assertEqual(window.job.marks.inset_mm, 3.5)
+        self.assertFalse(window.controls["card"].isEnabled())
+        self.assertIn("SCM A4", window.source_label.text())
+        window.use_generated.click()
+        self.assertIsNone(window.artwork)
+        self.assertEqual(window.choice("layout_preset"), "")
+        self.assertTrue(window.controls["card"].isEnabled())
+
+    def test_sticker_workspace_traces_exports_and_loads_paired_geometry(self):
+        window = self.window
+        window.open_design()
+        design = window.design
+        design.replace_document(editor_model.Project(215.9, 279.4))
+        image = self.config_path / "sticker.png"
+        make_image(image)
+        with mock.patch.object(QFileDialog, "getOpenFileName", return_value=(str(image), "")):
+            design.place_sticker()
+        self.assertTrue(design.trace_button.isEnabled())
+        self.assertFalse(design.project.artwork().paths)
+
+        def apply_trace(dialog):
+            buttons = dialog.findChild(QDialogButtonBox)
+            buttons.button(QDialogButtonBox.StandardButton.Ok).click()
+            return dialog.result()
+
+        with mock.patch.object(QDialog, "exec", apply_trace):
+            design.trace_button.click()
+        self.assertEqual(len(design.project.artwork().paths), 3)
+        self.assertIn("Export Print", design.review_button.text())
+        target = self.config_path / "stickers.zip"
+        with mock.patch.object(QFileDialog, "getSaveFileName", return_value=(str(target), "")), \
+             mock.patch.object(design.export_tasks, "run", side_effect=lambda work, done: done(work(), None)):
+            design.review_button.click()
+        design.send_workspace.click()
+        with mock.patch.object(window, "select_open", return_value=target), \
+             mock.patch.object(window.tasks, "run", side_effect=lambda work, done: done(work(), None)):
+            window.open_sheet()
+        self.assertEqual(window.tabs.currentIndex(), window.tab("Sheet"))
+        self.assertTrue(window.bundle_checked)
+        self.assertEqual(len(window.job.paths), 3)
+        self.assertFalse(window.job.blocked)
+
+    def test_wheel_moves_the_pane_without_changing_the_focused_setting(self):
+        window = self.window
+        window.resize(980, 620)
+        window.show()
+        window.send_workspace.click()
+        self.app.processEvents()
+        page = window.tabs.currentWidget()
+        scroll = page.verticalScrollBar()
+        self.assertGreater(scroll.maximum(), 0)
+        force = window.blade["force"]
+        for widget, value in ((force, force.value), (force.lineEdit(), force.value), (force.slider, force.value),
+                              (window.controls["preset"], window.controls["preset"].currentIndex)):
+            with self.subTest(widget=type(widget).__name__):
+                widget.setFocus()
+                scroll.setValue(0)
+                before = value()
+                center = widget.rect().center()
+                wheel = QWheelEvent(QPointF(center), QPointF(widget.mapToGlobal(center)), QPoint(), QPoint(0, -120),
+                                    Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                                    Qt.ScrollPhase.NoScrollPhase, False)
+                QApplication.sendEvent(widget, wheel)
+                self.assertEqual(value(), before)
+                self.assertGreater(scroll.value(), 0)
+
+    def test_workspace_uses_readable_text_on_disabled_and_accent_buttons(self):
+        import re
+        from cut_proxies.qt_controls import _contrast, workspace_style
+
+        for background, text in (("#f5f5f5", "#202020"), ("#222629", "#eeeeee")):
+            palette = QPalette()
+            palette.setColor(QPalette.ColorRole.Button, QColor(background))
+            palette.setColor(QPalette.ColorRole.ButtonText, QColor(text))
+            palette.setColor(QPalette.ColorRole.Highlight, QColor("#38afe0"))
+            palette.setColor(QPalette.ColorRole.HighlightedText, QColor("white"))
+            style = workspace_style(palette)
+            disabled = re.search(r'QPushButton:disabled \{ background: (#[0-9a-f]+); color: (#[0-9a-f]+)', style)
+            accent = re.search(r'background: palette\(highlight\); color: (#[0-9a-f]+)', style)
+            self.assertGreaterEqual(_contrast(*(QColor(color) for color in disabled.groups())), 4.5)
+            self.assertGreaterEqual(_contrast(QColor(accent[1]), QColor("#38afe0")), 4.5)
+
+    def test_compound_and_text_reopen_and_review_as_verified_contours(self):
+        window = self.window
+        window.open_design()
+        design = window.design
+        project = compound_project()
+        design.replace_document(project)
+
+        def apply_text(dialog):
+            dialog.findChild(QPlainTextEdit).setPlainText("O")
+            buttons = dialog.findChild(QDialogButtonBox)
+            buttons.button(QDialogButtonBox.StandardButton.Ok).click()
+            return dialog.result()
+
+        with mock.patch.object(QDialog, "exec", apply_text):
+            design.text_button.click()
+        self.assertEqual(design.text_button.text(), "Edit Text…")
+        self.assertEqual(design.project.shapes[1].text.value, "O")
+        design.change_selected(x=110, y=40)
+        path = self.config_path / "compounds.scc-template"
+        with mock.patch.object(QFileDialog, "getSaveFileName", return_value=(str(path), "")):
+            self.assertTrue(design.save())
+        reopened = editor_model.load_project(path)
+        with mock.patch.object(QFileDialog, "getOpenFileName", return_value=(str(path), "")):
+            design.open_project()
+        self.assertEqual(design.project, reopened)
+        design.review_button.click()
+        self.assertFalse(window.job.blocked)
+        self.assertCountEqual(window.job.paths, reopened.artwork().paths)
+        self.assertEqual(len(window.job.paths), 4)
 
     def test_workspace_switch_leaves_an_empty_design_open_without_reviewing_it(self):
         window = self.window
@@ -386,6 +504,9 @@ class TestQtFrontend(unittest.TestCase):
             self.assertFalse(window.busy)
             window.start_send(expected, connection)
             self.assertEqual(cutter.run.call_args.args, (expected.steps,))
+            self.assertTrue(cutter.run.call_args.kwargs["wait_done"])
+            self.assertIsInstance(cutter.run.call_args.kwargs["control"], transport.CutControl)
+            self.assertIsNone(window.cut_control)
             window.link.setCurrentIndex(window.link.findData("ble"))
             self.assertIn("connection changed", window.send_refusal(expected, connection))
             window.start_send(expected, connection)
@@ -457,6 +578,7 @@ class TestQtFrontend(unittest.TestCase):
 
     def test_starting_guide_repeats_one_confirmed_pass_and_applies_the_count(self):
         window = self.window
+        window.open_material_guide()
         window.guide_apply.click()
         self.assertEqual([window.blade[field].value() for field in ("force", "speed", "depth", "passes")],
                          [25, 25, 7, 1])
@@ -468,21 +590,17 @@ class TestQtFrontend(unittest.TestCase):
         fake.run.return_value = 200
 
         with mock.patch.object(window.tasks, "run", side_effect=lambda work, done: done(work(), None)), \
-             mock.patch.object(transport, "open_transport", return_value=fake):
-            window.start_guide_pass(trial)
-            self.assertFalse(window.guide_send.isEnabled())
-            self.assertEqual(window.guide_outcome.currentData(), "")
-            window.guide_outcome.setCurrentIndex(window.guide_outcome.findData("rough"))
-            self.assertIn("Reduce force", window.guide_advice.text())
-            self.assertFalse(window.guide_send.isEnabled())
-            window.guide_outcome.setCurrentIndex(window.guide_outcome.findData("holding"))
+             mock.patch.object(transport, "open_transport", return_value=fake), \
+             mock.patch.object(window, "confirm", return_value=True) as confirm:
+            window.guide_send.click()
             self.assertTrue(window.guide_send.isEnabled())
+            self.assertEqual(window.guide_outcome.currentData(), "")
             window.blade["force"].setValue(27)
-            window.start_guide_pass(trial)
+            window.guide_send.click()
+        confirm.assert_called_once()
         self.assertEqual(fake.run.call_args_list, [mock.call(trial.sheet.steps, wait_done=True)] * 2)
         self.assertIn("2 completed passes", window.guide_status.text())
-        self.assertFalse(window.guide_use.isEnabled())
-        window.guide_outcome.setCurrentIndex(window.guide_outcome.findData("clean"))
+        self.assertTrue(window.guide_use.isEnabled())
         with mock.patch.object(qt_gui, "QInputDialog") as dialog:
             dialog.return_value.exec.return_value = 1
             dialog.return_value.textValue.return_value = "310 gsm Matte"
@@ -497,6 +615,22 @@ class TestQtFrontend(unittest.TestCase):
         window.guide_next.click()
         self.assertEqual(window.guide.spot, 2)
         self.assertFalse(window.guide_use.isEnabled())
+        self.assertIn("Spot 1 · 2 passes", window.guide_history.text())
+        self.assertEqual(window.preview.test_spots[0].passes, 2)
+
+    def test_guide_marked_sheet_export_uses_the_preview_placement(self):
+        window = self.window
+        window.open_material_guide()
+        self.assertIn("Registration off", window.footer_status.text())
+        window.guide_registration.setChecked(True)
+        self.assertIn("Registration scan before each pass", window.footer_status.text())
+        path = self.config_path / "marked-test.svg"
+        with mock.patch.object(window, "choose_output", return_value=path):
+            window.guide_marked_sheet.click()
+        self.assertTrue(window.preview.test_placement.registered)
+        self.assertFalse(window.guide_registration.isEnabled())
+        self.assertIn("registration-marks-DO-NOT-CUT", path.read_text())
+        self.assertTrue(window.preview.trial.sheet.registration)
 
     def test_qt_launcher_can_be_selected_explicitly_or_automatically(self):
         with mock.patch.object(qt_gui, "main", return_value=0) as launch:

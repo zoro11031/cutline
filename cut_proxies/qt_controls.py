@@ -2,14 +2,15 @@
 
 import threading
 
-from PySide6.QtCore import QObject, Qt, Signal, Slot
-from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
+from PySide6.QtCore import QEvent, QObject, QPointF, Qt, Signal, Slot
+from PySide6.QtGui import QColor, QIcon, QPalette, QWheelEvent
+from PySide6.QtWidgets import (QAbstractScrollArea, QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox,
+                               QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
                                QLabel, QLineEdit, QMenuBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QStyle,
                                QToolButton, QVBoxLayout, QWidget)
 
 
-WORKSPACE_STYLE = """
+_WORKSPACE_STYLE = """
 QWidget#workspace { background: palette(window); }
 QLabel[role="title"] { font-size: 19px; font-weight: 650; }
 QLabel[role="heading"] { font-weight: 650; }
@@ -52,7 +53,7 @@ QPushButton[role="workspaceTab"]:hover, QPushButton[role="workspaceTab"]:focus {
     border-color: palette(highlight);
 }
 QPushButton[role="workspaceTab"][active="true"] {
-    background: palette(highlight); color: palette(highlighted-text); border-color: palette(highlight);
+    background: palette(highlight); color: @accent_text; border-color: palette(highlight);
 }
 QPushButton[role="workspaceTool"], QToolButton[role="workspaceTool"] {
     background: palette(button); border: 1px solid palette(midlight);
@@ -62,21 +63,22 @@ QPushButton[role="workspaceTool"]:hover, QPushButton[role="workspaceTool"]:focus
 QToolButton[role="workspaceTool"]:hover, QToolButton[role="workspaceTool"]:focus {
     border-color: palette(highlight);
 }
-QToolButton[role="workspaceTool"]:disabled { color: palette(mid); }
+QToolButton[role="workspaceTool"]:disabled { background: @disabled_button; color: @disabled_text; }
 QPushButton[role="holder"]:checked {
-    background: palette(highlight); color: palette(highlighted-text); border-radius: 5px;
+    background: palette(highlight); color: @accent_text; border-radius: 5px;
 }
-QPushButton:disabled { color: palette(mid); }
+QPushButton:disabled { background: @disabled_button; color: @disabled_text; }
+QComboBox:disabled { background: @disabled_button; color: @disabled_text; }
 QPushButton[role="primary"] {
-    background: palette(highlight); color: palette(highlighted-text); font-weight: 650;
+    background: palette(highlight); color: @accent_text; font-weight: 650;
     border: 1px solid palette(highlight); border-radius: 6px; padding: 6px 14px;
 }
 QPushButton[role="primary"]:hover, QPushButton[role="primary"]:focus {
-    border-color: palette(highlighted-text);
+    border-color: @accent_text;
 }
 QPushButton[role="primary"]:pressed { padding-top: 7px; padding-bottom: 5px; }
 QPushButton[role="primary"]:disabled {
-    background: palette(button); color: palette(mid); border-color: palette(midlight);
+    background: @disabled_button; color: @disabled_text; border-color: palette(midlight);
 }
 QPlainTextEdit[role="diagnostics"] { font-family: monospace; }
 QToolButton[role="disclosure"] {
@@ -101,6 +103,12 @@ QSlider[role="cutSlider"]::sub-page:horizontal:disabled { background: palette(mi
 QMenuBar { padding: 2px 4px; }
 QMenuBar::item { padding: 5px 10px; }
 QMenuBar#workspaceMenu { background: transparent; padding: 0; }
+QMenuBar#workspaceMenu::item {
+    background: transparent; color: palette(window-text);
+    border-radius: 5px; padding: 5px 10px;
+}
+QMenuBar#workspaceMenu::item:selected,
+QMenuBar#workspaceMenu::item:pressed { background: palette(alternate-base); }
 QSplitter::handle { background: transparent; width: 12px; }
 QSplitter::handle:horizontal {
     background: palette(midlight);
@@ -110,6 +118,62 @@ QSplitter::handle:horizontal {
 QSplitter::handle:hover { background: palette(midlight); }
 QSplitter::handle:horizontal:hover { background: palette(highlight); }
 """
+
+
+def _contrast(first, second):
+    def luminance(color):
+        def linear(channel):
+            return channel / 12.92 if channel <= 0.04045 else ((channel + 0.055) / 1.055) ** 2.4
+
+        return sum(weight * linear(value) for weight, value in zip((0.2126, 0.7152, 0.0722), color.getRgbF()))
+
+    dark, light = sorted((luminance(first), luminance(second)))
+    return (light + 0.05) / (dark + 0.05)
+
+
+def _legible(preferred, background):
+    if _contrast(preferred, background) >= 4.5:
+        return preferred
+    return max((QColor("black"), QColor("white")), key=lambda color: _contrast(color, background))
+
+
+def workspace_style(palette):
+    active, role = QPalette.ColorGroup.Active, QPalette.ColorRole
+    button = palette.color(active, role.Button)
+    label = _legible(palette.color(active, role.ButtonText), button)
+    subdued = QColor.fromRgbF(*(surface + (text - surface) * 0.72
+                                for surface, text in zip(button.getRgbF()[:3], label.getRgbF()[:3])))
+    disabled = subdued if _contrast(subdued, button) >= 4.5 else label
+    accent = _legible(palette.color(active, role.HighlightedText), palette.color(active, role.Highlight))
+    return (_WORKSPACE_STYLE.replace("@accent_text", accent.name())
+            .replace("@disabled_button", button.name()).replace("@disabled_text", disabled.name()))
+
+
+class SettingsWheel(QObject):
+    """Route the wheel to the pane, including when a settings field has focus."""
+
+    def __init__(self, window):
+        super().__init__(window)
+        QApplication.instance().installEventFilter(self)
+
+    def eventFilter(self, widget, event):
+        if event.type() != QEvent.Type.Wheel:
+            return False
+        if isinstance(widget, QLineEdit) and isinstance(widget.parentWidget(), QAbstractSpinBox):
+            widget = widget.parentWidget()
+        if not isinstance(widget, (QComboBox, QAbstractSpinBox, QSlider)) or not self.parent().isAncestorOf(widget):
+            return False
+        ancestor = widget.parentWidget()
+        while ancestor is not None and not isinstance(ancestor, QAbstractScrollArea):
+            ancestor = ancestor.parentWidget()
+        if ancestor is not None:
+            viewport = ancestor.viewport()
+            position = viewport.mapFromGlobal(event.globalPosition())
+            wheel = QWheelEvent(QPointF(position), event.globalPosition(), event.pixelDelta(), event.angleDelta(),
+                                event.buttons(), event.modifiers(), event.phase(), event.inverted(),
+                                event.source(), event.pointingDevice())
+            QApplication.sendEvent(viewport, wheel)
+        return True
 
 
 class Tasks(QObject):

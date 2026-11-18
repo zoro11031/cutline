@@ -3,15 +3,16 @@
 from dataclasses import dataclass, replace
 import math
 from pathlib import Path
+import threading
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
-from . import editor_model, geometry, graphtec, importer, regmarks, template
+from . import design_text, editor_model, geometry, graphtec, importer, regmarks, sticker_assets, sticker_print, sticker_trace, template
 from .editor_canvas import DesignCanvas
 from .editor_model import (ACTIONS, ALIGNMENTS, ALL_ACTIONS, KINDS, REVIEW_ACTIONS,
                            History, Registration, Shape,
                            import_shapes, load_project, save_project)
-from .gtk_controls import disclosure, workspace_header, workspace_tools, zoom_controls
+from .gtk_controls import disclosure, protect_settings_wheel, workspace_header, workspace_tools, zoom_controls
 
 
 @dataclass
@@ -22,7 +23,7 @@ class Drag:
     scale: float
     indices: tuple[int, ...] = ()
     points: list | None = None
-    vertex: int | None = None
+    vertex: tuple[int, int] | None = None
 
 
 def panel(width):
@@ -78,6 +79,10 @@ class DesignWorkspace:
         self.tool.connect('notify::selected', self.tool_changed)
         objects.append(self.tool)
         self.add_button = self.button(objects, 'Add Shape', self.add_shape)
+        self.text_button = self.button(objects, 'Add Text…', lambda *_: self.text_dialog())
+        self.button(objects, 'Place Image…', lambda *_: self.place_sticker())
+        self.trace_button = self.button(objects, 'Trace and Bleed…', lambda *_: self.trace_sticker())
+        self.exporting_stickers = False
         objects.append(Gtk.Label(label='Objects', xalign=0, css_classes=['heading'], margin_top=10))
         self.objects = Gtk.ListBox(selection_mode=Gtk.SelectionMode.MULTIPLE)
         self.objects.add_css_class('boxed-list')
@@ -135,6 +140,8 @@ class DesignWorkspace:
         self.view.add_bottom_bar(footer)
         self.menu_bar = self.build_design_menus(shortcuts)
         header.pack_start(self.menu_bar)
+        protect_settings_wheel(self.view)
+        self.view.add_css_class('scc-workspace')
         self.refresh_objects((0,))
         self.tool_changed()
 
@@ -264,6 +271,8 @@ class DesignWorkspace:
                 ('Save As…', 'save-as', '<Control><Shift>s', self.save_as),
                 ('Import Artwork…', 'import-artwork', None, self.import_vector)):
             command(files, label, name, lambda handler=callback: handler(None), shortcut)
+        command(files, 'Place Image…', 'place-sticker', self.place_sticker)
+        command(files, 'Export Print & Cut ZIP…', 'export-stickers', self.export_stickers)
         edit = Gio.Menu()
         command(edit, 'Undo', 'undo', lambda: self.change_history(self.history.undo))
         command(edit, 'Redo', 'redo', lambda: self.change_history(self.history.redo))
@@ -333,6 +342,11 @@ class DesignWorkspace:
         modify = Gio.Menu()
         objects.append_submenu('Modify', modify)
         command(modify, 'Offset…', 'offset', self.offset_selection)
+        for operation in editor_model.PATH_OPERATIONS:
+            command(modify, operation, operation.lower().replace(' ', '-'),
+                    lambda name=operation: self.modify_shapes(name))
+        command(objects, 'Add or Edit Text…', 'text', self.text_dialog)
+        command(objects, 'Trace and Bleed…', 'trace-sticker', self.trace_sticker)
         menus = Gio.Menu()
         for title, menu in (('_File', files), ('_Edit', edit), ('_View', view),
                             ('_Panels', panels), ('_Object', objects)):
@@ -393,6 +407,7 @@ class DesignWorkspace:
         dialog = Adw.AlertDialog(heading='Offset', body='Use a negative distance to inset the shape.')
         options = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         amount = self.spin(options, 'Distance (mm)', -20, 20, 1)
+        protect_settings_wheel(options)
         dialog.set_extra_child(options)
         dialog.add_response('cancel', 'Cancel')
         dialog.add_response('offset', 'Create Offset')
@@ -411,6 +426,152 @@ class DesignWorkspace:
 
         dialog.connect('response::offset', apply)
         dialog.present(self.parent)
+
+    def modify_shapes(self, operation):
+        try:
+            shapes, selected = editor_model.modify_selection(self.project.shapes, self.selected_indices(), operation)
+        except ValueError as error:
+            self.status.set_text(str(error))
+        else:
+            self.commit(shapes, selected)
+
+    def text_dialog(self):
+        selection = self.selected_indices()
+        shape = self.project.shapes[selection[0]] if len(selection) == 1 else None
+        spec = shape.text if shape else None
+        try:
+            families, family, notice = design_text.font_choices(spec)
+        except ValueError as error:
+            self.status.set_text(str(error))
+            return
+        dialog = Adw.Dialog(title='Edit Text' if spec else 'Add Text', content_width=420)
+        view = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        view.add_top_bar(header)
+        form = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8,
+                       margin_start=16, margin_end=16, margin_top=8, margin_bottom=16)
+        view.set_content(form)
+        dialog.set_child(view)
+
+        value = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        value.update_property([Gtk.AccessibleProperty.LABEL], ['Text'])
+        value.get_buffer().set_text(spec.value if spec else '')
+        entry = Gtk.ScrolledWindow(min_content_height=90)
+        entry.set_child(value)
+        form.append(entry)
+        fonts = Gtk.DropDown.new_from_strings(families)
+        fonts.set_enable_search(True)
+        fonts.set_selected(families.index(family))
+        fonts.update_property([Gtk.AccessibleProperty.LABEL], ['Font'])
+        form.append(fonts)
+        size = self.spin(form, 'Size (mm)', 1, 100, spec.size_mm if spec else 10)
+        status = Gtk.Label(label=notice, xalign=0, wrap=True)
+        fonts.connect('notify::selected', lambda *_: status.set_text(''))
+        form.append(status)
+        protect_settings_wheel(form)
+
+        def apply(_button):
+            buffer = value.get_buffer()
+            text = buffer.get_text(*buffer.get_bounds(), False)
+            updated = editor_model.TextSpec(text, families[fonts.get_selected()], size.get_value())
+            try:
+                shapes, selected = design_text.edit(self.project, updated, selection[0] if spec else None)
+            except ValueError as error:
+                status.set_text(str(error))
+            else:
+                self.commit(shapes, selected)
+                dialog.close()
+
+        button = Gtk.Button(label='Apply' if spec else 'Add', css_classes=['suggested-action'])
+        button.connect('clicked', apply)
+        header.pack_end(button)
+        dialog.present(self.parent)
+        value.grab_focus()
+
+    def place_sticker(self):
+        def opened(path):
+            project = self.project
+            shape = sticker_trace.place(path, project.width, project.height)
+            self.commit((*project.shapes, shape), (len(project.shapes),))
+            self.status.set_text('Select Trace and Bleed to create the cut outline.')
+
+        self.file_dialog('Place Sticker Image', opened,
+                         filters=('*.png', '*.PNG', '*.jpg', '*.JPG', '*.jpeg', '*.JPEG', '*.webp', '*.WEBP'))
+
+    def trace_sticker(self):
+        selection = self.selected_indices()
+        if len(selection) != 1:
+            return
+        shape = self.project.shapes[selection[0]]
+        settings = shape.sticker
+        if settings is None:
+            return
+        dialog = Adw.Dialog(title='Trace and Bleed', content_width=410)
+        view = Adw.ToolbarView()
+        dialog.set_child(view)
+        header = Adw.HeaderBar()
+        view.add_top_bar(header)
+        form = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8,
+                       margin_start=16, margin_end=16, margin_top=8, margin_bottom=16)
+        view.set_content(form)
+        sources = Gtk.DropDown.new_from_strings(sticker_assets.SOURCES)
+        sources.set_selected(sticker_assets.SOURCES.index(settings.trace_source))
+        sources.update_property([Gtk.AccessibleProperty.LABEL], ['Trace from'])
+        source_row = Gtk.Box(spacing=6)
+        source_row.append(Gtk.Label(label='Trace from', xalign=0, hexpand=True))
+        source_row.append(sources)
+        form.append(source_row)
+        threshold = self.spin(form, 'Threshold', 1, 254, settings.threshold, step=1, digits=0)
+        holes = Gtk.CheckButton(label='Include interior holes', active=settings.keep_holes)
+        form.append(holes)
+        bleed = self.spin(form, 'Print bleed (mm)', 0, 5, settings.bleed_mm, step=0.25)
+        status = Gtk.Label(xalign=0, wrap=True)
+        form.append(status)
+        protect_settings_wheel(form)
+
+        def apply(_button):
+            try:
+                traced = sticker_trace.trace(shape, source=sticker_assets.SOURCES[sources.get_selected()],
+                                             threshold=threshold.get_value_as_int(), keep_holes=holes.get_active(),
+                                             bleed_mm=bleed.get_value())
+            except ValueError as error:
+                status.set_text(str(error))
+            else:
+                self.change_properties(contours=traced.contours, sticker=traced.sticker)
+                dialog.close()
+
+        button = Gtk.Button(label='Trace', css_classes=['suggested-action'])
+        button.connect('clicked', apply)
+        header.pack_end(button)
+        dialog.present(self.parent)
+
+    def export_stickers(self):
+        if self.exporting_stickers:
+            return
+
+        def chosen(path):
+            target = sticker_print.destination(path)
+            project, cutter = self.project, self.cutter.name
+            self.exporting_stickers = True
+            self.status.set_text('Exporting Print & Cut…')
+
+            def done(message):
+                self.exporting_stickers = False
+                self.status.set_text(message)
+                return GLib.SOURCE_REMOVE
+
+            def write():
+                try:
+                    result = sticker_print.export(target, project, cutter=cutter)
+                except (OSError, ValueError) as error:
+                    message = str(error)
+                else:
+                    message = f'Saved {result.name}. Open it in Send → Sheet.'
+                GLib.idle_add(done, message)
+
+            threading.Thread(target=write, daemon=True).start()
+
+        self.file_dialog('Export Print & Cut', chosen, filters=('*.zip',), save_name='stickers.zip')
 
     def replicate_panel(self, inspector):
         self.heading(inspector, 'Replicate')
@@ -565,8 +726,7 @@ class DesignWorkspace:
     def refresh_status(self):
         p = self.project
         action = REVIEW_ACTIONS[self.review_action.get_selected()]
-        count = sum(s.visible and s.action != "None" and action in (s.action, ALL_ACTIONS)
-                    for s in p.shapes)
+        count = len(p.artwork(action).paths)
         label = "cut and score" if action == ALL_ACTIONS else action.lower()
         selection = len(self.selected_indices())
         self.status.set_text(f'{p.width:g} × {p.height:g} mm · {count} {label} path(s)'
@@ -579,7 +739,10 @@ class DesignWorkspace:
         self.redo_button.set_sensitive(bool(self.history.future))
         self.menu_actions.lookup_action('undo').set_enabled(bool(self.history.past))
         self.menu_actions.lookup_action('redo').set_enabled(bool(self.history.future))
-        self.review.set_sensitive(count > 0)
+        has_stickers = any(shape.visible and shape.sticker for shape in p.shapes)
+        self.review.set_label('Export Print & Cut…' if has_stickers else 'Review in Send')
+        self.review.set_sensitive(count > 0 or has_stickers)
+        self.review_action.set_sensitive(not has_stickers)
         self.canvas.queue_draw()
 
     def select_shape(self, *_args):
@@ -588,6 +751,10 @@ class DesignWorkspace:
         indices = self.selected_indices()
         shapes = self.project.shapes
         obj = shapes[indices[0]] if len(indices) == 1 else None
+        self.text_button.set_label('Edit Text…' if obj and obj.text else 'Add Text…')
+        can_trace = bool(obj and obj.sticker)
+        self.trace_button.set_sensitive(can_trace)
+        self.menu_actions.lookup_action('trace-sticker').set_enabled(can_trace)
         self.loading = True
         for field, spin in self.fields.items():
             enabled = obj is not None and (field != 'radius' or obj.kind == 'Rounded rectangle')
@@ -893,15 +1060,14 @@ class DesignWorkspace:
         if len(indices) == 1:
             index = indices[0]
             shape = self.project.shapes[index]
-            if shape.visible and shape.kind in ('Path', 'Line'):
-                distances = [math.dist((x, y), point) for point in shape.path().points]
-                vertex = min(range(len(distances)), key=distances.__getitem__)
-                if distances[vertex] <= 7 / scale:
+            if shape.visible and shape.kind in editor_model.POINT_EDIT_KINDS:
+                distance, vertex = editor_model.nearest_vertex(shape, (x, y))
+                if distance <= 7 / scale:
                     self.drag = Drag('point', x, y, scale, (index,), vertex=vertex)
                     return
         for index in reversed(range(len(self.project.shapes))):
             shape = self.project.shapes[index]
-            if shape.visible and shape.kind in ('Path', 'Line') and editor_model.hit(shape, (x, y), 5 / scale):
+            if shape.visible and shape.kind in editor_model.POINT_EDIT_KINDS and editor_model.hit(shape, (x, y), 5 / scale):
                 self.set_selection((index,))
                 break
 
@@ -934,7 +1100,8 @@ class DesignWorkspace:
         elif drag.mode == 'point':
             index = drag.indices[0]
             shape = base.shapes[index]
-            px, py = shape.path().points[drag.vertex]
+            contour, vertex = drag.vertex
+            px, py = shape.paths()[contour].points[vertex]
             position = self.grid_point(px + dx / drag.scale, py + dy / drag.scale)
             try:
                 edited = editor_model.move_vertex(shape, drag.vertex, position)
@@ -1098,8 +1265,9 @@ class DesignWorkspace:
                 self.polygon.clear()
                 self.fit(None)
                 self.refresh_objects((0,))
-                if details:
-                    self.status.set_text(details)
+                notice = design_text.unavailable_fonts(project) or details
+                if notice:
+                    self.status.set_text(notice)
 
             self.confirm_discard(replace_project)
 
@@ -1163,5 +1331,8 @@ class DesignWorkspace:
         self.file_dialog('Import cut geometry', opened, filters=('*.svg','*.dxf','*.SVG','*.DXF','*.studio3','*.STUDIO3'))
 
     def review_paths(self, _button):
+        if any(shape.visible and shape.sticker for shape in self.project.shapes):
+            self.export_stickers()
+            return
         action = REVIEW_ACTIONS[self.review_action.get_selected()]
         self.on_review(self.project, action)

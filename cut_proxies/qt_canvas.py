@@ -24,15 +24,20 @@ def pen(color, width=0, dashed=False):
 
 
 def draw_path(scene, contour, line, fill=Qt.BrushStyle.NoBrush):
-    if not contour.points:
-        return None
+    return draw_contours(scene, (contour,), line, fill)
+
+
+def draw_contours(scene, contours, line, fill=Qt.BrushStyle.NoBrush):
     path = QPainterPath()
-    path.moveTo(*contour.points[0])
-    for point in contour.points[1:]:
-        path.lineTo(*point)
-    if contour.closed:
-        path.closeSubpath()
-    return scene.addPath(path, line, QBrush(fill))
+    path.setFillRule(Qt.FillRule.OddEvenFill)
+    for contour in contours:
+        if contour.points:
+            path.moveTo(*contour.points[0])
+            for point in contour.points[1:]:
+                path.lineTo(*point)
+            if contour.closed:
+                path.closeSubpath()
+    return None if path.isEmpty() else scene.addPath(path, line, QBrush(fill))
 
 
 def draw_marks(scene, marks, *, ink=True, outline=False):
@@ -173,6 +178,8 @@ class Preview(SheetView):
         super().__init__()
         self.job = self.report = self.pdf_size = None
         self.trial = None
+        self.test_placement = None
+        self.test_spots = ()
         self.pdf = QImage()
         self.mode = "Overlay"
         self.colorblind = False
@@ -186,16 +193,17 @@ class Preview(SheetView):
         self.pdf_size, self.report = size, report
         self.render_sheet()
 
-    def show_trial(self, trial):
-        if trial is not self.trial:
-            self.trial = trial
+    def show_trial(self, trial, spots=(), placement=None):
+        placement = trial.placement if trial else placement
+        if (trial, spots, placement) != (self.trial, self.test_spots, self.test_placement):
+            self.trial, self.test_spots, self.test_placement = trial, spots, placement
             self.render_sheet()
 
     def render_sheet(self):
         scene = self.scene()
         scene.clear()
-        if self.trial:
-            self.draw_trial(scene, self.trial)
+        if self.test_placement:
+            self.draw_trial(scene)
             return
         job = self.job if self.mode != "Print PDF" or self.pdf.isNull() else None
         image = not self.pdf.isNull() and (self.mode != "Cut paths" or job is None)
@@ -224,17 +232,31 @@ class Preview(SheetView):
         if refit or self.fitted:
             self.fit()
 
-    def draw_trial(self, scene, trial):
-        page = QRectF(0, 0, trial.placement.width, trial.placement.height)
+    def draw_trial(self, scene):
+        placement = self.test_placement
+        page = QRectF(0, 0, placement.width, placement.height)
         refit = self.set_page_bounds(page.adjusted(-12, -12, 12, 12))
         draw_paper(scene, page)
         draw_feed_arrow(scene, page.width(), self.palette().windowText().color())
-        sample = rect(trial.sheet.cells[0].rect)
-        scene.addRect(sample, pen("#187289", 0.45), QBrush(QColor(46, 142, 177, 32)))
-        text = scene.addSimpleText("Test cut")
-        text.setScale(0.35)
-        text.setBrush(QColor("#12394d"))
-        text.setPos(sample.right() + 2, sample.top())
+        if placement.marks:
+            draw_marks(scene, placement.marks)
+        active = self.trial.sheet.cells[0] if self.trial else None
+        if active:
+            scene.addRect(rect(active.rect), pen("#187289", 0.55), QBrush(QColor(46, 142, 177, 32)))
+        for spot in self.test_spots:
+            box = rect(spot.rect)
+            color = "#984d12" if spot.uncertain else "#166356"
+            item = scene.addRect(box, pen(color, 0.35), QBrush(QColor(49, 141, 125, 28)))
+            item.setToolTip(f"Spot {spot.number} · {spot.count}")
+            label = scene.addSimpleText(f"{spot.number}: {spot.passes}{'?' if spot.uncertain else ''}")
+            label.setBrush(QColor(color))
+            label.setScale(0.45)
+            label.setPos(box.left() + 1, box.top() + 2)
+        if active and all(spot.number != active.index + 1 for spot in self.test_spots):
+            label = scene.addSimpleText(str(active.index + 1))
+            label.setBrush(QColor("#12394d"))
+            label.setScale(0.45)
+            label.setPos(active.rect.x + 1, active.rect.y + 2)
         if refit or self.fitted:
             self.fit()
 

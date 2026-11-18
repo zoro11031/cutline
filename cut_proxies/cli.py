@@ -106,7 +106,7 @@ def show_checks(j):
 
 
 def common_layout_args(p, bundles=False):
-    p.add_argument('--layout-preset', choices=tuple(layout_presets.BUILTIN),
+    p.add_argument('--layout-preset', choices=tuple(layout_presets.available()),
                    help='apply a complete printed-sheet layout; overrides layout '
                         'options and leaves blade settings unchanged')
     p.add_argument("--sheet", choices=sorted(geometry.SHEETS))
@@ -279,7 +279,10 @@ def build_from_args(args, matched=None, bundle_row=None) -> job_mod.Job:
         options["depth"] = None if args.depth == -1 else args.depth
     selected = getattr(args, 'layout_preset', None)
     if selected:
-        options.update(layout_presets.BUILTIN[selected].options(), use_document_page=False)
+        preset = layout_presets.available()[selected]
+        options.update(preset.options(), use_document_page=False)
+        if isinstance(preset, layout_presets.PublishedTemplate) and imported is None:
+            options.update(imported=preset.artwork(), use_document_page=True)
     if matched:
         options.update(matched.layout, engine='scm', mode=template.ROUNDED, bleed_mm=0)
     return job_mod.build(**options)
@@ -554,7 +557,11 @@ def cmd_check_sheet(args):
         else:
             j = build_from_args(args)
             marks = j.marks
-            report = sheet_mod.measure(path, marks, page=args.page, dpi=args.dpi)
+            preset = layout_presets.available().get(getattr(args, 'layout_preset', None))
+            if isinstance(preset, layout_presets.PublishedTemplate):
+                report, _ = sheet_mod.measure_preview(path, marks, args.page, args.dpi, orient_scm=True)
+            else:
+                report = sheet_mod.measure(path, marks, page=args.page, dpi=args.dpi)
     except (ValueError, sheet_mod.SheetError, bundle.BundleError) as exc:
         fail(str(exc))
 

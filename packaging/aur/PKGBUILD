@@ -9,7 +9,7 @@ conflicts=('cut-proxies')
 arch=('any')
 url='https://github.com/zoro11031/silhouette-linux'
 license=('LicenseRef-Unknown')
-depends=('python>=3.10' 'pyside6>=6.4' 'python-pillow' 'poppler')
+depends=('python>=3.10' 'pyside6>=6.4' 'python-pillow' 'poppler' 'geos>=3.10' 'pango')
 optdepends=('python-gobject: GTK fallback frontend'
             'python-cairo: GTK fallback canvas'
             'libadwaita: GTK fallback widgets'

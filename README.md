@@ -12,6 +12,7 @@ workflow and share projects, presets, and calibration.
 From a checkout, run `./bin/silhouette-control-center gui`. See the
 [setup guide](docs/SETUP.md#install) to install the desktop and USB
 dependencies, or use one of the [package recipes](packaging/README.md).
+For vector editing from a checkout, install GEOS 3.10 or later and Pango/Cairo.
 
 If you have both frontends installed, choose one with
 `gui --frontend qt` or `gui --frontend gtk`. The launcher tries Qt first.
@@ -59,7 +60,7 @@ In **File**, **Open** loads a project, SVG, DXF, or supported Studio3 file.
 | Panel | What you can do |
 |---|---|
 | Page Setup | Set paper size, orientation, mat, printed marks, and grid. |
-| Drawing Tool | Draw shapes or use Point Edit to move points on a line or path. |
+| Drawing Tool | Draw shapes, add text, or use Point Edit to move nodes on a path. |
 | Transform | Move, resize, rotate, mirror, align, or space objects. |
 | Replicate | Make rows and columns of the selection. |
 | Line and Fill | Set colors and pick Cut, Score, or None. |
@@ -73,11 +74,30 @@ Use **Edit** to undo, redo, duplicate, or delete objects. Use **View** for
 zoom, page rotation, grid, snapping, and borders. Set your
 printer margin under **Page Setup → Advanced Options** to see the print
 border. **Panels** jumps to colors, line styles, Transform, and Replicate.
-**Object** has alignment, path tools, and holder assignments. **Offset**
-works on simple closed shapes with no inward corners.
+**Object → Modify** has Weld, Subtract, Intersect, and Offset for closed shapes.
+Subtract keeps the lowest selected object and removes the parts covered by the
+other selected objects. **Make Compound Path** combines contours into one object
+with holes. **Release Compound Path** makes its outlines separate objects.
 
-Studio3 import brings in supported vectors and page size. Text editing,
-raster tools, and full compound-path and boolean editing are still open.
+Select a text object and choose **Edit Text** to change the words, font, or size.
+Projects save the exact outlines used for the preview and cut. If a font is
+missing, you can still cut the saved outlines. Install the font or choose a
+replacement to edit the text.
+
+Studio3 import brings in supported vectors and page size.
+
+## Sticker Print & Cut
+
+1. In **Design**, choose **File → New** for a blank sheet. Choose **Place Image** and open a PNG, JPEG, or WebP. Move or resize it on the sheet.
+2. Select the image and choose **Trace and Bleed**. Automatic uses transparency when present. Use **Dark artwork** or **Light artwork** for opaque images, and choose whether to cut interior holes. Bleed extends the print past the cut path in millimetres.
+3. Choose **Export Print & Cut** to save the ZIP. It contains the full-size PDF with registration marks and a separate SVG of the Cut outlines. The project keeps the source image, so it can be reopened and traced again.
+4. Open the ZIP in **Send → Sheet**, choose **Save Print PDF**, and print at **Actual size** or **100%**. Load the sheet face-up as shown. Check the registration marks before sending the cut job.
+
+## Silhouette Card Maker templates
+
+Under **Send → Layout → Layout preset**, choose an **SCM** template for an existing Silhouette Card Maker print. Letter and A4 each include Standard, Poker, Japanese, Bridge, Catan, Tarot, and nine-card Standard Borderless. Match the paper, card size, and borderless setting used to print your sheet.
+
+These templates use cut outlines and registration settings from Alan Cha’s Silhouette Card Maker. Open the matching PDF in **Sheet** to check the marks and see which edge goes into the cutter. The preview turns sideways PDFs into the template’s loading orientation. [Upstream templates](https://github.com/Alan-Cha/silhouette-card-maker/tree/main/cutting_templates)
 
 ## Working with Proxy Press
 
@@ -95,9 +115,18 @@ Older ZIPs may contain a Studio3 file or DXF. Use **Sheet → Save Paired Cut
 File** to save that file. For direct cutting from the ZIP, export one that
 includes a cut SVG.
 
-For a manual eight-card layout, choose **Letter · MTG Cameo** or
-**A4 · MTG Cameo**. These match the corresponding Proxy Press layout
-settings. If you changed the layout in Proxy Press, use the matching export.
+For the stock eight-card layout, choose **Silhouette Card Maker** under
+**Print Settings → Cutting** in Proxy Press and select Letter or A4. The
+standard template uses a 10 mm registration inset, 0.625 mm bleed, and no
+printed cut guides. Export the **print & cut ZIP** so the cut file matches
+the PDF.
+
+For an existing Proxxied print, use the cut file that matches its PDF.
+If you want to try a stock Card Maker template with Proxxied, turn off
+guides, set bleed to 0.625 mm, and set the registration inset to 10 mm.
+Check that the card positions and registration marks match the template.
+The official templates are designed for the corresponding Card Maker PDF.
+[Silhouette Card Maker cutting guide](https://alan-cha.github.io/silhouette-card-maker/tutorial/guide/)
 
 ```sh
 silhouette-control-center check-sheet cards-print-and-cut.zip --bundle-sheet 2
@@ -114,13 +143,17 @@ Open **Send → Dial In a Material**. Choose a factory preset for your stock
 or try **Silhouette starting point**. With an AutoBlade in holder 1 on a
 Cameo 4, it starts at force 25, speed 25, depth 7, and one pass.
 
-1. Load a blank test sheet of the same material. The preview shows the test spot.
-2. Choose **Cut One Pass**. Leave the mat loaded, lift a corner, and answer
-   **How did the cut look?**
-3. Repeat on the same spot if the sample is almost through. If you change a
-   setting, use a fresh spot.
-4. After a clean cut, choose **Use Tested Settings**. You can save them under
-   the material’s name or use them for this job.
+1. Load the same material you plan to cut. The preview starts at the bottom-left.
+2. Choose **Cut One Pass**. Keep the mat loaded and use **Repeat One Pass**
+   as needed. The preview records the confirmed pass count for each spot.
+3. Choose **Next Test Spot** to try different settings. When the cut looks
+   right, choose **Use Tested Settings** to apply the current spot’s count.
+
+To unload and reload a test sheet, open **Test Options → Use Registration
+Marks** and **Save Marked Test Sheet**. Print the SVG at actual size. Each
+pass locates the sheet using its marks. Reload the same sheet when resuming.
+Control Center keeps the marked sheet’s passes and spot positions when you
+close the app. **New Test Sheet** clears that sheet’s history.
 
 Use **Corner Test Cut** for a single 3 mm square on the current sheet.
 Control Center looks for a spare corner and shows the spot before cutting.
@@ -137,9 +170,16 @@ Edit the active cut settings in **Send**. In **Materials**, **Save as New**
 keeps a copy of those settings under a new name. Presets stay
 available after you quit. [About preset files](profiles/README.md)
 
-**Track Enhancing** starts on for the starting preset and factory blade
-presets at force 19 or higher. The guided test skips that roller cycle so
-repeated passes use the same loaded spot.
+**Track Enhancing** runs the rollers before cutting. For standard Letter
+Print & Cut on a Cameo 4, Control Center waits for the rollers to finish,
+then uses the same registration scan and cut area as it does with Track
+Enhancing off. The guided test skips the roller cycle.
+
+During a full desktop cut, **Pause Cut** holds the next command batch
+after the current cutter operation. Leave the mat loaded and choose
+**Resume Cut** to continue in the same session. **Cancel Cut** ends the
+job after the current operation. The cutter can finish motion it has
+already accepted.
 
 **Tool Holder 1** and **Tool Holder 2** keep separate settings while the app
 is open. Save named presets to keep those settings for later. **Standard**

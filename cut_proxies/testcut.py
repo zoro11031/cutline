@@ -121,13 +121,20 @@ def _cell_paths(rect: Rect, shape: str) -> tuple[template.CutPath, ...]:
 def _check_geometry(stream, groups, device, origin, limit):
     """Read every plotted vertex back, including every pass of every cell."""
     ox, oy = origin
-    wanted = [[(graphtec.su(x - ox), graphtec.su(y - oy)) for x, y in points]
-              for settings, paths in groups
-              for _, points in toolpath.schedule(paths, settings.clamped(device), origin)]
-    got = [[(graphtec.su(x), graphtec.su(y)) for x, y in path]
-           for path in verify.decode(stream).paths]
+    wanted = []
+    states = []
+    for settings, paths in groups:
+        draws = toolpath.schedule(paths, settings, origin)
+        wanted.extend([(graphtec.su(x - ox), graphtec.su(y - oy)) for x, y in points]
+                      for _, points in draws)
+        if device.detects_tools:
+            states.extend([verify._requested_motion_settings(settings, device)] * len(draws))
+    decoded = verify.decode(stream)
+    got = [[(graphtec.su(x), graphtec.su(y)) for x, y in path] for path in decoded.paths]
     if not wanted or got != wanted:
         raise ValueError("The test cut stream does not match the requested geometry.")
+    if states and verify._observed_motion_settings(decoded.commands) != states:
+        raise ValueError("The test cut stream does not match the settings for each sample.")
     width, height = map(graphtec.su, limit)
     if any(not (0 <= x <= width and 0 <= y <= height) for path in got for x, y in path):
         raise ValueError("A test cut path is outside the cut window. Check the mat and calibration.")
@@ -180,11 +187,11 @@ def build(device: graphtec.Device, base: CutSettings, forces=None,
           registration: bool = False,
           offset_mm: tuple[float, float] = (0.0, 0.0),
           shape: str = "square", mat: str = "auto", end_position: str = "below",
-          end_feed_mm: float = 0.0, spot: int | None = None) -> TestSheet:
+          end_feed_mm: float = 0.0, spot: int | None = None, from_bottom: bool = False) -> TestSheet:
     """Lay out the test squares and build the job.
 
     An explicit spot places one settings combination at a numbered cell.
-    Spots are numbered left to right, then top to bottom, starting at one.
+    Spots are numbered left to right, starting at one.
     """
     if shape not in TEST_SHAPES:
         raise ValueError(f"Unknown test cut shape {shape!r}.")
@@ -202,7 +209,12 @@ def build(device: graphtec.Device, base: CutSettings, forces=None,
         # Finish the triangle while the outer square still holds the material.
         base = dataclasses.replace(base, path_order="design", pass_order="path",
                                    interior_first=False, delicate_media=False)
-    settings = combinations(base, forces, speeds, passes, depths)
+    requested = combinations(base, forces, speeds, passes, depths)
+    if any(setting.passes < 1 for setting in requested):
+        raise ValueError("Set at least one cutting pass per sample.")
+    settings = [setting.clamped(device) for setting in requested]
+    if len({setting.depth is None for setting in settings}) > 1:
+        raise ValueError("Test manual and automatic blade depth on separate sheets.")
     if not settings:
         raise ValueError("no settings to test")
     if len(settings) > MAX_CELLS:
@@ -235,10 +247,10 @@ def build(device: graphtec.Device, base: CutSettings, forces=None,
     cells = []
     for i, s in enumerate(settings, first):
         row, col = divmod(i, cols)
+        y = sheet_h_mm - margin_mm - size_mm - row * pitch if from_bottom else margin_mm + row * pitch
         cells.append(Cell(
             index=i, row=row, col=col,
-            rect=Rect(margin_mm + col * pitch, margin_mm + row * pitch,
-                      size_mm, size_mm),
+            rect=Rect(margin_mm + col * pitch, y, size_mm, size_mm),
             settings=s))
 
     origin = (margin_mm, margin_mm) if registration else (0.0, 0.0)

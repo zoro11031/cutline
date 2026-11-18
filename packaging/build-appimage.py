@@ -110,7 +110,7 @@ def main():
         roots = [pathlib.Path('/usr/lib') / name for name in (
             'libgtk-4.so.1', 'libadwaita-1.so.0', 'libgirepository-1.0.so.1',
             'libgirepository-2.0.so.0', 'libcairo-gobject.so.2',
-            'libpangocairo-1.0.so.0', 'libnss_dns.so.2', 'libnss_files.so.2',
+            'libpangocairo-1.0.so.0', 'libgeos_c.so.1', 'libnss_dns.so.2', 'libnss_files.so.2',
             'libresolv.so.2', 'libusb-1.0.so.0')]
         # Bundle the PDF helpers, with wrappers using the matching loader.
         for command in ('pdfinfo', 'pdftoppm', 'rsvg-convert'):
