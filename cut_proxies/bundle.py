@@ -110,6 +110,8 @@ class Bundle:
 
     def measure(self, row, marks, dpi):
         self.check_current()
+        last = self.rows[-1]
+        expected_pages = last['backPage'] or last['frontPage']
         try:
             with zipfile.ZipFile(self.path) as archive, \
                  archive.open(self.pdf) as src, tempfile.TemporaryDirectory() as tmp:
@@ -124,7 +126,8 @@ class Bundle:
                 if any(abs(px - mm*dpi/25.4) > 1.5 for px, mm in zip(image.size, size)):
                     raise BundleError('The PDF front page size does not match the cutter sheet.')
                 report = sheet.measure(pdf, marks, page=row['frontPage'], dpi=dpi,
-                                       image=image, swap_page_axes=self.turned)
+                                       image=image, swap_page_axes=self.turned,
+                                       expected_pages=expected_pages)
         except (OSError, ValueError, KeyError, zipfile.BadZipFile, sheet.SheetError) as exc:
             raise BundleError(f'Could not measure {self.pdf}: {exc}') from exc
         return dataclasses.replace(report, pdf=self.pdf), image

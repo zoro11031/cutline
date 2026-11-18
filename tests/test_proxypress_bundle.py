@@ -53,6 +53,25 @@ class BundleRules(unittest.TestCase):
         with self.assertRaisesRegex(bundle.BundleError, 'PDF page'):
             bundle.load(self.path)
 
+    def test_pdf_page_count_must_match_the_full_bundle_mapping(self):
+        image = mock.Mock(size=(2200, 1700))
+        for back_page, page_count in ((None, 1), (2, 2), (2, 1), (2, 3)):
+            with self.subTest(back_page=back_page, page_count=page_count):
+                self.manifest['sheets'][0]['backPage'] = back_page
+                self.write()
+                matched = bundle.load(self.path)
+                with mock.patch.object(sheet, 'render', return_value=image), \
+                     mock.patch.object(sheet, 'page_size_mm',
+                                       return_value=(279.4, 215.9, page_count)), \
+                     mock.patch.object(sheet, 'ink_blobs', return_value=[]):
+                    if page_count == (back_page or 1):
+                        report, _ = matched.measure(matched.row(), matched.marks(), 200)
+                        self.assertEqual(report.page, 1)
+                    else:
+                        with self.assertRaisesRegex(bundle.BundleError,
+                                                    rf'contains {page_count} page\(s\).*maps {back_page}'):
+                            matched.measure(matched.row(), matched.marks(), 200)
+
     def test_uses_the_exact_scm_a4_frame_and_rejects_unmatched_svg(self):
         size = 3507 * 25.4 / 300, 2480 * 25.4 / 300
         for section in ['pdfPage', 'mat']:
