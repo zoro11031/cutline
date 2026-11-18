@@ -94,6 +94,9 @@ def resolve(paths, mode, assignments, preset, current, device, holder_profiles=N
                 group_preset = preset if item.preset == CURRENT_SETTINGS else presets.get(item.preset, device.name)
             except KeyError:
                 raise ValueError(f"Unknown preset {item.preset!r} in group {key!r}.") from None
+            if item.preset != CURRENT_SETTINGS:
+                group_preset = presets.for_context(group_preset, device.name,
+                                                  item.holder or group_preset.cut_settings().holder)
             settings = current if item.preset == CURRENT_SETTINGS else group_preset.cut_settings()
             if item.holder is not None:
                 settings = dataclasses.replace(settings, holder=item.holder)

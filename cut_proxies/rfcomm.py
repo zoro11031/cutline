@@ -26,17 +26,22 @@ def _run(args):
         return ""
 
 
-def _paired_devices():
+def paired_candidates(*, connected=False):
     if sys.platform.startswith("linux"):
-        # BlueZ has used both forms across releases. Include cached names
-        # so a cutter which is paired but temporarily offline can be selected.
-        for args in (("devices", "Paired"), ("paired-devices",), ("devices",)):
+        # BlueZ has used both paired-device commands across releases.
+        # Device details distinguish Classic profiles from LE-only records.
+        for args in (("devices", "Paired"), ("paired-devices",)):
             for line in _run(["bluetoothctl", *args]).splitlines():
                 tag, _, rest = line.strip().partition(" ")
                 address, _, name = rest.partition(" ")
                 if tag == "Device" and _ADDRESS.fullmatch(address) and name:
-                    yield Candidate(address.upper(), name.strip())
-    elif sys.platform == "win32":
+                    details = _run(["bluetoothctl", "info", address]).lower()
+                    if connected and "br/edr.connected: yes" not in details:
+                        continue
+                    if ("00001101-0000-1000-8000-00805f9b34fb" in details
+                            or ("br/edr.paired: yes" in details)):
+                        yield Candidate(address.upper(), name.strip())
+    elif sys.platform == "win32" and not connected:
         command = ("Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | "
                    "ForEach-Object { $_.FriendlyName + '|' + $_.InstanceId }")
         for line in _run(["powershell", "-NoProfile", "-Command", command]).splitlines():
@@ -58,7 +63,7 @@ def _inquiry():
 
 def _candidates(include_all=False):
     seen = {}
-    for record in _paired_devices():
+    for record in paired_candidates():
         if record.model is not None or record.identifier not in seen:
             seen[record.identifier] = record
     if not any(record.model is not None for record in seen.values()):

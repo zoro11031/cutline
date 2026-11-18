@@ -60,6 +60,16 @@ class Candidate:
     peripheral: object = None
 
     @property
+    def catalog_name(self):
+        if model := self.model:
+            return model.name
+        for name in ("Curio 2",):
+            compact = "".join(self.name.upper().split()).removeprefix("SILHOUETTE")
+            if compact == name.upper().replace(" ", "") or re.fullmatch(r"CURIO2-[A-Z0-9]+", compact):
+                return f"Silhouette {name}"
+        return None
+
+    @property
     def model(self):
         return advertised_model(self.name)
 

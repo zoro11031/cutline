@@ -46,7 +46,7 @@ def discover(include_all=False):
 
     try:
         devices = sorted(asyncio.run(scan()), key=lambda r: (r.name.casefold(), r.identifier))
-        return [(r.identifier, r.name) for r in devices if include_all or r.model or r.service]
+        return [(r.identifier, r.name) for r in devices if include_all or r.catalog_name or r.service]
     except TransportError:
         raise
     except Exception as exc:
@@ -64,8 +64,7 @@ class BleTransport(Transport):
         try:
             selected = self._run(self._connect(identifier, name, device), 30, "connection")
             self.identifier = selected.identifier
-            self.device = confirm_firmware(self.firmware_version(), device, selected.model,
-                                           allow_unknown=allow_unknown)
+            self.device = confirm_firmware(self.firmware_version(), device, selected.model)
         except BaseException:
             self.close()
             raise
@@ -111,12 +110,21 @@ class BleTransport(Transport):
         # Inkscape's GATT transport keeps control notifications out of replies.
         await self._client.start_notify(CONTROL, lambda *_: None)
         await self._client.start_notify(READ, self._on_reply)
+        return selected
+
+    async def _initialize(self):
         for uuid in (CONTROL, READ, WRITE):
             await self._client.write_gatt_char(
                 uuid, graphtec.CMD_ESC + graphtec.ESC_EOT, response=True)
         await asyncio.sleep(1)
         self._buffer.clear()
-        return selected
+
+    def run(self, steps, *args, **kwargs):
+        steps = tuple(steps)
+        if steps and steps[0].kind == "write" and self.device is not None and not getattr(self, "_initialized", False):
+            self._run(self._initialize(), 10, "initialization")
+            self._initialized = True
+        return super().run(steps, *args, **kwargs)
 
     def _on_reply(self, _characteristic, data):
         self._buffer.extend(data)

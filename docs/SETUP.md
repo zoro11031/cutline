@@ -130,9 +130,17 @@ If the error changes across the sheet, check the print size first.
 Use **Layout → Advanced Options → Export** for an SVG, DXF, and proof. Use **Sheet → Save Paired
 Cut File** to get the original cut file from a ProxyPress ZIP.
 
-To add Studio’s factory materials, choose **Blade → Advanced Options → Import Studio Materials**.
-Look for `condition.csv` under `Resources/Resources/SPEC_S` in the Studio
-installation. You can also use `silhouette-control-center materials --file PATH`.
+In **Send**, leave **Cutter** on **Auto Detect** or choose a model for
+offline planning. If multiple endpoints appear, select one under
+**Connected cutter**. Use **Check Status** to see whether the cutter is ready.
+
+Factory materials load from an accessible Studio installation or a local
+import. In **Blade → Advanced Options**, choose **Import Studio Materials**
+for a standalone `condition.csv` or **Import Factory Folder** for the Studio
+installation or the folder containing that CSV. A validated local copy stays
+available when the original file moves. **Restore Default Materials** backs
+up edited defaults and keeps personal presets. You can also inspect the CSV
+with `silhouette-control-center materials --file PATH`.
 [Saving and sharing presets](../profiles/README.md)
 
 ## Environment variables

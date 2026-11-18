@@ -40,11 +40,9 @@ What the columns mean, and how they map onto what the machine is sent:
     confirmation of a recovered value from the vendor's own data.
 
 `cutter_class_id`
-    One row per material per machine class (`cameo`, `cc300-20`, `cc330-20`,
-    `portrait`, ...). In release 5.0.556.1 the settings are **identical
-    across every class** for all but four materials (Fabric, both Heat
-    Transfer variants and the Sketch Pen), so the class is recorded but is
-    not used to pick a row unless asked for.
+    Machine division recorded for this variant. The factory snapshot retains
+    the original row and category ancestry independently of the picker.
+
 """
 
 from __future__ import annotations
@@ -52,6 +50,8 @@ from __future__ import annotations
 import csv
 import dataclasses
 import pathlib
+import os
+import tempfile
 
 from . import config
 from .graphtec import CutSettings, su_to_mm
@@ -71,6 +71,17 @@ class Material:
     depth_mm: float | None
     offset_su: int
     tool: str
+    source_id: str = ""
+    group_id: str = ""
+    categories: tuple[str, ...] = ()
+    holder: int | None = None
+    action: str = ""
+    acceleration: int | None = None
+    track_enhancing: bool | None = None
+    line_segment_overcut: bool | None = None
+    corner_start_mm: float | None = None
+    corner_end_mm: float | None = None
+    raw: tuple[tuple[str, str], ...] = ()
 
     @property
     def blade_diameter_mm(self) -> float:
@@ -89,7 +100,15 @@ class Material:
             force=self.force, speed=self.speed, passes=self.passes,
             depth=self.autoblade_depth,
             blade_diameter_mm=self.blade_diameter_mm,
-            lift_head=True,
+            lift_head=bool(self.offset_su),
+            holder=self.holder or 1,
+            acceleration=self.acceleration,
+            track_enhancing=self.track_enhancing or False,
+            sharpen_corners=self.line_segment_overcut or False,
+            **{key: value for key, value in (
+                ("corner_start_mm", self.corner_start_mm),
+                ("corner_end_mm", self.corner_end_mm)) if value is not None},
+
         )
 
     def describe(self) -> str:
@@ -101,25 +120,42 @@ class Material:
 
 def find_condition_csv() -> pathlib.Path | None:
     """Find the user's chosen CSV or a copy in the app configuration directory."""
+    snapshot = config.CONFIG_DIR / "studio-materials" / "condition.csv"
+    if snapshot.is_file():
+        return snapshot
     selected = config.load_settings().get("material_csv")
-    if isinstance(selected, str) and selected:
-        path = pathlib.Path(selected).expanduser()
-        if path.is_file():
-            return path
-    default = config.CONFIG_DIR / "condition.csv"
-    return default if default.is_file() else None
+    roots = [config.CONFIG_DIR, pathlib.Path("/Applications/Silhouette Studio.app/Contents")]
+    if os.environ.get("ProgramFiles"):
+        roots.append(pathlib.Path(os.environ["ProgramFiles"]) / "Silhouette America" / "Silhouette Studio")
+    wine = pathlib.Path(os.environ.get("WINEPREFIX", pathlib.Path.home() / ".wine"))
+    roots.append(wine / "drive_c/Program Files/Silhouette America/Silhouette Studio")
+    paths = [pathlib.Path(selected).expanduser()] if isinstance(selected, str) and selected else []
+    for root in roots:
+        paths.extend((root / "condition.csv", root / "Resources/Resources/SPEC_S/condition.csv"))
+    return next((path for path in paths if path.is_file()), None)
 
 
 def select_condition_csv(path):
-    """Remember a valid CSV explicitly selected in the app."""
+    """Validate and snapshot the factory source without touching personal settings."""
     path = pathlib.Path(path).resolve()
-    rows = load(path)
-    if not rows:
-        raise ValueError(f"{path} contains no usable material settings.")
-    settings = config.load_settings()
-    settings["material_csv"] = str(path)
-    config.save_settings(settings)
-    return rows
+    if path.is_dir():
+        candidates = [path / "Resources/Resources/SPEC_S/condition.csv", path / "condition.csv"]
+        path = next((candidate for candidate in candidates if candidate.is_file()), candidates[0])
+    data = path.read_bytes()
+    destination = config.CONFIG_DIR / "studio-materials" / "condition.csv"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as pending:
+        temporary = pathlib.Path(pending.name)
+        pending.write(data)
+    try:
+        rows = load(temporary)
+        if not rows:
+            raise ValueError(f"{path} contains no usable material settings.")
+        if not destination.is_file() or destination.read_bytes() != data:
+            temporary.replace(destination)
+        return rows
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _cell(row, idx, key):
@@ -163,6 +199,26 @@ def load(path=None) -> list[Material]:
         except ValueError:
             return None
 
+    parents = {_cell(row, idx, "uuid"): _cell(row, idx, "parent_uuid") for row in body}
+
+    def categories(parent):
+        result = []
+        visited = set()
+        while parent and parent not in visited:
+            visited.add(parent)
+            if names.get(parent):
+                result.append(names[parent])
+            parent = parents.get(parent)
+        return tuple(reversed(result[1:]))
+
+    def flag(row, key):
+        value = _cell(row, idx, key).lower()
+        if value in ("on", "true", "1"):
+            return True
+        if value in ("off", "false", "0"):
+            return False
+        return None
+
     out: list[Material] = []
     for row in body:
         if _cell(row, idx, "category") != "leaf":
@@ -181,6 +237,18 @@ def load(path=None) -> list[Material]:
             depth_mm=number(row, "(blade_depth)", float),
             offset_su=number(row, "(tool.offset)") or 0,
             tool=_cell(row, idx, "(tool.type)"),
+            source_id=_cell(row, idx, "uuid"),
+            group_id=_cell(row, idx, "parent_uuid"),
+            holder=number(row, "(tool_holder)"),
+            action=_cell(row, idx, "(action)"),
+            acceleration=number(row, "(acceleration)"),
+            track_enhancing=flag(row, "(track_enhancing)"),
+            categories=categories(_cell(row, idx, "parent_uuid")),
+            line_segment_overcut=flag(row, "(tangential_emulation)"),
+            corner_start_mm=number(row, "(overcut.start_point_length)", float),
+            corner_end_mm=number(row, "(overcut.end_point_length)", float),
+            raw=tuple(zip(rows[0], row)),
+
         ))
     return out
 
@@ -204,33 +272,32 @@ def by_name(path=None, cutter_class: str = "") -> dict[str, Material]:
 
 def cutter_divisions(rows, cutter_name: str, show_all: bool) -> dict[str, Material]:
     """Expose the material divisions recorded by Studio's database."""
-    if show_all:
-        choices = {}
-        for material in rows:
-            division = material.cutter_class or "General"
-            tool = f" · {material.tool}" if material.tool else ""
-            label = f"{material.name} · {division}{tool}"
-            choices.setdefault(label, material)
-        return choices
-
     def normalize(value):
-        return "".join(char for char in value.lower() if char.isalnum())
+        return "".join(char for char in value.casefold() if char.isalnum())
 
     model = cutter_name.removeprefix("Silhouette ")
     family = normalize(model.split()[0]) if model else ""
     exact = normalize(model)
-
-    def rank(material):
-        division = normalize(material.cutter_class)
-        if division and division == exact:
-            return 2
-        return int(bool(division) and division == family)
-
-    choices = {}
+    ranks = {exact: 2, family: 1, "": 0}
+    groups = {}
     for material in rows:
-        current = choices.get(material.name)
-        if current is None or rank(material) > rank(current):
-            choices[material.name] = material
+        division = normalize(material.cutter_class)
+        if show_all or division in ranks:
+            groups.setdefault(material.name, []).append(material)
+    choices = {}
+    for name, variants in groups.items():
+        if not show_all:
+            rank = max(ranks[normalize(row.cutter_class)] for row in variants)
+            variants = [row for row in variants if ranks[normalize(row.cutter_class)] == rank]
+        for row in variants:
+            label = name
+            if show_all or len(variants) > 1:
+                details = " · ".join(filter(None, (row.cutter_class, row.tool, row.action,
+                                                    f"Holder {row.holder}" if row.holder else "")))
+                label = f"{name} · {details or 'General'}"
+                if label in choices:
+                    label += f" · {row.source_id or len(choices) + 1}"
+            choices[label] = row
     return choices
 
 
@@ -250,11 +317,11 @@ def as_preset(material: Material, name: str = "", note: str = "") -> dict:
         "name": name or f"{material.name} (Silhouette)",
         "description": f"Studio settings for {material.name}.",
         "origin": "silhouette",
+        "factory_id": material.source_id,
+        "factory_group": material.group_id,
+        "factory_holder": material.holder,
+        "factory_tool": material.tool,
+        "factory_action": material.action,
         "note": note or "From Silhouette Studio’s factory settings.",
-        "settings": {
-            "force": s.force, "speed": s.speed, "passes": s.passes,
-            "depth": s.depth, "blade_diameter_mm": s.blade_diameter_mm,
-            "lift_head": bool(s.blade_diameter_mm),
-            "track_enhancing": bool(s.blade_diameter_mm and s.force >= 19),
-        },
+        "settings": dataclasses.asdict(s),
     }

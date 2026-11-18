@@ -127,12 +127,8 @@ def _special_value(row, value, text):
     return row
 
 
-def _transport_options(connection):
-    mode, identifier, *channel = connection
-    options = {"bluetooth_id": identifier} if mode in bluetooth.BLUETOOTH_MODES else {}
-    if channel:
-        options["bluetooth_channel"] = channel[0]
-    return mode, options
+from . import cutters
+
 
 
 class ControlPage(Gtk.ScrolledWindow):
@@ -614,6 +610,12 @@ class Window(Adw.ApplicationWindow):
         self._suppress = False
         self.on_changed()
         self.stack.connect("notify::visible-child-name", self.on_page_changed)
+        GLib.idle_add(self.refresh_usb)
+        GLib.idle_add(self.refresh_wireless)
+        wireless_timer = GLib.timeout_add_seconds(30, lambda: (self.refresh_wireless(), True)[1])
+        self.connect("destroy", lambda *_: GLib.source_remove(wireless_timer))
+        timer = GLib.timeout_add_seconds(2, lambda: (self.refresh_usb(), True)[1])
+        self.connect("destroy", lambda *_: GLib.source_remove(timer))
 
     def on_page_changed(self, stack, _param):
         page = stack.get_visible_child_name()
@@ -686,6 +688,8 @@ class Window(Adw.ApplicationWindow):
             "Select a Bluetooth cutter." if mode in bluetooth.BLUETOOTH_MODES and not identifier else
             ""
         )
+        if not reason:
+            reason = cutters.usb_refusal(self._connection(), job.device, self.selected_cutter())
         self.scan_button.set_sensitive(not reason and bool(job.registration_steps()))
         if not reason and job.settings.passes <= 0:
             reason = "Set at least one pass to send cut paths."
@@ -1006,6 +1010,9 @@ class Window(Adw.ApplicationWindow):
         choose = Gtk.Button(label="Import Studio Materials…", valign=Gtk.Align.CENTER)
         choose.connect("clicked", self.on_choose_material_csv)
         csv.add_suffix(choose)
+        choose_folder = Gtk.Button(label="Import Factory Folder…", valign=Gtk.Align.CENTER)
+        choose_folder.connect("clicked", lambda *_: self.on_choose_material_csv(folder=True))
+        csv.add_suffix(choose_folder)
         g3.add(csv)
         g3.add(apply_row)
         restore = Adw.ActionRow(title="Restore Default Materials",
@@ -1017,6 +1024,7 @@ class Window(Adw.ApplicationWindow):
         advanced.append(g3)
         self._load_materials()
         self.r_cutter.connect("notify::selected", self.on_material_cutter_changed)
+        self.r_cutter.set_visible(False)
 
         for row in (self.r_cutter, self.r_path_order, self.r_pass_order, self.r_weed_lines):
             row.connect("notify::selected", self.on_changed)
@@ -1063,15 +1071,22 @@ class Window(Adw.ApplicationWindow):
         refresh.set_valign(Gtk.Align.CENTER)
         refresh.connect("clicked", self.on_refresh_status)
         g2.set_header_suffix(refresh)
-        self.r_connection = _combo("Connection", ["USB", *bluetooth.BLUETOOTH_MODES.values()],
+        self.r_send_cutter = _combo("Cutter", list(cutters.MODELS.values()))
+        self.r_send_cutter.connect("notify::selected", self.on_send_cutter)
+        g2.add(self.r_send_cutter)
+        normal.prepend(g2)
+        self.r_connection = _combo("Connection", ["Automatic", *bluetooth.BLUETOOTH_MODES.values()],
                                    subtitle="Status not checked")
         self.r_connection.set_subtitle_lines(0)
-        self.r_bluetooth = _combo("Bluetooth cutter", ["Select a cutter"])
+        self.r_bluetooth = _combo("Connected cutter", ["Select a cutter"])
         self.r_bluetooth_id = Adw.EntryRow(title="Bluetooth identifier")
         self.r_bluetooth_channel = _spin("RFCOMM channel", 1, 30, 1, 1, 0)
         self._bluetooth_devices = []
+        self._usb_devices = {}
+        self._wireless_choices = {}
+        self._wireless_scanning = False
         self.r_bluetooth.connect("notify::selected", self.on_bluetooth_selected)
-        scan = Gtk.Button(label="Find Bluetooth cutters")
+        scan = Gtk.Button(label="Refresh Cutters")
         scan.connect("clicked", self._scan_bluetooth)
         self.r_bluetooth.add_suffix(scan)
         g2.add(self.r_connection)
@@ -1080,7 +1095,6 @@ class Window(Adw.ApplicationWindow):
         self.on_connection_changed()
         self.r_bluetooth_id.connect("changed", self.on_connection_target_changed)
         self.r_bluetooth_channel.connect("notify::value", self.on_connection_target_changed)
-        normal.append(g2)
         advanced, self.send_advanced = disclosure(normal)
         bluetooth_options = Adw.PreferencesGroup(title="Bluetooth")
         bluetooth_options.add(self.r_bluetooth_id)
@@ -1531,11 +1545,18 @@ class Window(Adw.ApplicationWindow):
 
     def restore_holder(self, device):
         slot = int(self.r_holder.get_value()) if device.two_tools else 1
+        fresh = slot not in self.holder_state.drafts
         saved = self.holder_state.switch(slot, *self.current_holder_profile()) if slot != self.holder_state.active else None
         self._suppress = True
         try:
             if saved:
                 preset, settings = saved
+                if fresh and preset.factory_group:
+                    try:
+                        preset = presets.for_context(preset, device.name, slot)
+                    except ValueError:
+                        preset = presets.get(presets.STARTING_NAME, device.name)
+                    settings = for_holder(preset.cut_settings(), slot)
                 self.refresh_preset_choices(preset.name)
                 self.preset_note.set_subtitle(preset.note or preset.description)
                 self._load_blade_settings(settings)
@@ -2141,10 +2162,10 @@ class Window(Adw.ApplicationWindow):
         self.rebuild()
 
     # ---- Silhouette's own materials ----------------------------------
-    def on_choose_material_csv(self, *_args):
+    def on_choose_material_csv(self, *_args, folder=False):
         from . import materials
 
-        dialog = Gtk.FileDialog(title="Choose Silhouette condition.csv")
+        dialog = Gtk.FileDialog(title="Choose Studio factory folder" if folder else "Choose Silhouette condition.csv")
         filt = Gtk.FileFilter()
         filt.set_name("CSV files")
         filt.add_suffix("csv")
@@ -2154,7 +2175,7 @@ class Window(Adw.ApplicationWindow):
 
         def done(chooser, result):
             try:
-                path = chooser.open_finish(result).get_path()
+                path = (chooser.select_folder_finish(result) if folder else chooser.open_finish(result)).get_path()
                 if path is not None:
                     materials.select_condition_csv(path)
                     self._load_materials()
@@ -2165,7 +2186,7 @@ class Window(Adw.ApplicationWindow):
             except (OSError, ValueError) as error:
                 self.toast(str(error))
 
-        dialog.open(self, None, done)
+        (dialog.select_folder if folder else dialog.open)(self, None, done)
 
     def on_material_cutter_changed(self, *_args):
         self._load_materials()
@@ -2229,15 +2250,11 @@ class Window(Adw.ApplicationWindow):
             self.toast("Import Studio Materials and choose a material first.")
             return
         if self.r_cutter_divisions.get_selected() == 0:
-            self.refresh_preset_choices(m.name)
+            self.refresh_preset_choices(name)
             self.on_preset()
             return
         was, self._suppress = self._suppress, True
-        self.r_force.set_value(m.force)
-        self.r_speed.set_value(m.speed)
-        self.r_passes.set_value(m.passes)
-        self.r_depth.set_value(-1 if m.autoblade_depth is None else m.autoblade_depth)
-        self.r_diameter.set_value(m.blade_diameter_mm)
+        self._load_blade_settings(for_holder(m.cut_settings(), self.holder_state.active))
         self._suppress = was
         self.toast(f"{name}: {m.describe()}")
         self.on_changed()
@@ -2417,6 +2434,10 @@ class Window(Adw.ApplicationWindow):
         if trial != current:
             self.toast("Test settings or cutter connection changed. Review the pass again.")
             return
+        refusal = cutters.usb_refusal(trial.connection, trial.sheet.device, self.selected_cutter())
+        if refusal:
+            self.toast(refusal)
+            return
         self._sending = True
         self.update_send_actions()
 
@@ -2426,9 +2447,8 @@ class Window(Adw.ApplicationWindow):
             self.toast(str(error) if error else "Pass complete. Keep the mat loaded and lift a corner.")
 
         def work():
-            mode, options = _transport_options(trial.connection)
             try:
-                with transport.open_transport(mode, device=trial.sheet.device, **options) as cutter:
+                with cutters.open_link(trial.connection, trial.sheet.device) as cutter:
                     starting_guide.run_pass(cutter, trial)
             except Exception as error:
                 GLib.idle_add(done, error)
@@ -2481,13 +2501,16 @@ class Window(Adw.ApplicationWindow):
             self.toast("The cutter connection is busy.")
             return
         self.guide.invalidate()
+        refusal = cutters.usb_refusal(connection, ts.device, self.selected_cutter())
+        if refusal:
+            self.toast(refusal)
+            return
         self._sending = True
         self.update_send_actions()
 
         def work():
             try:
-                mode, options = _transport_options(connection)
-                with transport.open_transport(mode, device=ts.device, **options) as tr:
+                with cutters.open_link(connection, ts.device) as tr:
                     if tr.can_read:
                         state = tr.status()
                         if state != "ready":
@@ -2501,6 +2524,58 @@ class Window(Adw.ApplicationWindow):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def selected_cutter(self):
+        return list(cutters.MODELS)[self.r_send_cutter.get_selected()]
+
+    def on_send_cutter(self, *_args):
+        model = self.selected_cutter()
+        if model == cutters.AUTO:
+            self.on_bluetooth_selected()
+        else:
+            for index, device in enumerate(graphtec.DEVICES):
+                if device.name == model:
+                    self.r_cutter.set_selected(index)
+                    break
+        self.update_send_actions()
+
+    def refresh_usb(self):
+        if self._sending or self._connection_mode() != "auto":
+            return False
+        devices = {**cutters.usb_choices(), **self._wireless_choices}
+        if devices != self._usb_devices:
+            self._usb_devices = devices
+            self.r_bluetooth.set_model(Gtk.StringList.new(["Select a cutter", *devices.values()]))
+            selected = next(iter(devices)) if len(devices) == 1 and cutters.auto_model(next(iter(devices)), next(iter(devices.values()))) else None
+            self.r_bluetooth.set_selected(list(devices).index(selected) + 1 if selected else 0)
+            self.on_bluetooth_selected()
+            self.r_connection.set_subtitle(devices.get(selected, "Select a cutter." if devices else "No cutter found."))
+        return False
+
+    def refresh_wireless(self):
+        if self._sending or self._wireless_scanning or self._connection_mode() != "auto":
+            return False
+        self._wireless_scanning = True
+
+        def done(choices):
+            self._wireless_scanning = False
+            self._wireless_choices = choices
+            self.refresh_usb()
+            return False
+
+        def work():
+            try:
+                choices = cutters.wireless_choices()
+            except transport.TransportError:
+                choices = {}
+            GLib.idle_add(done, choices)
+
+        threading.Thread(target=work, daemon=True).start()
+        return False
+
+    def _automatic_endpoint(self):
+        index = self.r_bluetooth.get_selected() - 1
+        return list(self._usb_devices)[index] if 0 <= index < len(self._usb_devices) else None
+
     def _connection_mode(self):
         return ("auto", *bluetooth.BLUETOOTH_MODES)[self.r_connection.get_selected()]
 
@@ -2510,7 +2585,10 @@ class Window(Adw.ApplicationWindow):
         self.r_bluetooth.set_model(Gtk.StringList.new(["Select a cutter"]))
         self.r_bluetooth.set_selected(0)
         self.r_bluetooth_id.set_text("")
-        self.r_bluetooth.set_visible(mode != "auto")
+        self._usb_devices = {}
+        self.r_bluetooth.set_visible(True)
+        if mode == "auto":
+            GLib.idle_add(self.refresh_usb)
         if hasattr(self, "advanced_bluetooth"):
             self.advanced_bluetooth.set_visible(mode != "auto")
         self.r_bluetooth_id.set_visible(mode != "auto")
@@ -2525,6 +2603,10 @@ class Window(Adw.ApplicationWindow):
     def _scan_bluetooth(self, button):
         from . import ble, rfcomm
         mode = self._connection_mode()
+        if mode == "auto":
+            self.refresh_usb()
+            self.refresh_wireless()
+            return
         scanner = ble if mode == "ble" else rfcomm
 
         def update(devices, error):
@@ -2553,16 +2635,27 @@ class Window(Adw.ApplicationWindow):
 
     def on_bluetooth_selected(self, *_args):
         index = self.r_bluetooth.get_selected() - 1
+        if self._connection_mode() == "auto":
+            endpoint = self._automatic_endpoint()
+            model = cutters.auto_model(endpoint, self._usb_devices.get(endpoint, ""))
+            if model and self.selected_cutter() == cutters.AUTO:
+                self.r_cutter.set_selected(graphtec.DEVICES.index(model))
+            self.update_send_actions()
+            return
         if 0 <= index < len(self._bluetooth_devices):
             identifier, name = self._bluetooth_devices[index]
             self.r_bluetooth_id.set_text(identifier)
-            if model := bluetooth.advertised_model(name):
+            model = bluetooth.advertised_model(name)
+            if model and self.selected_cutter() == cutters.AUTO:
                 self.r_cutter.set_selected(graphtec.DEVICES.index(model))
 
     def _connection(self):
         mode = self._connection_mode()
         if mode == "auto":
-            return mode, None
+            endpoint = self._automatic_endpoint()
+            if endpoint and endpoint[0] in bluetooth.BLUETOOTH_MODES:
+                return endpoint[0], endpoint[1]
+            return mode, endpoint
         identifier = self.r_bluetooth_id.get_text().strip() or None
         if mode == "bluetooth":
             return mode, identifier, int(self.r_bluetooth_channel.get_value())
@@ -2572,7 +2665,7 @@ class Window(Adw.ApplicationWindow):
         if self._sending or self._checking_status:
             return
         connection = self._connection()
-        mode, options = _transport_options(connection)
+        mode = connection[0]
         if mode in bluetooth.BLUETOOTH_MODES and not connection[1]:
             self.r_connection.set_subtitle("Select a Bluetooth cutter.")
             self.tool_row.set_subtitle("Select a Bluetooth cutter.")
@@ -2589,13 +2682,13 @@ class Window(Adw.ApplicationWindow):
                 return
             self.r_connection.set_subtitle(text)
             self.tool_row.set_subtitle(text)
-            if mode in bluetooth.BLUETOOTH_MODES and device is not None:
+            if device is not None and self.selected_cutter() == cutters.AUTO:
                 self.r_cutter.set_selected(graphtec.DEVICES.index(device))
 
         def work():
             device = None
             try:
-                with transport.open_transport(mode, **options) as cutter:
+                with cutters.open_link(connection) as cutter:
                     device = cutter.device
                     text = f"{device.name} · {cutter.status_with_tools()}"
                     if mode in bluetooth.BLUETOOTH_MODES:
@@ -2624,6 +2717,10 @@ class Window(Adw.ApplicationWindow):
         connection = self._connection()
         if connection[0] in bluetooth.BLUETOOTH_MODES and not connection[1]:
             self.toast("Select a Bluetooth cutter first.")
+            return
+        refusal = cutters.usb_refusal(connection, j.device, self.selected_cutter())
+        if refusal:
+            self.toast(refusal)
             return
         if corner:
             try:
@@ -2668,7 +2765,7 @@ class Window(Adw.ApplicationWindow):
                                        if scan_only else Adw.ResponseAppearance.DESTRUCTIVE)
         dialog.set_default_response("cancel")
         if connection[1]:
-            dialog.set_body(f"{body}\n\nBluetooth target: {j.device.name} ({connection[1]})")
+            dialog.set_body(f"{body}\n\nConnection: {j.device.name} ({connection[1]})")
         dialog.connect("response", self._cut_response, j, connection, scan_only)
         dialog.present(self)
 
@@ -2691,6 +2788,10 @@ class Window(Adw.ApplicationWindow):
         if connection != self._connection():
             self.toast("The cutter connection changed. Review and confirm the job again.")
             return
+        refusal = cutters.usb_refusal(connection, j.device, self.selected_cutter())
+        if refusal:
+            self.toast(refusal)
+            return
         checked = corner.job if corner else j
         steps = checked.registration_steps() if scan_only else checked.steps
         if not steps:
@@ -2707,9 +2808,9 @@ class Window(Adw.ApplicationWindow):
         report = self.sheet_report if matched else None
 
         def work():
-            mode, options = _transport_options(connection)
+            mode = connection[0]
             try:
-                with transport.open_transport(mode, device=j.device, **options) as t:
+                with cutters.open_link(connection, j.device) as t:
                     if t.can_read:
                         state = t.status()
                         if state == "unloaded":

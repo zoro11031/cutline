@@ -11,6 +11,7 @@ import pathlib
 import re
 import tempfile
 
+from . import graphtec
 from .graphtec import CutSettings
 
 
@@ -21,6 +22,11 @@ class Preset:
     origin: str                 # silhouette | recovered | derived | measured
     settings: dict
     note: str = ""
+    factory_id: str = ""
+    factory_group: str = ""
+    factory_holder: int | None = None
+    factory_tool: str = ""
+    factory_action: str = ""
 
     def cut_settings(self) -> CutSettings:
         return CutSettings(**self.settings)
@@ -147,7 +153,7 @@ _FACTORY_REFERENCE = {
     "Silhouette Sketch Pen": "Pen, no blade",
 }
 
-BUILTIN = (_STARTING, *(dataclasses.replace(
+_FORMER_BUILTIN = (_STARTING, *(dataclasses.replace(
     _LEGACY_BY_NAME[previous], name=name,
     settings={**_LEGACY_BY_NAME[previous].settings, "track_enhancing": name in ("Cardstock", "Coverstock")},
     note="From Silhouette Studio’s factory settings.")
@@ -159,6 +165,8 @@ BUILTIN = (_STARTING, *(dataclasses.replace(
       for name, force, speed, passes, depth in (
           ("Adhesive-Backed Cardstock", 29, 3, 1, 4), ("Textured Cardstock", 30, 4, 1, 3),
           ("Glitter Cardstock", 33, 3, 2, 6), ("Chipboard", 33, 1, 2, 5))))
+BUILTIN = (_STARTING,)
+_LEGACY_BY_NAME.update((preset.name, preset) for preset in _FORMER_BUILTIN if preset != _STARTING)
 BUILTIN_BY_NAME = {preset.name: preset for preset in BUILTIN}
 
 
@@ -209,6 +217,11 @@ def _read_presets(folder: pathlib.Path):
             origin=raw.get("origin", "derived"),
             settings=raw.get("settings", {}),
             note=raw.get("note", ""),
+            factory_id=raw.get("factory_id", ""),
+            factory_group=raw.get("factory_group", ""),
+            factory_holder=raw.get("factory_holder"),
+            factory_tool=raw.get("factory_tool", ""),
+            factory_action=raw.get("factory_action", ""),
         )
 
 
@@ -216,8 +229,41 @@ def all_presets(cutter=DEFAULT_CUTTER) -> dict[str, Preset]:
     """Starting point, factory materials for this cutter, and local presets."""
     out = {**BUILTIN_BY_NAME, **factory_presets(cutter)}
     for folder in (bundled_dir(), user_dir()):
-        out.update((preset.name, preset) for _, preset in _read_presets(folder))
+        for _, preset in _read_presets(folder):
+            if preset.factory_id:
+                for label, factory in out.items():
+                    if factory.factory_id == preset.factory_id:
+                        out[label] = dataclasses.replace(preset, name=label)
+                        break
+            else:
+                label = preset.name
+                if label in out and out[label].factory_id:
+                    label += " · Personal"
+                out[label] = dataclasses.replace(preset, name=label)
     return out
+
+
+def for_context(preset, cutter, holder, *, tool=None, action=None):
+    """Resolve one compatible variant of a selected factory material."""
+    if not preset.factory_group:
+        return preset
+    matches = [item for item in all_presets(cutter).values()
+               if item.factory_group == preset.factory_group
+               and item.factory_holder in (None, holder)
+               and (not tool or item.factory_tool in ("", tool))
+               and (not action or item.factory_action in ("", action))]
+    if not matches:
+        raise ValueError(f"No compatible variant of {preset.name} for Holder {holder}.")
+    def specificity(item):
+        return (item.factory_holder == holder, bool(tool and item.factory_tool == tool),
+                bool(action and item.factory_action == action))
+    best = max(map(specificity, matches))
+    choices = [item for item in matches if specificity(item) == best]
+    if preset in choices:
+        return preset
+    if len(choices) == 1:
+        return choices[0]
+    raise ValueError(f"Choose a {preset.name} variant for Holder {holder}.")
 
 
 ALIASES = {
@@ -260,7 +306,8 @@ def save_blade_settings(name: str, *, force: int, speed: int, depth: int | None,
             raise ValueError("Enter a preset name.")
         if any(new_name.casefold() == name.casefold() for name in all_presets(cutter)):
             raise ValueError("A preset with that name already exists.")
-        preset = dataclasses.replace(preset, name=new_name)
+        preset = dataclasses.replace(preset, name=new_name, factory_id="", factory_group="",
+                                     factory_holder=None, factory_tool="", factory_action="")
     elif CutSettings(**settings) == preset.cut_settings():
         return None
     return save(dataclasses.replace(
@@ -282,9 +329,13 @@ def save_tested_settings(name, settings, cutter):
 def restore_default_materials() -> tuple[int, pathlib.Path | None]:
     """Restore shipped presets and back up the overridden user files."""
     folder = user_dir()
-    shipped = set(BUILTIN_BY_NAME) | set(factory_presets())
+    shipped = set(BUILTIN_BY_NAME) | {preset.name for preset in _FORMER_BUILTIN}
+    for device in graphtec.DEVICES:
+        shipped.update(factory_presets(device.name))
     shipped.update(preset.name for _, preset in _read_presets(bundled_dir()))
-    overrides = [path for path, preset in _read_presets(folder) if preset.name in shipped]
+    overrides = [path for path, preset in _read_presets(folder)
+                 if preset.factory_id or (preset.name in shipped and preset.origin == "derived"
+                                          and preset.description == "Settings you saved.")]
     if not overrides:
         return 0, None
     backup = pathlib.Path(tempfile.mkdtemp(prefix="material-backup-", dir=folder))
@@ -304,14 +355,15 @@ def restore_default_materials() -> tuple[int, pathlib.Path | None]:
 def save(preset: Preset) -> pathlib.Path:
     folder = user_dir()
     folder.mkdir(parents=True, exist_ok=True)
-    existing = {item.name: path for path, item in _read_presets(folder)}
-    path = existing.get(preset.name)
+    identity = preset.factory_id or preset.name
+    existing = {(item.factory_id or item.name): path for path, item in _read_presets(folder)}
+    path = existing.get(identity)
     if path is None:
         slug = re.sub(r"[^a-z0-9._-]+", "-", preset.name.lower().replace(",", ""))
         slug = slug.strip(".-")[:100] or "preset"
         path = folder / f"{slug}.json"
         if path.exists():
-            suffix = hashlib.sha256(preset.name.encode()).hexdigest()[:12]
+            suffix = hashlib.sha256(identity.encode()).hexdigest()[:12]
             path = folder / f"{slug}-{suffix}.json"
     data = json.dumps(dataclasses.asdict(preset), indent=2) + "\n"
     temp = None

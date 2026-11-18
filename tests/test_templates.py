@@ -343,7 +343,7 @@ class TestPresets(unittest.TestCase):
         self.assertEqual({name for name, preset in bundled.items() if preset.origin != "silhouette"},
                          {presets.STARTING_NAME})
         self.assertEqual(bundled[presets.STARTING_NAME].origin, "guide")
-        self.assertIn("Cardstock", bundled)
+        self.assertEqual(set(bundled), {presets.STARTING_NAME})
 
     def test_presets_build_valid_cut_settings(self):
         from cut_proxies import presets

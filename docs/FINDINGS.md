@@ -1642,3 +1642,56 @@ reads with the AutoBlade installed. An earlier query returned ` 0, 0`.
 The first field identifies holder 1 and the second identifies holder 2.
 The detection test sent only queries. The Kraft blade and aftermarket
 green holder were unavailable for physical identification.
+
+## Cutter selection and local material import
+
+The WinBoat inventory identifies Studio file version 5.0.556.1, product
+version V5.0.556.001, SHA-256
+`4871EDB71FB28B02593850006992277E69E058D0A385B0AC6402F63B9514A47B`.
+The guest was reachable but its desktop session was occupied during this
+pass. Clean-profile enumeration and executable call tracing remain open.
+
+### Device evidence
+
+| Coverage | Evidence |
+| --- | --- |
+| Existing GPGL profiles | 15 named Cameo and Portrait variants with USB IDs from Inkscape Silhouette |
+| Catalog-only entries | Curio, Curio 2, Silhouette SD, Original Silhouette, and legacy Graphtec/Xyron cutters. Unknown IDs and capabilities need additional evidence |
+| Local USB status and identity | Cameo 4, `0b4d:1137`, `/dev/usb/lp0`, firmware V1.20, status `unloaded` |
+| Local BLE | BlueZ 5.88, Bleak 3.1.0, Cameo 4 V1.20. With USB attached, the cached name was `CAMEO 4-499341P` with a random LE address. A fresh scan missed it and connecting to the cached record disconnected during service discovery. The probe sent no cutter commands |
+| External hardware | Cuthulhu reports USB enumeration and status for Cameo 5 Alpha Plus (`3844:0002`) on macOS. Inkscape Silhouette reports BLE plotting with a pen on Cameo 5 Alpha on macOS |
+
+The Classic fallback previously read BlueZ's unfiltered device list and
+offered the unpaired Cameo 4 BLE record as an RFCOMM endpoint. Classic now
+requires Classic inquiry or BlueZ evidence of the Classic profile or
+pairing. Sillinux uses BlueZ pairing for its Linux RFCOMM channel 1 path.
+Inkscape and this application use the same vendor GATT UUIDs. Inkscape
+initializes only after resolving that service. Control Center checks for a
+matching firmware response before initialization. Linux BLE with USB
+detached and a same-device Studio capture remain open for this pass. The
+earlier November 17 trace reached the vendor service but did not establish
+a firmware reply under Linux.
+
+References: [Inkscape BLE transport](https://github.com/fablabnbg/inkscape-silhouette/blob/e782d599b799861b8e2aaacc49bb2ccc7ec78633/silhouette/BLETransport.py),
+[Sillinux Classic transport](https://github.com/racxusdev/Sillinux/blob/63b8d5d0fc28b1719a4a307b2b52d0e15200ec16/crates/silhouette-driver/src/bt.rs),
+[Cuthulhu hardware notes](https://github.com/vcolombo/cuthulhu/blob/c9a07a29ebc11c5e9d7274afc3930a6a8bb66ccd/docs/protocol/silhouette-cameo5.md).
+
+### Factory resource reconciliation
+
+The saved `SPEC_S/condition.csv` contains 29 material groups, 3 folders,
+1 root and 290 unique leaf UUIDs. The importer retains all 290 leaves.
+There are 29 per cutter class across 10 classes. Tool counts are adjustable
+270, blue 10, pen2 5, and unspecified 5. Holder and action are unspecified
+in all 290 rows. The two Blade Depth columns agree across all leaves.
+All 290 rows say Overcut off with start and end values of zero. Acceleration
+and Track Enhancing have no named columns in this source. The two saved
+`media.csv` tables describe paper sizes and UI metadata. Their headers
+contain no cutting-settings columns. Historical dated condition tables and
+runtime defaults were not reconciled with a clean Studio profile.
+
+The local snapshot preserves duplicate columns and unmapped fields such as
+platform, flags, message IDs, dash fields, and raw tool identifiers.
+Vendor rows stay local. The imported library is complete for this saved
+CSV. Whether Studio supplements it with newer model-, tool-, holder-, or
+action-specific data remains open. No GUI comparison with a clean Studio
+profile was performed in this pass.

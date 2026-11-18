@@ -19,7 +19,7 @@ cheap: nine sub-suites of a few tests each.
 import io
 import unittest
 
-from cut_proxies import corner_test, graphtec, job, regmarks, starting_guide, testcut, transport, verify
+from cut_proxies import corner_test, cutters, graphtec, job, regmarks, starting_guide, testcut, transport, verify
 
 
 def _run(class_paths):
@@ -48,6 +48,11 @@ def refuse_depth(codes):
 
 
 CASES = (
+    (cutters, "usb_refusal", lambda *a: "", "every endpoint accepted",
+     ["tests.test_cutter_detection.TestExactEndpoint.test_refusal_changes_with_endpoint_and_model"]),
+    (cutters, "usb_refusal", lambda *a: "refused", "every endpoint refused",
+     ["tests.test_cutter_detection.TestExactEndpoint.test_refusal_changes_with_endpoint_and_model"]),
+
     (graphtec.Device, "supports_holder", lambda *a: True, "every holder accepted",
      ["tests.test_guards.TestInstalledTools"]),
     (graphtec.Device, "supports_holder", lambda *a: False, "every holder refused",

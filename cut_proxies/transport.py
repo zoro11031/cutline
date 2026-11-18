@@ -219,7 +219,7 @@ class PyUsbTransport(Transport):
     name = "pyusb"
     can_read = True
 
-    def __init__(self, device: graphtec.Device | None = None):
+    def __init__(self, device: graphtec.Device | None = None, *, usb_endpoint=None):
         try:
             import usb.core
             import usb.util
@@ -233,6 +233,8 @@ class PyUsbTransport(Transport):
         found = None
         for dev in usb.core.find(find_all=True):
             known = graphtec.device_for(dev.idVendor, dev.idProduct)
+            if usb_endpoint is not None and (dev.bus, dev.address) != usb_endpoint:
+                continue
             if known and (device is None or known == device):
                 found = (dev, known)
                 break
@@ -333,8 +335,11 @@ class UsbLpTransport(Transport):
     name = "usblp"
     can_read = True
 
-    def __init__(self, path: str | None = None, device=None):
-        candidates = [(known, node) for known, node in find_devices()
+    def __init__(self, path: str | None = None, device=None, *, usb_endpoint=None):
+        discovered = (find_devices() if usb_endpoint is None else
+                      [(known, node) for known, node, endpoint in usb_endpoints()
+                       if endpoint == usb_endpoint])
+        candidates = [(known, node) for known, node in discovered
                       if node.startswith("/dev/usb/lp")
                       and (path is None or path == node)
                       and (device is None or device == known)]
@@ -344,6 +349,10 @@ class UsbLpTransport(Transport):
                     self._fd = os.open(cand, os.O_RDWR | os.O_NONBLOCK)
                 except OSError:
                     continue
+                if usb_endpoint is not None and not any(
+                        entry == (known, cand, usb_endpoint) for entry in usb_endpoints()):
+                    self.close()
+                    raise NotFound("The selected USB cutter disconnected.")
                 self.path = cand
                 self.device = known
                 return
@@ -436,13 +445,8 @@ class FileTransport(Transport):
 # discovery
 # --------------------------------------------------------------------------
 
-def find_devices() -> list[tuple[graphtec.Device, str]]:
-    """Every known cutter currently on the USB bus, with how it is reachable.
-
-    Uses sysfs rather than pyusb so that discovery works even when pyusb is
-    missing - which is the common case, and the case where a clear message
-    matters most.
-    """
+def usb_endpoints(*, include_unknown=False):
+    """Return model, printer node, and this enumeration's bus/address."""
     out: list[tuple[graphtec.Device, str]] = []
     root = "/sys/bus/usb/devices"
     if not os.path.isdir(root):
@@ -458,22 +462,40 @@ def find_devices() -> list[tuple[graphtec.Device, str]]:
             continue
         dev = graphtec.device_for(vid, pid)
         if dev is None:
+            if not include_unknown or vid not in (graphtec.VENDOR_GRAPHTEC, graphtec.VENDOR_CAMEO5ALPHA):
+                continue
+            dev = (vid, pid)
+        try:
+            with open(os.path.join(base, "busnum")) as fh:
+                bus = int(fh.read())
+            with open(os.path.join(base, "devnum")) as fh:
+                address = int(fh.read())
+            children = sorted(os.listdir(base))
+        except (OSError, ValueError):
             continue
         lp = ""
-        for sub in sorted(os.listdir(base)):
+        for sub in children:
             cand = os.path.join(base, sub, "usbmisc")
             if os.path.isdir(cand):
-                names = os.listdir(cand)
+                try:
+                    names = os.listdir(cand)
+                except OSError:
+                    continue
                 if names:
                     lp = f"/dev/usb/{names[0]}"
-        out.append((dev, lp or "bulk endpoints only"))
+        out.append((dev, lp or "bulk endpoints only", (bus, address)))
     return out
+
+
+def find_devices() -> list[tuple[graphtec.Device, str]]:
+    return [(device, node) for device, node, _ in usb_endpoints()]
 
 
 def open_transport(prefer: str = "auto", dump_to=None,
                    device: graphtec.Device | None = None,
                    bluetooth_id: str | None = None, *, bluetooth_name: str | None = None,
-                   bluetooth_channel: int | None = None, allow_unknown_firmware: bool = False) -> Transport:
+                   bluetooth_channel: int | None = None, allow_unknown_firmware: bool = False,
+                   usb_endpoint=None) -> Transport:
     """Open the best available transport.
 
     Automatic selection tries USB. Bluetooth Classic and LE are explicit
@@ -498,8 +520,11 @@ def open_transport(prefer: str = "auto", dump_to=None,
         raise TransportError(f"unknown transport {prefer!r}")
     for kind in order:
         try:
-            return PyUsbTransport(device) if kind == "pyusb" \
-                else UsbLpTransport(device=device)
+            if kind == "pyusb":
+                return PyUsbTransport(device, usb_endpoint=usb_endpoint) if usb_endpoint else PyUsbTransport(device)
+            if usb_endpoint:
+                return UsbLpTransport(device=device, usb_endpoint=usb_endpoint)
+            return UsbLpTransport(device=device)
         except TransportError as exc:
             errors.append(f"{kind}: {exc}")
     raise NotFound("No usable transport to the cutter.\n  "
