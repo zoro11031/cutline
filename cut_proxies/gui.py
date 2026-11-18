@@ -1464,8 +1464,8 @@ class Window(Adw.ApplicationWindow):
             return
         grid = self.job.grid
         registration = Registration.from_marks(self.job.marks) if self.job.registration else None
-        project = Project(grid.sheet_w_mm, grid.sheet_h_mm, shapes, registration)
-        design = DesignWorkspace(self, project, self.close_design, self.review_design)
+        project = Project(grid.sheet_w_mm, grid.sheet_h_mm, shapes, registration, self.job.mat)
+        design = DesignWorkspace(self, project, self.close_design, self.review_design, cutter=self.job.device)
         self.workspaces.add_named(design.view, 'design')
         self.design = design
         self.workspaces.set_visible_child(design.view)
@@ -1490,25 +1490,17 @@ class Window(Adw.ApplicationWindow):
         return True
 
     def review_design(self, project, action):
-        page = (project.width, project.height)
-        matching = next(((sheet, portrait) for sheet in geometry.SHEETS.values()
-                         for portrait in (True, False) if sheet.size(portrait) == page), None)
-        if matching is None:
-            self.design.status.set_text('Choose a supported paper size to review cut paths.')
-            return
         from .editor_model import ALL_ACTIONS
         artwork = project.artwork(action)
         if any(path.length_mm() <= 0 for path in artwork.paths):
             self.design.status.set_text('Resize any paths with no length before reviewing.')
             return
-        sheet, portrait = matching
         self.template_shapes = project.shapes
         self._suppress = True
         try:
             self.r_layout_preset.set_selected(0)
-            self.r_sheet.set_selected(sorted(geometry.SHEETS).index(sheet.name))
-            self.r_orient.set_selected(1 if portrait else 2)
             self.r_mode.set_selected(0)
+            self.r_mat.set_selected(list(graphtec.MAT_OPTIONS).index(project.mat))
             self.r_send_mode.set_selected(list(actions.SEND_MODES).index("layer" if action == ALL_ACTIONS else "simple"))
             self.r_skip.set_text('')
             self.r_register.set_active(project.registration is not None)
@@ -1538,7 +1530,7 @@ class Window(Adw.ApplicationWindow):
     def _update_document_sheet(self, artwork):
         sheets = sorted(geometry.SHEETS)
         current = self._text(self.r_sheet)
-        native = artwork is not None and artwork.studio3_page
+        native = artwork is not None and artwork.use_document_page
         if native:
             self.r_sheet.set_model(Gtk.StringList.new([*sheets, "Document Size"]))
             self.r_sheet.set_selected(len(sheets))

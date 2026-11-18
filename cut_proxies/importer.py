@@ -97,6 +97,7 @@ class Imported:
     inkscape_marks: InkscapeMarks | None = None
     inkscape_mark_error: str | None = None
     studio3_page: bool = False
+    use_document_page: bool = False
 
     def colours(self) -> dict[str, int]:
         """Stroke colours present, and how many paths each has."""
@@ -1135,7 +1136,7 @@ def load_studio3(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
                 "Layer visibility, colors, raster images, effects and registration settings "
                 "are not imported."]
     return Imported(tuple(paths), *page, str(path), "Studio3 page coordinates in mm", warnings,
-                    page_size_mm=page, studio3_page=True)
+                    page_size_mm=page, studio3_page=True, use_document_page=True)
 
 
 def load(path, tolerance: float = CHORD_TOLERANCE_MM, *,

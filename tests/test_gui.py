@@ -5,7 +5,7 @@ from pathlib import Path
 import unittest
 import types
 from unittest import mock
-from cut_proxies import config, importer, job, presets
+from cut_proxies import config, graphtec, importer, job, presets
 
 try:
     from cut_proxies import gui
@@ -43,6 +43,66 @@ class TestDesignWorkspace(unittest.TestCase):
         win.close_design()
         self.assertEqual(win.workspaces.get_visible_child_name(), 'tools')
         self.assertIsNone(win.design)
+
+    def test_design_page_setup_preserves_custom_page_mat_and_marks_in_send(self):
+        from cut_proxies.editor_model import Shape
+
+        win = self.make_window()
+        win.design_button.emit('clicked')
+        design = win.design
+        design.commit((Shape('Rectangle', x=35, y=43, width=20, height=30),), (0,))
+        design.page.set_selected(design.page_sizes.index('Custom'))
+        design.page_width.set_value(150)
+        design.page_height.set_value(180)
+        design.mat.set_selected(list(graphtec.MAT_OPTIONS).index('cameo-12x12'))
+        design.mark_inset.set_value(14)
+        design.mark_length.set_value(9)
+        self.assertEqual(design.mat_size, (304.8, 304.8))
+        self.assertEqual(design.cut_border.x, 14)
+        design.review.emit('clicked')
+        self.assertEqual(win.stack.get_visible_child_name(), 'cut')
+        self.assertEqual((win.job.grid.sheet_w_mm, win.job.grid.sheet_h_mm), (150, 180))
+        self.assertEqual(win.job.mat, 'cameo-12x12')
+        self.assertEqual((win.job.marks.inset_mm, win.job.marks.length_mm), (14, 9))
+        self.assertEqual(win.job.blocked, [])
+
+    def test_design_drawing_points_selection_and_replicate_enter_history(self):
+        from cut_proxies.editor_model import Shape
+        from gi.repository import Gdk
+
+        win = self.make_window()
+        win.design_button.emit('clicked')
+        design = win.design
+        design.commit((), ())
+        gesture = mock.Mock()
+        gesture.get_current_event_state.return_value = Gdk.ModifierType(0)
+        canvas = design.canvas
+        with mock.patch.object(canvas, 'viewport', return_value=(0, 0, 2)):
+            design.tool.set_selected(design.tools.index('Rectangle'))
+            design.drag_begin(gesture, 120, 100)
+            design.drag_end(gesture, 20, 30)
+            self.assertEqual(design.project.shapes, (Shape('Rectangle', 60, 50, 10, 15),))
+            design.tool.set_selected(design.tools.index('Polygon'))
+            for x, y in ((180, 100), (220, 100), (220, 160)):
+                design.pick_polygon_point(gesture, 1, x, y)
+            design.finish_polygon()
+            self.assertEqual(design.project.shapes[1].path().points, ((90, 50), (110, 50), (110, 80)))
+            design.tool.set_selected(design.tools.index('Point Edit'))
+            design.drag_begin(gesture, 180, 100)
+            design.drag_end(gesture, 0, 20)
+            self.assertEqual(design.project.shapes[1].path().points[0], (90, 60))
+            design.tool.set_selected(0)
+            design.drag_begin(gesture, 80, 60)
+            design.drag_end(gesture, 160, 120)
+        self.assertEqual(design.selected_indices(), (0, 1))
+        design.group_button.emit('clicked')
+        self.assertIsNotNone(design.project.shapes[0].group)
+        self.assertEqual(design.project.shapes[0].group, design.project.shapes[1].group)
+        design.rows.set_value(1)
+        design.replicate_button.emit('clicked')
+        self.assertEqual(len(design.project.shapes), 4)
+        design.undo_button.emit('clicked')
+        self.assertEqual(len(design.project.shapes), 2)
 
     def test_save_preset_button_reloads_edited_blade_settings(self):
         with tempfile.TemporaryDirectory() as folder, \

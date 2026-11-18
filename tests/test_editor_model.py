@@ -3,7 +3,7 @@ import pathlib
 import tempfile
 import unittest
 
-from cut_proxies import editor_model, job, regmarks
+from cut_proxies import actions, editor_model, job, regmarks
 
 
 class TestEditorModel(unittest.TestCase):
@@ -104,3 +104,79 @@ class TestEditorModel(unittest.TestCase):
                 result = job.build(imported=design, preset_name='Plain paper test', offset_mm=(0,0))
                 self.assertFalse(result.blocked)
                 self.assertEqual(len(result.paths),1)
+
+
+    def test_opening_old_v2_shape_supplies_optional_color_and_mat_defaults(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder) / 'old.scc-template'
+            base = editor_model.Shape('Rectangle', x=25)
+            editor_model.save_project(path, editor_model.Project(279.4, 215.9, (base,)))
+            doc = json.loads(path.read_text())
+            del doc['objects'][0]['fill'], doc['objects'][0]['stroke'], doc['objects'][0]['group'], doc['mat']
+            path.write_text(json.dumps(doc))
+            self.assertEqual(editor_model.load_project(path).shapes, (base,))
+            self.assertEqual(editor_model.load_project(path).mat, 'auto')
+
+    def test_spacing_and_align_use_transformed_edges(self):
+        shapes = (editor_model.Shape('Rectangle', x=20, y=60, width=15, height=10, rotation=90),
+                  editor_model.Shape('Rectangle', x=60, y=50, width=20, height=20),
+                  editor_model.Shape('Rectangle', x=105, y=40, width=25, height=30))
+        moved = editor_model.align(shapes, (0, 1, 2), 'Align Top')
+        self.assertEqual([editor_model.bounds((s,)).y for s in moved], [40, 40, 40])
+        moved = editor_model.align(shapes, (0, 1, 2), 'Space Horizontally')
+        a, b, c = [editor_model.bounds((s,)) for s in moved]
+        self.assertAlmostEqual(b.x - a.x2, c.x - b.x2)
+        self.assertEqual((moved[0], moved[2]), (shapes[0], shapes[2]))
+
+    def test_replicate_moves_selection_as_a_unit_with_physical_spacing(self):
+        shapes = (editor_model.Shape('Rectangle', x=20, y=30, width=40, height=30),
+                  editor_model.Shape('Ellipse', x=80, y=35, width=10, height=10))
+        result = editor_model.replicate(shapes, (0, 1), 2, 2, 5, 7)
+        self.assertEqual(len(result), 8)
+        self.assertEqual([(s.x, s.y) for s in result[2:]], [(95, 30), (155, 35),
+                         (20, 67), (80, 72), (95, 67), (155, 72)])
+        self.assertEqual([s.kind for s in result[2:]], ['Rectangle', 'Ellipse'] * 3)
+
+    def test_open_line_hit_uses_segments_and_vertex_edit_keeps_style_and_action(self):
+        line = editor_model.Shape('Line', x=20, y=20, width=30, height=30,
+                                  action='Score', stroke='#ff0000')
+        self.assertFalse(editor_model.hit(line, (20, 44), 1))
+        self.assertTrue(editor_model.hit(line, (40, 40), 1))
+        edited = editor_model.move_vertex(line, 1, (60, 54))
+        self.assertEqual(edited.path().points, ((20, 20), (60, 54)))
+        self.assertFalse(edited.closed)
+        self.assertEqual((edited.action, edited.stroke), ('Score', '#ff0000'))
+
+    def test_line_and_fill_survive_project_save_import_and_send_groups(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target = pathlib.Path(folder) / 'art.svg'
+            target.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="210mm" height="297mm" '
+                              'viewBox="0 0 210 297"><rect x="45" y="45" width="30" height="30" '
+                              'stroke="#f00" fill="#00ff00"/></svg>')
+            shapes, _ = editor_model.import_shapes(target)
+            target = target.with_suffix('.scc-template')
+            project = editor_model.Project(210, 297, shapes, mat='cameo-12x12')
+            editor_model.save_project(target, project)
+            reopened = editor_model.load_project(target)
+        self.assertEqual(reopened.mat, 'cameo-12x12')
+        self.assertEqual(reopened.artwork().paths[0].stroke, '#ff0000')
+        self.assertEqual(reopened.artwork().paths[0].fill, '#00ff00')
+        built = job.build(imported=reopened.artwork(), use_document_page=True, registration=False,
+                          send_mode='fill', assignments=(actions.parse_assignment('#00ff00=Plain paper test'),))
+        self.assertEqual(len(built.paths), 1)
+        self.assertEqual(built.blocked, [])
+
+
+    def test_grouped_objects_align_together_and_copies_remain_separate_groups(self):
+        objects = tuple(editor_model.Shape('Rectangle', x=x, y=y, width=10, height=15)
+                        for x, y in ((20, 35), (40, 60), (70, 30)))
+        grouped = editor_model.group_selection(objects, (0, 1))
+        self.assertEqual(editor_model.group_members(grouped, 1), (0, 1))
+        aligned = editor_model.align(grouped, (0, 1, 2), 'Align Top')
+        self.assertEqual([s.y for s in aligned], [30, 55, 30])
+        copied = editor_model.replicate(aligned, (0, 1), 3, 1, 2, 2)
+        self.assertEqual(editor_model.group_members(copied, 3), (3, 4))
+        self.assertEqual(editor_model.group_members(copied, 5), (5, 6))
+        released = editor_model.group_selection(copied, (3,), release=True)
+        self.assertIsNone(released[4].group)
+        self.assertEqual(editor_model.group_members(released, 0), (0, 1))

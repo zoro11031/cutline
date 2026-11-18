@@ -99,15 +99,26 @@ cut the marks.
 
 ## Design workspace
 
-Open **Design** from the header to edit the current card layout or start with
-**New**. The canvas supports drag placement, millimetre coordinates, rotation,
-mirroring, a 5 mm grid, and undo and redo. SVG and DXF imports show their source
-scale before placement. Open v1 template projects on their saved page and
-save current projects as `.scc-template` v2.
+Open **Design** to edit the current layout or use **New** to start a blank
+sheet. **Open** loads a saved project or creates a design from SVG, DXF, or
+supported Studio3 vectors. **Import** adds paths to the open design. Design
+projects use `.scc-template` and open projects saved by earlier releases.
 
-Assign each object **Cut**, **Score**, or **None**, then choose an action next
-to **Review paths**. Choose **All actions** to send Cut and Score together
-with separate presets, holders and order in the Cut view.
+| Design panel | Controls |
+| --- | --- |
+| Page Setup | Media Size, Orientation, custom dimensions, Cutting Mat, Registration Marks, Show Cut Border, Show Grid, Show Rulers, and Snap to Grid. Mat selection and registration settings follow the design into Cut. |
+| Drawing Tool | Draw lines, rectangles, rounded rectangles, ellipses, freehand paths, and polygons on the canvas. Press Enter or click the first vertex to close a polygon. Use Point Edit to move vertices on a path or line. |
+| Transform | Set position, size, aspect ratio, rotation, and mirroring. Shift-click or drag a selection rectangle to move several objects, align their edges or centers, or space them evenly. Group and Ungroup control which objects move together on the canvas. |
+| Replicate | Make rows and columns of the selection with horizontal and vertical spacing in millimetres. |
+| Line and Fill | Set solid colors and the Cut, Score, or None action. Line and fill colors carry over to grouped Send. |
+
+**Review paths** previews a checked job. **All actions** places Cut and Score in
+separate groups so each can have its own preset, holder, and order.
+
+Studio Design features still open include text and font editing, raster Trace,
+Offset, Modify operations such as Weld and Subtract, compound paths, printer
+margins, and multiple open document tabs. Point Edit works on stored path
+vertices. Studio3 import reads the available vectors and page dimensions.
 
 ## The sheet
 
