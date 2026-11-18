@@ -248,10 +248,9 @@ def as_preset(material: Material, name: str = "", note: str = "") -> dict:
     s = material.cut_settings()
     return {
         "name": name or f"{material.name} (Silhouette)",
-        "description": f"Silhouette's own setting for {material.name}.",
+        "description": f"Studio settings for {material.name}.",
         "origin": "silhouette",
-        "note": (note or f"Silhouette Studio factory settings"
-                 f"{f' · {material.cutter_class}' if material.cutter_class else ''}. {material.describe()}."),
+        "note": note or "From Silhouette Studio’s factory settings.",
         "settings": {
             "force": s.force, "speed": s.speed, "passes": s.passes,
             "depth": s.depth, "blade_diameter_mm": s.blade_diameter_mm,

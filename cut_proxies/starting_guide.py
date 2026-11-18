@@ -20,10 +20,10 @@ TUNING_TIPS = (
 OUTCOMES = {
     "": "Choose what happened",
     "clean": "Separated cleanly",
-    "holding": "Mostly cut, still attached",
+    "holding": "Still attached",
     "shallow": "Barely marked the material",
-    "rough": "Rough, jagged or rippled edge",
-    "skipped": "Carriage skipped or material shifted",
+    "rough": "Rough or rippled edge",
+    "skipped": "Cutter skipped or slipped",
     "mat": "Cut deeply into the mat",
 }
 ADVICE = {

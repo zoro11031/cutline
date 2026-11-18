@@ -33,153 +33,100 @@ DEFAULT_CUTTER = "Silhouette Cameo 4"
 _LEGACY: tuple[Preset, ...] = (
     Preset(
         name="310 gsm black-core",
-        description="User-selected 310 gsm black-core settings.",
+        description="Older settings for 310 gsm black-core stock.",
         origin="derived",
         settings=dict(force=35, speed=25, depth=7, passes=4,
                       blade_diameter_mm=0.9, lift_head=True,
                       sharpen_corners=False, media=135, acceleration=1),
-        note="User-selected settings. Never cut as part of this project's verification.",
+        note="Never cut in this project.",
     ),
     Preset(
         name="330 gsm black-core",
-        description="User-selected 330 gsm black-core settings.",
+        description="Older settings for 330 gsm black-core stock.",
         origin="derived",
         settings=dict(force=35, speed=25, depth=7, passes=4,
                       blade_diameter_mm=0.9, lift_head=True,
                       sharpen_corners=False, media=135, acceleration=1),
-        note="User-selected settings. Never cut as part of this project's verification.",
+        note="Never cut in this project.",
     ),
     Preset(
         name="Coverstock (Silhouette)",
-        description="The heaviest paper material Silhouette publishes a "
-                    "setting for.",
+        description="Factory preset for heavy cardstock.",
         origin="silhouette",
         settings=dict(force=33, speed=1, depth=7, passes=2,
                       blade_diameter_mm=0.9, lift_head=True, media=135,
                       acceleration=1),
-        note="Verbatim from Silhouette Studio 5.0.556.1's own material "
-             "database (Resources/Resources/SPEC_S/condition.csv). Published "
-             "by the vendor, and identical for every cutter class in that "
-             "file including the Cameo 4 and 5. It is their material, not "
-             "330 gsm black-core, so it is a floor rather than an answer.",
+        note="From Silhouette Studio.",
     ),
     Preset(
         name="300 gsm cardstock",
-        description="Lighter card: between Textured Cardstock and "
-                    "Coverstock.",
+        description="Older settings for 300 gsm cardstock.",
         origin="derived",
         settings=dict(force=32, speed=2, depth=6, passes=2,
                       blade_diameter_mm=0.9, lift_head=True, media=135,
                       acceleration=1),
-        note="Interpolated between Silhouette's Textured Cardstock (force "
-             "30, speed 4, one pass, 0.3 mm) and its Coverstock (force 33, "
-             "speed 1, two passes, 0.7 mm). Never cut.",
+        note="Based on Studio’s cardstock settings. Never cut.",
     ),
     Preset(
         name="Cardstock (Silhouette)",
-        description="Silhouette's plain cardstock setting. Far too light for "
-                    "330 gsm, included as the published baseline.",
+        description="Factory preset for plain cardstock.",
         origin="silhouette",
         settings=dict(force=20, speed=4, depth=3, passes=1,
                       blade_diameter_mm=0.9, lift_head=True, media=122,
                       acceleration=3),
-        note="Verbatim from condition.csv. Here so the distance between "
-             "'cardstock' as Silhouette means it and the stock this suite "
-             "actually prints on is visible rather than assumed.",
+        note="From Silhouette Studio.",
     ),
     Preset(
         name="Card Maker reference (cardstock + laminate)",
-        description="Alan Cha's tested reference settings for Cameo with "
-                    "AutoBlade on cardstock + laminate.",
+        description="Settings for laminated cardstock.",
         origin="guide",
         settings=dict(force=33, speed=25, depth=7, passes=4,
                       blade_diameter_mm=0.9, lift_head=True, media=135,
                       acceleration=3),
-        note="From Alan Cha's Silhouette Card Maker cutting guide "
-             "(https://alan-cha.github.io/silhouette-card-maker/tutorial/guide/): "
-             "tested reference settings on a Cameo with AutoBlade on recommended "
-             "110 lb / 300 gsm cardstock and laminate. The guide's reference is force "
-             "35 (clamped here to 33, the Cameo 4 hardware ceiling; Cameo 5 Alpha "
-             "accepts up to 40), speed 25, depth 7, and 4 passes. Prioritize tuning: "
-             "passes (1-4), then force, then speed, then depth. If laminate edges "
-             "ripple, ease off force. If the machine skips steps, reduce speed.",
+        note="From Alan Cha’s Silhouette Card Maker guide.",
     ),
     Preset(
         name="Card Maker starting point",
-        description="The Card Maker guide's starting point for determining "
-                    "settings on a test sheet.",
+        description="One pass for a material test.",
         origin="guide",
         settings=dict(force=25, speed=25, depth=7, passes=1,
                       blade_diameter_mm=0.9, lift_head=True, media=135,
                       acceleration=3),
-        note="The Silhouette Card Maker cutting guide's starting point for finding "
-             "your cut settings: force 25, speed 25, depth 7, 1 pass. Cut a test sheet, "
-             "and WITHOUT ejecting the mat lift a corner and check the cut; repeat "
-             "the job as many times as necessary to determine the required pass count. "
-             "Speed 25 is from the community guide; Silhouette's own condition.csv "
-             "never exceeds 10.",
+        note="From the Silhouette Card Maker guide.",
     ),
     Preset(
         name="Cameo 4 starting point",
-        description="The Card Maker guide's starting point. Much faster than "
-                    "Silhouette's own figures - read the note.",
+        description="One pass for a material test.",
         origin="guide",
         settings=dict(force=25, speed=25, depth=7, passes=1,
                       blade_diameter_mm=0.9, lift_head=True, media=135,
                       acceleration=3),
-        note="The Silhouette Card Maker cutting guide's documented starting "
-             "point: force 25, speed 25, depth 7, one pass, measured on a "
-             "Cameo 5 with an AutoBlade. Its SPEED CONTRADICTS Silhouette's "
-             "own database, which never exceeds 10 for any material on any "
-             "cutter class - see docs/FINDINGS.md section 11. Both are "
-             "recorded; the defaults here follow the vendor, because slower "
-             "is the safer error on expensive stock. Its depth of 7 does "
-             "agree with Coverstock's 0.7 mm. Use the guide's method even if "
-             "you use the vendor's numbers: cut a test sheet, and WITHOUT "
-             "ejecting the mat lift a corner and look at it; re-send until "
-             "it separates. Tune passes, then force, then speed, then depth.",
+        note="From the Silhouette Card Maker guide.",
     ),
     Preset(
         name="Deep-cut blade, 330 gsm",
-        description="For the deep-cut (black) blade rather than the standard "
-                    "ratchet or AutoBlade.",
+        description="Older settings for a deep-cut blade and heavy card.",
         origin="derived",
         settings=dict(force=30, speed=1, passes=2, blade_diameter_mm=2.0,
                       lift_head=True, media=135, acceleration=1),
-        note="The deep-cut blade is 2.0 mm rather than 0.9 mm, which changes "
-             "the cutter-offset circle the machine swings on a direction "
-             "change; getting that number wrong is what rounds off corners "
-             "that should be square. Silhouette publishes no setting for it, "
-             "so this is Coverstock with the force eased off because the "
-             "geometry cuts more readily, and no depth because it is not an "
-             "AutoBlade. Never cut.",
+        note="Never cut in this project.",
     ),
     Preset(
         name="Plain paper test",
-        description="Alignment proofing on ordinary paper. Cuts through, "
-                    "costs nothing.",
+        description="Cut a sample from ordinary paper.",
         origin="silhouette",
         settings=dict(force=15, speed=10, depth=2, passes=1,
                       blade_diameter_mm=0.9, lift_head=True, media=132,
                       acceleration=3),
-        note="Silhouette's own 'Print Paper' setting, verbatim from "
-             "condition.csv. Use this for every first run of a new template: "
-             "it proves the registration and the geometry without spending "
-             "card.",
+        note="Studio’s Print Paper preset.",
     ),
     Preset(
         name="Pen, no blade",
-        description="Draw the cut lines instead of cutting them.",
+        description="Draw the cut lines with a sketch pen.",
         origin="silhouette",
         settings=dict(force=18, speed=10, passes=1, blade_diameter_mm=0.0,
                       lift_head=False, media=132, acceleration=3),
-        note="Silhouette's own 'Silhouette Sketch Pen' setting. Its tool "
-             "offset is 0 where every blade in the file is 18, which is "
-             "exactly inkscape-silhouette's recovered note that the FC "
-             "command is ' 0 for the pen, 18 for cutting' - the vendor's data "
-             "confirming a captured value. The safest possible way to check "
-             "a template against a printed sheet: put a pen in the holder "
-             "and let it trace where it would have cut.",
+        note="Studio’s Silhouette Sketch Pen preset.",
     ),
 )
 
@@ -190,9 +137,8 @@ _LEGACY_BY_NAME = {p.name: p for p in _LEGACY}
 _STARTING = dataclasses.replace(
     _LEGACY_BY_NAME["Card Maker starting point"], name=STARTING_NAME,
     settings={**_LEGACY_BY_NAME["Card Maker starting point"].settings, "track_enhancing": True},
-    description="One-pass baseline from the Silhouette Card Maker community guide.",
-    note="Start here for the Card Maker method, or use a Studio factory preset for your material. "
-         "Cut a test on matching stock before sending the job.")
+    description="One pass to see how your material cuts.",
+    note="From the Silhouette Card Maker guide. Try it on a scrap of the same stock.")
 
 _FACTORY_REFERENCE = {
     "Coverstock": "Coverstock (Silhouette)",
@@ -204,12 +150,12 @@ _FACTORY_REFERENCE = {
 BUILTIN = (_STARTING, *(dataclasses.replace(
     _LEGACY_BY_NAME[previous], name=name,
     settings={**_LEGACY_BY_NAME[previous].settings, "track_enhancing": name in ("Cardstock", "Coverstock")},
-    note="Recorded from the Silhouette Studio 5.0.556.1 factory material database.")
+    note="From Silhouette Studio’s factory settings.")
     for name, previous in _FACTORY_REFERENCE.items()),
     # Values recorded in docs/FINDINGS.md, section 15.
     *(Preset(name, "Silhouette Studio factory setting.", "silhouette",
              dict(force=force, speed=speed, passes=passes, depth=depth, track_enhancing=True),
-             "Recorded from the Silhouette Studio 5.0.556.1 factory material database.")
+             "From Silhouette Studio’s factory settings.")
       for name, force, speed, passes, depth in (
           ("Adhesive-Backed Cardstock", 29, 3, 1, 4), ("Textured Cardstock", 30, 4, 1, 3),
           ("Glitter Cardstock", 33, 3, 2, 6), ("Chipboard", 33, 1, 2, 5))))
@@ -318,8 +264,8 @@ def save_blade_settings(name: str, *, force: int, speed: int, depth: int | None,
     elif CutSettings(**settings) == preset.cut_settings():
         return None
     return save(dataclasses.replace(
-        preset, origin="derived", settings=settings, description="Locally edited preset.",
-        note="User-selected settings. Never cut as part of this project's verification."))
+        preset, origin="derived", settings=settings, description="Settings you saved.",
+        note="Saved without a recorded test. Never cut as part of this project’s verification."))
 
 
 def save_tested_settings(name, settings, cutter):
@@ -329,7 +275,7 @@ def save_tested_settings(name, settings, cutter):
     if any(name.casefold() == existing.casefold() for existing in all_presets(cutter)):
         raise ValueError("That preset name already exists. Add a detail such as the weight or finish.")
     preset = Preset(name, f"Tested on {cutter}.", "measured", dataclasses.asdict(settings),
-                    f"Clean cut confirmed by the operator on {date.today().isoformat()} using {cutter}.")
+                    f"Clean cut checked on {date.today().isoformat()} with {cutter}.")
     return save(preset)
 
 

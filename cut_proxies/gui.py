@@ -36,10 +36,11 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 
 from . import (actions, bluetooth, bundle, config, corner_test, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
                starting_guide, template, testcut, toolpath, transport)  # noqa: E402
+from .desktop_help import CONTROL_HELP, SETUP_STEPS  # noqa: E402
 
 APP_ID = "org.printing.SilhouetteControlCenter"
 PREVIEW_MODES = ("Cut paths", "Print PDF", "Overlay")
@@ -97,6 +98,17 @@ def _switch(title, active, subtitle=None):
     return row
 
 
+def _special_value(row, value, text):
+    def display(spin):
+        if spin.get_value() == value:
+            spin.set_text(text)
+            return True
+        return False
+
+    row.connect("output", display)
+    return row
+
+
 def _transport_options(connection):
     mode, identifier, *channel = connection
     options = {"bluetooth_id": identifier} if mode in bluetooth.BLUETOOTH_MODES else {}
@@ -128,12 +140,16 @@ class ControlPage(Gtk.ScrolledWindow):
 class Preview(Gtk.DrawingArea):
     """Draws the sheet, the marks, their exclusion zones and the cut paths."""
 
-    __gsignals__ = {"pdf-changed": (GObject.SignalFlags.RUN_LAST, None, ())}
+    __gsignals__ = {"pdf-changed": (GObject.SignalFlags.RUN_LAST, None, ()),
+                    "zoom-changed": (GObject.SignalFlags.RUN_LAST, None, (float,))}
 
     def __init__(self):
         super().__init__()
         self.mode = "Overlay"
         self.job = None
+        self.trial = None
+        self.zoom = 1.0
+        self.pan = self.pan_start = (0, 0)
         self.sheet = None          # a sheet.SheetReport, when a PDF is loaded
         self.pdf_surface = None
         self.pdf_size_mm = None
@@ -143,9 +159,55 @@ class Preview(Gtk.DrawingArea):
         self.set_content_height(300)
         self.set_hexpand(True)
         self.set_vexpand(True)
+        pan = Gtk.GestureDrag(button=1)
+        pan.connect("drag-begin", lambda *_: setattr(self, "pan_start", self.pan))
+        pan.connect("drag-update", self.pan_preview)
+        self.add_controller(pan)
+        scroll = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.VERTICAL)
+        scroll.connect("scroll", self.scroll_zoom)
+        self.add_controller(scroll)
 
     def set_job(self, job):
+        before = self.page_size()
         self.job = job
+        if self.page_size() != before:
+            self.fit()
+        self.queue_draw()
+
+    def set_trial(self, trial):
+        if trial != self.trial:
+            previous = self.page_size()
+            self.trial = trial
+            if self.page_size() != previous:
+                self.fit()
+            self.queue_draw()
+
+    def page_size(self):
+        if self.trial:
+            return self.trial.placement.width, self.trial.placement.height
+        if self.job:
+            return self.job.grid.sheet_w_mm, self.job.grid.sheet_h_mm
+        return self.pdf_size_mm
+
+    def fit(self):
+        self.zoom = 1.0
+        self.pan = (0, 0)
+        self.emit("zoom-changed", self.zoom)
+        self.queue_draw()
+
+    def zoom_by(self, factor):
+        self.zoom = min(8.0, max(0.3, self.zoom * factor))
+        self.emit("zoom-changed", self.zoom)
+        self.queue_draw()
+
+    def scroll_zoom(self, controller, _dx, dy):
+        if not dy or not controller.get_current_event_state() & Gdk.ModifierType.CONTROL_MASK:
+            return False
+        self.zoom_by(1.25 if dy < 0 else 0.8)
+        return True
+
+    def pan_preview(self, _gesture, dx, dy):
+        self.pan = self.pan_start[0] + dx, self.pan_start[1] + dy
         self.queue_draw()
 
     def set_sheet(self, report):
@@ -153,12 +215,15 @@ class Preview(Gtk.DrawingArea):
         self.queue_draw()
 
     def set_pdf(self, png=None, width_mm=None, height_mm=None):
+        before = self.page_size()
         had_pdf = self.pdf_surface is not None
         self.pdf_surface = (cairo.ImageSurface.create_from_png(io.BytesIO(png))
                             if png is not None else None)
         self.pdf_size_mm = (width_mm, height_mm) if png is not None else None
         if had_pdf != (self.pdf_surface is not None):
             self.emit("pdf-changed")
+        if self.page_size() != before:
+            self.fit()
         self.queue_draw()
 
     def set_mode(self, mode):
@@ -174,11 +239,42 @@ class Preview(Gtk.DrawingArea):
         scale = min((width - 32) / sheet_width, (height - 32) / sheet_height)
         return (width - sheet_width * scale) / 2, (height - sheet_height * scale) / 2, scale
 
+    def apply_camera(self, cr, width, height, sheet_width, sheet_height):
+        _, _, scale = self.viewport(width, height, sheet_width, sheet_height)
+        scale = max(0.01, scale * self.zoom)
+        cr.translate((width - sheet_width * scale) / 2 + self.pan[0],
+                     (height - sheet_height * scale) / 2 + self.pan[1])
+        cr.scale(scale, scale)
+        return scale
+
+    def draw_trial(self, cr, width, height):
+        sheet_w, sheet_h = self.page_size()
+        scale = self.apply_camera(cr, width, height, sheet_w, sheet_h)
+        cr.set_source_rgb(1, 1, 1)
+        cr.rectangle(0, 0, sheet_w, sheet_h)
+        cr.fill_preserve()
+        cr.set_line_width(1 / scale)
+        cr.set_source_rgb(0.55, 0.62, 0.68)
+        cr.stroke()
+        sample = self.trial.sheet.cells[0].rect
+        cr.rectangle(sample.x, sample.y, sample.w, sample.h)
+        cr.set_source_rgba(0.18, 0.56, 0.69, 0.17)
+        cr.fill_preserve()
+        cr.set_source_rgb(0.10, 0.43, 0.53)
+        cr.stroke()
+        cr.select_font_face("Sans")
+        cr.set_font_size(max(3, 11 / scale))
+        cr.move_to(sample.x2 + 2, sample.y + 5)
+        cr.show_text("Test cut")
+
     def _draw(self, _area, cr, width, height):
         dark = Adw.StyleManager.get_default().get_dark()
-        bg = (0.13, 0.13, 0.14) if dark else (0.95, 0.95, 0.96)
+        bg = (0.14, 0.15, 0.17) if dark else (0.89, 0.90, 0.92)
         cr.set_source_rgb(*bg)
         cr.paint()
+        if self.trial:
+            self.draw_trial(cr, width, height)
+            return
 
         pdf = self.pdf_surface if self.mode != "Cut paths" or self.job is None else None
         pdf_size = self.pdf_size_mm if pdf is not None else None
@@ -195,11 +291,7 @@ class Preview(Gtk.DrawingArea):
 
         W, H = (j.grid.sheet_w_mm, j.grid.sheet_h_mm) if j else pdf_size
         canvas_w, canvas_h = (max(W, pdf_size[0]), max(H, pdf_size[1])) if pdf_size else (W, H)
-        x, y, scale = self.viewport(width, height, canvas_w, canvas_h)
-        if scale <= 0:
-            return
-        cr.translate(x, y)
-        cr.scale(scale, scale)
+        scale = self.apply_camera(cr, width, height, canvas_w, canvas_h)
         hair = 1.0 / scale
 
         # the sheet
@@ -355,6 +447,7 @@ class Window(Adw.ApplicationWindow):
         self._building = False
         self._sending = False
         self._checking_status = False
+        self.tuning = False
         self.guide = starting_guide.Guide()
         self._suppress = True        # don't rebuild while constructing rows
 
@@ -371,24 +464,37 @@ class Window(Adw.ApplicationWindow):
         self.stack = Adw.ViewStack()
         switcher = Adw.ViewSwitcher(stack=self.stack,
                                     policy=Adw.ViewSwitcherPolicy.WIDE)
-        header.set_title_widget(switcher)
+        header.set_title_widget(Adw.WindowTitle(title="Silhouette Control Center"))
         outer.add_top_bar(header)
 
+        setup = Gtk.Button(label="Setup Guide")
+        setup.connect("clicked", self.show_setup_guide)
+        header.pack_start(setup)
+
+        workspace = Gtk.Box(spacing=4)
         self.design_button = Gtk.Button(label='Design')
         self.design_button.connect('clicked', self.on_edit_template)
-        header.pack_start(self.design_button)
+        self.design_button.set_tooltip_text("Draw or edit cut paths.")
+        workspace.append(self.design_button)
+        self.send_workspace = Gtk.Button(label="Send", css_classes=["suggested-action"])
+        self.send_workspace.connect("clicked", self.on_review_send)
+        self.send_workspace.set_tooltip_text("Review the job and cutter settings.")
+        workspace.append(self.send_workspace)
+        header.pack_end(workspace)
 
         self.banner = Adw.Banner(revealed=False)
         outer.add_top_bar(self.banner)
 
-        # preview on the right, pages on the left
         split = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL,
-                          wide_handle=True, position=520,
-                          resize_start_child=True, resize_end_child=True,
+                          wide_handle=True, position=700,
+                          resize_start_child=True, resize_end_child=False,
                           shrink_start_child=False, shrink_end_child=False)
         self.split = split
-        split.set_start_child(self.stack)
-        self.stack.set_hexpand(True)
+        settings = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        settings.set_size_request(370, -1)
+        settings.append(switcher)
+        settings.append(self.stack)
+        split.set_end_child(settings)
 
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         right.set_size_request(320, -1)
@@ -398,8 +504,8 @@ class Window(Adw.ApplicationWindow):
         right.set_margin_end(12)
         self.preview = Preview()
         preview_bar = Gtk.Box(spacing=8)
-        preview_title = Gtk.Label(label="Preview", xalign=0, hexpand=True, css_classes=["heading"])
-        preview_bar.append(preview_title)
+        self.preview_title = Gtk.Label(label="Sheet preview", xalign=0, hexpand=True, css_classes=["heading"])
+        preview_bar.append(self.preview_title)
         self.preview_mode = Gtk.DropDown.new_from_strings(PREVIEW_MODES)
         self.preview_mode.set_selected(PREVIEW_MODES.index("Overlay"))
         self.preview_mode.set_visible(False)
@@ -407,20 +513,31 @@ class Window(Adw.ApplicationWindow):
         self.preview_mode.connect("notify::selected", lambda picker, *_: self.preview.set_mode(
             PREVIEW_MODES[picker.get_selected()]))
         self.preview.connect("pdf-changed", lambda preview: self.preview_mode.set_visible(
-            preview.pdf_surface is not None))
+            not self.tuning and preview.pdf_surface is not None))
         preview_bar.append(self.preview_mode)
-        self.colorblind_toggle = Gtk.CheckButton(label='Colorblind mode')
-        self.colorblind_toggle.set_tooltip_text('Blue/orange outlines, dashed failures and OK/! labels')
-        self.colorblind_toggle.connect('toggled', self.on_colorblind_changed)
-        self.colorblind_toggle.set_active(bool(config.load_settings().get('colorblind_mode', False)))
-        preview_bar.append(self.colorblind_toggle)
+        zoom = Gtk.Box(spacing=4)
+        for label, tip, action in (("−", "Zoom out", lambda: self.preview.zoom_by(0.8)),
+                                   ("+", "Zoom in", lambda: self.preview.zoom_by(1.25)),
+                                   ("Fit", "Show the whole sheet", self.preview.fit)):
+            widget = Gtk.Button(label=label, tooltip_text=tip)
+            widget.connect("clicked", lambda _button, call=action: call())
+            zoom.append(widget)
+        self.preview_zoom = Gtk.Label(label="100%", width_chars=5)
+        zoom.insert_child_after(self.preview_zoom, zoom.get_first_child())
+        self.preview.connect("zoom-changed", lambda _preview, value: self.preview_zoom.set_label(f"{value:.0%}"))
+        preview_bar.append(zoom)
         right.append(preview_bar)
         frame = Gtk.Frame()
         frame.set_child(self.preview)
         right.append(frame)
 
-        summary = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        summary.add_css_class('card')
+        self.colorblind_toggle = Gtk.CheckButton(label='Colorblind mode')
+        self.colorblind_toggle.set_tooltip_text('Use blue and orange. Failed checks also get a label or dashed outline.')
+        self.colorblind_toggle.connect('toggled', self.on_colorblind_changed)
+        self.colorblind_toggle.set_active(bool(config.load_settings().get('colorblind_mode', False)))
+
+        self.summary_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.summary_card.add_css_class('card')
         inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         for side in ('top', 'bottom', 'start', 'end'):
             getattr(inner, 'set_margin_' + side)(14)
@@ -439,11 +556,14 @@ class Window(Adw.ApplicationWindow):
         inner.append(self.summary_layout)
         inner.append(self.summary_material)
         inner.append(self.summary_note)
-        summary.append(inner)
-        right.append(summary)
+        self.summary_card.append(inner)
+        right.append(self.summary_card)
 
-        self.advanced_toggle = Gtk.CheckButton(label='Advanced details')
-        right.append(self.advanced_toggle)
+        self.preview_options = Gtk.Box(spacing=16)
+        self.advanced_toggle = Gtk.CheckButton(label='Job details')
+        self.preview_options.append(self.advanced_toggle)
+        self.preview_options.append(self.colorblind_toggle)
+        right.append(self.preview_options)
         self.checks = Gtk.Label(xalign=0, wrap=True, selectable=True)
         self.checks.add_css_class("monospace")
         self.checks.add_css_class("dim-label")
@@ -455,7 +575,7 @@ class Window(Adw.ApplicationWindow):
         self.advanced_toggle.connect('toggled',
             lambda toggle: self.advanced_panel.set_visible(toggle.get_active()))
         right.append(scroller)
-        split.set_end_child(right)
+        split.set_start_child(right)
 
         outer.set_content(split)
 
@@ -463,6 +583,7 @@ class Window(Adw.ApplicationWindow):
         self._page_sheet()
         self._page_blade()
         self._page_cut()
+        self.add_control_help()
         outer.add_bottom_bar(self._send_bar())
 
         self._suppress = False
@@ -470,8 +591,11 @@ class Window(Adw.ApplicationWindow):
         self.stack.connect("notify::visible-child-name", self.on_page_changed)
 
     def on_page_changed(self, stack, _param):
+        page = stack.get_visible_child_name()
+        if page != "cut":
+            self.tuning = False
         self.update_send_actions()
-        if stack.get_visible_child_name() == "blade":
+        if page == "blade":
             self.on_refresh_status()
 
     def _send_bar(self):
@@ -486,6 +610,9 @@ class Window(Adw.ApplicationWindow):
         self.cut_button.add_css_class("destructive-action")
         self.cut_button.connect("clicked", self.on_cut)
         bar.pack_end(self.cut_button)
+        self.back_to_send = Gtk.Button(label="Back to Send", css_classes=["suggested-action"])
+        self.back_to_send.connect("clicked", self.close_material_guide)
+        bar.pack_end(self.back_to_send)
         return bar
 
     def send_review_destination(self):
@@ -499,6 +626,8 @@ class Window(Adw.ApplicationWindow):
         return "cut", "Review Send"
 
     def on_review_send(self, *_args):
+        if self.tuning:
+            self.close_material_guide()
         destination, _ = self.send_review_destination()
         if destination == "design":
             self.on_edit_template()
@@ -511,8 +640,9 @@ class Window(Adw.ApplicationWindow):
         page = self.stack.get_visible_child_name()
         destination, label = self.send_review_destination()
         self.review_send.set_label(label)
-        self.review_send.set_visible(page != destination)
-        self.cut_button.set_visible(page == "cut" and destination == "cut")
+        self.review_send.set_visible(not self.tuning and page != destination)
+        self.cut_button.set_visible(not self.tuning and page == "cut" and destination == "cut")
+        self.back_to_send.set_visible(self.tuning)
         job = self.job
         mode, identifier, *_ = self._connection()
         reason = (
@@ -530,10 +660,60 @@ class Window(Adw.ApplicationWindow):
             reason = "Set at least one pass to send cut paths."
         self.cut_button.set_sensitive(not reason)
         self.corner_button.set_sensitive(not reason)
-        status = reason or f"{len(job.paths)} paths · {job.device.name} · {'Registration on' if job.registration else 'Registration off'}"
+        status = ("Blank test stock · Registration off for samples" if self.tuning else reason or
+                  f"{len(job.paths)} paths · {job.device.name} · {'Registration on' if job.registration else 'Registration off'}")
         self.send_status.set_label(status)
         self.send_status.set_tooltip_text(status)
         self.update_guide()
+        self.update_tuning_preview()
+
+    def show_setup_guide(self, *_args):
+        dialog = Adw.AlertDialog(heading="Set Up Your First Cut", body=SETUP_STEPS)
+        dialog.add_response("close", "Close")
+        dialog.add_response("tune", "Dial In a Material…")
+        dialog.set_response_appearance("tune", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_close_response("close")
+        dialog.connect("response::tune", self.open_material_guide)
+        dialog.present(self)
+
+    def open_material_guide(self, *_args):
+        self.stack.set_visible_child_name("cut")
+        self.tuning = True
+        self.update_send_actions()
+        GLib.idle_add(self.scroll_to_guide)
+
+    def scroll_to_guide(self):
+        if self.tuning and self.send_page.get_mapped():
+            placed, bounds = self.guide_group.compute_bounds(self.send_page.controls)
+            if placed:
+                self.send_page.get_vadjustment().set_value(max(0, bounds.get_y() - 12))
+        return GLib.SOURCE_REMOVE
+
+    def close_material_guide(self, *_args):
+        self.tuning = False
+        self.send_page.get_vadjustment().set_value(0)
+        self.update_send_actions()
+
+    def adjust_guide_settings(self, *_args):
+        if self.guide.trial:
+            self.on_guide_next()
+        self.stack.set_visible_child_name("blade")
+
+    def update_tuning_preview(self):
+        trial = None
+        if self.tuning:
+            trial = self.guide.trial
+            if trial is None:
+                try:
+                    trial = self.guide_proposal()
+                except (ValueError, KeyError):
+                    pass
+        self.preview.set_trial(trial)
+        self.preview_title.set_label("Material test sheet" if trial else "Sheet preview")
+        self.preview_mode.set_visible(not self.tuning and self.preview.pdf_surface is not None)
+        self.summary_card.set_visible(not self.tuning)
+        self.preview_options.set_visible(not self.tuning)
+        self.advanced_panel.set_visible(not self.tuning and self.advanced_toggle.get_active())
 
     # ---- pages -------------------------------------------------------
     def _page_layout(self):
@@ -541,7 +721,7 @@ class Window(Adw.ApplicationWindow):
 
         group = Adw.PreferencesGroup(
             title='Printed-sheet preset',
-            description='Matches the current Proxy Press Silhouette Cameo setup. Blade settings are separate.')
+            description='Choose the layout you printed.')
         self.r_layout_preset = _combo(
             'Layout preset', ['Custom'] + [p.name for p in layout_presets.BUILTIN.values()])
         self.r_layout_preset.connect('notify::selected', self.on_layout_preset)
@@ -550,12 +730,13 @@ class Window(Adw.ApplicationWindow):
 
         gsrc = Adw.PreferencesGroup(
             title="What to cut",
-            description="Use a generated layout or open an Inkscape SVG or DXF cut file.")
+            description="Use a card layout or open your cut file.")
         self.import_row = Adw.ActionRow(
             title="Generated layout",
             subtitle="Using the sheet and card settings below")
         self.import_row.set_subtitle_lines(0)
-        open_btn = Gtk.Button(label="Open SVG, DXF or Studio3…")
+        open_btn = Gtk.Button(label="Open Cut Artwork…")
+        open_btn.set_tooltip_text("Open an SVG, DXF, or Studio3 file.")
         open_btn.set_valign(Gtk.Align.CENTER)
         open_btn.connect("clicked", self.on_open_artwork)
         clear_btn = Gtk.Button(label="Clear")
@@ -564,23 +745,16 @@ class Window(Adw.ApplicationWindow):
         self.import_row.add_suffix(open_btn)
         self.import_row.add_suffix(clear_btn)
         gsrc.add(self.import_row)
-        self.r_colour = _combo(
-            "Cut only this line colour", ["all colours"],
-            subtitle="Studio's cut-by-colour: a file can carry both cut "
-                     "lines and printed guides")
+        self.r_colour = _combo("Line color", ["all colours"], subtitle="Cut only lines of this color.")
         self.r_colour.connect("notify::selected", self.on_changed)
         gsrc.add(self.r_colour)
         page.add(gsrc)
 
-        g = Adw.PreferencesGroup(
-            title="Sheet and cards",
-            description="The grid has to match the sheet that was printed. "
-                        "Pick the engine that produced it.")
+        g = Adw.PreferencesGroup(title="Sheet and cards")
         self.r_engine = _combo(
             "Layout engine",
             ["Silhouette Card Maker", "Proxy Press"],
-            subtitle="Card Maker centres cards in an inset usable area; "
-                     "Proxy Press centres the grid on the whole sheet")
+            subtitle="Choose the app that laid out your cards.")
         self.r_sheet = _combo("Sheet", sorted(geometry.SHEETS),
                               sorted(geometry.SHEETS).index("Letter"))
         self.r_card = _combo("Card size", sorted(geometry.CARDS),
@@ -597,34 +771,24 @@ class Window(Adw.ApplicationWindow):
         self.r_mode = _combo(
             "Cut mode", ["rounded", "square", "cross"],
             subtitle="cross cuts straight across for a corner punch")
-        self.r_radius = _spin("Corner radius", 0, 10, 3.2, 0.1, 1,
-                              subtitle="mm; 3.2 mm MTG standard, 3 mm for Kadomaru punches")
+        self.r_radius = _spin("Corner radius (mm)", 0, 10, 3.2, 0.1, 1)
         g2.add(self.r_mode)
         g2.add(self.r_radius)
         page.add(g2)
 
         g3 = Adw.PreferencesGroup(
             title="Registration marks",
-            description="These are printed, not cut. They must match what is "
-                        "on the sheet exactly, or the sensor will not find "
-                        "them.")
+            description="Match the marks on your print.")
         self.r_pattern = _combo(
             "Pattern", list(regmarks.PATTERNS),
-            subtitle="three = every Cameo; four = Cameo 5 Alpha only")
-        self.r_inset = _spin("Inset from the paper edge", 2, 40, 10.0, 0.5, 1,
-                             subtitle="mm; 10 standard, 3.5 borderless "
-                                      "(needed for a 3x3 nine-card sheet)")
-        self.r_length = _spin("Arm length", 0, 20, 0.0, 0.5, 1,
-                              subtitle="mm; 0 means the longest that clears "
-                                       "the cards")
-        self.r_thickness = _spin("Line thickness", 0.5, 1.0, 1.0, 0.1, 1,
-                                 subtitle="mm; the machine accepts 0.5 to 1.0")
-        self.r_bleed = _spin("Bleed around each card", 0, 5, 0.0, 0.25, 2,
-                             subtitle="mm; used for the collision check")
+            subtitle="Four marks are for Cameo 5 Alpha.")
+        self.r_inset = _spin("Inset (mm)", 2, 40, 10.0, 0.5, 1)
+        self.r_length = _spin("Arm length (mm)", 0, 20, 0.0, 0.5, 1)
+        _special_value(self.r_length, 0, "Auto")
+        self.r_thickness = _spin("Line thickness (mm)", 0.5, 1.0, 1.0, 0.1, 1)
+        self.r_bleed = _spin("Bleed (mm)", 0, 5, 0.0, 0.25, 2)
         self.r_skip = Adw.EntryRow(title="Skip slots")
-        self.r_skip.set_tooltip_text(
-            "Comma-separated 0-based card numbers to leave uncut, for slots "
-            "printed empty so a card stops crowding a mark.")
+        self.r_skip.set_tooltip_text("Enter card numbers to skip, such as 0, 3. The first card is 0.")
         for r in (self.r_pattern, self.r_inset, self.r_length,
                   self.r_thickness, self.r_bleed, self.r_skip):
             g3.add(r)
@@ -655,12 +819,7 @@ class Window(Adw.ApplicationWindow):
 
     def _page_sheet(self):
         page = ControlPage()
-        g = Adw.PreferencesGroup(
-            title="The printed sheet",
-            description="Measure where the registration marks actually are, "
-                        "instead of trusting that the print matched the "
-                        "template. This is the question the cutter's sensor "
-                        "asks.")
+        g = Adw.PreferencesGroup(title="Printed sheet", description="Open your print file and check its marks.")
         self.sheet_row = Adw.ActionRow(title="No PDF loaded",
                                        subtitle="Pick the sheet you printed")
         self.sheet_row.set_subtitle_lines(0)
@@ -676,11 +835,8 @@ class Window(Adw.ApplicationWindow):
         self.bundle_export.set_visible(False)
         g.add(self.bundle_export)
 
-        self.r_sheet_page = _spin("Page", 1, 99, 1, 1, 0,
-                                  subtitle="which page of the PDF to measure")
-        self.r_sheet_dpi = _combo("Render resolution", ["150", "200", "300"], 1,
-                                  subtitle="higher is slower and barely more "
-                                           "accurate")
+        self.r_sheet_page = _spin("Page", 1, 99, 1)
+        self.r_sheet_dpi = _combo("Preview resolution (dpi)", ["150", "200", "300"], 1)
         g.add(self.r_sheet_page)
         g.add(self.r_sheet_dpi)
         self.r_sheet_page.connect('notify::value', self.on_sheet_number_changed)
@@ -696,11 +852,7 @@ class Window(Adw.ApplicationWindow):
         g.add(remeasure)
         page.add(g)
 
-        g2 = Adw.PreferencesGroup(
-            title="PDF registration check",
-            description="Each row in the result names the mark and its measured "
-                        "position in the PDF. Use Cut → Calibration for a "
-                        "correction measured on a physical pen test.")
+        g2 = Adw.PreferencesGroup(title="PDF registration check")
         self.sheet_result = Adw.ActionRow(title="Not measured", subtitle="")
         self.sheet_result.set_subtitle_lines(0)
         g2.add(self.sheet_result)
@@ -719,56 +871,39 @@ class Window(Adw.ApplicationWindow):
         names = sorted(presets.all_presets())
         default = (names.index(config.DEFAULT_PRESET)
                    if config.DEFAULT_PRESET in names else 0)
-        g = Adw.PreferencesGroup(
-            title="Preset",
-            description="Every number below is an index the machine uses, not "
-                        "grams or mm per second. The mapping is not published.")
+        g = Adw.PreferencesGroup(title="Material preset")
         self.r_preset = _combo("Preset", names, default)
         self.preset_changed_id = self.r_preset.connect("notify::selected", self.on_preset)
         g.add(self.r_preset)
-        self.preset_note = Adw.ActionRow(title="Provenance", subtitle="")
+        self.preset_note = Adw.ActionRow(title="About this preset", subtitle="")
         self.preset_note.set_subtitle_lines(0)
         g.add(self.preset_note)
+        self.guide_button(g, "Dial In a Material…", self.open_material_guide)
         page.add(g)
 
-        g2 = Adw.PreferencesGroup(
-            title="Blade",
-            description="Tuning order: passes, then force, then speed, then "
-                        "depth. On heavy stock, multi-pass cuts cleaner. If "
-                        "laminate edges ripple, reduce force. If machine "
-                        "skips, reduce speed.")
+        g2 = Adw.PreferencesGroup(title="Cutter and blade")
         self.r_cutter = _combo(
             "Cutter", [d.name for d in graphtec.DEVICES],
             [d.name for d in graphtec.DEVICES].index("Silhouette Cameo 4"))
-        self.r_force = _spin("Force", 1, 40, 30, 1, 0,
-                             subtitle="1-33 on a Cameo 4; 40 on the Alpha")
-        self.r_speed = _spin("Speed", 1, 30, 3, 1, 0,
-                             subtitle="Silhouette's own tables never exceed "
-                                      "10; the community guide uses 25")
-        self.r_passes = _spin("Passes", 1, 10, 3, 1, 0,
-                              subtitle="tune this first, before force")
-        self.r_depth = _spin("AutoBlade depth", -1, 10, 7, 1, 0,
-                             subtitle="-1 leaves the blade alone; 0 retracts it. A "
-                                      "ceiling, not a cut amount.")
-        self.r_holder = _spin("Tool holder", 1, 2, 1, subtitle="Holder 2 requires a dual-carriage cutter")
-        self.r_acceleration = _spin("Acceleration", -1, 3, -1,
-                                    subtitle="-1 uses the automatic acceleration sequence")
-        self.r_diameter = _spin("Blade diameter (mm)", 0, 2.3, 0.9, 0.05, 2,
-                                subtitle="Cutter offset from the tool setting; 0 for a pen")
+        self.r_force = _spin("Force", 1, 40, 30)
+        self.r_speed = _spin("Speed", 1, 30, 3)
+        self.r_passes = _spin("Passes", 1, 10, 3)
+        self.r_depth = _special_value(_spin("Blade Depth", -1, 10, 7), -1, "Manual / off")
+        self.r_holder = _spin("Tool Holder", 1, 2, 1)
+        self.r_acceleration = _special_value(_spin("Acceleration", -1, 3, -1), -1, "Auto")
+        self.r_diameter = _spin("Tool Offset (mm)", 0, 2.3, 0.9, 0.05, 2)
         self.r_lift = _switch("Lift head", True)
-        self.r_corners = _switch("Line Segment Overcut", False,
-                                 subtitle="Lift the blade and extend cuts at sharp corners")
+        self.r_corners = _switch("Line Segment Overcut", False)
         self.r_corner_start = _spin("Start Extension (mm)", 0, 0.9, 0.1, 0.1, 1)
         self.r_corner_end = _spin("End Extension (mm)", 0, 0.9, 0.1, 0.1, 1)
-        self.r_track = _switch("Track Enhancing", False,
-                                subtitle="Run the rollers before registration or cutting")
+        self.r_track = _switch("Track Enhancing", False)
         for r in (self.r_cutter, self.r_force, self.r_speed, self.r_passes,
                   self.r_depth, self.r_holder, self.r_acceleration, self.r_diameter,
                   self.r_lift, self.r_corners, self.r_corner_start, self.r_corner_end,
                   self.r_track):
             g2.add(r)
-        self.tool_row = Adw.ActionRow(title="Installed tools", subtitle="Read the tool IDs from the connected cutter")
-        detect = Gtk.Button(label="Detect blades", valign=Gtk.Align.CENTER)
+        self.tool_row = Adw.ActionRow(title="Installed tools", subtitle="See what is in each holder.")
+        detect = Gtk.Button(label="Detect Installed Tools", valign=Gtk.Align.CENTER)
         detect.connect("clicked", self.on_refresh_status)
         self.tool_row.add_suffix(detect)
         g2.add(self.tool_row)
@@ -781,7 +916,7 @@ class Window(Adw.ApplicationWindow):
         save_preset.add_suffix(self.save_preset_btn)
         g2.add(save_preset)
         self.new_preset_name = Adw.EntryRow(title="New preset name")
-        create = Gtk.Button(label="Save as new preset", valign=Gtk.Align.CENTER)
+        create = Gtk.Button(label="Save as New", valign=Gtk.Align.CENTER)
         create.connect("clicked", lambda *_: self.on_save_blade_preset(
             new_name=self.new_preset_name.get_text()))
         self.new_preset_name.add_suffix(create)
@@ -791,8 +926,7 @@ class Window(Adw.ApplicationWindow):
         paths = Adw.PreferencesGroup(title="Cut paths")
         self.r_path_order = _combo("Cut Order Sorting", list(toolpath.PATH_ORDERS.values()))
         self.r_interiors = _switch("Sort Interior Contours First", False)
-        self.r_delicate = _switch("Delicate Media Path", False,
-                                  subtitle="Software alternative to Intelligent Path Technology")
+        self.r_delicate = _switch("Delicate Media Path", False)
         self.r_pass_order = _combo("Pass order", list(toolpath.PASS_ORDERS.values()))
         self.r_alternate = _switch("Alternate pass direction", False)
         self.r_overcut = _spin("Seam Overcut (mm)", 0, 1000, 0, 0.1, 2,
@@ -812,10 +946,8 @@ class Window(Adw.ApplicationWindow):
         page.add(self.weed_group)
 
         g3 = Adw.PreferencesGroup(
-            title="Silhouette's own material settings",
-            description="Read from Studio's condition.csv. Coverstock is the "
-                        "heaviest paper they publish a setting for, and this "
-                        "suite prints on something heavier.")
+            title="Studio materials",
+            description="Import Studio’s condition.csv to add its factory presets.")
         self.r_cutter_divisions = _combo("Show Cutter Divisions", ["Known Cutters", "All Cutters"])
         self.r_cutter_divisions.connect("notify::selected", self._load_materials)
         g3.add(self.r_cutter_divisions)
@@ -829,7 +961,7 @@ class Window(Adw.ApplicationWindow):
         apply_row.add_suffix(apply_btn)
         g3.add(self.r_material)
         csv = Adw.ActionRow(title="Local materials file")
-        choose = Gtk.Button(label="Choose condition.csv…", valign=Gtk.Align.CENTER)
+        choose = Gtk.Button(label="Import Studio Materials…", valign=Gtk.Align.CENTER)
         choose.connect("clicked", self.on_choose_material_csv)
         csv.add_suffix(choose)
         g3.add(csv)
@@ -859,33 +991,22 @@ class Window(Adw.ApplicationWindow):
         self.on_preset()
 
     def _page_cut(self):
-        page = ControlPage()
+        self.send_page = page = ControlPage()
         self.send_modes = Adw.PreferencesGroup(title="Send by")
-        self.r_send_mode = _combo("Mode", list(actions.SEND_MODES.values()))
+        self.r_send_mode = _combo("Mode", ["Standard", "Line", "Fill", "Layer"])
+        self.r_send_mode.set_tooltip_text("Use one set of cut settings, or assign settings by color or layer.")
         self.r_send_mode.connect("notify::selected", self.on_changed)
         self.send_modes.add(self.r_send_mode)
-        page.add(self.send_modes)
         self.send_groups = Adw.PreferencesGroup(
-            title="Cut groups", description="Enable the groups to send and choose their order.")
-        page.add(self.send_groups)
+            title="Cut groups", description="Choose which groups to cut and in what order.")
 
-        g = Adw.PreferencesGroup(
-            title="Registration",
-            description="The cutter finds the printed marks, then treats the "
-                        "top-left mark as the origin of every coordinate it "
-                        "is given.")
-        self.r_register = _switch(
-            "Scan for the marks", True,
-            subtitle="Off cuts in sheet coordinates. Only for a blank sheet.")
-        self.r_auto = _switch(
-            "Search automatically", True,
-            subtitle="Off expects you to park the head on the first mark "
-                     "yourself")
+        g = Adw.PreferencesGroup(title="Registration")
+        self.r_register = _switch("Scan for printed marks", True)
+        self.r_auto = _switch("Search automatically", True)
         g.add(self.r_register)
         g.add(self.r_auto)
-        test_scan = Adw.ActionRow(title="Test registration",
-                                  subtitle="Moves the mat to scan the marks without cutting")
-        self.scan_button = Gtk.Button(label="Test scan")
+        test_scan = Adw.ActionRow(title="Test registration", subtitle="Scan the marks without cutting.")
+        self.scan_button = Gtk.Button(label="Test Registration")
         self.scan_button.set_valign(Gtk.Align.CENTER)
         self.scan_button.connect("clicked", lambda *_: self.on_cut(scan_only=True))
         test_scan.add_suffix(self.scan_button)
@@ -901,7 +1022,7 @@ class Window(Adw.ApplicationWindow):
 
         g2 = Adw.PreferencesGroup(title="Cutter")
         self.status_row = Adw.ActionRow(title="Status", subtitle="not checked")
-        refresh = Gtk.Button(label="Refresh")
+        refresh = Gtk.Button(label="Check Status")
         refresh.set_valign(Gtk.Align.CENTER)
         refresh.connect("clicked", self.on_refresh_status)
         self.status_row.add_suffix(refresh)
@@ -924,6 +1045,9 @@ class Window(Adw.ApplicationWindow):
         self.r_bluetooth_id.connect("changed", self.on_connection_target_changed)
         self.r_bluetooth_channel.connect("notify::value", self.on_connection_target_changed)
         page.add(g2)
+        page.add(self.send_modes)
+        page.add(self.send_groups)
+        page.add(self.cut_settings_group())
         page.add(g)
 
         media = Adw.PreferencesGroup(title="Media handling")
@@ -944,8 +1068,9 @@ class Window(Adw.ApplicationWindow):
         media.add(self.r_show_weed)
         page.add(media)
 
-        guide = Adw.PreferencesGroup(title="Starting Guide", description=starting_guide.GUIDE_TEXT)
-        self.guide_apply = self.guide_button(guide, "Apply Starting Settings", self.on_guide_start)
+        self.guide_group = guide = Adw.PreferencesGroup(title="Dial In a Material", description=starting_guide.GUIDE_TEXT)
+        self.guide_apply, self.guide_edit = self.guide_buttons(
+            guide, ("Use Starting Settings", self.on_guide_start), ("Adjust in Blade", self.adjust_guide_settings))
         self.guide_status = Adw.ActionRow(title="Test spot 1")
         self.guide_status.set_subtitle_lines(0)
         guide.add(self.guide_status)
@@ -955,10 +1080,10 @@ class Window(Adw.ApplicationWindow):
         self.guide_advice = Adw.ActionRow(title="What to try next")
         self.guide_advice.set_subtitle_lines(0)
         guide.add(self.guide_advice)
-        self.guide_send = self.guide_button(guide, "Cut One Pass…", self.on_guide_pass)
-        self.guide_use = self.guide_button(guide, "Use Tested Settings…", self.on_guide_use)
-        self.guide_next = self.guide_button(guide, "Next Test Spot", self.on_guide_next)
-        self.guide_reset = self.guide_button(guide, "New Test Sheet", self.on_guide_reset)
+        self.guide_send, self.guide_use = self.guide_buttons(
+            guide, ("Cut One Pass…", self.on_guide_pass), ("Use Tested Settings…", self.on_guide_use))
+        self.guide_next, self.guide_reset = self.guide_buttons(
+            guide, ("Next Test Spot", self.on_guide_next), ("New Test Sheet", self.on_guide_reset))
         tips = Adw.ExpanderRow(title="Tips for adjusting the cut")
         detail = Adw.ActionRow(title="One change at a time", subtitle=starting_guide.TUNING_TIPS)
         detail.set_subtitle_lines(0)
@@ -967,11 +1092,7 @@ class Window(Adw.ApplicationWindow):
         page.add(guide)
 
         gcal = Adw.PreferencesGroup(
-            title="Calibration",
-            description="The standing error between where the sensor sees "
-                        "the marks and where the tool lands. Measure it once "
-                        "with a pen test on a registered physical print. "
-                        "Enter the correction in millimetres.")
+            title="Calibration", description="Use a pen test to measure how far to shift the cut.")
         dx, dy = config.cut_offset()
         self.r_cal_x = _spin("Offset X", -5, 5, dx, 0.05, 2,
                              subtitle="mm, positive is right")
@@ -992,8 +1113,7 @@ class Window(Adw.ApplicationWindow):
 
         gtest = Adw.PreferencesGroup(
             title="Test-Cut Matrix",
-            description="Cut each sample at its own force and pass count. "
-                        "Lift each sample without ejecting the mat.")
+            description="Try several settings on one blank sheet.")
         self.r_test_shape = _combo("Test shape", list(testcut.TEST_SHAPES.values()))
         gtest.add(self.r_test_shape)
         self.r_test_force = Adw.EntryRow(title="Force values")
@@ -1016,7 +1136,7 @@ class Window(Adw.ApplicationWindow):
         g3 = Adw.PreferencesGroup(title="Export")
         dump = Adw.ActionRow(
             title="Save the raw stream",
-            subtitle="Write the bytes to a file instead of cutting")
+            subtitle="Save the cutter commands for troubleshooting.")
         dump_btn = Gtk.Button(label="Save as...")
         dump_btn.set_valign(Gtk.Align.CENTER)
         dump_btn.connect("clicked", self.on_dump)
@@ -1026,6 +1146,58 @@ class Window(Adw.ApplicationWindow):
         page.add(g3)
 
         self.stack.add_titled_with_icon(page, "cut", "Send", "media-playback-start-symbolic")
+
+    def cut_settings_group(self):
+        group = Adw.PreferencesGroup(title="Cut Settings")
+        dial_in = Gtk.Button(label="Dial In a Material…", valign=Gtk.Align.CENTER)
+        dial_in.connect("clicked", self.open_material_guide)
+        group.set_header_suffix(dial_in)
+        self.r_send_preset = _combo("Material", [config.DEFAULT_PRESET])
+        self.send_preset_changed_id = self.r_send_preset.connect(
+            "notify::selected", lambda row, *_: self.r_preset.set_selected(row.get_selected()))
+        group.add(self.r_send_preset)
+        self.send_controls = {}
+        for field, source in (("force", self.r_force), ("speed", self.r_speed), ("passes", self.r_passes),
+                              ("depth", self.r_depth), ("holder", self.r_holder)):
+            row = Adw.SpinRow(title=source.get_title(), adjustment=source.get_adjustment())
+            row.set_digits(source.get_digits())
+            if field == "depth":
+                _special_value(row, -1, "Manual / off")
+            self.add_send_control(group, field, source, row)
+        for field, source in (("sharpen_corners", self.r_corners), ("track_enhancing", self.r_track)):
+            row = _switch(source.get_title(), source.get_active())
+            source.bind_property("active", row, "active",
+                                 GObject.BindingFlags.BIDIRECTIONAL | GObject.BindingFlags.SYNC_CREATE)
+            self.add_send_control(group, field, source, row)
+        self.guide_button(group, "Edit Blade Settings", lambda *_: self.stack.set_visible_child_name("blade"))
+        return group
+
+    def add_send_control(self, group, field, source, row):
+        source.bind_property("sensitive", row, "sensitive", GObject.BindingFlags.SYNC_CREATE)
+        self.send_controls[field] = row
+        group.add(row)
+
+    def sync_send_material(self):
+        with self.r_send_preset.handler_block(self.send_preset_changed_id):
+            model = self.r_preset.get_model()
+            if self.r_send_preset.get_model() is not model:
+                self.r_send_preset.set_model(model)
+            self.r_send_preset.set_selected(self.r_preset.get_selected())
+
+    def add_control_help(self):
+        for field, row in {
+            "force": self.r_force, "speed": self.r_speed, "passes": self.r_passes, "depth": self.r_depth,
+            "holder": self.r_holder, "acceleration": self.r_acceleration, "blade_diameter_mm": self.r_diameter,
+            "sharpen_corners": self.r_corners, "corner_start_mm": self.r_corner_start, "corner_end_mm": self.r_corner_end,
+            "track_enhancing": self.r_track, "path_order": self.r_path_order, "pass_order": self.r_pass_order,
+            "interior_first": self.r_interiors, "delicate_media": self.r_delicate, "overcut_mm": self.r_overcut,
+            "registration": self.r_register, "auto_search": self.r_auto, "mark_inset_mm": self.r_inset,
+            "mark_length_mm": self.r_length, "mark_thickness_mm": self.r_thickness, "bleed_mm": self.r_bleed,
+            "mat": self.r_mat, "end_position": self.r_end_position, "end_feed_mm": self.r_feed,
+        }.items():
+            row.set_tooltip_text(CONTROL_HELP[field])
+        for field, row in self.send_controls.items():
+            row.set_tooltip_text(CONTROL_HELP[field])
 
     def on_colorblind_changed(self, toggle):
         self.preview.set_colorblind(toggle.get_active())
@@ -1191,6 +1363,7 @@ class Window(Adw.ApplicationWindow):
     def on_changed(self, *_a):
         if self._suppress:
             return
+        self.sync_send_material()
         device = graphtec.device_by_name(self._text(self.r_cutter))
         self.r_holder.set_sensitive(device.two_tools)
         self.r_depth.set_sensitive(device.autoblade and (not device.two_tools or self.r_holder.get_value() == 1))
@@ -1295,12 +1468,7 @@ class Window(Adw.ApplicationWindow):
 
     def on_preset(self, *_a):
         p = presets.get(self._text(self.r_preset), self._text(self.r_cutter))
-        flag = {"measured": "measured on a real cut",
-                "silhouette": "from Silhouette's published settings",
-                "recovered": "from the recovered media table",
-                "guide": "from the Card Maker community guide; not measured here"}.get(
-                    p.origin, "Starting settings")
-        self.preset_note.set_subtitle(f"{flag}\n\n{p.note}")
+        self.preset_note.set_subtitle(p.note or p.description)
         was = self._suppress
         self._suppress = True
         self._load_blade_settings(p.cut_settings())
@@ -1570,6 +1738,7 @@ class Window(Adw.ApplicationWindow):
         if any(path.length_mm() <= 0 for path in artwork.paths):
             self.design.status.set_text('Resize any paths with no length before reviewing.')
             return
+        self.tuning = False
         self.template_shapes = project.shapes
         self._suppress = True
         try:
@@ -1934,7 +2103,11 @@ class Window(Adw.ApplicationWindow):
         name = self._text(self.r_material)
         m = self._materials.get(name)
         if m is None:
-            self.toast("Choose a local Silhouette condition.csv file first.")
+            self.toast("Import Studio Materials and choose a material first.")
+            return
+        if self.r_cutter_divisions.get_selected() == 0:
+            self.refresh_preset_choices(m.name)
+            self.on_preset()
             return
         was, self._suppress = self._suppress, True
         self.r_force.set_value(m.force)
@@ -1961,13 +2134,30 @@ class Window(Adw.ApplicationWindow):
         group.add(button)
         return button
 
+    @staticmethod
+    def guide_buttons(group, *actions):
+        row = Gtk.Box(spacing=6, homogeneous=True, margin_top=6)
+        buttons = []
+        for label, handler in actions:
+            button = Gtk.Button(label=label)
+            button.connect("clicked", handler)
+            row.append(button)
+            buttons.append(button)
+        group.add(row)
+        return buttons
+
     def update_guide(self):
         busy = self._sending or self._checking_status
-        for field in (self.guide_apply, self.guide_next, self.guide_reset):
+        for field in (self.guide_apply, self.guide_edit, self.guide_next, self.guide_reset):
             field.set_sensitive(not busy)
         state = self.guide
         self.guide_send.set_sensitive(not busy and state.can_cut)
         self.guide_use.set_sensitive(not busy and state.outcome == "clean" and state.tested_settings is not None)
+        for button in (self.guide_send, self.guide_use):
+            if button.get_sensitive():
+                button.add_css_class("suggested-action")
+            else:
+                button.remove_css_class("suggested-action")
         label = "Repeat One Pass…" if self.guide.completed else "Cut One Pass…"
         self.guide_send.set_label(label)
         title, _, body = self.guide.status().partition("\n")
@@ -2053,6 +2243,7 @@ class Window(Adw.ApplicationWindow):
     def on_guide_next(self, *_args):
         self.guide.next_spot()
         self.update_guide()
+        self.update_tuning_preview()
 
     def on_guide_reset(self, *_args):
         dialog = Adw.AlertDialog(heading="Start a New Test Sheet?",
@@ -2066,6 +2257,7 @@ class Window(Adw.ApplicationWindow):
             if response == "new" and not (self._sending or self._checking_status):
                 self.guide.reset()
                 self.update_guide()
+                self.update_tuning_preview()
 
         dialog.connect("response", reset)
         dialog.present(self)

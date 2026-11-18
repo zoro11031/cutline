@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, 
 
 from . import (actions, bluetooth, bundle, config, corner_test, editor_model, geometry, graphtec, importer, job,
                layout_presets, materials, presets, regmarks, starting_guide, template, testcut, toolpath, transport)
+from .desktop_help import CONTROL_HELP, SETUP_STEPS
 from .qt_canvas import PREVIEW_MODES, Preview, ZoomControls
 from .qt_controls import (WORKSPACE_STYLE, Form, Page, Tasks, bar, button, set_choices,
                           styled_label, themed_icon, workspace_switch)
@@ -44,35 +45,6 @@ BLADE_CHOICES = (
     ("path_order", "Cut Order Sorting", toolpath.PATH_ORDERS),
     ("pass_order", "Pass order", toolpath.PASS_ORDERS),
 )
-
-HELP = {
-    "force": "Pressure applied while cutting. Increase a little at a time if a test still has connected spots.",
-    "speed": "How quickly the carriage moves. Smaller or intricate shapes may benefit from a slower speed.",
-    "passes": "How many times each outline is cut. Start with one and count how many test passes separate the stock.",
-    "depth": "AutoBlade extension from 0 (retracted) to 10. Choose Manual / off to set depth directly on the tool.",
-    "holder": "The numbered slot on the cutter where you installed the tool.",
-    "acceleration": "Controls how quickly the carriage changes speed. Auto lets the cutter choose.",
-    "blade_diameter_mm": "The tool offset used to turn a drag blade through corners. Use 0 mm for a pen.",
-    "sharpen_corners": "Lift the blade at sharp turns and extend the cut by the Start and End values.",
-    "corner_start_mm": "Continue a little past the start of the segment so the cuts meet at the corner.",
-    "corner_end_mm": "Extend the end of the segment so the cuts meet at the corner.",
-    "track_enhancing": "Run the rollers before scanning or cutting. Use force 19 or higher.",
-    "path_order": "Choose whether to keep document order, shorten travel, or reduce roller movement.",
-    "pass_order": "Choose when repeated passes are made, such as finishing each shape before moving on.",
-    "interior_first": "Cut holes and other nested shapes before their surrounding outlines.",
-    "delicate_media": "Choose path starts and directions to reduce stress on delicate media.",
-    "overcut_mm": "Overlap the start and end of each closed outline to close any small gap.",
-    "registration": "Use the printed marks to line up the cut with your print. Turn off for blank media.",
-    "auto_search": "Search from the cutter's starting position. Turn off if you position the head over the first mark.",
-    "mark_inset_mm": "Distance from the paper edge to the printed marks. Match the document you printed.",
-    "mark_length_mm": "Length of each mark arm. Auto uses the longest arms that clear the layout.",
-    "mark_thickness_mm": "Width of the printed mark strokes. Match your print settings.",
-    "bleed_mm": "Printed artwork extending beyond each card edge. It is included in the clearance check.",
-    "mat": "Choose the mat you loaded, or Matless if your device and material support it.",
-    "end_position": "Return to Origin keeps the cutter at the starting point. Feed moves past the last cut.",
-    "end_feed_mm": "Distance to feed beyond the farthest cut when Feed is selected.",
-}
-
 
 class Window(QMainWindow):
     def __init__(self):
@@ -196,7 +168,7 @@ class Window(QMainWindow):
             self.sheet_page()
             self.blade_page()
             self.send_page()
-        for field, description in HELP.items():
+        for field, description in CONTROL_HELP.items():
             widget = self.blade.get(field) or self.controls.get(field)
             widget.setToolTip(description)
         self.skip.setToolTip("Comma-separated slot numbers, starting at 0 in the top-left. Skipped slots are left uncut.")
@@ -420,11 +392,7 @@ class Window(QMainWindow):
         dialog = QMessageBox(self)
         dialog.setWindowTitle("Set Up Your First Cut")
         dialog.setText("Set up your first cut")
-        dialog.setInformativeText(
-            "1. Open SVG, DXF or Studio3 artwork in Layout, start in Design, or open a matched ZIP in Sheet.\n\n"
-            "2. In Send, connect your cutter and choose a material. Use Dial In a Material to test the same stock.\n\n"
-            "3. For a printed sheet, check the PDF in Sheet and test registration in Send. "
-            "Review the preview before sending the full cut.")
+        dialog.setInformativeText(SETUP_STEPS)
         tune = dialog.addButton("Dial In a Material…", QMessageBox.ButtonRole.ActionRole)
         dialog.addButton(QMessageBox.StandardButton.Close)
         dialog.exec()
@@ -770,7 +738,7 @@ class Window(QMainWindow):
     def update_enabled_fields(self):
         device = graphtec.device_by_name(self.choice("cutter"))
         for name, upper in (("force", device.max_pressure), ("speed", device.max_speed)):
-            self.blade[name].setToolTip(f"{HELP[name]} Range on {DEVICES[device.name]} is 1–{upper}.")
+            self.blade[name].setToolTip(f"{CONTROL_HELP[name]} Range on {DEVICES[device.name]} is 1–{upper}.")
         self.blade["holder"].setEnabled(device.two_tools)
         self.blade["depth"].setEnabled(device.autoblade and self.blade["holder"].value() == 1)
         self.blade["acceleration"].setEnabled(device.detects_tools)
