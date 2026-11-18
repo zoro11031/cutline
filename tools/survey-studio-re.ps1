@@ -1,5 +1,4 @@
-# Read-only reverse-engineering inventory. Run through winboat.run_script so
-# the existing session guard, credential pipe and 600 s launch bound apply.
+# Read-only reverse-engineering inventory for a Windows installation.
 # Does not start Studio, send a job, install tools, or copy vendor resources.
 param(
   [Parameter(Mandatory=$true)][string]$OutputDirectory

@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest import mock
 
-from cut_proxies import cli, editor_model, job, transport
+from cut_proxies import cli, corner_test, editor_model, job, materials, transport
 
 try:
     from PySide6.QtCore import Qt
@@ -150,6 +150,74 @@ class TestQtFrontend(unittest.TestCase):
         self.assertIsNone(window.report)
         self.assertIsNone(window.preview.report)
         self.assertFalse(window.preview.pdf.isNull())
+
+    def test_corner_test_sends_only_one_square_and_leaves_the_layout_in_place(self):
+        window = self.window
+        self.assertEqual(tuple(window.pages), ("Layout", "Sheet", "Blade", "Send"))
+        window.blade["passes"].setValue(4)
+        plan = window.job
+        sample = corner_test.build(plan, bleed_mm=window.controls["bleed_mm"].value())
+        cutter = mock.MagicMock()
+        cutter.__enter__.return_value = cutter
+        cutter.can_read = True
+        cutter.status.return_value = "ready"
+        cutter.run.return_value = 123
+
+        with mock.patch.object(window, "confirm", return_value=True) as confirm, \
+             mock.patch.object(window.tasks, "run", side_effect=lambda work, done: done(work(), None)), \
+             mock.patch.object(transport, "open_transport", return_value=cutter):
+            window.corner_button.click()
+        self.assertIn(sample.describe(), confirm.call_args.args[1])
+        cutter.run.assert_called_once_with(sample.job.steps, wait_done=True)
+        self.assertIs(window.job, plan)
+        self.assertEqual(window.blade["passes"].value(), 4)
+
+    def test_local_materials_file_is_used_and_invalid_replacement_is_refused(self):
+        window = self.window
+        source = self.config_path / "local.csv"
+        source.write_text("category,uuid,parent_uuid,name_resolved,(force.pressure),(speed),(blade_depth)\n"
+                          "Category,ID,Parent,Name,Force,Speed,Depth\n"
+                          "group,g,,Sample vinyl,,,\n"
+                          "leaf,l,g,,16,8,0.3\n")
+        with mock.patch.object(window, "select_open", return_value=source):
+            window.choose_material_csv()
+        self.assertEqual(materials.find_condition_csv(), source)
+        window.material.setCurrentIndex(window.material.findData("Sample vinyl"))
+        window.apply_material()
+        self.assertEqual([window.blade[field].value() for field in ("force", "speed", "depth")], [16, 8, 3])
+
+        invalid = self.config_path / "unusable.csv"
+        invalid.write_text("category,uuid,parent_uuid,name_resolved,(force.pressure),(speed)\n"
+                           "Category,ID,Parent,Name,Force,Speed\n"
+                           "group,g,,Sample vinyl,,\n")
+        with mock.patch.object(window, "select_open", return_value=invalid):
+            window.choose_material_csv()
+        self.assertEqual(materials.find_condition_csv(), source)
+
+    def test_starting_guide_repeats_one_confirmed_pass_and_applies_the_count(self):
+        window = self.window
+        window.guide_apply.click()
+        self.assertEqual([window.blade[field].value() for field in ("force", "speed", "depth", "passes")],
+                         [25, 25, 7, 1])
+        trial = window.guide.prepare(window.connection(), window.job_options(), window.job, "square")
+        fake = mock.MagicMock()
+        fake.__enter__.return_value = fake
+        fake.can_read = True
+        fake.status.return_value = "ready"
+        fake.run.return_value = 200
+
+        with mock.patch.object(window.tasks, "run", side_effect=lambda work, done: done(work(), None)), \
+             mock.patch.object(transport, "open_transport", return_value=fake):
+            window.start_guide_pass(trial)
+            window.blade["force"].setValue(27)
+            window.start_guide_pass(trial)
+        self.assertEqual(fake.run.call_args_list, [mock.call(trial.sheet.steps, wait_done=True)] * 2)
+        self.assertIn("2 completed passes", window.guide_status.text())
+        window.guide_use.click()
+        self.assertEqual((window.blade["force"].value(), window.blade["passes"].value()), (25, 2))
+        window.guide_next.click()
+        self.assertEqual(window.guide.spot, 2)
+        self.assertFalse(window.guide_use.isEnabled())
 
     def test_qt_launcher_can_be_selected_explicitly_or_automatically(self):
         with mock.patch.object(qt_gui, "main", return_value=0) as launch:

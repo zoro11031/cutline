@@ -20,7 +20,6 @@ actually established and what was not.
 | `cut_proxies/importer.py` | Reads SVG and DXF into cut paths. Units are the whole problem. |
 | `cut_proxies/sheet.py` | Measures the registration marks on a printed PDF, optically. |
 | `cut_proxies/job.py` | Composes all of the above into one checked job. Both front ends go through it. |
-| `cut_proxies/winboat.py` | The Silhouette Studio fallback in the Windows guest. |
 | `cut_proxies/cli.py` | Terminal frontend and desktop toolkit selection. |
 | `cut_proxies/qt_gui.py`, `qt_design.py` | Qt Widgets workspace and editor. |
 | `cut_proxies/gui.py`, `editor.py` | GTK4/libadwaita workspace and editor. |
@@ -75,38 +74,12 @@ clearance, builds the stream, decodes it back and measures every card. A
 caller refuses on `Job.blocked`. Do not add a path to the cutter that skips
 it, and do not downgrade a check to a warning to make a job go through.
 
-**Bound every launch at launch.** `timeout` in front of `xfreerdp` is the
-only protection in this project that survives the cleanup never running —
-it is set by the thing being launched and does not depend on any later line
-executing. A helper script gets 600 s, an interactive Studio session 4 h;
-nothing gets none. The reap below is the second line of defence, not the
-first.
-
-**Match the process, not a mention of it.** `_is_rdp_client` checks the
-executable actually being run, because a filter that matches anywhere in a
-command line will eventually target a wrapper, a `timeout`, or the reaper
-itself. The prefix heuristic it replaced passed a `python3 -c` wrapper.
-
-**Clean up at the start of a run, not the end.** An end-of-run cleanup does
-not survive the run being cut short, and a blocked command still prints like
-a success — two browsers leaked for hours here that way. `release_our_sessions`
-reaps at the start of every launch path, and only ever touches clients
-carrying our own `/wm-class:cut-proxies-guest` marker. Never widen that
-match: it terminates processes, and another tool's RDP session is somebody's
-job in flight.
-
-**Credentials.** The WinBoat guest login lives in the user's
-`~/.winboat/docker-compose.yml`. Read it only at the point of use, pass it
-straight to `xfreerdp`, and replace it with a placeholder in anything
-returned for display. It must never reach a log, a commit, a fixture or an
-error message.
-
 ## Checks before committing
 
 ```sh
 ./run-tests.sh                 # 306 tests + the coverage audit
 cut-proxies cut --dry-run      # build and verify a real job end to end
-cut-proxies status             # cutter, transports, WinBoat guest
+cut-proxies status             # cutter and transports
 ```
 
 **A test that asserts nothing passes unconditionally.** `run-tests.sh`
@@ -120,8 +93,7 @@ discriminating: a guard tested only where it should refuse is passed by a
 function hardwired to refuse, and a guard tested only where it should allow
 is passed by one hardwired to allow. `tests/test_discrimination.py` pins
 each guard in both directions and requires its test class to object; add a
-case there whenever you add a guard. `rdp_busy` had two tests and both were
-negative, so a `return ""` stub passed them.
+case there whenever you add a guard.
 
 **Every guard needs a test that fires it.** `tests/test_guards.py` exists
 because six safety checks had been verified once by hand and never again — a
@@ -207,10 +179,6 @@ identify /tmp/t/proof.png     # must be 1275x1650 for Letter at 150 dpi
   clearance on one axis. `mask_hints()` reports it and the operator covers
   those cards for the scan; it is deliberately *not* a blocking error.
   Section 12.
-- **WinBoat serves one RDP session at a time**, and a second connection
-  silently does nothing. `rdp_busy()` must stay in front of every launch.
-  Connect with `/d:. /sec:nla` — `-sec-nla` is not a real flag and failing on
-  it looks like success. Section 13.
 - **The calibration offset is a translation, not a scale.** It is applied
   once, in `CutJob._path_commands`, by folding it into the origin shift, and
   `verify` subtracts it again before measuring — otherwise a correctly
@@ -220,6 +188,3 @@ identify /tmp/t/proof.png     # must be 1275x1650 for Letter at 150 dpi
   translating it.
 - **The test sheet's map is not a cut file.** It carries text labels. Same
   rule as the proof: it exists to be read next to the sheet.
-- **Never put the guest password in argv.** `_run_freerdp` passes every
-  argument through `/args-from:fd:`, so it is not in `ps`, a file, or the
-  environment. Section 14.

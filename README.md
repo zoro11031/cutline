@@ -71,7 +71,7 @@ silhouette-control-center template --portrait --mark-inset 3.5     # nine up
 silhouette-control-center template --engine proxypress             # match a Proxy Press sheet
 silhouette-control-center cut --dry-run              # build, verify, send nothing
 silhouette-control-center cut --preset "Pen, no blade"             # draw it instead
-silhouette-control-center status                     # cutter, transports, WinBoat guest
+silhouette-control-center status                     # cutter and transports
 silhouette-control-center materials                  # Silhouette's own material settings
 silhouette-control-center testcut --force 25,29,33 --passes 1,2   # find your settings
 silhouette-control-center calibrate --x 0.2 --y -0.1 # standing blade-vs-sensor offset
@@ -184,11 +184,9 @@ silhouette-control-center cut --from cards-print-and-cut.zip --bundle-sheet 2 --
 number in ProxyPress. In a duplex export, sheet 2 normally uses PDF front
 page 3. An export of sheet 2 alone uses PDF front page 1.
 
-**Studio → Open current sheet in Studio** opens the Studio file or DXF paired
-with the selected sheet in the ZIP. **Choose file…** in the Studio tab opens
-a standalone `.studio3` file. Earlier ProxyPress ZIPs with Studio files can
-be checked in **Sheet** and opened in **Studio**. For direct cutting, use a
-current ZIP that includes the physical cut SVG.
+**Sheet → Save Paired Cut File** exports the original file from the selected ZIP
+sheet. For direct cutting from a ZIP, export a current ProxyPress bundle that
+includes the physical cut SVG.
 
 Open a standalone `.studio3` in **Layout → Open SVG, DXF or Studio3…**
 to preview its stored vector outlines at the document's page size.
@@ -196,7 +194,6 @@ to preview its stored vector outlines at the document's page size.
 ```sh
 silhouette-control-center import artwork.studio3
 silhouette-control-center cut --from artwork.studio3 --dry-run
-silhouette-control-center cut --from artwork.studio3 --via studio
 ```
 
 Direct import supports the `silhouette05;` format. Review the outlines and
@@ -240,9 +237,24 @@ preferred.
 
 ## Finding your settings
 
-Rather than guessing from a table, cut a sheet of test squares — each one
-with its own force, speed, depth and pass count, all in a single pass of the
-mat:
+Use **Send → Corner Test Cut** for a single 3 mm square on the current
+sheet. Control Center checks the active cut window, registration marks and
+card outlines before picking a corner. The confirmation shows the spot.
+The test uses the current tool settings for one pass and returns to origin.
+
+Open **Send → Starting Guide** and choose **Apply Starting Settings** to
+load the Card Maker starting point into Blade. On a Cameo 4 with an AutoBlade
+in holder 1, this sets force **25**, speed **25**, depth **7**, and **1 pass**.
+
+Load a blank sheet of the same stock on the mat and choose **Cut One Pass**.
+The cutter returns to origin, and the guide waits for it to report completion.
+Keep the mat loaded and lift a corner. If the cut still holds, choose
+**Repeat One Pass** to cut the same spot with the same settings. When it
+separates cleanly, **Use Tested Settings** copies the guide's blade numbers
+and completed pass count into **Blade**. Use **Next Test Spot** to try a
+different setting on fresh material on the same sheet.
+
+The test-cut matrix cuts multiple samples at once:
 
 ```sh
 silhouette-control-center testcut --force 25,29,33 --passes 1,2,3 --out ~/Documents
@@ -346,8 +358,7 @@ silhouette-control-center cut --dry-run              # build and verify a real j
 silhouette-control-center status                     # what hardware is actually reachable
 ```
 
-The tests are fast and offline. Nothing in them touches USB or the WinBoat
-guest.
+The tests use simulated cutter connections.
 
 ## Caveats
 
@@ -357,13 +368,6 @@ for the current hardware results and [docs/SETUP.md](docs/SETUP.md) for
 Bluetooth setup. Physical registration and cut accuracy require a measured
 proof sheet. The [Inkscape Silhouette comparison](docs/INKSCAPE_COMPATIBILITY.md)
 tracks driver, geometry, and file-format coverage.
-
-Silhouette Studio is installed in the WinBoat guest and is detected
-automatically. `silhouette-control-center studio --run-helper` runs a read-only survey
-inside Windows and writes its report back to the shared folder; `silhouette-control-center
-studio <template>` opens a template in Studio. Windows serves one RDP session
-at a time, so both refuse — with a message naming the holder — if something
-else already has it.
 
 ## Independent application handoff
 

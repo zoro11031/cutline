@@ -19,7 +19,7 @@ Recommends:     libusb1
 %description
 Qt 6, GTK4 and terminal front ends for Silhouette Cameo proxy-card templates,
 cut-stream generation, and verification. Hardware cutting requires device
-access permissions. Studio integration uses an existing WinBoat installation.
+access permissions.
 
 %prep
 %setup -q

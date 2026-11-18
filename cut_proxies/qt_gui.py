@@ -6,7 +6,6 @@ from contextlib import contextmanager
 import io
 from pathlib import Path
 import sys
-import tempfile
 import zipfile
 
 from PySide6.QtCore import Qt
@@ -15,8 +14,8 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, 
                                QLabel, QMainWindow, QMessageBox, QPlainTextEdit,
                                QSplitter, QStackedWidget, QTabWidget, QVBoxLayout, QWidget)
 
-from . import (actions, bluetooth, bundle, config, editor_model, geometry, graphtec, importer, job,
-               layout_presets, materials, presets, regmarks, template, testcut, toolpath, transport, winboat)
+from . import (actions, bluetooth, bundle, config, corner_test, editor_model, geometry, graphtec, importer, job,
+               layout_presets, materials, presets, regmarks, starting_guide, template, testcut, toolpath, transport)
 from .qt_canvas import PREVIEW_MODES, Preview
 from .qt_controls import Form, Page, Tasks, button, set_choices
 
@@ -56,6 +55,7 @@ class Window(QMainWindow):
         self.job = self.artwork = self.project_shapes = self.design = self.reviewed_design = None
         self.pdf = self.bundle = self.sheet_token = self.report = None
         self.bundle_checked = self.busy = self.loading = False
+        self.guide = starting_guide.Guide()
         self.group_rows = {}
         self.group_choices = {}
         self.pages = {}
@@ -133,7 +133,6 @@ class Window(QMainWindow):
             self.sheet_page()
             self.blade_page()
             self.send_page()
-            self.studio_page()
         self.rebuild()
 
     @contextmanager
@@ -199,6 +198,8 @@ class Window(QMainWindow):
         form = page.group("Printed sheet")
         self.sheet_file = form.note("Open a print PDF or a matched ProxyPress ZIP.")
         form.push("Open PDF or ZIP…", self.open_sheet)
+        self.bundle_export = form.push("Save Paired Cut File…", self.save_bundle_file)
+        self.bundle_export.hide()
         self.sheet_page_number = form.number("Page", 1, 1, 999, changed=self.change_sheet_page)
         self.sheet_dpi = form.choice("Measurement resolution", (150, 200, 300), 200, self.measure_sheet)
         form.push("Measure Registration Marks", self.measure_sheet)
@@ -233,6 +234,7 @@ class Window(QMainWindow):
         self.divisions = table.choice("Show Cutter Divisions", {False: "Known Cutters", True: "All Cutters"},
                                      changed=self.load_materials)
         self.material = table.choice("Material", ())
+        table.push("Choose condition.csv…", self.choose_material_csv)
         table.push("Apply Material", self.apply_material)
         table.push("Restore Default Materials…", self.restore_materials)
         self.install_page("Blade", page)
@@ -265,6 +267,7 @@ class Window(QMainWindow):
         self.check(registration, "registration", "Scan for printed marks", True)
         self.check(registration, "auto_search", "Search automatically", True)
         self.scan_button = registration.push("Test Registration", lambda: self.confirm_send(scan_only=True))
+        self.corner_button = registration.push("Corner Test Cut…", self.confirm_corner_test)
 
         media = page.group("Media handling")
         self.choose(media, "mat", "Cutting mat", graphtec.MAT_OPTIONS)
@@ -272,12 +275,20 @@ class Window(QMainWindow):
         self.number(media, "end_feed_mm", "Feed Distance (mm)", 0, 0, 3000, 0.5, 2)
         self.weed_visibility = media.choice("Show Weed Settings", ("Auto", "Always", "Never"),
                                           self.settings.get("show_weed_settings"), self.update_weed_preference)
+        guide = page.group("Starting Guide")
+        guide.note(starting_guide.GUIDE_TEXT)
+        self.guide_apply = guide.push("Apply Starting Settings", self.apply_guide_start)
+        self.guide_status = guide.note()
+        self.guide_send = guide.push("Cut One Pass…", self.confirm_guide_pass)
+        self.guide_use = guide.push("Use Tested Settings", self.use_guide_settings)
+        self.guide_next = guide.push("Next Test Spot", self.next_guide_spot)
+        self.guide_reset = guide.push("New Test Sheet", self.reset_guide)
         calibration = page.group("Calibration")
         dx, dy = config.cut_offset()
         self.cal_x = calibration.number("Offset X (mm)", dx, -5, 5, 0.05, 2, self.rebuild)
         self.cal_y = calibration.number("Offset Y (mm)", dy, -5, 5, 0.05, 2, self.rebuild)
         calibration.push("Save Calibration", self.save_calibration)
-        tests = page.group("Test cut")
+        tests = page.group("Test-Cut Matrix")
         self.test_shape = tests.choice("Shape", testcut.TEST_SHAPES)
         self.test_force = tests.text("Force values", "25,29,33")
         self.test_passes = tests.text("Pass counts", "1,2,3,4")
@@ -285,17 +296,6 @@ class Window(QMainWindow):
         page.group("Diagnostics").push("Save Raw Stream…", self.dump_stream)
         self.install_page("Send", page)
         self.change_connection()
-
-    def studio_page(self):
-        page = Page()
-        form = page.group("Silhouette Studio via WinBoat")
-        self.guest_status = form.note("Guest status not checked.")
-        form.push("Check Guest", self.check_guest)
-        form.push("Stage Guest Helper", self.prepare_guest)
-        form.push("Launch Studio", lambda: self.open_in_studio(None))
-        form.push("Open Current Sheet in Studio", self.open_current_in_studio)
-        form.push("Open Studio File…", self.choose_studio_file)
-        self.install_page("Studio", page)
 
     def change_preview(self):
         self.preview.mode = self.preview_mode.currentData()
@@ -367,6 +367,16 @@ class Window(QMainWindow):
             self.materials = {}
         set_choices(self.material, sorted(self.materials) or {"": "No Studio material database"})
 
+    def choose_material_csv(self):
+        path = self.select_open("Choose Silhouette condition.csv", "CSV files (*.csv *.CSV)")
+        if path:
+            try:
+                materials.select_condition_csv(path)
+            except (OSError, ValueError) as error:
+                self.message(str(error))
+            else:
+                self.load_materials()
+
     def change_cutter(self):
         self.load_materials()
         self.rebuild()
@@ -374,7 +384,7 @@ class Window(QMainWindow):
     def apply_material(self):
         selected = self.materials.get(self.material.currentData())
         if selected is None:
-            self.message("Load Studio's material database through the WinBoat helper.")
+            self.message("Choose a local Silhouette condition.csv file first.")
             return
         with self.editing():
             self.blade["force"].setValue(selected.force)
@@ -575,7 +585,7 @@ class Window(QMainWindow):
         self.job = None
         problems = []
         if self.bundle and self.artwork is None:
-            summary = "Open this ZIP's paired template in Studio."
+            summary = "Save the legacy cut file from Sheet. A cut SVG is required for direct cutting."
         else:
             try:
                 self.job = job.build(**self.job_options())
@@ -584,8 +594,9 @@ class Window(QMainWindow):
             else:
                 current = self.job
                 problems = current.blocked
+                passes = "pass" if current.settings.passes == 1 else "passes"
                 caption = f"{len(current.action_groups)} Send groups" if current.action_groups else (
-                    f"{current.preset.name} · {current.settings.passes} passes")
+                    f"{current.preset.name} · {current.settings.passes} {passes}")
                 summary = (f"{current.grid.sheet_w_mm:g} × {current.grid.sheet_h_mm:g} mm · "
                            f"{len(current.paths)} paths\n{caption}")
                 if problems or current.warnings:
@@ -610,9 +621,7 @@ class Window(QMainWindow):
         if self.pending_design():
             return "Design"
         if self.bundle:
-            if self.artwork is None:
-                return "Studio"
-            if not self.bundle_checked:
+            if self.artwork is None or not self.bundle_checked:
                 return "Sheet"
         return "Send"
 
@@ -647,13 +656,15 @@ class Window(QMainWindow):
             return
         target = self.review_tab()
         index = self.tabs.currentIndex()
-        self.review_button.setText({"Studio": "Studio Options"}.get(target, f"Review {target}"))
+        self.review_button.setText(f"Review {target}")
         self.review_button.setVisible(target == "Design" or index != self.tab(target))
         self.send_button.setVisible(target == "Send" and index == self.tab("Send"))
         reason = self.send_refusal(self.job, self.connection())
         self.send_button.setEnabled(not reason)
+        self.corner_button.setEnabled(not reason)
         self.scan_button.setEnabled(not self.send_refusal(self.job, self.connection(), scan_only=True))
         self.test_button.setEnabled(not self.busy)
+        self.update_guide()
         self.footer_status.setText(reason or (
             f"{self.job.device.name} · {len(self.job.paths)} paths · "
             + ("Registration on" if self.job.registration else "Registration off")))
@@ -719,6 +730,7 @@ class Window(QMainWindow):
     def clear_bundle(self):
         if self.bundle:
             self.bundle = self.pdf = None
+            self.bundle_export.hide()
             self.lock_bundle_controls(False)
             self.invalidate_measurement(clear_image=True)
             self.sheet_file.setText("Open a print PDF or a matched ProxyPress ZIP.")
@@ -726,6 +738,18 @@ class Window(QMainWindow):
             with self.editing():
                 self.sheet_page_number.setRange(1, 999)
                 self.sheet_page_number.setValue(1)
+
+    def save_bundle_file(self):
+        matched, row = self.bundle, self.current_bundle_row()
+        if matched is None:
+            return
+        try:
+            name = matched.cut_file_name(row)
+            path = self.choose_output("Save Paired Cut File", name)
+            if path:
+                self.message(f"Saved {matched.save_cut_file(row, path).name}.")
+        except bundle.BundleError as error:
+            self.message(str(error))
 
     def open_sheet(self):
         path = self.select_open("Open Printed Sheet", "Print PDF or ProxyPress ZIP (*.pdf *.PDF *.zip *.ZIP)")
@@ -751,6 +775,7 @@ class Window(QMainWindow):
         drawing = matched.artwork(row) if "svg" in row else None
         self.clear_bundle()
         self.bundle, self.pdf = matched, path
+        self.bundle_export.show()
         self.reviewed_design = self.project_shapes = None
         self.lock_bundle_controls(True)
         with self.editing():
@@ -942,12 +967,27 @@ class Window(QMainWindow):
         if self.confirm(title, prompt):
             self.start_send(plan, connection, scan_only=scan_only)
 
-    def start_send(self, plan, connection, *, scan_only=False):
+    def confirm_corner_test(self):
+        plan, connection = self.job, self.connection()
+        reason = self.send_refusal(plan, connection)
+        if reason:
+            self.message(reason)
+            return
+        try:
+            sample = corner_test.build(plan, self.artwork, self.project_shapes or (), self.controls["bleed_mm"].value())
+        except ValueError as error:
+            self.message(str(error))
+            return
+        if self.confirm("Corner Test Cut?", sample.describe()):
+            self.start_send(plan, connection, corner=sample)
+
+    def start_send(self, plan, connection, *, scan_only=False, corner=None):
         reason = self.send_refusal(plan, connection, scan_only=scan_only)
         if reason:
             self.message(reason)
             return
-        steps = plan.registration_steps() if scan_only else plan.steps
+        checked = corner.job if corner else plan
+        steps = checked.registration_steps() if scan_only else checked.steps
         report, row, matched = self.report, self.current_bundle_row(), self.bundle
 
         def failed(error):
@@ -958,10 +998,13 @@ class Window(QMainWindow):
             self.scan_result.setText("\n".join((str(error), *notes)))
             self.tabs.setCurrentIndex(self.tab("Sheet"))
 
-        self.send_steps(plan.device, connection, steps, "Registration scan passed." if scan_only else "Cut sent.",
-                        on_registration_failure=failed)
+        success = ("Corner test sent." if corner else "Registration scan passed." if scan_only else "Cut sent.")
+        self.send_steps(checked.device, connection, steps, success,
+                        on_registration_failure=failed, wait_done=corner is not None)
 
-    def send_steps(self, device, connection, steps, success, *, on_registration_failure=None, test=False):
+    def send_steps(self, device, connection, steps, success, *, on_registration_failure=None,
+                   test=False, wait_done=False):
+        self.guide.invalidate()
         self.busy = True
         self.scan_result.clear()
         self.refresh_send()
@@ -972,6 +1015,8 @@ class Window(QMainWindow):
                     state = cutter.status()
                     if state in ("moving", "unloaded") or (state != "ready" and (test or connection[0] != "auto")):
                         raise transport.TransportError(f"The cutter is not ready ({state}).")
+                if wait_done and cutter.can_read:
+                    return cutter.run(steps, wait_done=True)
                 return cutter.run(steps)
 
         def done(sent, error):
@@ -980,6 +1025,88 @@ class Window(QMainWindow):
             if isinstance(error, transport.RegistrationFailed) and on_registration_failure:
                 on_registration_failure(error)
             self.message(str(error) if error else f"{success} {sent:,} bytes.")
+
+        self.tasks.run(work, done)
+
+    def update_guide(self):
+        state = self.guide
+        for field in (self.guide_apply, self.guide_next, self.guide_reset):
+            field.setEnabled(not self.busy)
+        self.guide_send.setEnabled(not self.busy and not state.interrupted)
+        self.guide_use.setEnabled(not self.busy and state.tested_settings is not None)
+        self.guide_send.setText("Repeat One Pass…" if state.completed else "Cut One Pass…")
+        self.guide_status.setText("Waiting for the cutter to finish…" if self.busy else state.status())
+
+    def set_guide_blade_values(self, values):
+        with self.editing():
+            for key, value in values.items():
+                self.blade[key].setValue(-1 if value is None else value)
+        self.rebuild()
+
+    def apply_guide_start(self):
+        values = self.blade_values()
+        device = graphtec.device_by_name(self.choice("cutter"))
+        self.set_guide_blade_values(starting_guide.starting_values(
+            device, values["holder"] if device.two_tools else 1, values["blade_diameter_mm"]))
+        suffix = "" if self.blade["depth"].value() >= 0 else " Set depth on the blade."
+        self.message("Starting settings applied to Blade." + suffix)
+
+    def use_guide_settings(self):
+        settings = self.guide.tested_settings
+        if settings is None:
+            return
+        device = graphtec.device_by_name(self.choice("cutter"))
+        holder = self.blade["holder"].value() if device.two_tools else 1
+        if device != self.guide.trial.sheet.device or settings.holder != holder:
+            self.message("Select the tested cutter and tool holder first.")
+            return
+        self.set_guide_blade_values({name: getattr(settings, name) for name in ("force", "speed", "depth", "passes")})
+        self.message(f"Applied the tested settings with {settings.passes} pass(es).")
+
+    def next_guide_spot(self):
+        self.guide.next_spot()
+        self.update_guide()
+
+    def reset_guide(self):
+        if self.confirm("Start a New Test Sheet?", "Load a fresh blank sheet to start at the first spot."):
+            self.guide.reset()
+            self.update_guide()
+
+    def confirm_guide_pass(self):
+        if self.busy:
+            return
+        try:
+            trial = self.guide.prepare(self.connection(), self.job_options(), self.job, self.test_shape.currentData())
+        except (ValueError, KeyError) as error:
+            self.message(str(error))
+            return
+        prompt = self.guide.prompt(trial)
+        if self.confirm("Send One Test Pass?", prompt):
+            self.start_guide_pass(trial)
+
+    def start_guide_pass(self, trial):
+        if self.busy:
+            return
+        try:
+            current = self.guide.prepare(self.connection(), self.job_options(), self.job, self.test_shape.currentData())
+        except (ValueError, KeyError) as error:
+            self.message(str(error))
+            return
+        if trial != current:
+            self.message("Test settings or cutter connection changed. Review the pass again.")
+            return
+        self.busy = True
+        self.refresh_send()
+
+        def work():
+            with self.open_link(trial.connection, trial.sheet.device) as cutter:
+                return starting_guide.run_pass(cutter, trial)
+
+        def done(_sent, error):
+            self.guide.record(trial, error)
+            self.busy = False
+            self.refresh_send()
+            self.message(str(error) if error else "Pass complete. Keep the mat loaded and lift a corner.")
 
         self.tasks.run(work, done)
 
@@ -1008,42 +1135,6 @@ class Window(QMainWindow):
                 self.send_steps(device, connection, samples.steps, "Test cut sent.", test=True)
             else:
                 self.message("The settings or cutter connection changed. Review the test cut again.")
-
-    def check_guest(self):
-        self.run_guest_task(winboat.status, lambda value:
-            f"Studio: {value.studio_state}\n"
-            + ("Ready to open the guest." if value.ready_for_studio else value.why_not_ready()))
-
-    def prepare_guest(self):
-        self.run_guest_task(winboat.prepare, lambda value: "\n".join(value["steps"]))
-
-    def run_guest_task(self, work, format_result):
-        def done(value, error):
-            self.guest_status.setText(str(error) if error else format_result(value))
-        self.guest_status.setText("Working…")
-        self.tasks.run(work, done)
-
-    def open_in_studio(self, path):
-        self.run_guest_task(lambda: winboat.open_in_studio(path), lambda _: "Silhouette Studio is opening.")
-
-    def choose_studio_file(self):
-        path = self.select_open("Open Studio File", "Silhouette Studio (*.studio *.STUDIO *.studio3 *.STUDIO3)")
-        if path:
-            self.open_in_studio(path)
-
-    def open_current_in_studio(self):
-        plan, matched, row = self.job, self.bundle, self.current_bundle_row()
-
-        def work():
-            if matched:
-                with tempfile.TemporaryDirectory() as folder:
-                    return winboat.open_in_studio(matched.studio_file(row, folder))
-            if not plan:
-                raise ValueError("Build the layout before opening it in Studio.")
-            files = job.write_templates(plan, self.job_name(plan), folder=winboat.stage_dir(), proof=False)
-            return winboat.open_in_studio(files["dxf"])
-
-        self.run_guest_task(work, lambda _: "Silhouette Studio is opening the current sheet.")
 
     def open_design(self):
         if self.bundle or self.busy:

@@ -1,4 +1,4 @@
-# Run through cut_proxies.winboat.run_script: guarded RDP and bounded launch.
+# Run manually on Windows with Silhouette Studio installed.
 # Opens a generated DXF and selects it; never sends a cut or print.
 # Output remains local: screenshots may include the current Studio workspace.
 param(

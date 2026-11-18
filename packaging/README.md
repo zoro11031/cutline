@@ -30,7 +30,7 @@ The RPM uses Fedora dependency names. It is built on Arch and has not been
 installed or exercised on Fedora. Both packages install private, version
 independent Python sources into `/usr/lib/cut-proxies`, a launcher into
 `/usr/bin`, and matching desktop/icon entries. GTK, Python, Pillow and
-Poppler are native dependencies; PyUSB and the WinBoat tools are optional.
+Poppler are native dependencies; PyUSB is optional.
 
 The AUR recipe uses the user-provided upstream repository:
 `https://github.com/zoro11031/silhouette-linux`. The source tarball must be
@@ -75,7 +75,7 @@ python3 packaging/build-appimage.py --runtime /path/to/runtime-x86_64 \
 
 For a machine without usable FUSE, add `--appimage-extract-and-run` before
 the application arguments. The bundle uses the matching loader explicitly
-without exporting its library path to host Docker/FreeRDP processes. The
+without exporting its library path to host tools. The
 default renderer is Cairo to avoid bundling GPU drivers. Bundled runtime
 versions, runtime hash and package provenance are in
 `usr/share/doc/silhouette-control-center/bundle.json` inside the image. This is a local
@@ -95,7 +95,7 @@ The smoke test checks bundled module origins, the libusb backend, a verified
 job and its liveness probes, PDF physical dimensions, and rasterization. With
 `--gui`, it briefly opens a separate window, checks its verified preview,
 and closes it. It never sends a cut. Host USB permissions still apply; see
-`docs/SETUP.md`. Windows, Studio, Docker and FreeRDP are not bundled.
+`docs/SETUP.md`.
 
 For Cameo 4 Bluetooth LE, build the AppImage with Bleak and its Linux
 backend (dbus-fast) installed on the build host. The AppImage records
@@ -118,8 +118,7 @@ the GNOME 50 runtime from Flathub when needed. It can access USB devices,
 BlueZ, Documents, Downloads, and files chosen through the desktop file
 picker. For direct USB access, apply the model-specific seat permission
 once with `sh install-silverblue.sh --udev`, then reconnect the cutter.
-The AppImage runs on the host and can use host WinBoat, Docker and
-FreeRDP when they are installed. Use it for the Windows bridge.
+
 
 Build the Flatpak with `./packaging/build-flatpak.sh` after installing
 `org.gnome.Sdk//50` and `org.gnome.Platform//50` from Flathub. It uses the

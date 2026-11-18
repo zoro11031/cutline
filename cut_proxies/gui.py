@@ -1,6 +1,6 @@
 """Silhouette Control Center: a GTK4 / libadwaita front end.
 
-Five pages - Layout, Sheet, Blade, Cut and Studio - around one live preview.
+Layout, Sheet, Blade and Send share one live preview.
 
 The preview is not decoration.  A cut template is a set of coordinates that
 have to agree with ink already on a sheet, and the fastest way to catch a
@@ -26,7 +26,6 @@ from __future__ import annotations
 import math
 import io
 import pathlib
-import tempfile
 import threading
 import time
 import traceback
@@ -39,8 +38,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 
-from . import (actions, bluetooth, bundle, config, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
-               template, testcut, toolpath, transport, winboat)  # noqa: E402
+from . import (actions, bluetooth, bundle, config, corner_test, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
+               starting_guide, template, testcut, toolpath, transport)  # noqa: E402
 
 APP_ID = "org.printing.SilhouetteControlCenter"
 PREVIEW_MODES = ("Cut paths", "Print PDF", "Overlay")
@@ -356,6 +355,7 @@ class Window(Adw.ApplicationWindow):
         self._building = False
         self._sending = False
         self._checking_status = False
+        self.guide = starting_guide.Guide()
         self._suppress = True        # don't rebuild while constructing rows
 
         self.toasts = Adw.ToastOverlay()
@@ -463,7 +463,6 @@ class Window(Adw.ApplicationWindow):
         self._page_sheet()
         self._page_blade()
         self._page_cut()
-        self._page_studio()
         outer.add_bottom_bar(self._send_bar())
 
         self._suppress = False
@@ -494,7 +493,7 @@ class Window(Adw.ApplicationWindow):
             return "design", "Review Design"
         if self.pdf_bundle:
             if self.imported is None:
-                return "studio", "Studio Options"
+                return "sheet", "Review Sheet"
             if not self.bundle_checked:
                 return "sheet", "Review Sheet"
         return "cut", "Review Send"
@@ -520,7 +519,7 @@ class Window(Adw.ApplicationWindow):
             "Sending to the cutter…" if self._sending else
             "Checking cutter status…" if self._checking_status else
             "Review the latest edits in Design." if destination == "design" else
-            "Open the paired template in Studio." if destination == "studio" else
+            "This ZIP has a legacy cut file. Save it from Sheet." if self.pdf_bundle and self.imported is None else
             "Check the matching PDF in Sheet." if destination == "sheet" else
             "Check this layout before sending." if job is None or job.blocked else
             "Select a Bluetooth cutter." if mode in bluetooth.BLUETOOTH_MODES and not identifier else
@@ -530,9 +529,11 @@ class Window(Adw.ApplicationWindow):
         if not reason and job.settings.passes <= 0:
             reason = "Set at least one pass to send cut paths."
         self.cut_button.set_sensitive(not reason)
+        self.corner_button.set_sensitive(not reason)
         status = reason or f"{len(job.paths)} paths · {job.device.name} · {'Registration on' if job.registration else 'Registration off'}"
         self.send_status.set_label(status)
         self.send_status.set_tooltip_text(status)
+        self.update_guide()
 
     # ---- pages -------------------------------------------------------
     def _page_layout(self):
@@ -668,6 +669,12 @@ class Window(Adw.ApplicationWindow):
         pick.connect("clicked", self.on_pick_pdf)
         self.sheet_row.add_suffix(pick)
         g.add(self.sheet_row)
+        self.bundle_export = Adw.ActionRow(title="Paired cut file")
+        save = Gtk.Button(label="Save Paired Cut File…", valign=Gtk.Align.CENTER)
+        save.connect("clicked", self.on_save_bundle_file)
+        self.bundle_export.add_suffix(save)
+        self.bundle_export.set_visible(False)
+        g.add(self.bundle_export)
 
         self.r_sheet_page = _spin("Page", 1, 99, 1, 1, 0,
                                   subtitle="which page of the PDF to measure")
@@ -821,6 +828,11 @@ class Window(Adw.ApplicationWindow):
         apply_btn.connect("clicked", self.on_apply_material)
         apply_row.add_suffix(apply_btn)
         g3.add(self.r_material)
+        csv = Adw.ActionRow(title="Local materials file")
+        choose = Gtk.Button(label="Choose condition.csv…", valign=Gtk.Align.CENTER)
+        choose.connect("clicked", self.on_choose_material_csv)
+        csv.add_suffix(choose)
+        g3.add(csv)
         g3.add(apply_row)
         restore = Adw.ActionRow(title="Restore Default Materials",
                                 subtitle="Back up edits to built-in materials and restore their original settings")
@@ -878,6 +890,12 @@ class Window(Adw.ApplicationWindow):
         self.scan_button.connect("clicked", lambda *_: self.on_cut(scan_only=True))
         test_scan.add_suffix(self.scan_button)
         g.add(test_scan)
+        corner = Adw.ActionRow(title="Corner Test Cut",
+                               subtitle="Cut one 3 mm square in a clear corner")
+        self.corner_button = Gtk.Button(label="Test cut…", valign=Gtk.Align.CENTER)
+        self.corner_button.connect("clicked", lambda *_: self.on_cut(corner=True))
+        corner.add_suffix(self.corner_button)
+        g.add(corner)
         self.r_register.connect("notify::active", self.on_changed)
         self.r_auto.connect("notify::active", self.on_changed)
 
@@ -926,6 +944,17 @@ class Window(Adw.ApplicationWindow):
         media.add(self.r_show_weed)
         page.add(media)
 
+        guide = Adw.PreferencesGroup(title="Starting Guide", description=starting_guide.GUIDE_TEXT)
+        self.guide_apply = self.guide_button(guide, "Apply Starting Settings", self.on_guide_start)
+        self.guide_status = Adw.ActionRow(title="Test spot 1")
+        self.guide_status.set_subtitle_lines(0)
+        guide.add(self.guide_status)
+        self.guide_send = self.guide_button(guide, "Cut One Pass…", self.on_guide_pass)
+        self.guide_use = self.guide_button(guide, "Use Tested Settings", self.on_guide_use)
+        self.guide_next = self.guide_button(guide, "Next Test Spot", self.on_guide_next)
+        self.guide_reset = self.guide_button(guide, "New Test Sheet", self.on_guide_reset)
+        page.add(guide)
+
         gcal = Adw.PreferencesGroup(
             title="Calibration",
             description="The standing error between where the sensor sees "
@@ -951,7 +980,7 @@ class Window(Adw.ApplicationWindow):
             r.connect("notify::value", self.on_changed)
 
         gtest = Adw.PreferencesGroup(
-            title="Find your settings",
+            title="Test-Cut Matrix",
             description="Cut each sample at its own force and pass count. "
                         "Lift each sample without ejecting the mat.")
         self.r_test_shape = _combo("Test shape", list(testcut.TEST_SHAPES.values()))
@@ -987,59 +1016,6 @@ class Window(Adw.ApplicationWindow):
 
         self.stack.add_titled_with_icon(page, "cut", "Send", "media-playback-start-symbolic")
 
-    def _page_studio(self):
-        page = ControlPage()
-        g = Adw.PreferencesGroup(
-            title="Silhouette Studio in the WinBoat guest",
-            description="The fallback when the direct USB path will not "
-                        "register or will not cut. Also the reference to "
-                        "capture traffic against.")
-        self.guest_row = Adw.ActionRow(title="Guest", subtitle="not checked")
-        self.guest_row.set_subtitle_lines(0)
-        check = Gtk.Button(label="Check")
-        check.set_valign(Gtk.Align.CENTER)
-        check.connect("clicked", self.on_check_guest)
-        self.guest_row.add_suffix(check)
-        g.add(self.guest_row)
-
-        prep = Adw.ActionRow(
-            title="Stage the guest helper",
-            subtitle="Writes a PowerShell script into the shared folder that "
-                     "reports what the guest can see. Installs nothing.")
-        prep_btn = Gtk.Button(label="Stage")
-        prep_btn.set_valign(Gtk.Align.CENTER)
-        prep_btn.connect("clicked", self.on_prepare_guest)
-        prep.add_suffix(prep_btn)
-        g.add(prep)
-
-        launch_row = Adw.ActionRow(
-            title="Launch Studio (blank)",
-            subtitle="Opens Silhouette Studio without opening a template")
-        launch_btn = Gtk.Button(label="Launch")
-        launch_btn.set_valign(Gtk.Align.CENTER)
-        launch_btn.connect("clicked", self.on_launch_blank_studio)
-        launch_row.add_suffix(launch_btn)
-        g.add(launch_row)
-
-        open_row = Adw.ActionRow(
-            title="Open current sheet in Studio",
-            subtitle="Uses the paired Studio file from a ProxyPress ZIP, or a DXF.")
-        open_btn = Gtk.Button(label="Open")
-        open_btn.set_valign(Gtk.Align.CENTER)
-        open_btn.connect("clicked", self.on_open_studio)
-        open_row.add_suffix(open_btn)
-        g.add(open_row)
-        pick_row = Adw.ActionRow(title='Open a Studio file',
-                                 subtitle='Select a .studio3 file, including one extracted from a ProxyPress ZIP.')
-        pick_btn = Gtk.Button(label='Choose file…', valign=Gtk.Align.CENTER)
-        pick_btn.connect('clicked', self.on_pick_studio_file)
-        pick_row.add_suffix(pick_btn)
-        g.add(pick_row)
-        page.add(g)
-        self.stack.add_titled_with_icon(page, "studio", "Studio",
-                                        "computer-symbolic")
-
-    # ---- reading the controls ----------------------------------------
     def on_colorblind_changed(self, toggle):
         self.preview.set_colorblind(toggle.get_active())
         settings = config.load_settings()
@@ -1330,8 +1306,8 @@ class Window(Adw.ApplicationWindow):
             self.job = None
             self.preview.set_job(None)
             self.summary_icon.set_from_icon_name('document-open-symbolic')
-            self.summary_title.set_label('Studio template')
-            self.summary_layout.set_label('Use Studio → Open current sheet in Studio.')
+            self.summary_title.set_label('Legacy cut file')
+            self.summary_layout.set_label('Use Sheet → Save Paired Cut File.')
             self.summary_material.set_label('')
             self.summary_note.set_label('A newer ProxyPress ZIP includes SVG paths for direct cutting.')
             self.checks.set_text('')
@@ -1654,6 +1630,7 @@ class Window(Adw.ApplicationWindow):
         if not self.pdf_bundle:
             return
         self.pdf_bundle = None
+        self.bundle_export.set_visible(False)
         self.lock_bundle_layout(False)
         self.bundle_checked = False
         self.pdf_path = None
@@ -1690,6 +1667,30 @@ class Window(Adw.ApplicationWindow):
             f'Sheet {row["sheet"]} · PDF front page {row["frontPage"]}\n'
             + self.pdf_bundle.mat_placement())
 
+    def on_save_bundle_file(self, *_args):
+        matched = self.pdf_bundle
+        if matched is None:
+            return
+        row = matched.rows[int(self.r_sheet_page.get_value()) - 1]
+        try:
+            name = matched.cut_file_name(row)
+        except bundle.BundleError as error:
+            self.toast(str(error))
+            return
+        dialog = Gtk.FileDialog(title="Save Paired Cut File", initial_name=name)
+
+        def done(chooser, result):
+            try:
+                path = chooser.save_finish(result).get_path()
+                if path is not None:
+                    self.toast(f"Saved {matched.save_cut_file(row, path).name}.")
+            except GLib.Error:
+                return
+            except bundle.BundleError as error:
+                self.toast(str(error))
+
+        dialog.save(self, None, done)
+
     def on_pick_pdf(self, *_a):
         dialog = Gtk.FileDialog(title="Open the printed sheet")
         filt = Gtk.FileFilter()
@@ -1725,6 +1726,7 @@ class Window(Adw.ApplicationWindow):
                     return
                 self.clear_bundle()
                 self.pdf_bundle = matched
+                self.bundle_export.set_visible(True)
                 self.lock_bundle_layout(True)
                 self.pdf_path = path
                 self._sheet_token = self.sheet_report = None
@@ -1830,6 +1832,30 @@ class Window(Adw.ApplicationWindow):
         self.rebuild()
 
     # ---- Silhouette's own materials ----------------------------------
+    def on_choose_material_csv(self, *_args):
+        from . import materials
+
+        dialog = Gtk.FileDialog(title="Choose Silhouette condition.csv")
+        filt = Gtk.FileFilter()
+        filt.set_name("CSV files")
+        filt.add_suffix("csv")
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(filt)
+        dialog.set_filters(filters)
+
+        def done(chooser, result):
+            try:
+                path = chooser.open_finish(result).get_path()
+                if path is not None:
+                    materials.select_condition_csv(path)
+                    self._load_materials()
+            except GLib.Error:
+                return
+            except (OSError, ValueError) as error:
+                self.toast(str(error))
+
+        dialog.open(self, None, done)
+
     def _load_materials(self, *_args):
         selected = self._text(self.r_material)
         previous = getattr(self, "_materials", {}).get(selected)
@@ -1841,7 +1867,7 @@ class Window(Adw.ApplicationWindow):
                 self.r_cutter_divisions.get_selected() == 1)
         except (OSError, ValueError):
             pass
-        names = sorted(self._materials) or ["(no Studio installation found)"]
+        names = sorted(self._materials) or ["(no local CSV selected)"]
         self.r_material.set_model(Gtk.StringList.new(names))
         if selected in self._materials:
             self.r_material.set_selected(names.index(selected))
@@ -1881,8 +1907,7 @@ class Window(Adw.ApplicationWindow):
         name = self._text(self.r_material)
         m = self._materials.get(name)
         if m is None:
-            self.toast("No Silhouette material database found. Run "
-                       "'cut-proxies studio --run-helper' first.")
+            self.toast("Choose a local Silhouette condition.csv file first.")
             return
         was, self._suppress = self._suppress, True
         self.r_force.set_value(m.force)
@@ -1901,6 +1926,126 @@ class Window(Adw.ApplicationWindow):
         config.save_cut_offset(dx, dy)
         self.toast(f"Calibration saved: {dx:+g}, {dy:+g} mm")
         self.rebuild()
+
+    @staticmethod
+    def guide_button(group, label, handler):
+        button = Gtk.Button(label=label, halign=Gtk.Align.START)
+        button.connect("clicked", handler)
+        group.add(button)
+        return button
+
+    def update_guide(self):
+        busy = self._sending or self._checking_status
+        for field in (self.guide_apply, self.guide_next, self.guide_reset):
+            field.set_sensitive(not busy)
+        self.guide_send.set_sensitive(not busy and not self.guide.interrupted)
+        self.guide_use.set_sensitive(not busy and self.guide.tested_settings is not None)
+        label = "Repeat One Pass…" if self.guide.completed else "Cut One Pass…"
+        self.guide_send.set_label(label)
+        title, _, body = self.guide.status().partition("\n")
+        self.guide_status.set_title(title)
+        self.guide_status.set_subtitle("Waiting for the cutter to finish…" if self._sending else body)
+
+    def set_guide_blade_values(self, values):
+        fields = {"force": self.r_force, "speed": self.r_speed, "depth": self.r_depth, "passes": self.r_passes}
+        previous, self._suppress = self._suppress, True
+        try:
+            for name, value in values.items():
+                fields[name].set_value(-1 if value is None else value)
+        finally:
+            self._suppress = previous
+        self.on_changed()
+
+    def on_guide_start(self, *_args):
+        device = graphtec.device_by_name(self._text(self.r_cutter))
+        opts = self._blade_options()
+        self.set_guide_blade_values(starting_guide.starting_values(device, opts["holder"], opts["blade_diameter_mm"]))
+        suffix = "" if self.r_depth.get_value() >= 0 else " Set depth on the blade."
+        self.toast("Starting settings applied to Blade." + suffix)
+
+    def on_guide_use(self, *_args):
+        settings = self.guide.tested_settings
+        if settings is None:
+            return
+        device = graphtec.device_by_name(self._text(self.r_cutter))
+        if device != self.guide.trial.sheet.device or settings.holder != self._blade_options()["holder"]:
+            self.toast("Select the tested cutter and tool holder first.")
+            return
+        self.set_guide_blade_values({name: getattr(settings, name) for name in ("force", "speed", "depth", "passes")})
+        self.toast(f"Applied the tested settings with {settings.passes} pass(es).")
+
+    def on_guide_next(self, *_args):
+        self.guide.next_spot()
+        self.update_guide()
+
+    def on_guide_reset(self, *_args):
+        dialog = Adw.AlertDialog(heading="Start a New Test Sheet?",
+                                 body="Load a fresh blank sheet to start at the first spot.")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("new", "New Sheet")
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def reset(_dialog, response):
+            if response == "new" and not (self._sending or self._checking_status):
+                self.guide.reset()
+                self.update_guide()
+
+        dialog.connect("response", reset)
+        dialog.present(self)
+
+    def guide_proposal(self):
+        shape = list(testcut.TEST_SHAPES)[self.r_test_shape.get_selected()]
+        return self.guide.prepare(self._connection(), self.options(), self.job, shape)
+
+    def on_guide_pass(self, *_args):
+        if self._sending or self._checking_status:
+            return
+        try:
+            trial = self.guide_proposal()
+        except (ValueError, KeyError) as error:
+            self.toast(str(error))
+            return
+        prompt = self.guide.prompt(trial)
+        dialog = Adw.AlertDialog(heading="Send One Test Pass?", body=prompt)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("cut", "Cut")
+        dialog.set_response_appearance("cut", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._guide_pass_response, trial)
+        dialog.present(self)
+
+    def _guide_pass_response(self, _dialog, response, trial):
+        if response != "cut" or self._sending or self._checking_status:
+            return
+        try:
+            current = self.guide_proposal()
+        except (ValueError, KeyError) as error:
+            self.toast(str(error))
+            return
+        if trial != current:
+            self.toast("Test settings or cutter connection changed. Review the pass again.")
+            return
+        self._sending = True
+        self.update_send_actions()
+
+        def done(error=None):
+            self.guide.record(trial, error)
+            self._send_done()
+            self.toast(str(error) if error else "Pass complete. Keep the mat loaded and lift a corner.")
+
+        def work():
+            mode, options = _transport_options(trial.connection)
+            try:
+                with transport.open_transport(mode, device=trial.sheet.device, **options) as cutter:
+                    starting_guide.run_pass(cutter, trial)
+            except Exception as error:
+                GLib.idle_add(done, error)
+            else:
+                GLib.idle_add(done)
+
+        threading.Thread(target=work, daemon=True).start()
 
     def on_test_cut(self, *_a):
         connection = self._connection()
@@ -1945,7 +2090,9 @@ class Window(Adw.ApplicationWindow):
         if self._sending or self._checking_status:
             self.toast("The cutter connection is busy.")
             return
+        self.guide.invalidate()
         self._sending = True
+        self.update_send_actions()
 
         def work():
             try:
@@ -2067,7 +2214,7 @@ class Window(Adw.ApplicationWindow):
 
         threading.Thread(target=work, daemon=True).start()
 
-    def on_cut(self, *_a, scan_only=False):
+    def on_cut(self, *_a, scan_only=False, corner=False):
         if design_review_pending(self):
             self.toast('Review the latest edits in Design.')
             return
@@ -2085,6 +2232,21 @@ class Window(Adw.ApplicationWindow):
         connection = self._connection()
         if connection[0] in bluetooth.BLUETOOTH_MODES and not connection[1]:
             self.toast("Select a Bluetooth cutter first.")
+            return
+        if corner:
+            try:
+                sample = corner_test.build(j, self.imported, self.template_shapes, self.r_bleed.get_value())
+            except ValueError as error:
+                self.toast(str(error))
+                return
+            dialog = Adw.AlertDialog(heading="Corner Test Cut?", body=sample.describe())
+            dialog.add_response("cancel", "Cancel")
+            dialog.add_response("cut", "Cut")
+            dialog.set_response_appearance("cut", Adw.ResponseAppearance.DESTRUCTIVE)
+            dialog.set_default_response("cancel")
+            dialog.set_close_response("cancel")
+            dialog.connect("response", self._cut_response, j, connection, False, sample)
+            dialog.present(self)
             return
         profiles = ("\n".join(f"{i + 1}. {group.key} · {group.describe()}"
                               for i, group in enumerate(j.action_groups))
@@ -2118,7 +2280,7 @@ class Window(Adw.ApplicationWindow):
         dialog.connect("response", self._cut_response, j, connection, scan_only)
         dialog.present(self)
 
-    def _cut_response(self, _dialog, response, j, connection=("auto", None), scan_only=False):
+    def _cut_response(self, _dialog, response, j, connection=("auto", None), scan_only=False, corner=None):
         if response != "cut":
             return
         if design_review_pending(self):
@@ -2137,10 +2299,12 @@ class Window(Adw.ApplicationWindow):
         if connection != self._connection():
             self.toast("The cutter connection changed. Review and confirm the job again.")
             return
-        steps = j.registration_steps() if scan_only else j.steps
+        checked = corner.job if corner else j
+        steps = checked.registration_steps() if scan_only else checked.steps
         if not steps:
             self.toast("This job does not use registration.")
             return
+        self.guide.invalidate()
         self._sending = True
         self.cut_button.set_sensitive(False)
         self.scan_button.set_sensitive(False)
@@ -2165,9 +2329,10 @@ class Window(Adw.ApplicationWindow):
                             raise transport.TransportError(
                                 "the cutter is busy")
                     started = time.monotonic()
-                    sent = t.run(steps)
-                GLib.idle_add(self.toast, "Registration scan passed. No cut paths were sent."
-                              if scan_only else f"Cut sent: {sent:,} bytes")
+                    sent = t.run(steps, wait_done=True) if corner and t.can_read else t.run(steps)
+                message = ("Corner test sent." if corner else "Registration scan passed. No cut paths were sent."
+                           if scan_only else f"Cut sent: {sent:,} bytes")
+                GLib.idle_add(self.toast, message)
             except transport.RegistrationFailed as exc:
                 GLib.idle_add(self.show_registration_failure, str(exc), j, matched, row, report,
                               mode, time.monotonic() - started)
@@ -2212,117 +2377,6 @@ class Window(Adw.ApplicationWindow):
     def _send_done(self):
         self._sending = False
         self.rebuild()
-
-    def on_check_guest(self, *_a):
-        self.guest_row.set_subtitle("checking...")
-
-        def work():
-            g = winboat.status()
-            bits = [
-                f"container: {'running' if g.container_running else 'stopped'}",
-                f"studio: {g.studio_state}",
-                f"usb passthrough: {'yes' if g.usb_passthrough else 'no'}",
-                f"rdp: port {g.rdp_port or '?'}, "
-                + ("reachable" if g.rdp_reachable else "not listening")
-                + f", session {g.rdp_in_use or 'free'}",
-            ]
-            if not g.ready_for_studio:
-                bits.append(f"not ready: {g.why_not_ready()}")
-            if g.share_host_path:
-                bits.append(f"share: {g.share_host_path} -> "
-                            f"{winboat.GUEST_SHARE}")
-            bits += [f"- {d}" for d in g.detail]
-            GLib.idle_add(self.guest_row.set_subtitle, "\n".join(bits))
-
-        threading.Thread(target=work, daemon=True).start()
-
-    def on_prepare_guest(self, *_a):
-        try:
-            info = winboat.prepare()
-        except Exception as exc:              # noqa: BLE001
-            self.toast(f"Could not stage the helper: {exc}")
-            return
-        self.guest_row.set_subtitle("\n".join(info["steps"]))
-        self.toast(f"Staged {info['script'].name}")
-
-    def on_launch_blank_studio(self, *_a):
-        try:
-            cmd = winboat.open_in_studio(None)
-        except Exception as exc:              # noqa: BLE001
-            self.toast(f"Could not launch Studio: {exc}")
-            return
-        self.toast("Opening Silhouette Studio in the guest")
-        self.guest_row.set_subtitle(" ".join(cmd))
-
-    def on_open_studio(self, *_a):
-        if self.pdf_bundle:
-            row = self.pdf_bundle.rows[int(self.r_sheet_page.get_value())-1]
-            try:
-                with tempfile.TemporaryDirectory() as folder:
-                    self.launch_studio_file(self.pdf_bundle.studio_file(row, folder))
-            except (OSError, bundle.BundleError) as exc:
-                self.toast(f'Could not open Studio: {exc}')
-            return
-        if self.job is None:
-            self.toast("Nothing to open: fix the layout first.")
-            return
-        j = self.job
-        stem = (f"{j.grid.sheet_name.lower()}-{j.grid.card.name}-"
-                f"{j.grid.cols}x{j.grid.rows}-{j.mode}")
-        try:
-            written = job_mod.write_templates(j, stem, folder=winboat.stage_dir(), proof=False)
-            cmd = winboat.open_in_studio(written["dxf"])
-        except Exception as exc:              # noqa: BLE001
-            self.toast(f"Could not open Studio: {exc}")
-            return
-        b = j.grid.bounds
-        self.toast(f"Staged {written['dxf'].name} & opening Studio")
-        guide_text = (
-            f"Command: {' '.join(cmd)}\n\n"
-            f"In Silhouette Studio:\n"
-            f"- Page Setup: {j.grid.sheet_name} {'Landscape' if not j.grid.portrait else 'Portrait'}\n"
-            f"- Reg Marks: Type 1, Inset {j.marks.inset_mm:g} mm, Length {j.marks.reg_length_mm:g} mm\n"
-            f"- Verify Size (Ctrl+A): {b.w:.2f} x {b.h:.2f} mm ({b.w / 25.4:.3f} x {b.h / 25.4:.3f} in)\n"
-            f"- If scaled in Basic Edition: lock aspect ratio and set Width to {b.w:.2f} mm ({b.w / 25.4:.3f} in)\n"
-            f"- Card size: {j.grid.card.width_mm:.1f} x {j.grid.card.height_mm:.1f} mm\n"
-            f"- Settings: Force {j.settings.force}, Speed {j.settings.speed}, Passes {j.settings.passes}, Depth {j.settings.depth or 7}\n"
-            f"- Sticky note hint: Cover bottom-left card during mark scan, remove before cutting"
-        )
-        self.guest_row.set_subtitle(guide_text)
-
-    def on_pick_studio_file(self, *_a):
-        chooser = Gtk.FileDialog(title='Open a Silhouette Studio file')
-        studio_filter = Gtk.FileFilter()
-        studio_filter.set_name('Silhouette Studio files')
-        for pattern in ('*.studio3', '*.STUDIO3', '*.studio', '*.STUDIO'):
-            studio_filter.add_pattern(pattern)
-        filters = Gio.ListStore.new(Gtk.FileFilter)
-        filters.append(studio_filter)
-        chooser.set_filters(filters)
-
-        def opened(dialog, result):
-            try:
-                path = dialog.open_finish(result).get_path()
-            except GLib.Error:
-                return
-            if path is None:
-                self.toast('Choose a local Studio file.')
-                return
-            self.launch_studio_file(pathlib.Path(path))
-
-        chooser.open(self, None, opened)
-
-    def launch_studio_file(self, path):
-        try:
-            winboat.open_in_studio(path)
-        except (OSError, RuntimeError, ValueError) as exc:
-            self.toast(f'Could not open Studio: {exc}')
-            return
-        self.toast(f'Opening {path.name} in Silhouette Studio')
-        if path.suffix.lower() == '.dxf':
-            self.guest_row.set_subtitle('Set the page and registration marks from Read me.txt in the ZIP.')
-        else:
-            self.guest_row.set_subtitle(f'{path.name} · Opens with the page and marks stored in the file.')
 
 
 class Application(Adw.Application):

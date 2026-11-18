@@ -207,7 +207,7 @@ class TestGuiCheckedPlan(unittest.TestCase):
             cut_button=mock.Mock(), scan_button=mock.Mock(), scan_result=mock.Mock(),
             r_auto=mock.Mock(), toast=mock.Mock(),
             rebuild=mock.Mock(), _send_done=mock.Mock(), update_send_actions=mock.Mock(),
-            _connection=lambda: ("auto", None))
+            _connection=lambda: ("auto", None), guide=mock.Mock())
         window.r_auto.get_active.return_value = True
         transport = mock.MagicMock()
         transport.__enter__.return_value = transport

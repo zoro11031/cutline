@@ -38,7 +38,7 @@ class Bundle:
     def artwork(self, row):
         self.check_current()
         if 'svg' not in row:
-            raise BundleError('This ZIP has a Studio cut file. Open it from Studio, or export a fresh ZIP for direct cutting.')
+            raise BundleError('This ZIP has a legacy cut file. Export a current ProxyPress ZIP with a cut SVG for direct cutting.')
         try:
             with zipfile.ZipFile(self.path) as archive:
                 imported = importer.load_svg(io.BytesIO(archive.read(row['svg'])))
@@ -69,20 +69,33 @@ class Bundle:
                  ('top-left L', 'top-right L', 'bottom-left L', 'bottom-right L'))
         return tuple(name for name in names if name in hints)
 
-    def studio_file(self, row, folder):
-        """Copy the paired Studio file or DXF into a caller-owned directory."""
-        self.check_current()
+    @staticmethod
+    def cut_file_name(row):
         number = row['sheet']
-        name = row.get('cutFile')
-        if name not in (f'sheet-{number}.studio3', f'sheet-{number}.dxf'):
-            raise BundleError(f'Sheet {number} has no matching Studio or DXF file.')
-        target = pathlib.Path(folder) / name
+        name = row.get('cutFile') or row.get('svg')
+        if name not in (f'sheet-{number}.studio3', f'sheet-{number}.dxf', f'sheet-{number}.svg'):
+            raise BundleError(f'Sheet {number} has no matching cut file.')
+        return name
+
+    def save_cut_file(self, row, path):
+        """Export the paired cut file unchanged to a user-selected path."""
+        self.check_current()
+        name = self.cut_file_name(row)
+        target = pathlib.Path(path)
+        if target.resolve() == self.path.resolve():
+            raise BundleError("Choose a destination separate from the source ZIP.")
+        temporary = None
         try:
-            with zipfile.ZipFile(self.path) as archive, archive.open(name) as source:
-                with target.open('wb') as destination:
-                    copyfileobj(source, destination)
+            with zipfile.ZipFile(self.path) as archive, archive.open(name) as source, \
+                 tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as destination:
+                temporary = pathlib.Path(destination.name)
+                copyfileobj(source, destination)
+            temporary.replace(target)
         except (OSError, KeyError, zipfile.BadZipFile) as exc:
-            raise BundleError(f'Could not copy the Studio file for sheet {number}: {exc}') from exc
+            raise BundleError(f'Could not save the cut file for sheet {row["sheet"]}: {exc}') from exc
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
         return target
 
     def check_current(self):

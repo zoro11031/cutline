@@ -1,5 +1,8 @@
 # Studio reverse engineering execution record
 
+References to the desktop app's WinBoat bridge describe an earlier workflow.
+For local file export, see the current setup guide.
+
 ## Starting point (2026-11-09)
 
 Execution of `REVERSE_ENGINEERING_BRIEF.md` starts with an evidence audit.
