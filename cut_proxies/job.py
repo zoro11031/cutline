@@ -20,8 +20,9 @@ from __future__ import annotations
 
 import dataclasses
 import pathlib
+import math
 
-from . import config, geometry, graphtec, layout_presets, presets, regmarks, template, verify
+from . import actions, config, geometry, graphtec, layout_presets, presets, regmarks, template, toolpath, verify
 
 
 @dataclasses.dataclass
@@ -54,6 +55,11 @@ class Job:
     steps: tuple = ()
     registration: bool = True
     auto_search: bool = True
+    mat: str = "auto"
+    end_position: str = "below"
+    end_feed_mm: float = 0.0
+    send_mode: str = "simple"
+    action_groups: tuple[actions.CutGroup, ...] = ()
 
     # ---- reporting ---------------------------------------------------
     @property
@@ -68,7 +74,15 @@ class Job:
 
     @property
     def cut_length_mm(self) -> float:
-        return template.total_length_mm(self.paths) * self.settings.passes
+        if not self.action_groups and not self.settings.custom_toolpath:
+            return template.total_length_mm(self.paths) * self.settings.passes
+        origin = self.marks.origin_mm if self.registration else (0.0, 0.0)
+        start = tuple(axis - offset for axis, offset in zip(origin, self.offset_mm))
+        groups = ([(group.settings, group.paths) for group in self.action_groups]
+                  if self.action_groups else [(self.settings, self.paths)])
+        return sum(math.dist(a, b) for settings, paths in groups
+                   for _, points in toolpath.schedule(paths, settings, start)
+                   for a, b in zip(points, points[1:]))
 
     def registration_steps(self) -> tuple:
         """Use the verified plan, stopping at the sensor's reply before paths."""
@@ -108,12 +122,39 @@ class Job:
         s = self.settings
         tool = [f"holder {s.holder}"]
         if self.device.cameo3_on:
-            tool.append("head lift on" if s.lift_head else "head lift off")
-            tool.append(f"corner extensions {s.corner_start_mm:g}/{s.corner_end_mm:g} mm"
-                        if s.sharpen_corners else "corner extensions off")
+            tool.append("head lift on" if s.lift_head or s.sharpen_corners else "head lift off")
+            if s.sharpen_corners:
+                tool.append(f"Line Segment Overcut {s.corner_start_mm:g}/{s.corner_end_mm:g} mm")
         if self.device.detects_tools:
             tool.append("automatic acceleration" if s.acceleration is None
                         else f"acceleration {s.acceleration}")
+        if s.track_enhancing:
+            tool.append("Track Enhancing")
+        if s.custom_toolpath:
+            tool.extend((toolpath.PATH_ORDERS[s.path_order], toolpath.PASS_ORDERS[s.pass_order]))
+            if s.interior_first or s.delicate_media:
+                tool.append("interior contours first")
+            if s.delicate_media:
+                tool.append("delicate media path")
+            if s.alternate_direction:
+                tool.append("alternating direction")
+            if s.overcut_mm:
+                tool.append(f"{s.overcut_mm:g} mm overcut")
+
+        weed_count = sum(toolpath.is_weed_path(path) for path in self.paths)
+        blade_rows = [
+            ("Preset", f"{self.preset.name} [{self.preset.origin}]"),
+            ("Blade", f"force {self.settings.force}, speed "
+                      f"{self.settings.speed}, {self.settings.passes} "
+                      f"pass(es), blade {self.settings.blade_diameter_mm:g} mm"
+                      + (f", depth {self.settings.depth}"
+                         if self.settings.depth is not None else "")),
+            ("Tool setup", ", ".join(tool)),
+        ]
+        if self.action_groups:
+            blade_rows = [("Send by", actions.SEND_MODES[self.send_mode])]
+            blade_rows.extend((f"{i + 1}. {group.key}", group.describe())
+                              for i, group in enumerate(self.action_groups))
         return [
             ("Cutter", f"{self.device.name} "
                        f"({self.device.width_mm:g} mm cuttable)"),
@@ -127,16 +168,14 @@ class Job:
                      f"{self.grid.card.height_mm:g} mm, "
                      f"{self.grid.card.radius_mm:g} mm corners"),
             ("Marks", mk.describe()),
+            ("Cutting mat", graphtec.MAT_OPTIONS[self.mat]),
+            ("End position", graphtec.END_POSITIONS[self.end_position]
+             + (f" +{self.end_feed_mm:g} mm" if self.end_feed_mm else "")),
+            *([("Weed Settings", f"{weed_count} cut paths")] if weed_count else []),
             ("Origin shift", f"cut coordinates are measured from "
                              f"({mk.origin_mm[0]:g}, {mk.origin_mm[1]:g}) mm"
              if self.registration else "registration off; sheet coordinates"),
-            ("Preset", f"{self.preset.name} [{self.preset.origin}]"),
-            ("Blade", f"force {self.settings.force}, speed "
-                      f"{self.settings.speed}, {self.settings.passes} "
-                      f"pass(es), blade {self.settings.blade_diameter_mm:g} mm"
-                      + (f", depth {self.settings.depth}"
-                         if self.settings.depth is not None else "")),
-            ("Tool setup", ", ".join(tool)),
+            *blade_rows,
             ("Cut mode", self.mode),
             ("Calibration", "none"
              if tuple(self.offset_mm) == (0.0, 0.0)
@@ -175,12 +214,50 @@ def build(sheet: str = config.DEFAULT_SHEET,
           auto_search: bool = True,
           skip: tuple[int, ...] = (),
           offset_mm: tuple[float, float] | None = None,
-          imported=None, blade_options=None) -> Job:
+          imported=None, blade_options=None, mat: str = "auto",
+          end_position: str = "below", end_feed_mm: float = 0.0,
+          weed_border_mm: float = 0.0, weed_lines: str = "none",
+          send_mode: str = "simple", assignments: tuple[actions.Assignment, ...] = (),
+          use_document_page: bool = False) -> Job:
     """Build and check a job.  Raises only on things that cannot be reported."""
     device = graphtec.device_by_name(cutter)
+    preset = presets.get(preset_name)
+    requested = dataclasses.replace(preset.cut_settings(), **(blade_options or {}))
+    if passes is not None:
+        requested.passes = passes
+    if force is not None:
+        requested.force = force
+    if speed is not None:
+        requested.speed = speed
+    if depth is not _USE_PRESET_DEPTH:
+        requested.depth = depth
+
+    groups = ()
+    if send_mode not in actions.SEND_MODES:
+        raise ValueError(f"Unknown send mode {send_mode!r}.")
+    if send_mode == "simple":
+        if assignments:
+            raise ValueError("Choose Line, Fill, or Layer to assign cut groups.")
+    else:
+        if imported is None or mode == template.CROSS:
+            raise ValueError("Grouped Send requires imported or Design cut paths.")
+        skipped = set(skip)
+        candidates = tuple(path for index, path in enumerate(imported.paths) if index not in skipped)
+        groups = actions.resolve(candidates, send_mode, assignments, preset, requested, device)
+        imported = dataclasses.replace(imported, paths=tuple(path for group in groups for path in group.paths))
+        skip = ()
 
     # 1. the grid
-    if engine == "proxypress":
+    if use_document_page and imported is not None and imported.page_size_mm:
+        width, height = imported.page_size_mm
+        paper = geometry.match_sheet(imported.page_size_mm)
+        sheet = paper[0] if paper else "Document Size"
+        grid = geometry.Grid("imported", sheet, width <= height, width, height,
+                             geometry.card(card), 0, 0, (), 0.0, 0.0)
+        inset = config.DEFAULT_MARK_INSET_MM if mark_inset_mm is None else mark_inset_mm
+        thickness = config.DEFAULT_MARK_THICKNESS_MM if mark_thickness_mm is None else mark_thickness_mm
+        length = mark_length_mm
+    elif engine == "proxypress":
         # The eight-up sheet, which is what this workflow prints. Proxy
         # Press's own b-cameo preset fits four, because a 16 mm margin
         # keeps the grid clear of the marks by brute force; `cut-proxies
@@ -207,11 +284,13 @@ def build(sheet: str = config.DEFAULT_SHEET,
     # Stock landscape jobs and bare cut files share the printed paper preset.
     if (length is None and not grid.portrait and card == "standard"
             and inset == 10 and proxypress is None and pattern == regmarks.THREE):
-        preset = layout_presets.BUILTIN.get(f"mtg-cameo-{sheet.lower()}")
-        if preset is not None:
-            length = preset.arm_mm
+        layout_preset = layout_presets.BUILTIN.get(f"mtg-cameo-{sheet.lower()}")
+        if layout_preset is not None:
+            length = layout_preset.arm_mm
 
     # 2. the marks
+    if use_document_page and imported is not None:
+        grid = _grid_from_paths(imported, grid)
     mk = regmarks.for_grid(grid, inset_mm=inset, length_mm=length,
                            thickness_mm=thickness, pattern=pattern)
     collisions = regmarks.collisions(grid, mk, bleed_mm=bleed_mm)
@@ -226,10 +305,11 @@ def build(sheet: str = config.DEFAULT_SHEET,
     # alternative was a second, weaker verification path for imports, and
     # the import is the case where the geometry is least trusted.
     if imported is not None:
-        grid = _grid_from_paths(imported, grid)
-        mk = regmarks.for_grid(grid, inset_mm=inset, length_mm=length,
-                               thickness_mm=thickness, pattern=pattern) \
-            if engine == "scm" else mk
+        if not use_document_page:
+            grid = _grid_from_paths(imported, grid)
+            if engine == "scm":
+                mk = regmarks.for_grid(grid, inset_mm=inset, length_mm=length,
+                                       thickness_mm=thickness, pattern=pattern)
         inkscape_marks = imported.inkscape_marks if registration else None
         if inkscape_marks:
             mk = regmarks.marks(grid.sheet_w_mm, grid.sheet_h_mm,
@@ -255,23 +335,27 @@ def build(sheet: str = config.DEFAULT_SHEET,
                       if i not in set(skip))
     else:
         paths = template.cut_paths(grid, mode, radius_mm, skip=skip)
+        if weed_border_mm or weed_lines != "none":
+            raise ValueError("Open cut artwork or review a Design to add a Weed Border.")
+    weed = toolpath.weed_paths(paths, weed_border_mm, weed_lines)
+    paths += weed
+    if groups and weed:
+        groups = (*groups[:-1], dataclasses.replace(groups[-1], paths=groups[-1].paths + weed))
     cut_cards = tuple(c for i, c in enumerate(grid.cards) if i not in set(skip))
     hints = [h for h in regmarks.mask_hints(grid, mk)
              if h["index"] not in set(skip)]
 
+    off += cutting_mat_errors(device, mat, grid.sheet_w_mm, grid.sheet_h_mm)
+
     # 4. the settings and the stream
-    preset = presets.get(preset_name)
-    cut = dataclasses.replace(preset.cut_settings(), **(blade_options or {}))
-    if passes is not None:
-        cut.passes = passes
-    if force is not None:
-        cut.force = force
-    if speed is not None:
-        cut.speed = speed
-    if depth is not _USE_PRESET_DEPTH:
-        cut.depth = depth
-    warnings = cut.warnings(device)
-    cut = cut.clamped(device)
+    if groups:
+        warnings = [f"{group.key}: {msg}" for group in groups for msg in group.warnings]
+        track = requested.track_enhancing or any(group.settings.track_enhancing for group in groups)
+        cut = dataclasses.replace(groups[0].settings, track_enhancing=track)
+        groups = (dataclasses.replace(groups[0], settings=cut), *groups[1:])
+    else:
+        warnings = requested.warnings(device)
+        cut = requested.clamped(device)
 
     # No explicit offset means "use whatever this machine was calibrated to".
     offset = config.cut_offset() if offset_mm is None else offset_mm
@@ -282,16 +366,23 @@ def build(sheet: str = config.DEFAULT_SHEET,
         registration=registration, auto_search=auto_search,
         quad=window["quad"], offset_mm=offset,
         mark_shape_mm=(mk.length_mm, mk.thickness_mm),
-        sheet_size_mm=(grid.sheet_w_mm, grid.sheet_h_mm))
-    steps = tuple(job.plan(paths))
+        sheet_size_mm=(grid.sheet_w_mm, grid.sheet_h_mm),
+        mat=mat, end_position=end_position, end_feed_mm=end_feed_mm)
+    steps = tuple(job.plan_matrix([(group.settings, group.paths) for group in groups], wait_between=True)
+                  if groups else job.plan(paths))
     stream = b''.join(step.data for step in steps if step.kind == 'write')
 
     # 5. take it apart again
     verify_mode = mode if imported is None else "rounded"
     check_options = dict(cards=cut_cards, offset_mm=offset, registration=registration,
-                         auto_search=auto_search)
+                         auto_search=auto_search, mat=mat, end_position=end_position,
+                         end_feed_mm=end_feed_mm)
+    if groups:
+        check_options["action_groups"] = groups
     if imported is not None:
         check_options["expected_paths"] = paths
+    elif cut.custom_toolpath:
+        check_options["source_paths"] = paths
     ok, rows = verify.expectations_met(stream, grid, mk, cut, device, verify_mode,
                                        **check_options)
     # ...and prove, in this same run, that those checks would have noticed if
@@ -314,7 +405,21 @@ def build(sheet: str = config.DEFAULT_SHEET,
                collisions=collisions, off_sheet=off, warnings=warnings,
                skip=skip, mask_hints=hints, offset_mm=offset,
                liveness_failures=liveness, steps=steps, registration=registration,
-               auto_search=auto_search)
+               auto_search=auto_search, mat=mat, end_position=end_position, end_feed_mm=end_feed_mm,
+               send_mode=send_mode, action_groups=groups)
+
+
+def cutting_mat_errors(device, mat: str, sheet_w: float, sheet_h: float) -> list[str]:
+    if mat == "auto" or mat not in graphtec.MAT_OPTIONS:
+        return []
+    if not device.cameo3_on:
+        return [f"{device.name} does not support software mat selection. Choose Automatic."]
+    if mat in graphtec.MATS:
+        _, width, height = graphtec.MATS[mat]
+        if sheet_w > width or sheet_h > height:
+            return [f"The {sheet_w:g} × {sheet_h:g} mm sheet does not fit "
+                    f"the {graphtec.MAT_OPTIONS[mat]} mat."]
+    return []
 
 
 def imported_mode_errors(imported, mode: str) -> list[str]:

@@ -67,23 +67,37 @@ A registration scan has to **read** the cutter's reply, and that is the one
 thing the `/dev/usb/lp*` path cannot be relied on for. For a registered cut,
 use `pyusb`.
 
-## Cameo 4 over Bluetooth LE
+## Bluetooth
 
-On Arch or CachyOS, install `python-bleak` and start the BlueZ Bluetooth
-service. Enable Bluetooth on the Cameo 4. In the desktop Cut tab, choose
-**Bluetooth LE**, find cutters, select the Cameo 4, and refresh its status.
-On the CLI:
+On Linux, install and start BlueZ and enable Bluetooth on the cutter.
+Install Bleak (`python-bleak` on Arch or CachyOS) for Bluetooth LE.
+For Bluetooth Classic, pair the cutter in your system Bluetooth settings
+and use a Python build with native RFCOMM sockets.
+
+In the **Cut** tab select **Bluetooth LE** or **Bluetooth Classic (RFCOMM)**.
+Use **Find Bluetooth cutters**, or enter the device identifier manually.
+Use **Refresh** to read the model, firmware, status and installed tools.
+Bluetooth Classic defaults to channel 1.
 
 ```sh
 cut-proxies status --transport ble
-cut-proxies status --transport ble --bluetooth-id AA:BB:CC:DD:EE:FF
-cut-proxies cut --transport ble --bluetooth-id AA:BB:CC:DD:EE:FF \
-  --layout-preset mtg-cameo-letter --preset 'Plain paper test' --dry-run
+cut-proxies status --transport ble --bluetooth-name "CAMEO 4" --diagnostics
+cut-proxies status --transport bluetooth --bluetooth-id AA:BB:CC:DD:EE:FF
+cut-proxies cut --transport bluetooth --bluetooth-id AA:BB:CC:DD:EE:FF \
+  --preset 'Plain paper test' --dry-run
 ```
 
-Use the address reported by discovery. Once the matching proof is printed
-at 100% and the cutter reports ready, remove `--dry-run` for the supervised
-proof. The settings-matrix test uses USB.
+`status --all-bluetooth` also lists devices that do not advertise a recognized
+cutter name or service. Use the identifier shown by discovery. On macOS,
+the BLE identifier can be a local UUID. Use `--bluetooth-channel` for a
+different RFCOMM channel. A live `cut` or `testcut` detects the model unless
+you supply `--cutter`. A dry run uses Cameo 4 by default and never opens
+Bluetooth. For an unrecognized firmware reply, `--allow-unrecognized-firmware`
+requires an explicit identifier and cutter model. A recognized but different
+model still stops the job.
+
+Bluetooth hardware results and the reference comparison are in
+[Inkscape Silhouette compatibility](INKSCAPE_COMPATIBILITY.md).
 
 ## Printing the sheet
 
@@ -155,6 +169,42 @@ Two ways to avoid it entirely:
   two have to agree: a slot skipped here but printed leaves an uncut card,
   and a slot printed blank but not skipped gets cut out of nothing.
 
+## Cut paths and media handling
+
+In **Blade → Cut paths**, choose **No Sort**, **Maximize Speed** for
+shorter travel between contours, or **Minimize Roller Movement** for
+top-to-bottom ordering by contour entry. **Sort Interior Contours First**
+puts nested paths ahead of their enclosing contours. **Delicate Media Path**
+also alternates the winding of successive closed contours to balance blade
+drag. This is a software alternative to Silhouette's proprietary Intelligent
+Path Technology. [Silhouette machine features](https://silhouetteamerica.freshdesk.com/support/solutions/articles/35000273078-features-cutting-machines-)
+
+**Finish each path** completes its passes in place. **Alternate pass
+direction** reverses every other pass. **Seam Overcut** overlaps both sides
+of a closed contour's start and end. **Line Segment Overcut** on **Blade**
+uses the cutter's sharp-corner controls in 0.1 mm steps. **Track Enhancing**
+runs the rollers before registration or cutting. The recovered driver
+reports force 19 or higher for this operation.
+
+In **Cut → Media handling**, choose the mat loaded in the machine or
+**No cutting mat**. **Feed** adds a distance beyond the farthest cut within
+the active feed window. **Return to Origin** returns to the cutter's
+starting position. [Cameo 4 manual, page 27](https://www.silhcdn.com/m/d/user-guides/cameo-4-en.pdf#page=28)
+
+```sh
+cut-proxies cut --path-order rollers --interior-first --line-segment-overcut \
+  --track-enhancing --feed-mm 4 --dry-run
+```
+
+For imported artwork or a Design project, **Blade → Weed Settings** adds a
+padded **Weed Border** and optional **Weed Lines** in clear horizontal or
+vertical gaps between contours. **Show Weed Settings** controls panel
+visibility. Review the blue dashed lines in the cut preview.
+**Show Cutter Divisions** switches between materials condensed for the
+selected cutter and all cutter classes in the installed Studio database.
+**Restore Default Materials** backs up edits to shipped presets and
+restores those settings.
+
 ## Finding your blade settings
 
 The reliable way, and the one the Card Maker guide describes, is to cut and
@@ -166,7 +216,10 @@ cut-proxies testcut --force 25,29,33 --passes 1,2,3 --out ~/Documents
 ```
 
 Nine 15 mm squares, each cut with its own settings, on a blank offcut of the
-real stock. It prints the map and writes a labelled SVG of it.
+real stock. It prints the map and writes a labelled SVG of it. For the
+Studio sample, choose **Studio square and triangle** or add `--shape studio`.
+It defaults to a 10 mm square and finishes the triangle first while the
+square still holds the material in place.
 
 Then, **without ejecting the mat**, lift a corner of each square and see
 which separated cleanly. The first combination that comes away with a light
@@ -309,8 +362,9 @@ is needed and is never printed. Override it with `CUT_PROXIES_GUEST_USER` and
 ## Inkscape Silhouette Print & Cut
 
 1. In Inkscape, put the printed artwork in a layer called **Print** and the
-   cut geometry in **Cut**. Convert cut text to paths, unlink clones and
-   flatten clips. Run **Extensions → Render → Silhouette Regmarks** with
+   cut geometry in **Cut**. Convert cut text to paths and flatten clips.
+   Local SVG clones of paths and groups are supported. Unlink clones that
+   reference external files, symbols, or separate viewports. Run **Extensions → Render → Silhouette Regmarks** with
    the standard three-mark pattern for Cameo 4. Save the Inkscape SVG and
    print the desired page at 100%.
 2. In the desktop app, open that SVG under **Layout → What to cut**, select
@@ -366,3 +420,26 @@ To reopen it, select the same paper and orientation and use **Open project**
 inside the editor. **Use template** loads the geometry into the regular
 checked job. From there, use **Export** for SVG, DXF and the print proof, or
 choose your tool and send the checked job from **Cut**.
+
+## Send by Line, Fill, or Layer
+
+In **Cut → Send by**, choose **Line**, **Fill**, or **Layer**. Expand each
+group you want to send and enable **Send this group**. Choose a preset,
+tool holder, and position in the send order. The cutter scans the
+registration marks once, then runs the enabled groups in order. For a
+Design project, review **All actions** to configure **Cut** and **Score**
+as separate groups in **Layer** mode.
+
+List the available names and build a checked direct-cutter job from the CLI.
+
+```sh
+cut-proxies import design.svg --list-groups line
+cut-proxies cut --from design.svg --send-by line \
+  --group 'blue=2:Pen, no blade' --group 'red=Plain paper test' --dry-run
+```
+
+Groups omitted from the list stay out of the cut. One holder can use
+different force, speed, passes, and automatic depths across groups with
+the same installed tool. A pen and blade need separate holders or sends.
+Group names reflect the source SVG colors and layers. DXF layers are
+available for Layer mode, with explicit DXF entity colors available for Line.

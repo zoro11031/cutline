@@ -5,7 +5,7 @@ from pathlib import Path
 import unittest
 import types
 from unittest import mock
-from cut_proxies import config, importer, job, presets
+from cut_proxies import config, graphtec, importer, job, presets
 
 try:
     from cut_proxies import gui
@@ -44,6 +44,184 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertEqual(win.workspaces.get_visible_child_name(), 'tools')
         self.assertIsNone(win.design)
 
+    def test_design_page_setup_preserves_custom_page_mat_and_marks_in_send(self):
+        from cut_proxies.editor_model import Shape
+
+        win = self.make_window()
+        win.design_button.emit('clicked')
+        design = win.design
+        design.commit((Shape('Rectangle', x=35, y=43, width=20, height=30),), (0,))
+        design.page.set_selected(design.page_sizes.index('Custom'))
+        design.page_width.set_value(150)
+        design.page_height.set_value(180)
+        design.mat.set_selected(list(graphtec.MAT_OPTIONS).index('cameo-12x12'))
+        design.mark_inset.set_value(14)
+        design.mark_length.set_value(9)
+        self.assertEqual(design.mat_size, (304.8, 304.8))
+        self.assertEqual(design.cut_border.x, 14)
+        design.review.emit('clicked')
+        self.assertEqual(win.stack.get_visible_child_name(), 'cut')
+        self.assertEqual((win.job.grid.sheet_w_mm, win.job.grid.sheet_h_mm), (150, 180))
+        self.assertEqual(win.job.mat, 'cameo-12x12')
+        self.assertEqual((win.job.marks.inset_mm, win.job.marks.length_mm), (14, 9))
+        self.assertEqual(win.job.blocked, [])
+
+    def test_design_drawing_points_selection_and_replicate_enter_history(self):
+        from cut_proxies.editor_model import Shape
+        from gi.repository import Gdk
+
+        win = self.make_window()
+        win.design_button.emit('clicked')
+        design = win.design
+        design.commit((), ())
+        gesture = mock.Mock()
+        gesture.get_current_event_state.return_value = Gdk.ModifierType(0)
+        canvas = design.canvas
+        with mock.patch.object(canvas, 'viewport', return_value=(0, 0, 2)):
+            design.tool.set_selected(design.tools.index('Rectangle'))
+            design.drag_begin(gesture, 120, 100)
+            design.drag_end(gesture, 20, 30)
+            self.assertEqual(design.project.shapes, (Shape('Rectangle', 60, 50, 10, 15),))
+            design.tool.set_selected(design.tools.index('Polygon'))
+            for x, y in ((180, 100), (220, 100), (220, 160)):
+                design.pick_polygon_point(gesture, 1, x, y)
+            design.finish_polygon()
+            self.assertEqual(design.project.shapes[1].path().points, ((90, 50), (110, 50), (110, 80)))
+            design.tool.set_selected(design.tools.index('Point Edit'))
+            design.drag_begin(gesture, 180, 100)
+            design.drag_end(gesture, 0, 20)
+            self.assertEqual(design.project.shapes[1].path().points[0], (90, 60))
+            design.tool.set_selected(0)
+            design.drag_begin(gesture, 80, 60)
+            design.drag_end(gesture, 160, 120)
+        self.assertEqual(design.selected_indices(), (0, 1))
+        design.group_button.emit('clicked')
+        self.assertIsNotNone(design.project.shapes[0].group)
+        self.assertEqual(design.project.shapes[0].group, design.project.shapes[1].group)
+        design.rows.set_value(1)
+        design.replicate_button.emit('clicked')
+        self.assertEqual(len(design.project.shapes), 4)
+        design.undo_button.emit('clicked')
+        self.assertEqual(len(design.project.shapes), 2)
+
+    def test_back_preserves_design_and_send_requires_review_of_new_edits(self):
+        from dataclasses import replace
+
+        win = self.make_window()
+        self.assertTrue(win.review_send.get_visible())
+        win.review_send.emit('clicked')
+        self.assertTrue(win.cut_button.get_visible())
+        win.on_edit_template()
+        design = win.design
+        design.review.emit('clicked')
+        self.assertTrue(win.cut_button.get_sensitive())
+        win.on_edit_template()
+        design.commit((replace(design.project.shapes[0], x=45),), (0,))
+        win.leave_design()
+        self.assertEqual(win.review_send.get_label(), 'Review Design')
+        self.assertFalse(win.cut_button.get_sensitive())
+        self.assertFalse(win.scan_button.get_sensitive())
+        win.review_send.emit('clicked')
+        self.assertIs(win.design, design)
+        self.assertEqual(design.project.shapes[0].x, 45)
+        self.assertTrue(design.dirty)
+        design.review.emit('clicked')
+        self.assertTrue(win.cut_button.get_sensitive())
+
+    def test_save_updates_the_open_project_without_opening_the_picker(self):
+        from cut_proxies.editor_model import load_project
+
+        win = self.make_window()
+        win.on_edit_template()
+        design = win.design
+        with tempfile.TemporaryDirectory() as folder:
+            dest = Path(folder) / 'cards.scc-template'
+            design.write_design(dest, None)
+            design.commit((), ())
+            self.assertTrue(design.dirty)
+            with mock.patch.object(design, 'file_dialog') as picker:
+                design.save(None)
+            self.assertEqual(picker.call_count, 0)
+            self.assertFalse(design.dirty)
+            self.assertEqual(load_project(dest), design.project)
+            self.assertEqual(design.title.get_title(), dest.name)
+
+    def test_zoom_keeps_the_point_under_the_pointer_and_fit_resets_the_view(self):
+        win = self.make_window()
+        win.on_edit_template()
+        design = win.design
+        canvas = design.canvas
+        with mock.patch.object(canvas, 'get_width', return_value=700), \
+             mock.patch.object(canvas, 'get_height', return_value=450):
+            anchor = (204, 135)
+            x, y, scale = canvas.viewport(700, 450)
+            location = (anchor[0] - x) / scale, (anchor[1] - y) / scale
+            canvas.zoom_by(1.25, anchor)
+            x, y, scale = canvas.viewport(700, 450)
+            self.assertAlmostEqual(x + location[0] * scale, anchor[0])
+            self.assertAlmostEqual(y + location[1] * scale, anchor[1])
+            self.assertEqual(design.zoom_readout.get_label(), '125%')
+            design.fit(None)
+        self.assertEqual((canvas.pan, canvas.zoom), ((0, 0), 1))
+        self.assertEqual(design.zoom_readout.get_label(), '100%')
+
+    def test_sheet_measurement_survives_blade_edits_but_not_registration_changes(self):
+        win = self.make_window()
+        win.pdf_path = Path('sample.pdf')
+        report = win.sheet_report = object()
+        token = win._sheet_token = object()
+        win.r_force.set_value(win.r_force.get_value() - 1)
+        self.assertIs(win.sheet_report, report)
+        self.assertIs(win._sheet_token, token)
+        win.r_inset.set_value(win.r_inset.get_value() + 1)
+        self.assertIsNone(win.sheet_report)
+        self.assertIsNone(win._sheet_token)
+
+    def test_preview_separates_cut_paths_from_print_and_restores_default_without_a_pdf(self):
+        import cairo
+        import io
+
+        win = self.make_window()
+        preview = win.preview
+        png = io.BytesIO()
+        print_image = cairo.ImageSurface(cairo.FORMAT_RGB24, 50, 50)
+        context = cairo.Context(print_image)
+        context.set_source_rgb(0.02, 0.62, 0.91)
+        context.paint()
+        print_image.write_to_png(png)
+        preview.set_pdf(png.getvalue(), 279.4, 215.9)
+        self.assertTrue(win.preview_mode.get_visible())
+
+        def render(mode):
+            win.preview_mode.set_selected(gui.PREVIEW_MODES.index(mode))
+            out = cairo.ImageSurface(cairo.FORMAT_RGB24, 320, 220)
+            preview._draw(preview, cairo.Context(out), 320, 220)
+            return bytes(out.get_data())
+
+        cut = render('Cut paths')
+        printed = render('Print PDF')
+        overlay = render('Overlay')
+        self.assertNotEqual(cut, printed)
+        self.assertNotEqual(overlay, printed)
+        preview.set_pdf()
+        self.assertFalse(win.preview_mode.get_visible())
+        self.assertEqual(render('Overlay'), cut)
+
+    def test_send_confirmation_is_invalidated_if_the_cutter_changes(self):
+        win = self.make_window()
+        checked = win.job
+        old_connection = win._connection()
+        win.r_connection.set_selected(1)
+        self.assertFalse(win.cut_button.get_sensitive())
+        self.assertIn('Select a Bluetooth cutter', win.send_status.get_label())
+        win.r_bluetooth_id.set_text('AB:00:00:00:00:01')
+        self.assertTrue(win.cut_button.get_sensitive())
+        with mock.patch.object(win, 'toast') as warning, \
+             mock.patch.object(gui.transport, 'open_transport') as open_transport:
+            win._cut_response(None, 'cut', checked, old_connection)
+            self.assertEqual(open_transport.call_count, 0)
+            self.assertIn('connection changed', warning.call_args.args[0])
+
     def test_save_preset_button_reloads_edited_blade_settings(self):
         with tempfile.TemporaryDirectory() as folder, \
              mock.patch.object(config, "CONFIG_DIR", Path(folder)):
@@ -67,7 +245,7 @@ class TestDesignWorkspace(unittest.TestCase):
                              (32, 21, -1, 5))
             self.assertIsNone(win.job.settings.depth)
             self.assertEqual(win.job.settings.passes, 5)
-            for cmd in (b"FC13,1,1", b"FE0,1", b"FF4,7,1"):
+            for cmd in (b"FC13,1,1", b"FE1,1", b"FF4,7,1"):
                 self.assertIn(cmd, win.job.stream.split(b"\x03"))
 
     def test_save_as_new_selects_a_distinct_preset(self):
@@ -231,6 +409,43 @@ class TestOpenDialogs(unittest.TestCase):
             dialog.return_value.connect.call_args.args[1](dialog.return_value, "open")
         self.assertEqual(load.call_args_list, [mock.call(path, page=None), mock.call(path, page=2)])
         window.set_artwork.assert_called_once_with(artwork, "multipage.svg · Page 2")
+
+    def test_group_assignments_keep_explicit_order_and_omit_disabled_rows(self):
+        from cut_proxies import actions
+
+        def row(key, active, preset, holder, order):
+            enabled = mock.Mock()
+            enabled.get_active.return_value = active
+            slot = mock.Mock()
+            slot.get_selected.return_value = holder
+            position = mock.Mock()
+            position.get_value.return_value = order
+            return key, None, enabled, preset, slot, position
+
+        window = types.SimpleNamespace(_text=lambda value: value, _send_rows=[
+            row("Cut", True, "Plain paper test", 1, 3),
+            row("Guide", False, "Plain paper test", 0, 2),
+            row("Score", True, "Pen, no blade", 2, 1),
+        ])
+        self.assertEqual(gui.Window._group_assignments(window), (
+            actions.Assignment("Score", "Pen, no blade", 2),
+            actions.Assignment("Cut", "Plain paper test", 1),
+        ))
+
+    def test_show_weed_settings_changes_visibility_only(self):
+        window = types.SimpleNamespace(r_show_weed=mock.Mock(), _text=mock.Mock(),
+            r_weed_border=mock.Mock(), r_weed_lines=mock.Mock(), weed_group=mock.Mock())
+        window.r_weed_border.get_value.return_value = 3
+        for mode, imported, visible in (("Auto", None, False), ("Auto", object(), True),
+                                        ("Always", None, True), ("Never", object(), False)):
+            with self.subTest(mode=mode, imported=bool(imported)):
+                window._text.return_value = mode
+                window.imported = imported
+                gui.Window._update_weed_controls(window)
+                window.weed_group.set_visible.assert_called_with(visible)
+                window.r_weed_border.set_sensitive.assert_called_with(imported is not None)
+        self.assertEqual(window.weed_group.set_visible.call_count, 4)
+        self.assertEqual(window.r_weed_border.set_value.call_count, 0)
 
     def test_colorblind_preference_preserves_calibration(self):
         window = types.SimpleNamespace(preview=mock.Mock(), toast=mock.Mock())

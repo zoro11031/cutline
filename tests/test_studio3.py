@@ -9,9 +9,11 @@ Studio on this machine. Section 29 of docs/FINDINGS.md keeps the two apart.
 
 import pathlib
 import struct
+import tempfile
 import unittest
+from unittest import mock
 
-from cut_proxies import importer, studio3
+from cut_proxies import cli, importer, job, studio3
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "studio3"
 
@@ -36,6 +38,71 @@ class TestNativeImport(unittest.TestCase):
                     self.assertTrue(path.closed)
                     self.assertAlmostEqual(max(xs) - min(xs), spec["w"], delta=0.02)
                     self.assertAlmostEqual(max(ys) - min(ys), spec["h"], delta=0.02)
+
+
+    @staticmethod
+    def vector_document(flags=1):
+        def block(body):
+            return b"\x01" + struct.pack("<I", len(body) + 4) + body
+
+        def point(x, y, incoming=None, outgoing=None):
+            def handle(delta):
+                return (b"\x01" + struct.pack("<ff", *delta)) if delta is not None else b"\x00"
+
+            return struct.pack("<ff", x, y) + handle(incoming) + handle(outgoing)
+
+        def subpath(closed, *points):
+            body = struct.pack("<Bi", closed, len(points) - 1) + b"".join(points)
+            return struct.pack("<I", 4 + len(body)) + body
+
+        def path(name, *segments):
+            payload = block(struct.pack("<i", len(segments) - 1) + b"".join(segments))
+            return (b"\x00" + block(b"") + bytes(65) + payload + b"\x01" + bytes(8)
+                    + block(b"") + struct.pack("<I", len(name)) + name)
+
+        open_line = subpath(0, point(22, 25, outgoing=(0, 20)), point(62, 25, incoming=(0, 20)))
+        triangle = subpath(flags, point(65, 46), point(75, 62), point(51, 62))
+        body = (block(b"") + block(bytes(0x29) + struct.pack("<ff", 105.5, 128.25))
+                + path(b"Example", triangle, open_line))
+        document = studio3.MAGIC + block(body)
+        header = bytearray(0x400)
+        header[:len(studio3.MAGIC)] = studio3.MAGIC
+        struct.pack_into("<Q", header, 0x10, len(document))
+        return bytes(header) + document
+
+    def test_compound_path_preserves_closed_polygon_and_open_cubic_in_mm(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = pathlib.Path(folder) / "Example.STUDIO3"
+            source.write_bytes(self.vector_document())
+            art = importer.load(source)
+        self.assertEqual(art.page_size_mm, (105.5, 128.25))
+        triangle, curve = art.paths
+        self.assertTrue(triangle.closed)
+        self.assertEqual(triangle.points, ((65, 46), (75, 62), (51, 62)))
+        self.assertFalse(curve.closed)
+        self.assertEqual((curve.points[0], curve.points[-1]), ((22, 25), (62, 25)))
+        self.assertAlmostEqual(max(y for _, y in curve.points), 40, delta=0.05)
+        planned = job.build(imported=art, use_document_page=True, registration=False)
+        self.assertEqual((planned.grid.sheet_w_mm, planned.grid.sheet_h_mm), art.page_size_mm)
+        self.assertEqual(planned.blocked, [])
+
+    def test_reports_invalid_geometry_and_truncated_document(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = pathlib.Path(folder) / "Corrupt.studio3"
+            source.write_bytes(self.vector_document(flags=2))
+            with self.assertRaisesRegex(importer.ImportError_, "Invalid Studio3 subpath"):
+                importer.load(source)
+            source.write_bytes(self.vector_document()[:-1])
+            with self.assertRaisesRegex(importer.ImportError_, "truncated Studio3 document"):
+                importer.load(source)
+
+    def test_original_file_is_forwarded_to_studio_without_converting(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = pathlib.Path(folder) / "Example.studio3"
+            source.write_bytes(self.vector_document())
+            with mock.patch.object(cli.winboat, "open_in_studio", return_value=["Studio"]) as open_file:
+                self.assertEqual(cli.main(["cut", "--from", str(source), "--via", "studio", "--dry-run"]), 0)
+                self.assertEqual(open_file.call_args, mock.call(source, dry_run=True))
 
 
 def load(name):

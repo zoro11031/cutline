@@ -28,16 +28,19 @@ reported instead.
 from __future__ import annotations
 
 import dataclasses
+from collections import defaultdict
 import math
 import re
 import xml.etree.ElementTree as ET
 
 from .geometry import Rect
-from .template import CHORD_TOLERANCE_MM, CutPath, rounded_rect_points
+from .template import CHORD_TOLERANCE_MM, CutPath
 
 SVG_NS = "http://www.w3.org/2000/svg"
+XLINK_HREF = "{http://www.w3.org/1999/xlink}href"
 INKSCAPE_NS = "http://www.inkscape.org/namespaces/inkscape"
 INKSCAPE_LABEL = f"{{{INKSCAPE_NS}}}label"
+INKSCAPE_GROUPMODE = f"{{{INKSCAPE_NS}}}groupmode"
 
 # IDs and geometry from inkscape-silhouette/render_silhouette_regmarks.py.
 INKSCAPE_MARK_IDS = ("regmark-tl", "regmark-tr", "regmark-bl", "regmark-br")
@@ -93,12 +96,14 @@ class Imported:
     page_size_mm: tuple[float, float] | None = None
     inkscape_marks: InkscapeMarks | None = None
     inkscape_mark_error: str | None = None
+    studio3_page: bool = False
+    use_document_page: bool = False
 
     def colours(self) -> dict[str, int]:
         """Stroke colours present, and how many paths each has."""
         out: dict[str, int] = {}
         for p in self.paths:
-            c = p.label.split("|", 1)[1] if "|" in p.label else ""
+            c = p.stroke
             out[c or "(none)"] = out.get(c or "(none)", 0) + 1
         return dict(sorted(out.items(), key=lambda kv: -kv[1]))
 
@@ -110,9 +115,7 @@ class Imported:
         leave the black alone.
         """
         want = '' if colour == '(none)' else normalise_colour(colour)
-        kept = tuple(p for p in self.paths
-                     if (p.label.split("|", 1)[1] if "|" in p.label else "")
-                     == want)
+        kept = tuple(p for p in self.paths if p.stroke == want)
         if not kept:
             raise ImportError_(
                 f"no paths with stroke {colour!r}; this file has "
@@ -443,7 +446,9 @@ def _tag(el) -> str:
 
 
 _NAMED = {"black": "#000000", "red": "#ff0000", "green": "#008000",
-          "blue": "#0000ff", "white": "#ffffff", "none": "none"}
+          "blue": "#0000ff", "white": "#ffffff", "none": "none",
+          "yellow": "#ffff00", "lime": "#00ff00", "cyan": "#00ffff",
+          "aqua": "#00ffff", "magenta": "#ff00ff", "fuchsia": "#ff00ff"}
 
 
 def normalise_colour(value: str | None) -> str:
@@ -512,7 +517,7 @@ def _shape_subpaths(el, tolerance):
     return []
 
 
-UNSUPPORTED = {"text", "tspan", "image", "use", "clipPath", "mask", "pattern",
+UNSUPPORTED = {"text", "tspan", "image", "clipPath", "mask", "pattern",
                "foreignObject"}
 
 
@@ -553,6 +558,40 @@ def _inkscape_marks(mark_paths, page_size):
                                "standard geometry and align in rows and columns.")
     window = tuple(round(v, 6) for v in (x, y, right, bottom))
     return InkscapeMarks(window[0], "four" if four else "three", window_mm=window)
+
+
+def _layer_captions(root):
+    """Disambiguate identically named layers under the same parent."""
+    siblings = defaultdict(list)
+
+    def collect(element, parent=None):
+        label = element.get(INKSCAPE_LABEL)
+        if _tag(element) == "g" and (label or element.get(INKSCAPE_GROUPMODE) == "layer"):
+            name = label or element.get("id", "Layer")
+            siblings[parent, name].append(element)
+            parent = element
+        for child in element:
+            collect(child, parent)
+
+    collect(root)
+    captions = {}
+    for (_parent, name), layers in siblings.items():
+        for index, element in enumerate(layers, 1):
+            distinct = len(layers) > 1 or name == "(no layer)"
+            captions[element] = f"{name} [{element.get('id') or index}]" if distinct else name
+    return captions
+
+
+def _clone_translation(element):
+    """SVG use x/y in local user units, before the instance transform."""
+    values = []
+    for attribute in ("x", "y"):
+        raw = element.get(attribute, "0").strip()
+        match = re.fullmatch(r"(" + _NUM.pattern + r")([a-z]*)", raw, re.I)
+        if not match or match[2].lower() not in _UNITS_MM:
+            raise ImportError_(f"Unsupported SVG clone translation {attribute}={raw!r}.")
+        values.append(float(match[1]) * (_UNITS_MM[match[2].lower()] / _UNITS_MM["px"]))
+    return (1, 0, 0, 1, *values)
 
 
 def load_svg(path, tolerance: float = CHORD_TOLERANCE_MM, *,
@@ -643,15 +682,26 @@ def load_svg(path, tolerance: float = CHORD_TOLERANCE_MM, *,
     paths: list[CutPath] = []
     warnings: list[str] = []
     seen_unsupported: set[str] = set()
+    elements_by_id = {}
+    duplicate_ids = set()
+    for element in root.iter():
+        identifier = element.get("id")
+        if identifier:
+            if identifier in elements_by_id:
+                duplicate_ids.add(identifier)
+            else:
+                elements_by_id[identifier] = element
 
     mark_paths = {}
     has_inkscape_marks = False
     ignored_layers = []
+    captions = _layer_captions(root)
 
-    def walk(el, mat, stroke, visibility="visible", in_marks=False):
+    def walk(el, mat, stroke, fill="#000000", layer=(), visibility="visible",
+             in_marks=False, instance=(), color="#000000"):
         nonlocal has_inkscape_marks
         name = _tag(el)
-        if name in {"defs", "metadata", "namedview"}:
+        if name in {"defs", "metadata", "namedview", "symbol", "style"}:
             return
         label = el.get(INKSCAPE_LABEL, "") if name == "g" else ""
         marker_group = name == "g" and (el.get("id") == "regmark"
@@ -683,6 +733,14 @@ def load_svg(path, tolerance: float = CHORD_TOLERANCE_MM, *,
         own_stroke = style.get("stroke", el.get("stroke"))
         if own_stroke and own_stroke != "inherit":
             stroke = normalise_colour(own_stroke)
+        own_fill = style.get("fill", el.get("fill"))
+        if own_fill and own_fill != "inherit":
+            fill = normalise_colour(own_fill)
+        own_color = normalise_colour(style.get("color", el.get("color")))
+        if own_color and own_color not in ("inherit", "currentcolor"):
+            color = own_color
+        if not instance and el in captions:
+            layer += (captions[el],)
         if in_marks:
             marker = el.get("id", "")
             stem, suffix, index = marker.partition("-page-")
@@ -698,7 +756,25 @@ def load_svg(path, tolerance: float = CHORD_TOLERANCE_MM, *,
                 else:
                     mark_paths[marker] = (), False
             for child in el:
-                walk(child, mat, stroke, visibility, in_marks=True)
+                walk(child, mat, stroke, fill, layer, visibility, in_marks=True, color=color)
+            return
+        if name == "use":
+            # inkscape-silhouette recursively walks the referenced object
+            # in the clone's frame. External resources and nested viewports
+            # require a renderer and are rejected here.
+            href = el.get("href") or el.get(XLINK_HREF, "")
+            if not href.startswith("#") or len(href) < 2:
+                raise ImportError_("An SVG clone requires a local #id reference.")
+            ref = href[1:]
+            target = elements_by_id.get(ref)
+            if target is None or ref in duplicate_ids:
+                raise ImportError_(f"SVG clone target {href} is missing or ambiguous.")
+            if ref in instance:
+                raise ImportError_(f"SVG clone target {href} forms a recursive reference.")
+            if _tag(target) in ("symbol", "svg", "defs"):
+                raise ImportError_(f"SVG clone target {href} contains a viewport or definition. Unlink it in Inkscape.")
+            walk(target, _matmul(mat, _clone_translation(el)), stroke, fill, layer, visibility,
+                 instance=(*instance, ref), color=color)
             return
         if name in UNSUPPORTED:
             if visibility == "visible":
@@ -730,10 +806,12 @@ def load_svg(path, tolerance: float = CHORD_TOLERANCE_MM, *,
                     pts = tuple((min(w_mm, max(0, x)), min(h_mm, max(0, y))) for x, y in pts)
                 # The colour rides in the label so the whole pipeline can
                 # carry it without a second channel.
-                tag = f"{name}|{stroke}" if stroke else name
-                paths.append(CutPath(pts, closed=closed, label=tag))
+                line_color = color if stroke == "currentcolor" else stroke
+                fill_color = color if fill == "currentcolor" else fill
+                tag = f"{name}|{line_color}" if line_color else name
+                paths.append(CutPath(pts, closed=closed, label=tag, fill=fill_color, layer=layer))
         for child in el:
-            walk(child, mat, stroke, visibility)
+            walk(child, mat, stroke, fill, layer, visibility, instance=instance, color=color)
 
     walk(root, base, "")
     inkscape_marks = None
@@ -858,6 +936,7 @@ def load_dxf(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
 
     def finish():
         nonlocal entity, data, verts, poly_closed, in_polyline
+        first = len(paths)
         if entity == "LINE":
             paths.append(CutPath(
                 ((num(10), num(20)), (num(11), num(21))), False, "LINE"))
@@ -904,6 +983,18 @@ def load_dxf(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
                     poly_closed, "POLYLINE"))
         elif entity in ("SPLINE", "ELLIPSE", "TEXT", "MTEXT", "INSERT"):
             seen_other.add(entity)
+        if len(paths) > first:
+            layer = data.get(8, ["0"])[0]
+            true_colour = num(420, -1)
+            aci_value = num(62, 256)
+            aci = int(aci_value) if math.isfinite(aci_value) else 256
+            primary = {1: "#ff0000", 2: "#ffff00", 3: "#00ff00", 4: "#00ffff",
+                       5: "#0000ff", 6: "#ff00ff"}
+            colour = (f"#{int(true_colour):06x}" if 0 <= true_colour <= 0xffffff
+                      else primary.get(aci, f"aci {aci}" if 0 < aci < 256 else ""))
+            paths[first:] = [dataclasses.replace(
+                path, layer=(layer,), label=f"{path.label}|{colour}" if colour else path.label)
+                for path in paths[first:]]
         entity, data, verts, poly_closed, in_polyline = None, {}, [], False, False
 
     i = start
@@ -982,8 +1073,7 @@ def load_dxf(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
             "drawing is positioned from its own extent; check the placement "
             "against the marks before cutting")
     flipped = tuple(
-        CutPath(tuple((x * scale, (top - y) * scale) for x, y in p.points),
-                p.closed, p.label)
+        dataclasses.replace(p, points=tuple((x * scale, (top - y) * scale) for x, y in p.points))
         for p in paths)
     xs = [x for p in flipped for x, _y in p.points]
     ys2 = [y for p in flipped for _x, y in p.points]
@@ -1011,22 +1101,42 @@ def _read_text(path) -> str:
 
 
 def load_studio3(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
-    """Import the rounded-card outlines understood by the Studio template reader."""
+    """Import the stored vectors, including closed paths and cubic curves."""
     from pathlib import Path
-    from . import studio3
+    from . import studio3, studio3_paths
 
-    data = Path(path).read_bytes()
     try:
-        cards = studio3.read_cards(data)
-        page = studio3.page_size(data)
+        page, outlines = studio3_paths.load_vectors(Path(path).read_bytes())
     except studio3.Studio3Error as exc:
         raise ImportError_(str(exc)) from exc
-    paths = tuple(CutPath(rounded_rect_points(Rect(c.x, c.y, c.w, c.h), c.radius, tolerance),
-                          closed=True, label=f"Card {i}")
-                  for i, c in enumerate(cards, 1))
-    return Imported(paths, *page, str(path), "Studio3 card coordinates in mm",
-                    ["Studio3 import reads rounded card outlines. Match registration to the printed sheet."],
-                    page_size_mm=page)
+
+    def control(vertex, handle):
+        x, y = vertex.point
+        return (x + handle[0], y + handle[1]) if handle else vertex.point
+
+    paths = []
+    for outline in outlines:
+        vertices = outline.vertices
+        points = [vertices[0].point]
+        destinations = vertices[1:] + vertices[:1] if outline.closed else vertices[1:]
+        for start, end in zip(vertices, destinations):
+            if start.outgoing or end.incoming:
+                points.extend(_cubic(start.point, control(start, start.outgoing),
+                                     control(end, end.incoming), end.point, tolerance))
+            else:
+                points.append(end.point)
+        if outline.closed:
+            points.pop()
+        if len(set(points)) >= 2:
+            paths.append(CutPath(tuple(points), outline.closed,
+                                 outline.name.replace("|", "/") or f"Path {len(paths) + 1}"))
+    if not paths:
+        raise ImportError_("The Studio3 document has no usable vector paths.")
+    warnings = ["Studio3 imports stored outlines. Verify which lines should cut. "
+                "Layer visibility, colors, raster images, effects and registration settings "
+                "are not imported."]
+    return Imported(tuple(paths), *page, str(path), "Studio3 page coordinates in mm", warnings,
+                    page_size_mm=page, studio3_page=True, use_document_page=True)
 
 
 def load(path, tolerance: float = CHORD_TOLERANCE_MM, *,
