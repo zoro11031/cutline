@@ -144,6 +144,23 @@ class TestQtFrontend(unittest.TestCase):
         select_all.trigger()
         self.assertEqual(len(design.selection()), len(design.project.shapes))
 
+    def test_wide_workspace_keeps_the_settings_pane_readable_and_resizable(self):
+        window = self.window
+        window.resize(1800, 900)
+        window.show()
+        self.app.processEvents()
+        split = window.workspace_split
+        self.assertEqual(split.sizes()[1], 480)
+        self.assertIs(window.menu_bar.parentWidget(), window.design_button.parentWidget().parentWidget())
+        self.assertEqual(window.preview_bar.height(), window.tabs.tabBar().height())
+
+        total = sum(split.sizes())
+        split.setSizes([total - 530, 530])
+        window.hide()
+        window.show()
+        self.app.processEvents()
+        self.assertEqual(split.sizes()[1], 530)
+
     def test_connection_method_defaults_to_automatic_inside_advanced_options(self):
         window = self.window
         window.show()

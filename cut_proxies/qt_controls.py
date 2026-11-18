@@ -19,6 +19,7 @@ QFrame#workspaceBar {
     border: 1px solid palette(midlight);
     border-radius: 9px;
 }
+QFrame#previewBar { border-bottom: 1px solid palette(midlight); }
 QScrollArea[role="settings"], QWidget[role="settingsPage"] { background: palette(window); }
 QTabWidget[role="settings"]::pane { border: 0; border-top: 1px solid palette(midlight); }
 QTabWidget[role="settings"] QTabBar::tab {
@@ -86,8 +87,15 @@ QSlider[role="cutSlider"]::handle:horizontal:disabled,
 QSlider[role="cutSlider"]::sub-page:horizontal:disabled { background: palette(mid); }
 QMenuBar { padding: 2px 4px; }
 QMenuBar::item { padding: 5px 10px; }
+QMenuBar#workspaceMenu { background: transparent; padding: 0; }
 QSplitter::handle { background: transparent; width: 12px; }
+QSplitter::handle:horizontal {
+    background: palette(midlight);
+    border-left: 5px solid palette(window);
+    border-right: 5px solid palette(window);
+}
 QSplitter::handle:hover { background: palette(midlight); }
+QSplitter::handle:horizontal:hover { background: palette(highlight); }
 """
 
 
