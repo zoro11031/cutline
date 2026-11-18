@@ -34,7 +34,7 @@ import re
 import xml.etree.ElementTree as ET
 
 from .geometry import Rect
-from .template import CHORD_TOLERANCE_MM, CutPath, rounded_rect_points
+from .template import CHORD_TOLERANCE_MM, CutPath
 
 SVG_NS = "http://www.w3.org/2000/svg"
 XLINK_HREF = "{http://www.w3.org/1999/xlink}href"
@@ -96,6 +96,7 @@ class Imported:
     page_size_mm: tuple[float, float] | None = None
     inkscape_marks: InkscapeMarks | None = None
     inkscape_mark_error: str | None = None
+    studio3_page: bool = False
 
     def colours(self) -> dict[str, int]:
         """Stroke colours present, and how many paths each has."""
@@ -1099,22 +1100,42 @@ def _read_text(path) -> str:
 
 
 def load_studio3(path, tolerance: float = CHORD_TOLERANCE_MM) -> Imported:
-    """Import the rounded-card outlines understood by the Studio template reader."""
+    """Import the stored vectors, including closed paths and cubic curves."""
     from pathlib import Path
-    from . import studio3
+    from . import studio3, studio3_paths
 
-    data = Path(path).read_bytes()
     try:
-        cards = studio3.read_cards(data)
-        page = studio3.page_size(data)
+        page, outlines = studio3_paths.load_vectors(Path(path).read_bytes())
     except studio3.Studio3Error as exc:
         raise ImportError_(str(exc)) from exc
-    paths = tuple(CutPath(rounded_rect_points(Rect(c.x, c.y, c.w, c.h), c.radius, tolerance),
-                          closed=True, label=f"Card {i}")
-                  for i, c in enumerate(cards, 1))
-    return Imported(paths, *page, str(path), "Studio3 card coordinates in mm",
-                    ["Studio3 import reads rounded card outlines. Match registration to the printed sheet."],
-                    page_size_mm=page)
+
+    def control(vertex, handle):
+        x, y = vertex.point
+        return (x + handle[0], y + handle[1]) if handle else vertex.point
+
+    paths = []
+    for outline in outlines:
+        vertices = outline.vertices
+        points = [vertices[0].point]
+        destinations = vertices[1:] + vertices[:1] if outline.closed else vertices[1:]
+        for start, end in zip(vertices, destinations):
+            if start.outgoing or end.incoming:
+                points.extend(_cubic(start.point, control(start, start.outgoing),
+                                     control(end, end.incoming), end.point, tolerance))
+            else:
+                points.append(end.point)
+        if outline.closed:
+            points.pop()
+        if len(set(points)) >= 2:
+            paths.append(CutPath(tuple(points), outline.closed,
+                                 outline.name.replace("|", "/") or f"Path {len(paths) + 1}"))
+    if not paths:
+        raise ImportError_("The Studio3 document has no usable vector paths.")
+    warnings = ["Studio3 imports stored outlines. Verify which lines should cut. "
+                "Layer visibility, colors, raster images, effects and registration settings "
+                "are not imported."]
+    return Imported(tuple(paths), *page, str(path), "Studio3 page coordinates in mm", warnings,
+                    page_size_mm=page, studio3_page=True)
 
 
 def load(path, tolerance: float = CHORD_TOLERANCE_MM, *,

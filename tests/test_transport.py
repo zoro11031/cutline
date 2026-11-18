@@ -87,6 +87,19 @@ class TestPathBatches(unittest.TestCase):
         self.assertEqual(park, b"SO0\x03")
         self.assertEqual(sent, len(self.data) + len(park))
 
+    def test_wait_done_checks_status_after_the_park_command(self):
+        events = []
+        self.cutter.can_read = True
+        park = graphtec.frame("SO0")
+        self.cutter.write.side_effect = lambda data: events.append(data) or len(data)
+        self.cutter.status.side_effect = lambda: events.append("status") or "ready"
+        self.assertEqual(self.cutter.run([graphtec.Step("write", park)], wait_done=True), len(park))
+        self.assertEqual(events, [park, "status"])
+        self.cutter.can_read = False
+        with self.assertRaisesRegex(transport.TransportError, "readable"):
+            self.cutter.run([graphtec.Step("write", park)], wait_done=True)
+        self.assertEqual(events, [park, "status"])
+
     def test_track_enhancing_waits_for_ready_before_sending_a_scan(self):
         roller = graphtec.Step("write", graphtec.frame("FY0"), wait_ready=True)
         scan = graphtec.Step("write", graphtec.frame("TB123,100,100,0,0"))

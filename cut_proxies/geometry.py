@@ -104,6 +104,15 @@ SHEETS: dict[str, Sheet] = {
 }
 
 
+def match_sheet(dimensions: tuple[float, float]) -> tuple[str, bool] | None:
+    """Recognize a named paper size and orientation from measured millimetres."""
+    for paper in SHEETS.values():
+        for portrait in (True, False):
+            if all(abs(a - b) <= 0.1 for a, b in zip(dimensions, paper.size(portrait))):
+                return paper.name, portrait
+    return None
+
+
 @dataclasses.dataclass(frozen=True)
 class Card:
     """A card face.  `radius_mm` is the printed corner radius."""

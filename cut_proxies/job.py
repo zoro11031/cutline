@@ -217,7 +217,8 @@ def build(sheet: str = config.DEFAULT_SHEET,
           imported=None, blade_options=None, mat: str = "auto",
           end_position: str = "below", end_feed_mm: float = 0.0,
           weed_border_mm: float = 0.0, weed_lines: str = "none",
-          send_mode: str = "simple", assignments: tuple[actions.Assignment, ...] = ()) -> Job:
+          send_mode: str = "simple", assignments: tuple[actions.Assignment, ...] = (),
+          use_document_page: bool = False) -> Job:
     """Build and check a job.  Raises only on things that cannot be reported."""
     device = graphtec.device_by_name(cutter)
     preset = presets.get(preset_name)
@@ -247,7 +248,16 @@ def build(sheet: str = config.DEFAULT_SHEET,
         skip = ()
 
     # 1. the grid
-    if engine == "proxypress":
+    if use_document_page and imported is not None and imported.page_size_mm:
+        width, height = imported.page_size_mm
+        paper = geometry.match_sheet(imported.page_size_mm)
+        sheet = paper[0] if paper else "Document Size"
+        grid = geometry.Grid("imported", sheet, width <= height, width, height,
+                             geometry.card(card), 0, 0, (), 0.0, 0.0)
+        inset = config.DEFAULT_MARK_INSET_MM if mark_inset_mm is None else mark_inset_mm
+        thickness = config.DEFAULT_MARK_THICKNESS_MM if mark_thickness_mm is None else mark_thickness_mm
+        length = mark_length_mm
+    elif engine == "proxypress":
         # The eight-up sheet, which is what this workflow prints. Proxy
         # Press's own b-cameo preset fits four, because a 16 mm margin
         # keeps the grid clear of the marks by brute force; `cut-proxies
@@ -279,6 +289,8 @@ def build(sheet: str = config.DEFAULT_SHEET,
             length = layout_preset.arm_mm
 
     # 2. the marks
+    if use_document_page and imported is not None:
+        grid = _grid_from_paths(imported, grid)
     mk = regmarks.for_grid(grid, inset_mm=inset, length_mm=length,
                            thickness_mm=thickness, pattern=pattern)
     collisions = regmarks.collisions(grid, mk, bleed_mm=bleed_mm)
@@ -293,10 +305,11 @@ def build(sheet: str = config.DEFAULT_SHEET,
     # alternative was a second, weaker verification path for imports, and
     # the import is the case where the geometry is least trusted.
     if imported is not None:
-        grid = _grid_from_paths(imported, grid)
-        mk = regmarks.for_grid(grid, inset_mm=inset, length_mm=length,
-                               thickness_mm=thickness, pattern=pattern) \
-            if engine == "scm" else mk
+        if not use_document_page:
+            grid = _grid_from_paths(imported, grid)
+            if engine == "scm":
+                mk = regmarks.for_grid(grid, inset_mm=inset, length_mm=length,
+                                       thickness_mm=thickness, pattern=pattern)
         inkscape_marks = imported.inkscape_marks if registration else None
         if inkscape_marks:
             mk = regmarks.marks(grid.sheet_w_mm, grid.sheet_h_mm,

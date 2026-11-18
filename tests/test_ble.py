@@ -1,14 +1,15 @@
 import asyncio
+import threading
 import unittest
 from unittest import mock
 
-from cut_proxies import ble, graphtec, transport
+from cut_proxies import ble, bluetooth, graphtec, transport
 
 
 class TestBle(unittest.TestCase):
     def setUp(self):
         self.cutter = ble.BleTransport.__new__(ble.BleTransport)
-        self.cutter._runner = asyncio.new_event_loop()
+        self.cutter._start_worker()
         self.cutter._ready = asyncio.Event()
         self.cutter._buffer = bytearray()
         self.cutter._client = mock.Mock(is_connected=True)
@@ -16,9 +17,19 @@ class TestBle(unittest.TestCase):
         self.cutter._client.write_gatt_char = mock.AsyncMock()
         self.addCleanup(self.cutter.close)
 
+    def notify(self, data):
+        self.cutter._runner.call_soon_threadsafe(self.cutter._on_reply, None, data)
+
+    def test_processes_idle_notifications_before_a_read(self):
+        delivered = threading.Event()
+        self.notify(b"0\x03")
+        self.cutter._runner.call_soon_threadsafe(delivered.set)
+        self.assertTrue(delivered.wait(1))
+        self.assertEqual(self.cutter.read(), b"0\x03")
+
     def test_fragmented_and_coalesced_replies(self):
-        self.cutter._on_reply(None, b"    ")
-        self.cutter._on_reply(None, b"0\x030\x03")
+        self.notify(b"    ")
+        self.notify(b"0\x030\x03")
         self.assertEqual(self.cutter.read(), graphtec.RESP_REGMARK_OK)
         self.assertEqual(self.cutter.read(), b"0\x03")
 
@@ -32,7 +43,7 @@ class TestBle(unittest.TestCase):
             self.cutter.read()
 
     def test_scan_failure_prevents_path_writes(self):
-        self.cutter._on_reply(None, b"1\x03")
+        self.notify(b"1\x03")
         steps = [graphtec.Step("expect", expect=graphtec.RESP_REGMARK_OK),
                  graphtec.Step("write", b"paths")]
         with self.assertRaises(transport.TransportError):
@@ -50,10 +61,10 @@ class TestBle(unittest.TestCase):
         for name, pid in (("CAMEO4-ABCD", 0x1137), ("Cameo 4 Plus", 0x1138),
                           ("CAMEO 5 ALPHA-9876", 0x0001), ("Cameo 5 Alpha Plus", 0x0002),
                           ("Portrait4-C250", 0x113F), ("Portrait 2", 0x1132),
-                          ("Cameo Pro Mark2", 0x1146)):
+                          ("Cameo Pro Mark2", 0x1146), ("Cameo Pro MK-II-AF00", 0x1146)):
             with self.subTest(name=name):
-                self.assertEqual(ble.advertised_model(name).product_id, pid)
-        self.assertIsNone(ble.advertised_model("CAMEO 40"))
+                self.assertEqual(bluetooth.advertised_model(name).product_id, pid)
+        self.assertIsNone(bluetooth.advertised_model("CAMEO 40"))
 
     def test_scan_accepts_advertised_name_or_device_name_and_preserves_address(self):
         matched = mock.Mock(address="ab:cd:ef")
@@ -62,25 +73,27 @@ class TestBle(unittest.TestCase):
         other.name = "Speaker"
         bleak = mock.Mock()
         bleak.BleakScanner.discover = mock.AsyncMock(return_value={
-            matched.address: (matched, mock.Mock(local_name=None)),
-            other.address: (other, mock.Mock(local_name="Speaker")),
+            matched.address: (matched, mock.Mock(local_name=None, service_uuids=[])),
+            other.address: (other, mock.Mock(local_name="Speaker", service_uuids=[])),
         })
         with mock.patch.object(ble, "_bleak", return_value=bleak):
-            self.assertEqual(ble.discover(), [("AB:CD:EF", "Cameo 5")])
+            self.assertEqual(ble.discover(), [("ab:cd:ef", "Cameo 5")])
+            self.assertEqual(ble.discover(include_all=True), [("ab:cd:ef", "Cameo 5"),
+                                                            ("xx:yy:zz", "Speaker")])
 
-    def test_unsupported_model_fails_before_discovery(self):
-        device = graphtec.device_by_name("Silhouette Cameo 2")
-        with mock.patch.object(ble, "_scan", new_callable=mock.AsyncMock) as scan:
-            with self.assertRaisesRegex(transport.TransportError, "unavailable.*Cameo 2"):
-                ble.BleTransport("00:00:00:00:00:00", device)
-        scan.assert_not_awaited()
+    def test_retries_only_the_transient_att_error_on_the_same_chunk(self):
+        write = self.cutter._client.write_gatt_char
+        write.side_effect = [OSError("ATT error: 0x0e"), None, None]
+        self.assertEqual(self.cutter.write(bytes(range(32))), 32)
+        self.assertEqual([call.args[1] for call in write.await_args_list],
+                         [bytes(range(20)), bytes(range(20)), bytes(range(20, 32))])
 
     def test_model_mismatch_fails_before_connecting(self):
         address = "00:00:00:00:00:00"
         model = graphtec.device_by_name("Silhouette Cameo 4 Plus")
         expected = graphtec.device_by_name("Silhouette Cameo 4")
         with mock.patch.object(ble, "_scan", new_callable=mock.AsyncMock,
-                               return_value={address: (mock.Mock(), model.name, model)}), \
+                               return_value=[bluetooth.Candidate(address, model.name)]), \
              mock.patch.object(ble, "_bleak") as bleak:
             with self.assertRaisesRegex(transport.TransportError, "advertises.*Cameo 4 Plus"):
                 ble.BleTransport(address, expected)
@@ -90,7 +103,7 @@ class TestBle(unittest.TestCase):
         model = graphtec.device_by_name("Silhouette Cameo 5 Alpha")
         address = "00:00:00:00:00:00"
         with mock.patch.object(ble.BleTransport, "_connect", new_callable=mock.AsyncMock,
-                               return_value=model), \
+                               return_value=bluetooth.Candidate("local-id", model.name)), \
              mock.patch.object(ble.BleTransport, "write") as write, \
              mock.patch.object(ble.BleTransport, "read", return_value=b"CAMEO 5 ALPHA V1.02\x03"):
             with ble.BleTransport(address) as link:
@@ -101,7 +114,7 @@ class TestBle(unittest.TestCase):
     def test_wrong_firmware_closes_connection(self):
         model = graphtec.device_by_name("Silhouette Cameo 4")
         with mock.patch.object(ble.BleTransport, "_connect", new_callable=mock.AsyncMock,
-                               return_value=model), \
+                               return_value=bluetooth.Candidate("local-id", model.name)), \
              mock.patch.object(ble.BleTransport, "write"), \
              mock.patch.object(ble.BleTransport, "read", return_value=b"CAMEO 4 PLUS V1.05\x03"), \
              mock.patch.object(ble.BleTransport, "close", autospec=True,

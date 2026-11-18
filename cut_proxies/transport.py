@@ -83,8 +83,10 @@ class Transport:
         self.close()
 
     # ---- the shared run loop ----------------------------------------
-    def run(self, steps, log=lambda m: None) -> int:
-        """Execute a `CutJob` plan, stopping on the first failed expectation."""
+    def run(self, steps, log=lambda m: None, *, wait_done: bool = False) -> int:
+        """Execute a checked plan, optionally waiting after its final command."""
+        if wait_done and not self.can_read:
+            raise TransportError("Waiting for completion requires a readable cutter connection.")
         steps = tuple(steps)
         # Query before motion, once for the whole job (including test matrices).
         # A depth command is always a complete ETX-delimited TF command.
@@ -110,6 +112,13 @@ class Transport:
                         f"{step.expect!r}, got {got!r}")
                 if step.note:
                     log(f"{step.note}: ok")
+        if wait_done:
+            log("Waiting for the cutter to finish")
+            try:
+                self._wait_until_ready()
+            except TransportError as exc:
+                raise TransportError("The commands were sent, but cutter completion could not "
+                                     f"be confirmed. {exc}") from exc
         return sent
 
     def _write_paths(self, data: bytes) -> int:
@@ -143,6 +152,29 @@ class Transport:
                 raise TransportError("The cutter stayed busy after a movement command. "
                                      "The rest of the job was stopped.")
             time.sleep(0.05)
+
+    def query_text(self, command, timeout_ms=5000):
+        """Read one ETX-framed reply to a known Graphtec query."""
+        self.write(graphtec.frame(command))
+        reply = self.read(timeout_ms=timeout_ms)
+        if not reply.endswith(graphtec.CMD_ETX):
+            raise TransportError(f"Unexpected reply to {command!r}. {reply!r}")
+        return reply[:-1].decode("ascii", errors="replace").strip()
+
+    def firmware_version(self):
+        if not getattr(self, "_firmware", None):
+            self._firmware = self.query_text(graphtec.QUERY_FIRMWARE_VERSION)
+        return self._firmware
+
+    def diagnostics(self):
+        """Read the same firmware and raw calibration queries as Graphtec.py."""
+        result = [("Firmware", self.firmware_version())]
+        if self.device and self.device.cameo3_on:
+            for query in ("TB71", "FA"):
+                result.append((query, self.query_text(query, timeout_ms=1000)))
+        if self.device and self.device.product_id == 0x112F:
+            result.append(("TC", self.query_text("TC", timeout_ms=1000)))
+        return result
 
     def tool_codes(self) -> tuple[int, ...]:
         """Query the installed holders (inkscape-silhouette Graphtec.py 927–941)."""
@@ -441,11 +473,12 @@ def find_devices() -> list[tuple[graphtec.Device, str]]:
 
 def open_transport(prefer: str = "auto", dump_to=None,
                    device: graphtec.Device | None = None,
-                   bluetooth_id: str | None = None) -> Transport:
+                   bluetooth_id: str | None = None, *, bluetooth_name: str | None = None,
+                   bluetooth_channel: int | None = None, allow_unknown_firmware: bool = False) -> Transport:
     """Open the best available transport.
 
-    `prefer` is "auto", "pyusb", "usblp" or "file".  "auto" takes pyusb when
-    it can, because it is the only one that can complete a registration scan.
+    Automatic selection tries USB. Bluetooth Classic and LE are explicit
+    choices so the job is sent to the intended cutter.
     """
     if prefer == "file" or dump_to is not None:
         if dump_to is None:
@@ -453,7 +486,12 @@ def open_transport(prefer: str = "auto", dump_to=None,
         return FileTransport(dump_to, device)
     if prefer == "ble":
         from .ble import BleTransport
-        return BleTransport(bluetooth_id, device)
+        return BleTransport(bluetooth_id, device, name=bluetooth_name,
+                            allow_unknown=allow_unknown_firmware)
+    if prefer == "bluetooth":
+        from .rfcomm import ClassicTransport
+        return ClassicTransport(bluetooth_id, device, name=bluetooth_name,
+                                channel=bluetooth_channel, allow_unknown=allow_unknown_firmware)
     errors = []
     order = {"auto": ("pyusb", "usblp"),
              "pyusb": ("pyusb",), "usblp": ("usblp",)}.get(prefer)

@@ -67,27 +67,37 @@ A registration scan has to **read** the cutter's reply, and that is the one
 thing the `/dev/usb/lp*` path cannot be relied on for. For a registered cut,
 use `pyusb`.
 
-## Bluetooth LE
+## Bluetooth
 
-On Arch or CachyOS, install `python-bleak` and start the BlueZ Bluetooth
-service. Enable Bluetooth on the cutter. In the desktop Cut tab, choose
-**Bluetooth LE**, find cutters, select yours, and refresh its status.
-The app selects the advertised model and confirms it against the cutter's
-firmware before sending any motion. On the CLI:
+On Linux, install and start BlueZ and enable Bluetooth on the cutter.
+Install Bleak (`python-bleak` on Arch or CachyOS) for Bluetooth LE.
+For Bluetooth Classic, pair the cutter in your system Bluetooth settings
+and use a Python build with native RFCOMM sockets.
+
+In the **Cut** tab select **Bluetooth LE** or **Bluetooth Classic (RFCOMM)**.
+Use **Find Bluetooth cutters**, or enter the device identifier manually.
+Use **Refresh** to read the model, firmware, status and installed tools.
+Bluetooth Classic defaults to channel 1.
 
 ```sh
 cut-proxies status --transport ble
-cut-proxies status --transport ble --bluetooth-id AA:BB:CC:DD:EE:FF
-cut-proxies cut --transport ble --bluetooth-id AA:BB:CC:DD:EE:FF \
-  --layout-preset mtg-cameo-letter --preset 'Plain paper test' --dry-run
+cut-proxies status --transport ble --bluetooth-name "CAMEO 4" --diagnostics
+cut-proxies status --transport bluetooth --bluetooth-id AA:BB:CC:DD:EE:FF
+cut-proxies cut --transport bluetooth --bluetooth-id AA:BB:CC:DD:EE:FF \
+  --preset 'Plain paper test' --dry-run
 ```
 
-Use the address reported by discovery and set `--cutter` to the matching model
-when it differs from the CLI's Cameo 4 default. The `testcut` command accepts
-the same connection flags. The model list follows the reference driver and
-includes Cameo 3, 4 and 5 variants and Portrait 2 through 4. The original
-Cameo 4 has been exercised. The expanded model matching has automated
-coverage, with physical tests pending.
+`status --all-bluetooth` also lists devices that do not advertise a recognized
+cutter name or service. Use the identifier shown by discovery. On macOS,
+the BLE identifier can be a local UUID. Use `--bluetooth-channel` for a
+different RFCOMM channel. A live `cut` or `testcut` detects the model unless
+you supply `--cutter`. A dry run uses Cameo 4 by default and never opens
+Bluetooth. For an unrecognized firmware reply, `--allow-unrecognized-firmware`
+requires an explicit identifier and cutter model. A recognized but different
+model still stops the job.
+
+Bluetooth hardware results and the reference comparison are in
+[Inkscape Silhouette compatibility](INKSCAPE_COMPATIBILITY.md).
 
 ## Printing the sheet
 

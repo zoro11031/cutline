@@ -39,7 +39,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
-from . import (actions, bundle, config, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
+from . import (actions, bluetooth, bundle, config, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
                template, testcut, toolpath, transport, winboat)  # noqa: E402
 
 APP_ID = "org.printing.SilhouetteControlCenter"
@@ -90,6 +90,14 @@ def _switch(title, active, subtitle=None):
     if subtitle:
         row.set_subtitle(subtitle)
     return row
+
+
+def _transport_options(connection):
+    mode, identifier, *channel = connection
+    options = {"bluetooth_id": identifier} if mode in bluetooth.BLUETOOTH_MODES else {}
+    if channel:
+        options["bluetooth_channel"] = channel[0]
+    return mode, options
 
 
 class ControlPage(Gtk.ScrolledWindow):
@@ -456,7 +464,7 @@ class Window(Adw.ApplicationWindow):
             title="Generated layout",
             subtitle="Using the sheet and card settings below")
         self.import_row.set_subtitle_lines(0)
-        open_btn = Gtk.Button(label="Open SVG/DXF...")
+        open_btn = Gtk.Button(label="Open SVG, DXF or Studio3…")
         open_btn.set_valign(Gtk.Align.CENTER)
         open_btn.connect("clicked", self.on_open_artwork)
         clear_btn = Gtk.Button(label="Clear")
@@ -781,8 +789,10 @@ class Window(Adw.ApplicationWindow):
         refresh.set_valign(Gtk.Align.CENTER)
         refresh.connect("clicked", self.on_refresh_status)
         self.status_row.add_suffix(refresh)
-        self.r_connection = _combo("Connection", ["USB", "Bluetooth LE"])
+        self.r_connection = _combo("Connection", ["USB", *bluetooth.BLUETOOTH_MODES.values()])
         self.r_bluetooth = _combo("Bluetooth cutter", ["Select a cutter"])
+        self.r_bluetooth_id = Adw.EntryRow(title="Bluetooth identifier")
+        self.r_bluetooth_channel = _spin("RFCOMM channel", 1, 30, 1, 1, 0)
         self._bluetooth_devices = []
         self.r_bluetooth.connect("notify::selected", self.on_bluetooth_selected)
         scan = Gtk.Button(label="Find Bluetooth cutters")
@@ -790,7 +800,11 @@ class Window(Adw.ApplicationWindow):
         self.r_bluetooth.add_suffix(scan)
         g2.add(self.r_connection)
         g2.add(self.r_bluetooth)
+        g2.add(self.r_bluetooth_id)
+        g2.add(self.r_bluetooth_channel)
         g2.add(self.status_row)
+        self.r_connection.connect("notify::selected", self.on_connection_changed)
+        self.on_connection_changed()
         page.add(g2)
 
         media = Adw.PreferencesGroup(title="Media handling")
@@ -1033,6 +1047,8 @@ class Window(Adw.ApplicationWindow):
             weed_lines=(list(toolpath.WEED_LINES)[self.r_weed_lines.get_selected()]
                         if self.imported and self.r_weed_border.get_value() else "none"),
         )
+        if options["sheet"] == "Document Size":
+            options.update(sheet=config.DEFAULT_SHEET, use_document_page=True)
         if self.pdf_bundle:
             options.update(self.pdf_bundle.layout, engine='scm', mode=template.ROUNDED,
                            bleed_mm=0, registration=True, skip=(), imported=self.imported)
@@ -1513,10 +1529,26 @@ class Window(Adw.ApplicationWindow):
         lines = [artwork.describe(), *artwork.warnings] if artwork else ['Cut template for Silhouette Studio']
         self.import_row.set_subtitle("\n".join(lines))
         was, self._suppress = self._suppress, True
+        self._update_document_sheet(artwork)
         self.r_colour.set_model(Gtk.StringList.new(["all colours", *(artwork.colours() if artwork else ())]))
         self.r_colour.set_selected(0)
         self._suppress = was
         self.on_changed()
+
+    def _update_document_sheet(self, artwork):
+        sheets = sorted(geometry.SHEETS)
+        current = self._text(self.r_sheet)
+        native = artwork is not None and artwork.studio3_page
+        if native:
+            self.r_sheet.set_model(Gtk.StringList.new([*sheets, "Document Size"]))
+            self.r_sheet.set_selected(len(sheets))
+            self.r_orient.set_selected(1 if artwork.width_mm <= artwork.height_mm else 2)
+        elif current == "Document Size":
+            self.r_sheet.set_model(Gtk.StringList.new(sheets))
+            self.r_sheet.set_selected(sheets.index(config.DEFAULT_SHEET))
+        elif self.r_sheet.get_model().get_n_items() > len(sheets):
+            self.r_sheet.set_model(Gtk.StringList.new(sheets))
+            self.r_sheet.set_selected(sheets.index(current))
 
     def on_clear_artwork(self, *_a):
         if self.imported is None and self.pdf_bundle is None:
@@ -1525,6 +1557,7 @@ class Window(Adw.ApplicationWindow):
         self.imported = None
         self.template_shapes = ()
         was, self._suppress = self._suppress, True
+        self._update_document_sheet(None)
         self.r_colour.set_model(Gtk.StringList.new(["all colours"]))
         self.r_colour.set_selected(0)
         self._suppress = was
@@ -1791,7 +1824,7 @@ class Window(Adw.ApplicationWindow):
 
     def on_test_cut(self, *_a):
         connection = self._connection()
-        if connection == ("ble", None):
+        if connection[0] in bluetooth.BLUETOOTH_MODES and not connection[1]:
             self.toast("Select a Bluetooth cutter first.")
             return
         device = graphtec.device_by_name(self._text(self.r_cutter))
@@ -1836,8 +1869,8 @@ class Window(Adw.ApplicationWindow):
 
         def work():
             try:
-                mode, address = connection
-                with transport.open_transport(mode, device=ts.device, bluetooth_id=address) as tr:
+                mode, options = _transport_options(connection)
+                with transport.open_transport(mode, device=ts.device, **options) as tr:
                     if tr.can_read:
                         state = tr.status()
                         if state != "ready":
@@ -1851,25 +1884,43 @@ class Window(Adw.ApplicationWindow):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _connection_mode(self):
+        return ("auto", *bluetooth.BLUETOOTH_MODES)[self.r_connection.get_selected()]
+
+    def on_connection_changed(self, *_args):
+        mode = self._connection_mode()
+        self._bluetooth_devices = []
+        self.r_bluetooth.set_model(Gtk.StringList.new(["Select a cutter"]))
+        self.r_bluetooth.set_selected(0)
+        self.r_bluetooth_id.set_text("")
+        self.r_bluetooth.set_visible(mode != "auto")
+        self.r_bluetooth_id.set_visible(mode != "auto")
+        self.r_bluetooth_channel.set_visible(mode == "bluetooth")
+        self.status_row.set_subtitle("Not checked")
+
     def _scan_bluetooth(self, button):
-        from . import ble
+        from . import ble, rfcomm
+        mode = self._connection_mode()
+        scanner = ble if mode == "ble" else rfcomm
 
         def update(devices, error):
             button.set_sensitive(True)
+            if mode != self._connection_mode():
+                return
             if error:
                 self.toast(error)
                 return
             self._bluetooth_devices = devices
             self.r_bluetooth.set_model(Gtk.StringList.new(
-                ["Select a cutter"] + [f"{name} ({address})"
+                ["Select a cutter"] + [f"{name or 'Unnamed'} ({address})"
                                        for address, name in devices]))
             self.r_bluetooth.set_selected(0)
             if not devices:
-                self.toast("No Silhouette cutter found over Bluetooth LE.")
+                self.toast(f"No Silhouette cutter found over {bluetooth.BLUETOOTH_MODES[mode]}.")
 
         def work():
             try:
-                GLib.idle_add(update, ble.discover(), None)
+                GLib.idle_add(update, scanner.discover(), None)
             except transport.TransportError as exc:
                 GLib.idle_add(update, [], str(exc))
 
@@ -1877,43 +1928,51 @@ class Window(Adw.ApplicationWindow):
         threading.Thread(target=work, daemon=True).start()
 
     def on_bluetooth_selected(self, *_args):
-        from . import ble
-
         index = self.r_bluetooth.get_selected() - 1
         if 0 <= index < len(self._bluetooth_devices):
-            model = ble.advertised_model(self._bluetooth_devices[index][1])
-            if model is not None:
+            identifier, name = self._bluetooth_devices[index]
+            self.r_bluetooth_id.set_text(identifier)
+            if model := bluetooth.advertised_model(name):
                 self.r_cutter.set_selected(graphtec.DEVICES.index(model))
 
     def _connection(self):
-        if self.r_connection.get_selected() == 0:
-            return "auto", None
-        index = self.r_bluetooth.get_selected() - 1
-        if 0 <= index < len(self._bluetooth_devices):
-            return "ble", self._bluetooth_devices[index][0]
-        return "ble", None
+        mode = self._connection_mode()
+        if mode == "auto":
+            return mode, None
+        identifier = self.r_bluetooth_id.get_text().strip() or None
+        if mode == "bluetooth":
+            return mode, identifier, int(self.r_bluetooth_channel.get_value())
+        return mode, identifier
 
     def on_refresh_status(self, *_a):
         if self._sending or self._checking_status:
             return
-        mode, address = self._connection()
+        connection = self._connection()
+        mode, options = _transport_options(connection)
         self._checking_status = True
         self.status_row.set_subtitle("Checking…")
         self.tool_row.set_subtitle("Checking…")
 
-        def done(text):
+        def done(text, device):
             self._checking_status = False
+            if connection != self._connection():
+                return
             self.status_row.set_subtitle(text)
             self.tool_row.set_subtitle(text)
+            if mode in bluetooth.BLUETOOTH_MODES and device is not None:
+                self.r_cutter.set_selected(graphtec.DEVICES.index(device))
 
         def work():
+            device = None
             try:
-                options = {"bluetooth_id": address} if mode == "ble" else {}
                 with transport.open_transport(mode, **options) as cutter:
-                    text = f"{cutter.device.name} · {cutter.status_with_tools()}"
+                    device = cutter.device
+                    text = f"{device.name} · {cutter.status_with_tools()}"
+                    if mode in bluetooth.BLUETOOTH_MODES:
+                        text += f" · {cutter.firmware_version()}"
             except Exception as exc:
                 text = f"Tool detection unavailable · {exc}"
-            GLib.idle_add(done, text)
+            GLib.idle_add(done, text, device)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -1927,7 +1986,7 @@ class Window(Adw.ApplicationWindow):
             self.toast(refusal)
             return
         connection = self._connection()
-        if connection[0] == "ble" and not connection[1]:
+        if connection[0] in bluetooth.BLUETOOTH_MODES and not connection[1]:
             self.toast("Select a Bluetooth cutter first.")
             return
         profiles = ("\n".join(f"{i + 1}. {group.key} · {group.describe()}"
@@ -1949,6 +2008,8 @@ class Window(Adw.ApplicationWindow):
             body += "\n\nPosition the cutter head over the first mark before starting the scan."
         if self.pdf_bundle:
             body += "\n\n" + self.pdf_bundle.mat_placement()
+        if self.imported is not None and self.imported.studio3_page:
+            body += "\n\nCheck the imported outlines and match the registration settings to the printed Studio3 sheet."
         dialog = Adw.AlertDialog(heading="Test registration?" if scan_only else "Send this cut?", body=body)
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("cut", "Scan" if scan_only else "Cut")
@@ -1983,16 +2044,15 @@ class Window(Adw.ApplicationWindow):
         report = self.sheet_report if matched else None
 
         def work():
-            mode, address = connection
+            mode, options = _transport_options(connection)
             try:
-                options = {"bluetooth_id": address} if mode == "ble" else {}
                 with transport.open_transport(mode, device=j.device, **options) as t:
                     if t.can_read:
                         state = t.status()
                         if state == "unloaded":
                             raise transport.TransportError(
                                 "the cutter says no media is loaded")
-                        if mode == "ble" and state != "ready":
+                        if mode in bluetooth.BLUETOOTH_MODES and state != "ready":
                             raise transport.TransportError(f"Bluetooth cutter is not ready ({state})")
                         if state == "moving":
                             raise transport.TransportError(
@@ -2019,7 +2079,7 @@ class Window(Adw.ApplicationWindow):
             notes.append(matched.mat_placement())
         notes.append("Check the printed front at 100% scale. Keep all marks uncovered "
                      "and check for glare at the corners.")
-        connection = "Bluetooth LE" if mode == "ble" else "USB"
+        connection = bluetooth.BLUETOOTH_MODES.get(mode, "USB")
         scan_details = [f"{j.device.name} · {connection}"]
         if row:
             scan_details.append(f"PDF front page {row['frontPage']}")

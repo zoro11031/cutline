@@ -158,6 +158,19 @@ a standalone `.studio3` file. Earlier ProxyPress ZIPs with Studio files can
 be checked in **Sheet** and opened in **Studio**. For direct cutting, use a
 current ZIP that includes the physical cut SVG.
 
+Open a standalone `.studio3` in **Layout → Open SVG, DXF or Studio3…**
+to preview its stored vector outlines at the document's page size.
+
+```sh
+silhouette-control-center import artwork.studio3
+silhouette-control-center cut --from artwork.studio3 --dry-run
+silhouette-control-center cut --from artwork.studio3 --via studio
+```
+
+Direct import supports the `silhouette05;` format. Review the outlines and
+match the cut job's registration settings to the printed sheet. Opening
+the original document in Studio preserves its Studio settings and artwork.
+
 Choose **Letter · MTG Cameo** or **A4 · MTG Cameo** in the window's
 Layout preset selector, or use:
 
@@ -310,7 +323,8 @@ A Cameo 4 running firmware V1.05 answered USB status and firmware queries.
 Bluetooth LE discovery also found the cutter. See [docs/FINDINGS.md](docs/FINDINGS.md)
 for the current hardware results and [docs/SETUP.md](docs/SETUP.md) for
 Bluetooth setup. Physical registration and cut accuracy require a measured
-proof sheet.
+proof sheet. The [Inkscape Silhouette comparison](docs/INKSCAPE_COMPATIBILITY.md)
+tracks driver, geometry, and file-format coverage.
 
 Silhouette Studio is installed in the WinBoat guest and is detected
 automatically. `silhouette-control-center studio --run-helper` runs a read-only survey

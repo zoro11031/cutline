@@ -16,11 +16,12 @@ Subcommands, in the order a sheet goes through them:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import pathlib
 import sys
 
-from . import (actions, config, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
+from . import (actions, bluetooth, config, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
                template, testcut, toolpath, transport, verify, winboat)
 
 try:
@@ -109,15 +110,12 @@ def common_layout_args(p, bundles=False):
     p.add_argument('--layout-preset', choices=tuple(layout_presets.BUILTIN),
                    help='apply a complete printed-sheet layout; overrides layout '
                         'options and leaves blade settings unchanged')
-    p.add_argument("--sheet", default=config.DEFAULT_SHEET,
-                   choices=sorted(geometry.SHEETS))
+    p.add_argument("--sheet", choices=sorted(geometry.SHEETS))
     p.add_argument("--card", default=config.DEFAULT_CARD,
                    help="card size name (default: standard = 63x88 mm)")
     orient = p.add_mutually_exclusive_group()
-    orient.add_argument("--portrait", dest="portrait", action="store_true",
-                        default=config.DEFAULT_PORTRAIT)
-    orient.add_argument("--landscape", dest="portrait", action="store_false",
-                        default=config.DEFAULT_PORTRAIT)
+    orient.add_argument("--portrait", dest="portrait", action="store_true", default=None)
+    orient.add_argument("--landscape", dest="portrait", action="store_false")
     p.add_argument("--engine", default="scm", choices=("scm", "proxypress"),
                    help="which layout to match: Silhouette Card Maker's, or "
                         "the grid Proxy Press draws")
@@ -137,7 +135,7 @@ def common_layout_args(p, bundles=False):
     p.add_argument("--bleed", type=float, default=0.0, metavar="MM",
                    help="bleed around each card, for the collision check")
     p.add_argument("--from", dest="source", metavar="FILE",
-                   help="use paths from " + ("an SVG, DXF or matched ProxyPress ZIP"
+                   help="use paths from " + ("an SVG, DXF, Studio3 or matched ProxyPress ZIP"
                                              if bundles else "an SVG, DXF or Studio3 template"))
     p.add_argument("--svg-page", type=int, metavar="N",
                    help="select a page in an Inkscape SVG (starting at 1)")
@@ -157,8 +155,7 @@ def common_layout_args(p, bundles=False):
 
 
 def common_cut_args(p):
-    p.add_argument("--cutter", default="Silhouette Cameo 4",
-                   help="cutter model (default: Silhouette Cameo 4)")
+    p.add_argument("--cutter", help="cutter model (Bluetooth detects it for live jobs; otherwise defaults to Cameo 4)")
     p.add_argument("--preset", default=config.DEFAULT_PRESET)
     p.add_argument("--force", type=int, default=None)
     p.add_argument("--speed", type=int, default=None)
@@ -257,10 +254,11 @@ def build_from_args(args, matched=None, bundle_row=None) -> job_mod.Job:
         end_feed_mm=getattr(args, "feed_mm", 0.0),
         weed_border_mm=getattr(args, "weed_border_mm", 0.0),
         weed_lines=getattr(args, "weed_lines", "none"),
-        sheet=args.sheet, card=args.card, portrait=args.portrait,
+        sheet=args.sheet or config.DEFAULT_SHEET, card=args.card,
+        portrait=config.DEFAULT_PORTRAIT if args.portrait is None else args.portrait,
         engine=args.engine,
         preset_name=getattr(args, "preset", config.DEFAULT_PRESET),
-        cutter=getattr(args, "cutter", "Silhouette Cameo 4"),
+        cutter=getattr(args, "cutter", None) or "Silhouette Cameo 4",
         mode=args.mode, radius_mm=args.radius,
         mark_inset_mm=args.mark_inset, mark_length_mm=args.mark_length,
         mark_thickness_mm=args.mark_thickness, pattern=args.pattern,
@@ -272,12 +270,19 @@ def build_from_args(args, matched=None, bundle_row=None) -> job_mod.Job:
         auto_search=not getattr(args, "manual_registration", False),
         skip=tuple(getattr(args, "skip", []) or ()),
     )
+    if imported and imported.studio3_page:
+        if args.sheet is None and args.portrait is None:
+            options["use_document_page"] = True
+        elif (paper := geometry.match_sheet(imported.page_size_mm)) is not None:
+            options["sheet"] = args.sheet or paper[0]
+            if args.portrait is None:
+                options["portrait"] = paper[1]
     options["blade_options"] = advanced_settings(args)
     if getattr(args, "depth", None) is not None:
         options["depth"] = None if args.depth == -1 else args.depth
     selected = getattr(args, 'layout_preset', None)
     if selected:
-        options.update(layout_presets.BUILTIN[selected].options())
+        options.update(layout_presets.BUILTIN[selected].options(), use_document_page=False)
     if matched:
         options.update(matched.layout, engine='scm', mode=template.ROUNDED, bleed_mm=0)
     return job_mod.build(**options)
@@ -587,8 +592,57 @@ def cmd_check_sheet(args):
 # testcut
 # --------------------------------------------------------------------------
 
+def connection_args(parser):
+    parser.add_argument("--transport", choices=("auto", "pyusb", "usblp", *bluetooth.BLUETOOTH_MODES),
+                        default="auto")
+    target = parser.add_mutually_exclusive_group()
+    target.add_argument("--bluetooth-id", "--bluetooth-address", metavar="ID",
+                        help="MAC address or operating-system BLE identifier")
+    target.add_argument("--bluetooth-name", metavar="NAME", help="exact or unique partial name")
+    parser.add_argument("--bluetooth-channel", type=int, metavar="N", help="RFCOMM channel (default 1)")
+    parser.add_argument("--allow-unrecognized-firmware", action="store_true",
+                        help="use an explicit cutter model for an unrecognized firmware reply")
+
+
+def connection_options(args):
+    options = {
+        "bluetooth_id": args.bluetooth_id, "bluetooth_name": args.bluetooth_name,
+        "bluetooth_channel": args.bluetooth_channel,
+        "allow_unknown_firmware": args.allow_unrecognized_firmware,
+    }
+    if any(value is not None and value is not False for value in options.values()) and (
+            args.transport not in bluetooth.BLUETOOTH_MODES):
+        fail("Bluetooth options require --transport ble or --transport bluetooth.")
+    if args.bluetooth_channel is not None and (args.transport != "bluetooth" or
+                                                not 1 <= args.bluetooth_channel <= 30):
+        fail("--bluetooth-channel requires Bluetooth Classic and a value from 1 to 30.")
+    if args.allow_unrecognized_firmware and not (args.bluetooth_id and getattr(args, "cutter", None)):
+        fail("--allow-unrecognized-firmware requires --bluetooth-id and --cutter.")
+    return {key: value for key, value in options.items() if value is not None and value is not False}
+
+
+@contextlib.contextmanager
+def cut_connection(args):
+    options = connection_options(args)
+    with contextlib.ExitStack() as stack:
+        link = None
+        if (args.transport in bluetooth.BLUETOOTH_MODES and not args.cutter and not args.dry_run
+                and getattr(args, "via", "cutter") == "cutter"):
+            try:
+                link = stack.enter_context(transport.open_transport(args.transport, **options))
+            except transport.TransportError as exc:
+                fail(str(exc))
+            args.cutter = link.device.name
+        yield link, options
+
+
 def cmd_testcut(args):
-    device = graphtec.device_by_name(args.cutter)
+    with cut_connection(args) as (link, options):
+        return _testcut(args, link, options)
+
+
+def _testcut(args, link, options):
+    device = graphtec.device_by_name(args.cutter or "Silhouette Cameo 4")
     base = dataclasses.replace(presets.get(args.preset).cut_settings(), **advanced_settings(args))
     sheet = geometry.sheet(args.sheet)
     w, h = sheet.size(portrait=not args.landscape)
@@ -637,14 +691,14 @@ def cmd_testcut(args):
         return 0
 
     try:
-        tr = transport.open_transport(args.transport, device=ts.device,
-                                      bluetooth_id=args.bluetooth_id)
+        tr = contextlib.nullcontext(link) if link else transport.open_transport(
+            args.transport, device=ts.device, **options)
     except transport.TransportError as exc:
         say(f"\n{exc}", style="bold red")
         fail("No way to reach the cutter. Use --dry-run.")
-    with tr:
-        if tr.can_read:
-            state = tr.status()
+    with tr as cutter:
+        if cutter.can_read:
+            state = cutter.status()
             say(f"\nCutter reports: {state}")
             if state != "ready":
                 fail(f"The cutter is not ready ({state}).")
@@ -652,7 +706,7 @@ def cmd_testcut(args):
             say("Cancelled.")
             return 0
         try:
-            sent = tr.run(ts.steps, log=lambda m: say("  " + m))
+            sent = cutter.run(ts.steps, log=lambda m: say("  " + m))
         except transport.TransportError as exc:
             fail(str(exc))
         say(f"Sent {sent:,} bytes.", style="bold green")
@@ -744,22 +798,37 @@ def cmd_materials(args):
 # status
 # --------------------------------------------------------------------------
 
+def show_device_diagnostics(cutter, firmware=True):
+    for label, value in cutter.diagnostics():
+        if firmware or label != "Firmware":
+            say(f"  {label}: {value}")
+
+
 def cmd_status(args):
-    if args.transport == "ble":
-        from . import ble
+    options = connection_options(args)
+    if args.transport in bluetooth.BLUETOOTH_MODES:
+        from . import ble, rfcomm
+        label = bluetooth.BLUETOOTH_MODES[args.transport]
+        scanner = ble if args.transport == "ble" else rfcomm
         try:
-            if args.bluetooth_id:
-                with transport.open_transport("ble", bluetooth_id=args.bluetooth_id) as cutter:
-                    say(f"{cutter.device.name}: {cutter.status_with_tools()}")
+            if args.bluetooth_id or args.bluetooth_name or args.diagnostics:
+                with transport.open_transport(args.transport, device=(
+                        graphtec.device_by_name(args.cutter) if args.cutter else None), **options) as cutter:
+                    say(f"{cutter.device.name} ({cutter.identifier}): {cutter.status_with_tools()}")
+                    say(f"  Firmware: {cutter.firmware_version()}")
+                    if args.diagnostics:
+                        show_device_diagnostics(cutter, firmware=False)
             else:
-                devices = ble.discover()
+                devices = scanner.discover(include_all=args.all_bluetooth)
                 for address, name in devices:
-                    say(f"{address}  {name}")
+                    say(f"{address}  {name or 'Unnamed device'}")
                 if not devices:
-                    say("No Cameo 4 found over Bluetooth LE.")
-        except transport.TransportError as exc:
+                    say(f"No Silhouette cutter found over {label}.")
+        except (transport.TransportError, ValueError, KeyError) as exc:
             fail(str(exc))
         return 0
+    if args.all_bluetooth:
+        fail("--all-bluetooth requires --transport ble or --transport bluetooth.")
 
     say("\nCutter", style="bold")
     found = transport.find_devices()
@@ -787,8 +856,10 @@ def cmd_status(args):
     if found:
         say("\nLive status", style="bold")
         try:
-            with transport.open_transport("auto") as t:
+            with transport.open_transport(args.transport) as t:
                 say(f"  {t.name}: {t.status_with_tools()}")
+                if args.diagnostics:
+                    show_device_diagnostics(t)
         except transport.TransportError as exc:
             say(f"  could not open the cutter: {exc}", style="yellow")
 
@@ -820,6 +891,27 @@ def cmd_status(args):
 # --------------------------------------------------------------------------
 
 def cmd_cut(args):
+    with cut_connection(args) as (link, options):
+        return _cut(args, link, options)
+
+
+def _cut(args, link, options):
+    if (args.via == "studio" and args.source
+            and pathlib.Path(args.source).suffix.lower() == ".studio3"):
+        path = pathlib.Path(args.source).expanduser()
+        if not path.is_file():
+            fail(f"No such file: {path}")
+        if args.send_by != "simple" or args.group or args.colour or args.skip or args.dump:
+            fail("Send grouping, path filters and stream dumps require direct cutter mode.")
+        try:
+            cmd = winboat.open_in_studio(path, dry_run=args.dry_run)
+        except (OSError, RuntimeError) as exc:
+            fail(str(exc))
+        say(" ".join(cmd), style="dim")
+        say(f"Opening the original {path.name} in Silhouette Studio."
+            if not args.dry_run else "Dry run: not launched.", style="bold")
+        return 0
+
     from . import bundle, sheet as sheet_mod
     matched = row = report = None
     try:
@@ -834,7 +926,7 @@ def cmd_cut(args):
             if problems:
                 fail('PDF registration check failed. Nothing was sent.\n' + '\n'.join(problems))
             say(f"Matched sheet {row['sheet']} with PDF front page {row['frontPage']}.")
-            if args.transport != "studio":
+            if args.via != "studio":
                 say(matched.mat_placement())
         else:
             j = build_from_args(args)
@@ -885,16 +977,16 @@ def cmd_cut(args):
         warn(f"The {name} preset needs a hardware test on this stock.")
 
     try:
-        t = transport.open_transport(args.transport, device=j.device,
-                                     bluetooth_id=args.bluetooth_id)
+        connection = contextlib.nullcontext(link) if link else transport.open_transport(
+            args.transport, device=j.device, **options)
     except transport.TransportError as exc:
         say(f"\n{exc}", style="bold red")
         fail("No way to reach the cutter. Use --dry-run, or go through "
              "Silhouette Studio with 'silhouette-control-center studio'.")
 
-    with t:
-        if args.transport == "ble":
-            say(f"\nBluetooth target: {j.device.name} ({args.bluetooth_id})")
+    with connection as t:
+        if args.transport in bluetooth.BLUETOOTH_MODES:
+            say(f"\nBluetooth target: {j.device.name} ({t.identifier})")
         if t.can_read:
             try:
                 state = t.status()
@@ -904,7 +996,7 @@ def cmd_cut(args):
             if state == "unloaded":
                 fail("The cutter says no media is loaded. Load the mat and "
                      "the sheet first.")
-            elif state != "ready" and args.transport == "ble":
+            elif state != "ready" and args.transport in bluetooth.BLUETOOTH_MODES:
                 fail(f"The Bluetooth cutter is not ready ({state}).")
             elif state == "moving":
                 fail("The cutter is busy.")
@@ -918,7 +1010,7 @@ def cmd_cut(args):
         try:
             sent = t.run(
                 _plan(j),
-                log=lambda m: say("  " + m))
+                log=lambda m: say("  " + m), wait_done=args.wait_done)
         except transport.RegistrationFailed as exc:
             notes = j.registration_notes(report, matched.near_marks(row) if matched else None)
             notes.append("Check that the printed front is at 100% scale and all marks are visible.")
@@ -1158,7 +1250,7 @@ def main(argv=None):
     tc.add_argument("--sheet", default=config.DEFAULT_SHEET,
                     choices=sorted(geometry.SHEETS))
     tc.add_argument("--landscape", action="store_true")
-    tc.add_argument("--cutter", default="Silhouette Cameo 4")
+    tc.add_argument("--cutter")
     tc.add_argument("--preset", default=config.DEFAULT_PRESET,
                     help="the baseline; any axis you do not vary keeps its "
                          "value from here")
@@ -1178,9 +1270,7 @@ def main(argv=None):
     tc.add_argument("--registration", action="store_true",
                     help="scan for marks first; off by default, because a "
                          "settings test should use a blank offcut")
-    tc.add_argument("--transport", default="auto",
-                    choices=("auto", "pyusb", "usblp", "ble"))
-    tc.add_argument("--bluetooth-id", metavar="ADDRESS")
+    connection_args(tc)
     tc.add_argument("--out", help="also write a labelled map SVG here")
     tc.add_argument("--dump", metavar="PATH")
     tc.add_argument("--dry-run", action="store_true")
@@ -1205,8 +1295,10 @@ def main(argv=None):
     ma.set_defaults(func=cmd_materials)
 
     st = sub.add_parser("status", help="cutter, transports, WinBoat guest")
-    st.add_argument("--transport", choices=("auto", "ble"), default="auto")
-    st.add_argument("--bluetooth-id", metavar="ADDRESS")
+    connection_args(st)
+    st.add_argument("--cutter", help="firmware model override")
+    st.add_argument("--all-bluetooth", action="store_true", help="include unnamed and unrecognized devices")
+    st.add_argument("--diagnostics", action="store_true", help="query firmware and calibration data")
     st.set_defaults(func=cmd_status)
 
     c = sub.add_parser("cut", help="register and cut")
@@ -1217,11 +1309,8 @@ def main(argv=None):
     c.add_argument("--group", action="append", default=[], metavar="GROUP=PRESET",
                    help="enable a group in send order. Use GROUP=2:PRESET for holder 2")
     c.add_argument("--via", default="cutter", choices=("cutter", "studio"),
-                   help="cutter = cut via USB directly; studio = stage DXF "
-                        "and open in Silhouette Studio in WinBoat guest")
-    c.add_argument("--transport", default="auto",
-                   choices=("auto", "pyusb", "usblp", "ble"))
-    c.add_argument("--bluetooth-id", metavar="ADDRESS")
+                   help="send directly or open the original Studio3 document or a generated DXF in WinBoat")
+    connection_args(c)
     c.add_argument("--dry-run", action="store_true",
                    help="build and check the job, send nothing")
     c.add_argument("--bundle-sheet", type=int, help="sheet number in a ProxyPress ZIP")
@@ -1232,6 +1321,7 @@ def main(argv=None):
                         "instead of an automatic search")
     c.add_argument("--no-registration", action="store_true",
                    help="cut without registering. Only for a blank sheet.")
+    c.add_argument("--wait-done", action="store_true", help="wait for the cutter to report ready after sending")
     c.add_argument("-y", "--yes", action="store_true")
     c.set_defaults(func=cmd_cut)
 
