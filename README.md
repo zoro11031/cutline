@@ -48,8 +48,8 @@ visual guide and send the separate cut SVG or DXF to your cutter.
 ## Design workspace
 
 Open **Design** to edit the current layout or choose **New** for a blank page.
-**Open** loads a project, SVG, DXF, or supported Studio3 file. **Import**
-adds artwork to the open project. **Save** keeps shapes editable in an
+In **File**, **Open** loads a project, SVG, DXF, or supported Studio3 file.
+**Import Artwork** adds paths to the open project. **Save** keeps shapes editable in an
 `.scc-template` file.
 
 | Panel | What you can do |
@@ -64,7 +64,8 @@ Choose **Send** at the top of Design to review the selected action.
 Choose **All actions** to give Cut and Score their own settings. **Back**
 keeps the design open so you can return to it.
 
-Use **View** for zoom, page rotation, grid, snapping, and borders. Set your
+Use **Edit** to undo, redo, duplicate, or delete objects. Use **View** for
+zoom, page rotation, grid, snapping, and borders. Set your
 printer margin under **Page Setup → Advanced Options** to see the print
 border. **Panels** jumps to colors, line styles, Transform, and Replicate.
 **Object** has alignment, path tools, and holder assignments. **Offset**
@@ -116,14 +117,15 @@ Use **Corner Test Cut** for a single 3 mm square on the current sheet.
 Control Center looks for a spare corner and shows the spot before cutting.
 Use the **Test-Cut Matrix** to try several settings on one blank sheet.
 
-## Blade presets
+## Material presets
 
 The app includes the Silhouette starting point and a set of Studio factory
 presets for cardstock, chipboard, paper, and pens. To add the full factory
-list from your own Studio installation, go to **Blade → Advanced Options → Import Studio Materials**
+list from your own Studio installation, go to **Materials → Import CSV**
 and choose its `condition.csv`. See [where to find it](docs/SETUP.md#exporting-files-and-reading-material-settings).
 
-**Save as New** keeps a copy of your settings under a new name. Presets stay
+Edit the active cut settings in **Send**. In **Materials**, **Save as New**
+keeps a copy of those settings under a new name. Presets stay
 available after you quit. [About preset files](profiles/README.md)
 
 **Track Enhancing** starts on for the starting preset and factory blade
@@ -140,12 +142,12 @@ uses the selected holder. To use both, assign selected shapes under
 
 | Setting | Where to find it |
 |---|---|
-| Force, Speed, Passes, Acceleration, Blade Depth, Tool Holder | **Send → Cut Settings** or **Blade** |
-| Track Enhancing and Line Segment Overcut | **Send → Cut Settings**. The extension lengths are under **Blade → Advanced Options**. |
+| Force, Speed, Passes, Acceleration, Blade Depth, Tool Holder | **Send → Cut Settings** |
+| Track Enhancing and Line Segment Overcut | **Send → Cut Settings**. The extension lengths are under **Send → Advanced Options → Blade details**. |
 | Cut Order Sorting | **Send → Advanced Options → Cut paths** |
-| Seam Overcut and Weed Settings | **Blade → Advanced Options** |
+| Seam Overcut and Weed Settings | **Send → Advanced Options** |
 | Cutting mat, Feed, Return to Origin | **Send → Advanced Options → Media handling** |
-| Installed tools | **Blade → Detect Installed Tools** or check cutter status in **Send** |
+| Installed tools | **Send → Check Status** |
 
 For a manual blade, set the depth on the tool. If **Blade Depth** is available,
 choose **Manual** to leave the depth as set.

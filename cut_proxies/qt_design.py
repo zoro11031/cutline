@@ -7,12 +7,12 @@ from math import dist
 from pathlib import Path
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
-from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence, QPen, QPolygonF
+from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence
 from PySide6.QtWidgets import (QAbstractItemView, QColorDialog, QComboBox, QFileDialog, QHBoxLayout, QInputDialog, QListWidget, QMenuBar,
                                QMessageBox, QSplitter, QStyle, QTabWidget, QToolBar, QVBoxLayout, QWidget)
 
 from . import editor_model as model, geometry, graphtec, importer, regmarks, template
-from .qt_canvas import SheetView, ZoomControls, draw_marks, draw_paper, draw_path, pen, rect
+from .qt_canvas import SheetView, ZoomControls, draw_feed_arrow, draw_marks, draw_paper, draw_path, pen, rect
 from .qt_controls import Page, bar, button, set_choices, styled_label, themed_icon, workspace_switch
 
 DESIGN_FILTER = "Design projects (*.scc-template);;Cut artwork (*.svg *.SVG *.dxf *.DXF *.studio3 *.STUDIO3)"
@@ -45,10 +45,7 @@ class Canvas(SheetView):
         if mat_visible:
             scene.addRect(mat.adjusted(-8, -13, 8, 8), pen("#59616a"), QBrush(QColor("#a2aab3")))
             self.grid(scene, mat, 25.4, "#87939d")
-            mid = mat.width() / 2
-            arrow = QPolygonF([QPointF(mid + dx, y) for dx, y in (
-                (0, -11), (5, -6), (2, -6), (2, -2), (-2, -2), (-2, -6), (-5, -6))])
-            scene.addPolygon(arrow, QPen(Qt.PenStyle.NoPen), QBrush(QColor("#535e68")))
+            draw_feed_arrow(scene, mat.width(), "#535e68")
         draw_paper(scene, page, shadow=not mat_visible)
         if editor.print_border.isChecked():
             margin = editor.print_margin.value()
@@ -350,14 +347,14 @@ class Design(QWidget):
         body.addWidget(self.menu_bar)
         toolbar = QToolBar()
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.command(toolbar, "New", self.new_project, QKeySequence.StandardKey.New,
-                     ("document-new", QStyle.StandardPixmap.SP_FileIcon))
-        self.command(toolbar, "Open…", self.open_project, QKeySequence.StandardKey.Open,
-                     ("document-open", QStyle.StandardPixmap.SP_DialogOpenButton))
+        new = self.command(toolbar, "New", self.new_project, QKeySequence.StandardKey.New,
+                           ("document-new", QStyle.StandardPixmap.SP_FileIcon))
+        open_file = self.command(toolbar, "Open…", self.open_project, QKeySequence.StandardKey.Open,
+                                 ("document-open", QStyle.StandardPixmap.SP_DialogOpenButton))
         self.save_action = self.command(toolbar, "Save", self.save, QKeySequence.StandardKey.Save,
                                         ("document-save", QStyle.StandardPixmap.SP_DialogSaveButton))
-        self.command(toolbar, "Save As…", lambda: self.save(as_new=True), QKeySequence.StandardKey.SaveAs)
-        self.command(toolbar, "Import…", self.import_art)
+        save_as = self.command(toolbar, "Save As…", lambda: self.save(as_new=True), QKeySequence.StandardKey.SaveAs)
+        import_art = self.command(toolbar, "Import Artwork…", self.import_art)
         toolbar.addSeparator()
         self.undo_action = self.command(toolbar, "Undo", self.undo, QKeySequence.StandardKey.Undo)
         self.redo_action = self.command(toolbar, "Redo", self.redo, QKeySequence.StandardKey.Redo)
@@ -404,7 +401,7 @@ class Design(QWidget):
             panel = Page()
             build(panel)
             self.inspector.addTab(panel.finish(), label)
-        self.build_design_menus()
+        self.build_design_menus((new, open_file, self.save_action, save_as, import_art))
         panes.addWidget(self.inspector)
         panes.setStretchFactor(1, 1)
         panes.setSizes([205, 550, 328])
@@ -423,10 +420,8 @@ class Design(QWidget):
         footer.addWidget(self.review_button)
         body.addWidget(footer_bar)
 
-        for label, key, callback in (("Select All", "Ctrl+A", lambda: self.select(
-                    i for i, shape in enumerate(self.project.shapes) if shape.visible)),
-                ("Group", "Ctrl+G", self.group), ("Ungroup", "Ctrl+Shift+G", lambda: self.group(release=True)),
-                ("Duplicate", "Ctrl+D", self.duplicate), ("Delete", "Delete", self.delete)):
+        for label, key, callback in (("Group", "Ctrl+G", self.group),
+                                    ("Ungroup", "Ctrl+Shift+G", lambda: self.group(release=True))):
             action = QAction(label, self)
             action.setShortcut(QKeySequence(key))
             action.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
@@ -546,7 +541,7 @@ class Design(QWidget):
         if picked.isValid():
             self.change_selected(**{field: picked.name()})
 
-    def build_design_menus(self):
+    def build_design_menus(self, file_actions):
         def command(menu, label, callback, shortcut=None):
             action = menu.addAction(label)
             action.triggered.connect(lambda checked=False: callback())
@@ -554,7 +549,20 @@ class Design(QWidget):
                 action.setShortcut(QKeySequence(shortcut))
             return action
 
-        view = self.menu_bar.addMenu("View")
+        files = self.menu_bar.addMenu("&File")
+        files.addActions(file_actions)
+        edit = self.menu_bar.addMenu("&Edit")
+        edit.addActions((self.undo_action, self.redo_action))
+        edit.addSeparator()
+        command(edit, "Select All", lambda: self.select(
+            i for i, shape in enumerate(self.project.shapes) if shape.visible), "Ctrl+A")
+        self.duplicate_action = command(edit, "Duplicate", self.duplicate, "Ctrl+D")
+        self.delete_action = command(edit, "Delete", self.delete, "Delete")
+        for action in edit.actions()[-3:]:
+            action.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
+            self.canvas.addAction(action)
+
+        view = self.menu_bar.addMenu("&View")
         zoom = view.addMenu("Zoom")
         for label, callback in (("Zoom In", lambda: self.canvas.zoom_by(1.25)),
                                 ("Zoom Out", lambda: self.canvas.zoom_by(0.8)), ("Fit", self.canvas.fit)):
@@ -747,7 +755,8 @@ class Design(QWidget):
         styles = {shapes[i].line_style for i in indices}
         self.line_style.setCurrentIndex(self.line_style.findData(styles.pop()) if len(styles) == 1 else -1)
         self.line_width.setValue(shape.line_width_mm if shape else 0)
-        for widget in (self.duplicate_button, self.delete_button, self.replicate_button):
+        for widget in (self.duplicate_button, self.delete_button, self.replicate_button,
+                       self.duplicate_action, self.delete_action):
             widget.setEnabled(bool(indices))
         enough = len(model.selected_units(shapes, indices)) > 1
         self.group_button.setEnabled(enough)

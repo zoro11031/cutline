@@ -66,13 +66,6 @@ class DesignWorkspace:
         header.pack_end(workspace)
         self.view.add_top_bar(header)
         shortcuts = Gtk.ShortcutController(scope=Gtk.ShortcutScope.MANAGED)
-        for trigger, callback in (("<Control>s", self.save), ("<Control><Shift>s", self.save_as)):
-            def invoke(_widget, _arguments, handler=callback):
-                handler(None)
-                return True
-
-            shortcut = Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string(trigger), Gtk.CallbackAction.new(invoke))
-            shortcuts.add_shortcut(shortcut)
         self.view.add_controller(shortcuts)
 
         toolbar = Gtk.Box(spacing=6, margin_start=12, margin_end=12, margin_top=6, margin_bottom=6)
@@ -96,7 +89,6 @@ class DesignWorkspace:
         zoom_in.set_tooltip_text('Zoom in')
         self.button(zoom_controls, 'Fit', self.fit)
 
-        body = Gtk.Box()
         left, objects = panel(174)
         objects.append(Gtk.Label(label='Drawing Tool', xalign=0, css_classes=['heading']))
         self.tools = ("Select", "Point Edit", *KINDS, "Polygon", "Freehand")
@@ -137,9 +129,17 @@ class DesignWorkspace:
             panels[widget.get_selected()][0]))
         right.append(switcher)
         right.append(self.inspector)
-        for child in (left, self.canvas, right):
-            body.append(child)
-        self.view.set_content(body)
+        drawing_panes = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL, wide_handle=True,
+                                  position=180, resize_start_child=False, resize_end_child=True,
+                                  shrink_start_child=False, shrink_end_child=False)
+        drawing_panes.set_start_child(left)
+        drawing_panes.set_end_child(self.canvas)
+        workspace_panes = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL, wide_handle=True,
+                                    resize_start_child=True, resize_end_child=False,
+                                    shrink_start_child=False, shrink_end_child=False)
+        workspace_panes.set_start_child(drawing_panes)
+        workspace_panes.set_end_child(right)
+        self.view.set_content(workspace_panes)
 
         footer = Gtk.Box(spacing=8, margin_start=12, margin_end=12, margin_top=6, margin_bottom=8)
         self.status = Gtk.Label(xalign=0, hexpand=True, wrap=True)
@@ -273,6 +273,22 @@ class DesignWorkspace:
                 shortcuts.add_shortcut(Gtk.Shortcut.new(
                     Gtk.ShortcutTrigger.parse_string(shortcut), Gtk.NamedAction.new(full_name)))
 
+        files = Gio.Menu()
+        for label, name, shortcut, callback in (
+                ('New', 'new', '<Control>n', self.new_project),
+                ('Open…', 'open', '<Control>o', self.open_project),
+                ('Save', 'save', '<Control>s', self.save),
+                ('Save As…', 'save-as', '<Control><Shift>s', self.save_as),
+                ('Import Artwork…', 'import-artwork', None, self.import_vector)):
+            command(files, label, name, lambda handler=callback: handler(None), shortcut)
+        edit = Gio.Menu()
+        command(edit, 'Undo', 'undo', lambda: self.change_history(self.history.undo))
+        command(edit, 'Redo', 'redo', lambda: self.change_history(self.history.redo))
+        command(edit, 'Select All', 'select-all', lambda: self.set_selection(
+            i for i, shape in enumerate(self.project.shapes) if shape.visible))
+        command(edit, 'Duplicate', 'duplicate', lambda: self.duplicate_shape(None))
+        command(edit, 'Delete', 'delete', lambda: self.delete_shape(None))
+
         view = Gio.Menu()
         zoom = Gio.Menu()
         view.append_submenu('Zoom', zoom)
@@ -334,8 +350,11 @@ class DesignWorkspace:
         modify = Gio.Menu()
         objects.append_submenu('Modify', modify)
         command(modify, 'Offset…', 'offset', self.offset_selection)
-        for title, menu in (('View', view), ('Panels', panels), ('Object', objects)):
-            toolbar.append(Gtk.MenuButton(label=title, menu_model=menu))
+        menus = Gio.Menu()
+        for title, menu in (('_File', files), ('_Edit', edit), ('_View', view),
+                            ('_Panels', panels), ('_Object', objects)):
+            menus.append_submenu(title, menu)
+        toolbar.append(Gtk.PopoverMenuBar.new_from_model(menus))
 
     def show_page_options(self, field):
         self.panel_switcher.set_selected(0)
@@ -575,6 +594,8 @@ class DesignWorkspace:
         self.save_button.set_sensitive(self.dirty or self.project_path is None)
         self.undo_button.set_sensitive(bool(self.history.past))
         self.redo_button.set_sensitive(bool(self.history.future))
+        self.menu_actions.lookup_action('undo').set_enabled(bool(self.history.past))
+        self.menu_actions.lookup_action('redo').set_enabled(bool(self.history.future))
         self.review.set_sensitive(count > 0)
         self.send_workspace.set_sensitive(count > 0)
         self.canvas.queue_draw()
@@ -622,6 +643,8 @@ class DesignWorkspace:
                                  else Gtk.INVALID_LIST_POSITION)
         self.duplicate.set_sensitive(bool(indices))
         self.remove.set_sensitive(bool(indices))
+        self.menu_actions.lookup_action('duplicate').set_enabled(bool(indices))
+        self.menu_actions.lookup_action('delete').set_enabled(bool(indices))
         self.replicate_button.set_sensitive(bool(indices))
         self.group_button.set_sensitive(len(indices) >= 2 and
                                         (shapes[indices[0]].group is None or

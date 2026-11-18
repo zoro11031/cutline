@@ -79,29 +79,46 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertEqual(win.workspaces.get_visible_child_name(), 'tools')
         self.assertIsNone(win.design)
 
-    def test_send_workspace_and_blade_share_material_and_cut_settings(self):
+    def test_send_editors_update_the_job_from_the_same_controls(self):
         win = self.make_window()
         win.send_workspace.emit('clicked')
         self.assertEqual(win.stack.get_visible_child_name(), 'cut')
-        self.assertEqual(win._text(win.r_send_preset), presets.STARTING_NAME)
         self.assertEqual(win._text(win.r_preset), presets.STARTING_NAME)
-        win.send_controls['passes'].set_value(3)
-        win.r_force.set_value(22)
+        win.r_passes.set_value(3)
+        win.send_sliders['force'].set_value(22)
         self.assertEqual(win.r_passes.get_value(), 3)
-        self.assertEqual(win.send_controls['force'].get_value(), 22)
+        self.assertEqual(win.r_force.get_value(), 22)
         self.assertEqual(win.job.settings.passes, 3)
         self.assertEqual(win.job.settings.force, 22)
-        win.send_controls['track_enhancing'].set_active(False)
-        self.assertFalse(win.r_track.get_active())
+        win.r_track.set_active(False)
         self.assertFalse(win.job.settings.track_enhancing)
+        materials = win.stack.get_child_by_name("materials")
+        self.assertFalse(win.r_force.is_ancestor(materials))
+        self.assertFalse(win.r_preset.is_ancestor(materials))
 
-    def test_manual_depth_is_readable_in_blade_and_send(self):
+    def test_manual_depth_is_readable(self):
         win = self.make_window()
         win.send_sliders["depth"].set_value(-1)
-        for entry in (win.r_depth, win.send_controls["depth"]):
-            self.assertEqual(entry.get_text(), "Manual")
-            self.assertGreaterEqual(entry.get_width_chars(), len(entry.get_text()))
+        self.assertEqual(win.r_depth.get_text(), "Manual")
+        self.assertGreaterEqual(win.r_depth.get_width_chars(), len(win.r_depth.get_text()))
         self.assertIsNone(win.job.settings.depth)
+
+    def test_workspace_menus_open_send_settings_and_run_design_commands(self):
+        import cairo
+
+        win = self.make_window()
+        win.workspace_actions.lookup_action("advanced-settings").activate(None)
+        self.assertEqual(win.stack.get_visible_child_name(), "cut")
+        self.assertTrue(win.send_advanced.get_expanded())
+        image = cairo.ImageSurface(cairo.FORMAT_RGB24, 480, 320)
+        with mock.patch.object(gui, "draw_feed_arrow", wraps=gui.draw_feed_arrow) as draw:
+            win.preview._draw(win.preview, cairo.Context(image), 480, 320)
+        self.assertEqual(draw.call_args.args[1], win.job.grid.sheet_w_mm)
+        win.on_edit_template()
+        design = win.design
+        self.assertIsNotNone(design.menu_actions.lookup_action("save"))
+        design.menu_actions.lookup_action("select-all").activate(None)
+        self.assertEqual(len(design.selected_indices()), len(design.project.shapes))
 
     def test_connection_method_defaults_to_automatic_inside_advanced_options(self):
         win = self.make_window()
@@ -167,8 +184,8 @@ class TestDesignWorkspace(unittest.TestCase):
         with mock.patch.object(presets, "factory_presets", return_value=variants):
             win.refresh_preset_choices()
             win.send_holder_buttons[2].set_active(True)
-            names = win.r_send_preset.get_model()
-            win.r_send_preset.set_selected(next(i for i in range(names.get_n_items())
+            names = win.r_preset.get_model()
+            win.r_preset.set_selected(next(i for i in range(names.get_n_items())
                                                if names.get_string(i) == "Sample · Holder 1"))
             self.assertEqual(win._text(win.r_preset), "Sample · Holder 2")
             self.assertEqual(win.job.settings.force, 21)
@@ -225,9 +242,9 @@ class TestDesignWorkspace(unittest.TestCase):
         win.guide_next.emit('clicked')
         self.assertFalse(win.preview.trial.sheet.extent().overlaps(first))
         win.guide_edit.emit('clicked')
-        self.assertEqual(win.stack.get_visible_child_name(), 'blade')
-        self.assertEqual(win.blade_guide.get_label(), 'Resume Material Test')
-        win.blade_guide.emit('clicked')
+        self.assertEqual(win.stack.get_visible_child_name(), 'cut')
+        self.assertEqual(win.material_guide.get_label(), 'Resume Material Test')
+        win.material_guide.emit('clicked')
         self.assertTrue(win.tuning)
         win.back_to_send.emit('clicked')
         self.assertIsNone(win.preview.trial)

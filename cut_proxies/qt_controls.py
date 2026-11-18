@@ -84,7 +84,9 @@ QSlider[role="cutSlider"]::handle:horizontal:focus,
 QSlider[role="cutSlider"]::handle:horizontal:hover { border: 1px solid palette(window-text); }
 QSlider[role="cutSlider"]::handle:horizontal:disabled,
 QSlider[role="cutSlider"]::sub-page:horizontal:disabled { background: palette(mid); }
-QSplitter::handle { background: transparent; width: 8px; }
+QMenuBar { padding: 2px 4px; }
+QMenuBar::item { padding: 5px 10px; }
+QSplitter::handle { background: transparent; width: 12px; }
 QSplitter::handle:hover { background: palette(midlight); }
 """
 

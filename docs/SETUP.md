@@ -107,7 +107,7 @@ Under **Send → Advanced Options → Media handling**, select the mat and choos
 stops. **Return to Origin** parks it at the start. **Feed** moves it past the
 last cut.
 
-For imported artwork or a design, **Blade → Advanced Options → Weed Settings** can add a border
+For imported artwork or a design, **Send → Advanced Options → Weed Settings** can add a border
 or lines through open gaps. Look for blue dashed lines in the preview.
 
 ## Finding your blade settings
@@ -146,8 +146,8 @@ offline planning. If multiple cutters appear, select one under
 **Connected cutter**. Use **Check Status** to see whether the cutter is ready.
 
 Factory materials load from an accessible Studio installation or a local
-import. In **Blade → Advanced Options**, choose **Import Studio Materials**
-for a standalone `condition.csv` or **Import Factory Folder** for the Studio
+import. In **Materials**, choose **Import CSV**
+for a standalone `condition.csv` or **Import Folder** for the Studio
 installation or the folder containing that CSV. A validated local copy stays
 available when the original file moves. **Restore Default Materials** backs
 up edited defaults and keeps personal presets. You can also inspect the CSV

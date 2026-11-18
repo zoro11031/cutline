@@ -87,41 +87,62 @@ class TestQtFrontend(unittest.TestCase):
         self.assertEqual(window.job.stream, expected.stream)
         self.assertEqual(window.job.blocked, [])
 
-    def test_send_workspace_quick_settings_and_blade_use_the_same_values(self):
+    def test_send_editors_update_the_job_from_the_same_controls(self):
         window = self.window
         window.send_workspace.click()
         self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
-        self.assertEqual(window.send_preset.currentData(), presets.STARTING_NAME)
         self.assertEqual(window.choice("preset"), presets.STARTING_NAME)
-        window.send_blade["passes"].setValue(3)
-        window.blade["force"].setValue(22)
-        self.assertEqual(window.send_blade["force"].value(), 22)
-        self.assertEqual(window.blade["passes"].value(), 3)
+        window.blade["passes"].setValue(3)
+        window.blade["force"].slider.setValue(22)
+        self.assertEqual(window.blade["force"].value(), 22)
+        self.assertEqual(window.job.settings.force, 22)
         self.assertEqual(window.job.settings.passes, 3)
-        window.send_blade["track_enhancing"].setChecked(False)
-        self.assertFalse(window.blade["track_enhancing"].isChecked())
+        window.blade["track_enhancing"].setChecked(False)
         self.assertFalse(window.job.settings.track_enhancing)
+        materials = window.tabs.widget(window.tab("Materials"))
+        self.assertFalse(materials.isAncestorOf(window.controls["preset"]))
+        self.assertFalse(materials.isAncestorOf(window.blade["force"]))
 
-    def test_manual_depth_fits_in_both_tabs_with_a_large_font(self):
+    def test_manual_depth_fits_with_a_large_font(self):
         window = self.window
         font = self.app.font()
         font.setPointSize(18)
         window.resize(980, 760)
         window.show()
+        window.send_workspace.click()
         window.blade["depth"].setValue(-1)
-        for tab, fields in (("Blade", window.blade), ("Send", window.send_blade)):
-            with self.subTest(tab=tab):
-                window.tabs.setCurrentIndex(window.tab(tab))
-                field = fields["depth"]
-                entry = field.lineEdit()
-                field.setFont(font)
-                entry.setFont(font)
-                self.app.processEvents()
-                self.assertEqual(entry.text(), "Manual")
-                self.assertEqual(entry.font().pointSize(), 18)
-                self.assertGreaterEqual(entry.contentsRect().width(),
-                                        entry.fontMetrics().horizontalAdvance(entry.text()) + 4)
+        field = window.blade["depth"]
+        entry = field.lineEdit()
+        field.setFont(font)
+        entry.setFont(font)
+        self.app.processEvents()
+        self.assertEqual(entry.text(), "Manual")
+        self.assertEqual(entry.font().pointSize(), 18)
+        self.assertGreaterEqual(entry.contentsRect().width(),
+                                entry.fontMetrics().horizontalAdvance(entry.text()) + 4)
         self.assertIsNone(window.job.settings.depth)
+
+    def test_workspace_menus_open_send_settings_and_run_design_commands(self):
+        window = self.window
+        workspace_actions = window.menu_bar.actions()
+        menus = {action.text().replace("&", ""): action.menu() for action in workspace_actions}
+        self.assertEqual(tuple(menus), ("File", "Edit", "View", "Settings", "Help"))
+        advanced = next(action for action in menus["Settings"].actions() if action.text() == "Advanced Send Settings")
+        advanced.trigger()
+        self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
+        self.assertTrue(window.send_advanced.disclosure.isChecked())
+        arrow = next(item for item in window.preview.scene().items() if item.toolTip() == "Feed this edge into the cutter")
+        self.assertAlmostEqual(arrow.sceneBoundingRect().center().x(), window.job.grid.sheet_w_mm / 2)
+        self.assertLess(arrow.sceneBoundingRect().bottom(), 0)
+        window.open_design()
+        design = window.design
+        design_actions = design.menu_bar.actions()
+        menus = {action.text().replace("&", ""): action.menu() for action in design_actions}
+        self.assertEqual(tuple(menus), ("File", "Edit", "View", "Panels", "Object"))
+        self.assertIn(design.save_action, menus["File"].actions())
+        select_all = next(action for action in menus["Edit"].actions() if action.text() == "Select All")
+        select_all.trigger()
+        self.assertEqual(len(design.selection()), len(design.project.shapes))
 
     def test_connection_method_defaults_to_automatic_inside_advanced_options(self):
         window = self.window
@@ -183,8 +204,8 @@ class TestQtFrontend(unittest.TestCase):
         window = self.window
         with mock.patch.object(presets, "factory_presets", return_value=variants):
             window.refresh_preset_choices()
-            window.send_blade["holder"].holders.button(2).click()
-            window.send_preset.setCurrentIndex(window.send_preset.findData("Sample · Holder 1"))
+            window.blade["holder"].holders.button(2).click()
+            window.select("preset", "Sample · Holder 1")
             self.assertEqual(window.choice("preset"), "Sample · Holder 2")
             self.assertEqual(window.job.settings.force, 21)
             self.assertEqual(window.job.settings.holder, 2)
@@ -195,14 +216,14 @@ class TestQtFrontend(unittest.TestCase):
         window.send_workspace.click()
         self.app.processEvents()
         self.assertTrue(window.send_advanced.isHidden())
-        self.assertTrue(window.send_blade["acceleration"].slider.isVisible())
+        self.assertTrue(window.blade["acceleration"].slider.isVisible())
         self.assertTrue(window.corner_button.isVisible())
-        window.send_blade["force"].slider.setValue(28)
-        window.send_blade["holder"].holders.button(2).click()
-        window.send_blade["force"].setValue(12)
-        self.assertFalse(window.send_blade["depth"].slider.isEnabled())
-        window.send_blade["holder"].holders.button(1).click()
-        self.assertEqual(window.send_blade["force"].slider.value(), 28)
+        window.blade["force"].slider.setValue(28)
+        window.blade["holder"].holders.button(2).click()
+        window.blade["force"].setValue(12)
+        self.assertFalse(window.blade["depth"].slider.isEnabled())
+        window.blade["holder"].holders.button(1).click()
+        self.assertEqual(window.blade["force"].slider.value(), 28)
         self.assertEqual(window.job.settings.holder, 1)
         window.send_advanced.disclosure.click()
         window.select("end_position", "start")
@@ -323,7 +344,7 @@ class TestQtFrontend(unittest.TestCase):
 
     def test_corner_test_sends_only_one_square_and_leaves_the_layout_in_place(self):
         window = self.window
-        self.assertEqual(tuple(window.pages), ("Layout", "Sheet", "Blade", "Send"))
+        self.assertEqual(tuple(window.pages), ("Layout", "Sheet", "Materials", "Send"))
         window.blade["passes"].setValue(4)
         plan = window.job
         sample = corner_test.build(plan, bleed_mm=window.controls["bleed_mm"].value())
@@ -439,9 +460,9 @@ class TestQtFrontend(unittest.TestCase):
         window.guide_next.click()
         self.assertFalse(window.preview.trial.sheet.extent().overlaps(first))
         window.guide_edit.click()
-        self.assertEqual(window.tabs.currentIndex(), window.tab("Blade"))
-        self.assertEqual(window.blade_guide.text(), "Resume Material Test")
-        window.blade_guide.click()
+        self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
+        self.assertEqual(window.material_guide.text(), "Resume Material Test")
+        window.material_guide.click()
         self.assertTrue(window.tuning)
         window.back_to_send.click()
         self.assertIsNone(window.preview.trial)
@@ -459,8 +480,8 @@ class TestQtFrontend(unittest.TestCase):
         cutter.run.side_effect = transport.RegistrationFailed()
         with mock.patch.object(window.tasks, "run", side_effect=lambda work, done: done(work(), None)), \
              mock.patch.object(transport, "open_transport", return_value=cutter):
-            window.detect_blades.click()
-        self.assertIn("Holder 1 AutoBlade", window.installed_tools.text())
+            window.refresh_cutter.click()
+        self.assertIn("Holder 1 AutoBlade", window.connection_status.text())
 
         def rejected(_work, done):
             done(None, cutter.run.side_effect)

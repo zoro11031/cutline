@@ -1,6 +1,6 @@
 """Silhouette Control Center: a GTK4 / libadwaita front end.
 
-Layout, Sheet, Blade and Send share one live preview.
+Layout, Sheet, Materials and Send share one live preview.
 
 The preview is not decoration.  A cut template is a set of coordinates that
 have to agree with ink already on a sheet, and the fastest way to catch a
@@ -43,6 +43,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 from . import (actions, bluetooth, bundle, config, corner_test, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
                starting_guide, template, testcut, toolpath, transport)  # noqa: E402
 from .desktop_help import BLADE_VALUE_TEXT, CONTROL_HELP, SETUP_STEPS  # noqa: E402
+from .editor_canvas import draw_feed_arrow  # noqa: E402
 from .gtk_controls import disclosure  # noqa: E402
 from .holder_settings import HolderSettings, for_holder  # noqa: E402
 
@@ -50,10 +51,11 @@ APP_ID = "org.printing.SilhouetteControlCenter"
 PREVIEW_MODES = ("Cut paths", "Print PDF", "Overlay")
 
 _CUT_SETTINGS_CSS = """
+.scc-tabs button { min-width: 0; padding: 5px 10px; }
 .scc-cut-settings row > box.header { min-height: 34px; padding: 2px 12px; }
 .scc-cut-settings spinbutton button { min-width: 16px; min-height: 25px; padding: 0 3px; }
 .scc-cut-settings .holder-tabs { padding: 5px 8px; }
-.scc-cut-settings .cut-toggles { padding: 4px 12px; }
+.scc-cut-settings .cut-toggles { padding: 5px 12px; }
 """
 
 
@@ -272,6 +274,7 @@ class Preview(Gtk.DrawingArea):
         cr.set_line_width(1 / scale)
         cr.set_source_rgb(0.55, 0.62, 0.68)
         cr.stroke()
+        self.draw_orientation(cr, sheet_w, scale)
         sample = self.trial.sheet.cells[0].rect
         cr.rectangle(sample.x, sample.y, sample.w, sample.h)
         cr.set_source_rgba(0.18, 0.56, 0.69, 0.17)
@@ -282,6 +285,12 @@ class Preview(Gtk.DrawingArea):
         cr.set_font_size(max(3, 11 / scale))
         cr.move_to(sample.x2 + 2, sample.y + 5)
         cr.show_text("Test cut")
+
+    @staticmethod
+    def draw_orientation(cr, width, scale):
+        dark = Adw.StyleManager.get_default().get_dark()
+        color = (0.83, 0.87, 0.91) if dark else (0.32, 0.37, 0.41)
+        draw_feed_arrow(cr, width, color, min(1, 1.2 / scale))
 
     def _draw(self, _area, cr, width, height):
         dark = Adw.StyleManager.get_default().get_dark()
@@ -324,6 +333,7 @@ class Preview(Gtk.DrawingArea):
         cr.set_line_width(hair)
         cr.rectangle(0, 0, W, H)
         cr.stroke()
+        self.draw_orientation(cr, W, scale)
         if j is None:
             return
 
@@ -480,9 +490,9 @@ class Window(Adw.ApplicationWindow):
         self.connect('close-request', self.confirm_window_close)
 
         header = Adw.HeaderBar()
-        self.stack = Adw.ViewStack()
-        switcher = Adw.ViewSwitcher(stack=self.stack,
-                                    policy=Adw.ViewSwitcherPolicy.WIDE)
+        self.stack = Gtk.Stack()
+        switcher = Gtk.StackSwitcher(stack=self.stack, margin_start=12, margin_end=12,
+                                     css_classes=["linked", "scc-tabs"])
         header.set_title_widget(Adw.WindowTitle(title="Silhouette Control Center"))
         outer.add_top_bar(header)
 
@@ -605,9 +615,12 @@ class Window(Adw.ApplicationWindow):
 
         self._page_layout()
         self._page_sheet()
-        self._page_blade()
+        self._page_materials()
         self._page_cut()
+        self._load_materials()
+        self.on_preset()
         self.add_control_help()
+        outer.add_top_bar(self.workspace_menu_bar())
         outer.add_bottom_bar(self._send_bar())
 
         self._suppress = False
@@ -625,6 +638,61 @@ class Window(Adw.ApplicationWindow):
         if page != "cut":
             self.tuning = False
         self.update_send_actions()
+
+    def workspace_menu_bar(self):
+        self.workspace_actions = Gio.SimpleActionGroup()
+        self.workspaces.insert_action_group("workspace", self.workspace_actions)
+
+        def command(menu, label, name, callback):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", lambda *_: callback())
+            self.workspace_actions.add_action(action)
+            menu.append(label, f"workspace.{name}")
+            return action
+
+        files = Gio.Menu()
+        command(files, "Open Cut Artwork…", "open-artwork", self.on_open_artwork)
+        command(files, "Open PDF or ZIP…", "open-print", self.open_print_from_menu)
+        self.close_print_action = command(files, "Close Print File", "close-print", self.close_printed_sheet)
+        self.paired_cut_action = command(files, "Save Paired Cut File…", "paired-cut", self.on_save_bundle_file)
+        command(files, "Export Cut Templates…", "export-templates", self.on_export)
+
+        edit = Gio.Menu()
+        command(edit, "Edit in Design", "design", self.on_edit_template)
+        self.reset_layout_action = command(edit, "Use Generated Layout", "reset-layout", self.on_clear_artwork)
+
+        view = Gio.Menu()
+        for label, name in (("Layout", "layout"), ("Sheet", "sheet"), ("Materials", "materials"), ("Send", "cut")):
+            command(view, label, name, lambda page=name: self.stack.set_visible_child_name(page))
+        command(view, "Fit Preview", "fit-preview", self.preview.fit)
+
+        settings = Gio.Menu()
+        command(settings, "Cut Settings", "cut-settings", self.open_cut_settings)
+        command(settings, "Advanced Send Settings", "advanced-settings", self.open_send_advanced)
+        help_menu = Gio.Menu()
+        command(help_menu, "Setup Guide", "setup-guide", self.show_setup_guide)
+        menus = Gio.Menu()
+        for label, menu in (("_File", files), ("_Edit", edit), ("_View", view),
+                            ("_Settings", settings), ("_Help", help_menu)):
+            menus.append_submenu(label, menu)
+        bar = Gtk.PopoverMenuBar.new_from_model(menus)
+        bar.set_margin_start(10)
+        bar.set_margin_end(10)
+        bar.set_margin_bottom(6)
+        return bar
+
+    def open_print_from_menu(self):
+        self.stack.set_visible_child_name("sheet")
+        self.on_pick_pdf()
+
+    def open_cut_settings(self):
+        self.open_send_workspace()
+        GLib.idle_add(self.scroll_send_to, self.cut_settings)
+
+    def open_send_advanced(self):
+        self.open_send_workspace()
+        self.send_advanced.set_expanded(True)
+        GLib.idle_add(self.scroll_send_to, self.send_advanced)
 
     def _send_bar(self):
         bar = Gtk.ActionBar()
@@ -675,6 +743,9 @@ class Window(Adw.ApplicationWindow):
         page = self.stack.get_visible_child_name()
         destination, label = self.send_review_destination()
         self.review_send.set_label(label)
+        self.close_print_action.set_enabled(self.pdf_path is not None)
+        self.paired_cut_action.set_enabled(self.pdf_bundle is not None)
+        self.reset_layout_action.set_enabled(self.imported is not None or self.pdf_bundle is not None)
         self.review_send.set_visible(not self.tuning and page != destination)
         at_send = not self.tuning and page == "cut"
         for control in (self.cut_button, self.scan_button, self.corner_button):
@@ -686,7 +757,6 @@ class Window(Adw.ApplicationWindow):
         mode, identifier, *_ = self._connection()
         can_check = bool(identifier) and not (self._sending or self._checking_status)
         self.check_cutter_status.set_sensitive(can_check)
-        self.detect_blades.set_sensitive(can_check)
         reason = (
             "Sending to the cutter…" if self._sending else
             "Checking cutter status…" if self._checking_status else
@@ -722,22 +792,18 @@ class Window(Adw.ApplicationWindow):
         dialog.present(self)
 
     def open_material_guide(self, *_args):
-        self.blade_guide.set_label("Dial In a Material…")
+        self.material_guide.set_label("Dial In a Material…")
         self.stack.set_visible_child_name("cut")
         self.tuning = True
         self.update_send_actions()
-        GLib.idle_add(self.scroll_to_guide)
+        GLib.idle_add(self.scroll_send_to, self.guide_group)
 
-    def scroll_to_guide(self):
-        if self.tuning and self.send_page.get_mapped():
-            placed, bounds = self.guide_group.compute_bounds(self.send_page.controls)
+    def scroll_send_to(self, target):
+        if target.get_mapped():
+            placed, bounds = target.compute_bounds(self.send_page.controls)
             if placed:
                 self.send_page.get_vadjustment().set_value(max(0, bounds.get_y() - 12))
         return GLib.SOURCE_REMOVE
-
-    def open_advanced_blade(self, *_args):
-        self.stack.set_visible_child_name("blade")
-        self.blade_advanced.set_expanded(True)
 
     def close_material_guide(self, *_args):
         self.tuning = False
@@ -747,8 +813,8 @@ class Window(Adw.ApplicationWindow):
     def adjust_guide_settings(self, *_args):
         if self.guide.trial:
             self.on_guide_next()
-        self.blade_guide.set_label("Resume Material Test")
-        self.stack.set_visible_child_name("blade")
+        self.open_cut_settings()
+        self.material_guide.set_label("Resume Material Test")
 
     def update_tuning_preview(self):
         trial = None
@@ -866,8 +932,7 @@ class Window(Adw.ApplicationWindow):
             r.connect("notify::value", self.on_changed)
         self.r_skip.connect("changed", self.on_changed)
 
-        self.stack.add_titled_with_icon(page, "layout", "Layout",
-                                        "view-grid-symbolic")
+        self.stack.add_titled(page, "layout", "Layout")
 
     def _page_sheet(self):
         page = ControlPage()
@@ -923,69 +988,72 @@ class Window(Adw.ApplicationWindow):
         advanced.append(pdf_options)
 
         self.update_sheet_controls()
-        self.stack.add_titled_with_icon(page, "sheet", "Sheet",
-                                        "document-print-symbolic")
+        self.stack.add_titled(page, "sheet", "Sheet")
 
-    def _page_blade(self):
+    def _page_materials(self):
         page = ControlPage()
-        names = sorted(presets.all_presets())
-        default = (names.index(config.DEFAULT_PRESET)
-                   if config.DEFAULT_PRESET in names else 0)
-        g = Adw.PreferencesGroup(title="Material preset")
-        self.r_preset = _combo("Preset", names, default)
-        self.preset_changed_id = self.r_preset.connect("notify::selected", self.on_preset)
-        g.add(self.r_preset)
+        g = Adw.PreferencesGroup(title="Material preset",
+                                 description="Choose and edit your cut settings in Send, then save them here.")
         self.preset_note = Adw.ActionRow(title="About this preset", subtitle="")
         self.preset_note.set_subtitle_lines(0)
         g.add(self.preset_note)
-        self.blade_guide = self.guide_button(g, "Dial In a Material…", self.open_material_guide)
-        page.add(g)
-
-        g2 = Adw.PreferencesGroup(title="Cutter and blade")
-        self.r_cutter = _combo(
-            "Cutter", [d.name for d in graphtec.DEVICES],
-            [d.name for d in graphtec.DEVICES].index("Silhouette Cameo 4"))
-        self.r_force = _spin("Force", 1, 40, 30)
-        self.r_speed = _spin("Speed", 1, 30, 3)
-        self.r_passes = _spin("Passes", 1, 10, 3)
-        self.r_depth = _special_value(_spin("Blade Depth", -1, 10, 7), -1, BLADE_VALUE_TEXT["depth"])
-        self.r_holder = _spin("Tool Holder", 1, 2, 1)
-        self.r_acceleration = _special_value(_spin("Acceleration", -1, 3, -1), -1,
-                                            BLADE_VALUE_TEXT["acceleration"])
-        self.r_diameter = _spin("Tool Offset (mm)", 0, 2.3, 0.9, 0.05, 2)
-        self.r_lift = _switch("Lift head", True)
-        self.r_corners = _switch("Line Segment Overcut", False)
-        self.r_corner_start = _spin("Start Extension (mm)", 0, 0.9, 0.1, 0.1, 1)
-        self.r_corner_end = _spin("End Extension (mm)", 0, 0.9, 0.1, 0.1, 1)
-        self.r_track = _switch("Track Enhancing", False)
-        self.blade_holder_buttons = self.tool_holder_picker(g2)
-        for r in (self.r_cutter, self.r_force, self.r_speed, self.r_passes,
-                  self.r_depth, self.r_acceleration, self.r_corners, self.r_track):
-            g2.add(r)
-        self.tool_row = Adw.ActionRow(title="Installed tools", subtitle="See what is in each holder.")
-        self.detect_blades = Gtk.Button(label="Detect Installed Tools", valign=Gtk.Align.CENTER)
-        self.detect_blades.connect("clicked", self.on_refresh_status)
-        self.tool_row.add_suffix(self.detect_blades)
-        g2.add(self.tool_row)
         save_preset = Adw.ActionRow(
-            title="Keep these settings",
-            subtitle="Save the blade and tool settings to the selected preset.")
-        self.save_preset_btn = Gtk.Button(label="Save preset")
+            title="Update selected preset")
+        self.save_preset_btn = Gtk.Button(label="Update Preset")
         self.save_preset_btn.set_valign(Gtk.Align.CENTER)
         self.save_preset_btn.connect("clicked", self.on_save_blade_preset)
         save_preset.add_suffix(self.save_preset_btn)
+        g.add(save_preset)
         self.new_preset_name = Adw.EntryRow(title="New preset name")
         create = Gtk.Button(label="Save as New", valign=Gtk.Align.CENTER)
         create.connect("clicked", lambda *_: self.on_save_blade_preset(
             new_name=self.new_preset_name.get_text()))
         self.new_preset_name.add_suffix(create)
-        g2.add(self.new_preset_name)
-        page.add(g2)
-        advanced, self.blade_advanced = disclosure(page.controls)
-        blade_details = Adw.PreferencesGroup(title="Blade details")
-        for row in (self.r_diameter, self.r_lift, self.r_corner_start, self.r_corner_end, save_preset):
-            blade_details.add(row)
-        advanced.append(blade_details)
+        g.add(self.new_preset_name)
+        page.add(g)
+
+        g3 = Adw.PreferencesGroup(
+            title="Studio materials",
+            description="Import Studio’s condition.csv to add its factory presets.")
+        self.r_cutter_divisions = _combo("Show Cutter Divisions", ["Known Cutters", "All Cutters"])
+        self.r_cutter_divisions.connect("notify::selected", self._load_materials)
+        g3.add(self.r_cutter_divisions)
+        self.r_material = _combo("Factory preset", ["(none loaded)"])
+        apply_row = Adw.ActionRow(
+            title="Apply the selected material",
+            subtitle="Load blade settings from the selected Studio material")
+        apply_btn = Gtk.Button(label="Apply")
+        apply_btn.set_valign(Gtk.Align.CENTER)
+        apply_btn.connect("clicked", self.on_apply_material)
+        apply_row.add_suffix(apply_btn)
+        g3.add(self.r_material)
+        imports = Gtk.Box(spacing=6, margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
+        choose = Gtk.Button(label="Import CSV…")
+        choose.connect("clicked", self.on_choose_material_csv)
+        imports.append(choose)
+        choose_folder = Gtk.Button(label="Import Folder…")
+        choose_folder.connect("clicked", lambda *_: self.on_choose_material_csv(folder=True))
+        imports.append(choose_folder)
+        g3.add(Adw.PreferencesRow(child=imports, activatable=False, selectable=False))
+        g3.add(apply_row)
+        restore = Adw.ActionRow(title="Restore Default Materials",
+                                subtitle="Back up edits to built-in materials and restore their original settings")
+        restore_button = Gtk.Button(label="Restore", valign=Gtk.Align.CENTER)
+        restore_button.connect("clicked", self.on_restore_default_materials)
+        restore.add_suffix(restore_button)
+        g3.add(restore)
+        page.add(g3)
+        self.stack.add_titled(page, "materials", "Materials")
+
+    def add_advanced_cut_settings(self, advanced):
+        blade = Adw.PreferencesGroup(title="Blade details")
+        self.r_diameter = _spin("Tool Offset (mm)", 0, 2.3, 0.9, 0.05, 2)
+        self.r_lift = _switch("Lift head", True)
+        self.r_corner_start = _spin("Start Extension (mm)", 0, 0.9, 0.1, 0.1, 1)
+        self.r_corner_end = _spin("End Extension (mm)", 0, 0.9, 0.1, 0.1, 1)
+        for row in (self.r_diameter, self.r_lift, self.r_corner_start, self.r_corner_end):
+            blade.add(row)
+        advanced.append(blade)
 
         paths = Adw.PreferencesGroup(title="Cut paths")
         self.r_path_order = _combo("Cut Order Sorting", list(toolpath.PATH_ORDERS.values()))
@@ -1009,59 +1077,21 @@ class Window(Adw.ApplicationWindow):
         self.weed_group.add(self.r_weed_lines)
         advanced.append(self.weed_group)
 
-        g3 = Adw.PreferencesGroup(
-            title="Studio materials",
-            description="Import Studio’s condition.csv to add its factory presets.")
-        self.r_cutter_divisions = _combo("Show Cutter Divisions", ["Known Cutters", "All Cutters"])
-        self.r_cutter_divisions.connect("notify::selected", self._load_materials)
-        g3.add(self.r_cutter_divisions)
-        self.r_material = _combo("Material", ["(none loaded)"])
-        apply_row = Adw.ActionRow(
-            title="Apply the selected material",
-            subtitle="Load blade settings from the selected Studio material")
-        apply_btn = Gtk.Button(label="Apply")
-        apply_btn.set_valign(Gtk.Align.CENTER)
-        apply_btn.connect("clicked", self.on_apply_material)
-        apply_row.add_suffix(apply_btn)
-        g3.add(self.r_material)
-        csv = Adw.ActionRow(title="Local materials file")
-        choose = Gtk.Button(label="Import Studio Materials…", valign=Gtk.Align.CENTER)
-        choose.connect("clicked", self.on_choose_material_csv)
-        csv.add_suffix(choose)
-        choose_folder = Gtk.Button(label="Import Factory Folder…", valign=Gtk.Align.CENTER)
-        choose_folder.connect("clicked", lambda *_: self.on_choose_material_csv(folder=True))
-        csv.add_suffix(choose_folder)
-        g3.add(csv)
-        g3.add(apply_row)
-        restore = Adw.ActionRow(title="Restore Default Materials",
-                                subtitle="Back up edits to built-in materials and restore their original settings")
-        restore_button = Gtk.Button(label="Restore", valign=Gtk.Align.CENTER)
-        restore_button.connect("clicked", self.on_restore_default_materials)
-        restore.add_suffix(restore_button)
-        g3.add(restore)
-        advanced.append(g3)
-        self._load_materials()
-        self.r_cutter.connect("notify::selected", self.on_material_cutter_changed)
-        self.r_cutter.set_visible(False)
-
-        for row in (self.r_cutter, self.r_path_order, self.r_pass_order, self.r_weed_lines):
+        for row in (self.r_path_order, self.r_pass_order, self.r_weed_lines):
             row.connect("notify::selected", self.on_changed)
-        for r in (self.r_lift, self.r_corners, self.r_alternate, self.r_track,
-                  self.r_interiors, self.r_delicate):
+        for r in (self.r_lift, self.r_alternate, self.r_interiors, self.r_delicate):
             r.connect("notify::active", self.on_changed)
-        for r in (self.r_force, self.r_speed, self.r_passes, self.r_depth, self.r_holder,
-                  self.r_acceleration, self.r_diameter, self.r_corner_start, self.r_corner_end,
-                  self.r_overcut, self.r_weed_border):
+        for r in (self.r_diameter, self.r_corner_start, self.r_corner_end, self.r_overcut, self.r_weed_border):
             r.connect("notify::value", self.on_changed)
-
-        self.stack.add_titled_with_icon(page, "blade", "Blade",
-                                        "applications-engineering-symbolic")
-        self.on_preset()
 
     def _page_cut(self):
         self.send_page = page = ControlPage()
         self.send_normal = normal = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         page.add(normal)
+        cutter_names = [d.name for d in graphtec.DEVICES]
+        self.r_cutter = _combo("Resolved cutter", cutter_names, cutter_names.index("Silhouette Cameo 4"))
+        self.r_cutter.connect("notify::selected", self.on_material_cutter_changed)
+        self.r_cutter.connect("notify::selected", self.on_changed)
         self.send_modes = Adw.PreferencesGroup(title="Send by")
         self.r_send_mode = _combo("Mode", ["Standard", "Line", "Fill", "Layer"])
         self.r_send_mode.set_tooltip_text("Use one set of cut settings, or assign settings by color or layer.")
@@ -1118,6 +1148,10 @@ class Window(Adw.ApplicationWindow):
         self.on_connection_changed()
         self.r_bluetooth_id.connect("changed", self.on_connection_target_changed)
         self.r_bluetooth_channel.connect("notify::value", self.on_connection_target_changed)
+        normal.append(self.send_groups)
+        self.cut_settings = self.cut_settings_group()
+        normal.append(self.cut_settings)
+        normal.append(g)
         advanced, self.send_advanced = disclosure(normal)
         bluetooth_options = Adw.PreferencesGroup(title="Connection")
         bluetooth_options.add(self.r_connection)
@@ -1125,9 +1159,6 @@ class Window(Adw.ApplicationWindow):
         bluetooth_options.add(self.r_bluetooth_channel)
         advanced.append(bluetooth_options)
         advanced.append(self.send_modes)
-        normal.append(self.send_groups)
-        normal.append(self.cut_settings_group())
-        normal.append(g)
 
         media = Adw.PreferencesGroup(title="Media handling")
         self.r_mat = _combo("Cutting mat", list(graphtec.MAT_OPTIONS.values()))
@@ -1147,23 +1178,13 @@ class Window(Adw.ApplicationWindow):
         media.add(self.r_show_weed)
         media.add(self.r_auto)
         advanced.append(media)
-        paths = Adw.PreferencesGroup(title="Cut paths")
-        order = _combo("Cut Order Sorting", list(toolpath.PATH_ORDERS.values()))
-        self.r_path_order.bind_property("selected", order, "selected",
-                                        GObject.BindingFlags.BIDIRECTIONAL | GObject.BindingFlags.SYNC_CREATE)
-        interiors = _switch("Sort Interior Contours First", self.r_interiors.get_active())
-        self.r_interiors.bind_property("active", interiors, "active",
-                                       GObject.BindingFlags.BIDIRECTIONAL | GObject.BindingFlags.SYNC_CREATE)
-        paths.add(order)
-        paths.add(interiors)
-        self.guide_button(paths, "More Blade Options…", self.open_advanced_blade)
-        advanced.append(paths)
+        self.add_advanced_cut_settings(advanced)
 
         self.guide_view = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, visible=False)
         page.add(self.guide_view)
         self.guide_group = guide = Adw.PreferencesGroup(title="Dial In a Material", description=starting_guide.GUIDE_TEXT)
         self.guide_apply, self.guide_edit = self.guide_buttons(
-            guide, ("Use Starting Settings", self.on_guide_start), ("Adjust in Blade", self.adjust_guide_settings))
+            guide, ("Use Starting Settings", self.on_guide_start), ("Adjust Cut Settings", self.adjust_guide_settings))
         self.guide_status = Adw.ActionRow(title="Test spot 1")
         self.guide_status.set_subtitle_lines(0)
         guide.add(self.guide_status)
@@ -1238,53 +1259,52 @@ class Window(Adw.ApplicationWindow):
         g3.add(dump)
 
         advanced.append(g3)
-        defaults = Adw.PreferencesGroup(title="Defaults")
-        self.guide_button(defaults, "Restore Default Materials…", self.on_restore_default_materials)
-        advanced.append(defaults)
-
-        self.stack.add_titled_with_icon(page, "cut", "Send", "media-playback-start-symbolic")
+        self.stack.add_titled(page, "cut", "Send")
 
     def cut_settings_group(self):
         group = Adw.PreferencesGroup(title="Cut Settings", css_classes=["scc-cut-settings"])
         _install_cut_settings_css(self.get_display())
-        dial_in = Gtk.Button(label="Dial In a Material…", valign=Gtk.Align.CENTER)
-        dial_in.connect("clicked", self.open_material_guide)
-        group.set_header_suffix(dial_in)
+        self.material_guide = Gtk.Button(label="Dial In a Material…", valign=Gtk.Align.CENTER)
+        self.material_guide.connect("clicked", self.open_material_guide)
+        group.set_header_suffix(self.material_guide)
+        self.r_holder = _spin("Tool Holder", 1, 2, 1)
+        self.r_holder.connect("notify::value", self.on_changed)
         self.send_holder_buttons = self.tool_holder_picker(group)
-        self.r_send_preset = _combo("Material", [config.DEFAULT_PRESET])
-        self.send_preset_changed_id = self.r_send_preset.connect(
-            "notify::selected", lambda row, *_: self.r_preset.set_selected(row.get_selected()))
-        group.add(self.r_send_preset)
-        self.send_controls = {}
+        names = sorted(presets.all_presets())
+        default = names.index(config.DEFAULT_PRESET) if config.DEFAULT_PRESET in names else 0
+        self.r_preset = _combo("Material", names, default)
+        self.preset_changed_id = self.r_preset.connect("notify::selected", self.on_preset)
+        group.add(self.r_preset)
         self.send_sliders = {}
-        for field, source in (("force", self.r_force), ("speed", self.r_speed), ("passes", self.r_passes),
-                              ("depth", self.r_depth), ("acceleration", self.r_acceleration)):
-            row = Adw.ActionRow(title=source.get_title())
+        for field, title, low, high, value in (
+                ("force", "Force", 1, 40, 30), ("speed", "Speed", 1, 30, 3),
+                ("passes", "Passes", 1, 10, 3), ("depth", "Blade Depth", -1, 10, 7),
+                ("acceleration", "Acceleration", -1, 3, -1)):
+            row = Adw.ActionRow(title=title)
             pieces = Gtk.Box(spacing=8, valign=Gtk.Align.CENTER)
-            adjustment = source.get_adjustment()
+            adjustment = Gtk.Adjustment(lower=low, upper=high, value=value, step_increment=1, page_increment=10)
             slider = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=adjustment,
                                draw_value=False, hexpand=True, width_request=110)
-            slider.update_property([Gtk.AccessibleProperty.LABEL], [source.get_title()])
-            precision = Gtk.SpinButton(adjustment=adjustment, digits=source.get_digits(),
+            slider.update_property([Gtk.AccessibleProperty.LABEL], [title])
+            precision = Gtk.SpinButton(adjustment=adjustment,
                                        width_chars=len(BLADE_VALUE_TEXT["depth"]))
-            precision.update_property([Gtk.AccessibleProperty.LABEL], [f"{source.get_title()} value"])
+            precision.update_property([Gtk.AccessibleProperty.LABEL], [f"{title} value"])
             if field in BLADE_VALUE_TEXT:
                 _special_value(precision, -1, BLADE_VALUE_TEXT[field])
-            source.bind_property("sensitive", row, "sensitive", GObject.BindingFlags.SYNC_CREATE)
+            precision.bind_property("sensitive", slider, "sensitive", GObject.BindingFlags.SYNC_CREATE)
+            precision.connect("value-changed", self.on_changed)
             pieces.append(slider)
             pieces.append(precision)
             row.add_suffix(pieces)
             group.add(row)
-            self.send_controls[field] = precision
+            setattr(self, f"r_{field}", precision)
             self.send_sliders[field] = slider
         toggles = Gtk.Box(spacing=16, css_classes=["cut-toggles"])
-        for field, source in (("sharpen_corners", self.r_corners), ("track_enhancing", self.r_track)):
-            control = Gtk.CheckButton(label=source.get_title())
-            source.bind_property("active", control, "active",
-                                 GObject.BindingFlags.BIDIRECTIONAL | GObject.BindingFlags.SYNC_CREATE)
-            source.bind_property("sensitive", control, "sensitive", GObject.BindingFlags.SYNC_CREATE)
-            self.send_controls[field] = control
-            toggles.append(control)
+        self.r_corners = Gtk.CheckButton(label="Line Segment Overcut")
+        self.r_track = Gtk.CheckButton(label="Track Enhancing")
+        for row in (self.r_corners, self.r_track):
+            row.connect("notify::active", self.on_changed)
+            toggles.append(row)
         group.add(Adw.PreferencesRow(child=toggles, activatable=False, selectable=False))
         return group
 
@@ -1303,13 +1323,6 @@ class Window(Adw.ApplicationWindow):
         group.add(slot_row)
         return buttons
 
-    def sync_send_material(self):
-        with self.r_send_preset.handler_block(self.send_preset_changed_id):
-            model = self.r_preset.get_model()
-            if self.r_send_preset.get_model() is not model:
-                self.r_send_preset.set_model(model)
-            self.r_send_preset.set_selected(self.r_preset.get_selected())
-
     def add_control_help(self):
         for field, row in {
             "force": self.r_force, "speed": self.r_speed, "passes": self.r_passes, "depth": self.r_depth,
@@ -1321,8 +1334,6 @@ class Window(Adw.ApplicationWindow):
             "mark_length_mm": self.r_length, "mark_thickness_mm": self.r_thickness, "bleed_mm": self.r_bleed,
             "mat": self.r_mat, "end_position": self.r_end_position, "end_feed_mm": self.r_feed,
         }.items():
-            row.set_tooltip_text(CONTROL_HELP[field])
-        for field, row in self.send_controls.items():
             row.set_tooltip_text(CONTROL_HELP[field])
         for field, slider in self.send_sliders.items():
             slider.set_tooltip_text(CONTROL_HELP[field])
@@ -1497,7 +1508,6 @@ class Window(Adw.ApplicationWindow):
             return
         device = graphtec.device_by_name(self._text(self.r_cutter))
         self.restore_holder(device)
-        self.sync_send_material()
         self.r_holder.set_sensitive(device.two_tools)
         self.r_depth.set_sensitive(device.autoblade and (not device.two_tools or self.r_holder.get_value() == 1))
         self.r_acceleration.set_sensitive(device.detects_tools)
@@ -1581,11 +1591,11 @@ class Window(Adw.ApplicationWindow):
                         preset = presets.get(presets.STARTING_NAME, device.name)
                     settings = for_holder(preset.cut_settings(), slot)
                 self.refresh_preset_choices(preset.name)
+                self.preset_note.set_title(preset.name)
                 self.preset_note.set_subtitle(preset.note or preset.description)
                 self._load_blade_settings(settings)
-            for buttons in (self.blade_holder_buttons, self.send_holder_buttons):
-                buttons[2].set_sensitive(device.two_tools)
-                buttons[slot].set_active(True)
+            self.send_holder_buttons[2].set_sensitive(device.two_tools)
+            self.send_holder_buttons[slot].set_active(True)
         finally:
             self._suppress = False
 
@@ -1643,6 +1653,7 @@ class Window(Adw.ApplicationWindow):
             index = next(i for i in range(model.get_n_items()) if model.get_string(i) == p.name)
             with self.r_preset.handler_block(self.preset_changed_id):
                 self.r_preset.set_selected(index)
+        self.preset_note.set_title(p.name)
         self.preset_note.set_subtitle(p.note or p.description)
         was = self._suppress
         self._suppress = True
@@ -2315,7 +2326,7 @@ class Window(Adw.ApplicationWindow):
         name = self._text(self.r_material)
         m = self._materials.get(name)
         if m is None:
-            self.toast("Import Studio Materials and choose a material first.")
+            self.toast("Import Studio materials, then choose a factory preset.")
             return
         if self.r_cutter_divisions.get_selected() == 0:
             self.refresh_preset_choices(name)
@@ -2405,7 +2416,7 @@ class Window(Adw.ApplicationWindow):
         opts = self._blade_options()
         self.set_guide_blade_values(starting_guide.starting_values(device, opts["holder"], opts["blade_diameter_mm"]))
         suffix = "" if self.r_depth.get_value() >= 0 else " Set depth on the blade."
-        self.toast("Starting settings applied to Blade." + suffix)
+        self.toast("Starting settings applied." + suffix)
 
     def on_guide_use(self, *_args):
         settings = self.guide.tested_settings
@@ -2673,7 +2684,6 @@ class Window(Adw.ApplicationWindow):
 
     def on_connection_target_changed(self, *_args):
         self.connection_status.set_subtitle("Not checked")
-        self.tool_row.set_subtitle("Not checked")
         self.scan_result.set_visible(False)
         self.update_send_actions()
 
@@ -2750,12 +2760,10 @@ class Window(Adw.ApplicationWindow):
         mode = connection[0]
         if not connection[1]:
             self.connection_status.set_subtitle("Select a cutter.")
-            self.tool_row.set_subtitle("Select a cutter.")
             return
         self._checking_status = True
         self.update_send_actions()
         self.connection_status.set_subtitle("Checking…")
-        self.tool_row.set_subtitle("Checking…")
 
         def done(text, device):
             self._checking_status = False
@@ -2763,7 +2771,6 @@ class Window(Adw.ApplicationWindow):
             if connection != self._connection():
                 return
             self.connection_status.set_subtitle(text)
-            self.tool_row.set_subtitle(text)
             if device is not None and self.selected_cutter() == cutters.AUTO:
                 self.r_cutter.set_selected(graphtec.DEVICES.index(device))
 
