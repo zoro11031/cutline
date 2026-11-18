@@ -26,8 +26,10 @@ from __future__ import annotations
 import math
 import io
 import pathlib
+import tempfile
 import threading
 import traceback
+import zipfile
 import cairo
 
 import gi
@@ -155,7 +157,7 @@ class Preview(Gtk.DrawingArea):
         cr.paint()
 
         j = self.job
-        if j is None:
+        if j is None and self.pdf_size_mm is None:
             cr.set_source_rgb(0.5, 0.5, 0.52)
             cr.select_font_face("Sans")
             cr.set_font_size(13)
@@ -165,7 +167,7 @@ class Preview(Gtk.DrawingArea):
             cr.show_text(msg)
             return
 
-        W, H = j.grid.sheet_w_mm, j.grid.sheet_h_mm
+        W, H = (j.grid.sheet_w_mm, j.grid.sheet_h_mm) if j else self.pdf_size_mm
         canvas_w, canvas_h = (max(W, self.pdf_size_mm[0]), max(H, self.pdf_size_mm[1])) \
             if self.pdf_size_mm is not None else (W, H)
         x, y, scale = self.viewport(width, height, canvas_w, canvas_h)
@@ -190,6 +192,8 @@ class Preview(Gtk.DrawingArea):
         cr.set_line_width(hair)
         cr.rectangle(0, 0, W, H)
         cr.stroke()
+        if j is None:
+            return
 
         mk = j.marks
         good_color = (0.0, 0.35, 0.75) if self.colorblind else (0.1, 0.55, 0.25)
@@ -336,9 +340,9 @@ class Window(Adw.ApplicationWindow):
         self.build_button.add_css_class("suggested-action")
         self.build_button.connect("clicked", lambda *_: self.rebuild())
         header.pack_start(self.build_button)
-        design_button = Gtk.Button(label='Design')
-        design_button.connect('clicked', self.on_edit_template)
-        header.pack_start(design_button)
+        self.design_button = Gtk.Button(label='Design')
+        self.design_button.connect('clicked', self.on_edit_template)
+        header.pack_start(self.design_button)
 
         self.banner = Adw.Banner(revealed=False)
         outer.add_top_bar(self.banner)
@@ -806,14 +810,19 @@ class Window(Adw.ApplicationWindow):
         g.add(launch_row)
 
         open_row = Adw.ActionRow(
-            title="Export and open in Studio",
-            subtitle="Writes the template, stages it, and opens it as a "
-                     "RemoteApp")
+            title="Open current sheet in Studio",
+            subtitle="Uses the paired Studio file from a ProxyPress ZIP, or a DXF.")
         open_btn = Gtk.Button(label="Open")
         open_btn.set_valign(Gtk.Align.CENTER)
         open_btn.connect("clicked", self.on_open_studio)
         open_row.add_suffix(open_btn)
         g.add(open_row)
+        pick_row = Adw.ActionRow(title='Open a Studio file',
+                                 subtitle='Select a .studio3 file, including one extracted from a ProxyPress ZIP.')
+        pick_btn = Gtk.Button(label='Choose file…', valign=Gtk.Align.CENTER)
+        pick_btn.connect('clicked', self.on_pick_studio_file)
+        pick_row.add_suffix(pick_btn)
+        g.add(pick_row)
         page.add(g)
         self.stack.add_titled_with_icon(page, "studio", "Studio",
                                         "computer-symbolic")
@@ -956,6 +965,18 @@ class Window(Adw.ApplicationWindow):
 
     def rebuild(self):
         if self._suppress or self._building:
+            return
+        if self.pdf_bundle and self.imported is None:
+            self.job = None
+            self.preview.set_job(None)
+            self.summary_icon.set_from_icon_name('document-open-symbolic')
+            self.summary_title.set_label('Studio template')
+            self.summary_layout.set_label('Use Studio → Open current sheet in Studio.')
+            self.summary_material.set_label('')
+            self.summary_note.set_label('A newer ProxyPress ZIP includes SVG paths for direct cutting.')
+            self.checks.set_text('')
+            self.cut_button.set_sensitive(False)
+            self.banner.set_revealed(False)
             return
         self._building = True
         try:
@@ -1120,7 +1141,7 @@ class Window(Adw.ApplicationWindow):
             self.toast('Wait for the current job to finish before opening Design.')
             return
         if self.design is not None:
-            self.workspaces.set_visible_child(self.design)
+            self.workspaces.set_visible_child(self.design.view)
             return
         if self.job is None:
             self.toast('Select a sheet before opening Design.')
@@ -1137,14 +1158,15 @@ class Window(Adw.ApplicationWindow):
         grid = self.job.grid
         registration = Registration.from_marks(self.job.marks) if self.job.registration else None
         project = Project(grid.sheet_w_mm, grid.sheet_h_mm, shapes, registration)
-        self.design = DesignWorkspace(self, project, self.close_design, self.review_design)
-        self.workspaces.add_named(self.design, 'design')
-        self.workspaces.set_visible_child(self.design)
+        design = DesignWorkspace(self, project, self.close_design, self.review_design)
+        self.workspaces.add_named(design.view, 'design')
+        self.design = design
+        self.workspaces.set_visible_child(design.view)
 
     def close_design(self, *_args):
         def discard():
             self.workspaces.set_visible_child_name('tools')
-            self.workspaces.remove(self.design)
+            self.workspaces.remove(self.design.view)
             self.design = None
 
         self.design.confirm_discard(discard)
@@ -1195,16 +1217,16 @@ class Window(Adw.ApplicationWindow):
     def set_artwork(self, artwork, name):
         self.imported = artwork
         self.import_row.set_title(name)
-        lines = [artwork.describe()] + artwork.warnings
+        lines = [artwork.describe(), *artwork.warnings] if artwork else ['Cut template for Silhouette Studio']
         self.import_row.set_subtitle("\n".join(lines))
         was, self._suppress = self._suppress, True
-        self.r_colour.set_model(Gtk.StringList.new(["all colours"] + list(artwork.colours())))
+        self.r_colour.set_model(Gtk.StringList.new(["all colours", *(artwork.colours() if artwork else ())]))
         self.r_colour.set_selected(0)
         self._suppress = was
         self.on_changed()
 
     def on_clear_artwork(self, *_a):
-        if self.imported is None:
+        if self.imported is None and self.pdf_bundle is None:
             return
         self.clear_bundle()
         self.imported = None
@@ -1249,35 +1271,45 @@ class Window(Adw.ApplicationWindow):
     def select_bundle_sheet(self):
         row = self.pdf_bundle.rows[int(self.r_sheet_page.get_value())-1]
         try:
-            artwork = self.pdf_bundle.artwork(row)
+            artwork = self.pdf_bundle.artwork(row) if 'svg' in row else None
         except bundle.BundleError as exc:
             self.on_clear_artwork()
             self.toast(str(exc))
             return
         self.sheet_row.set_subtitle(f'Sheet {row["sheet"]} · PDF front page {row["frontPage"]}')
-        self.set_artwork(artwork, row['svg'])
+        self.preview.set_pdf()
+        self.set_artwork(artwork, row.get('svg') or row['cutFile'])
 
     def on_pick_pdf(self, *_a):
         dialog = Gtk.FileDialog(title="Open the printed sheet")
         filt = Gtk.FileFilter()
-        filt.set_name("PDF or matched ProxyPress ZIP")
-        filt.add_mime_type("application/pdf")
-        filt.add_pattern("*.zip")
-        filt.add_pattern("*.ZIP")
+        filt.set_name('PDF and ZIP files (*.pdf, *.zip)')
+        for suffix in ('pdf', 'zip'):
+            filt.add_suffix(suffix)
+        all_files = Gtk.FileFilter()
+        all_files.set_name('All files')
+        all_files.add_pattern('*')
         filters = Gio.ListStore.new(Gtk.FileFilter)
         filters.append(filt)
+        filters.append(all_files)
         dialog.set_filters(filters)
+        dialog.set_default_filter(filt)
 
         def done(d, result):
             try:
                 gfile = d.open_finish(result)
             except GLib.Error:
                 return
-            path = pathlib.Path(gfile.get_path())
-            if path.suffix.lower() == '.zip':
+            filename = gfile.get_path()
+            if filename is None:
+                self.toast('Choose a local PDF or ProxyPress ZIP.')
+                return
+            path = pathlib.Path(filename)
+            if path.suffix.lower() == '.zip' or zipfile.is_zipfile(path):
                 try:
                     matched = bundle.load(path)
-                    artwork = matched.artwork(matched.rows[0])
+                    row = matched.rows[0]
+                    artwork = matched.artwork(row) if 'svg' in row else None
                 except bundle.BundleError as exc:
                     self.toast(str(exc))
                     return
@@ -1293,9 +1325,8 @@ class Window(Adw.ApplicationWindow):
                 self.r_sheet_page.get_adjustment().set_upper(len(matched.rows))
                 self.r_sheet_page.set_value(1)
                 self._suppress = False
-                row = matched.rows[0]
                 self.sheet_row.set_subtitle(f'Sheet {row["sheet"]} · PDF front page {row["frontPage"]}')
-                self.set_artwork(artwork, row['svg'])
+                self.set_artwork(artwork, row.get('svg') or row['cutFile'])
                 return
             if self.pdf_bundle:
                 self.on_clear_artwork()
@@ -1322,15 +1353,14 @@ class Window(Adw.ApplicationWindow):
 
     def measure_sheet(self):
         path = getattr(self, "pdf_path", None)
-        if path is None or self.job is None:
+        matched = self.pdf_bundle
+        if path is None or (self.job is None and not matched):
             self.toast("Load a PDF and fix the layout first.")
             return
         self.sheet_result.set_title("Measuring...")
         self.sheet_result.set_subtitle("")
-        marks = self.job.marks
-        grid = self.job.grid
+        marks = matched.marks() if matched else self.job.marks
         page = int(self.r_sheet_page.get_value())
-        matched = self.pdf_bundle
         if matched:
             row = matched.rows[page-1]
             self.bundle_checked = False
@@ -1354,7 +1384,7 @@ class Window(Adw.ApplicationWindow):
             except Exception as exc:              # noqa: BLE001
                 GLib.idle_add(self._sheet_failed, str(exc), token)
                 return
-            problems = report.problems(grid.sheet_w_mm, grid.sheet_h_mm)
+            problems = report.problems(marks.sheet_w_mm, marks.sheet_h_mm)
             GLib.idle_add(self._sheet_done, report, problems, png.getvalue(), token)
 
         threading.Thread(target=work, daemon=True).start()
@@ -1665,6 +1695,14 @@ class Window(Adw.ApplicationWindow):
         self.guest_row.set_subtitle(" ".join(cmd))
 
     def on_open_studio(self, *_a):
+        if self.pdf_bundle:
+            row = self.pdf_bundle.rows[int(self.r_sheet_page.get_value())-1]
+            try:
+                with tempfile.TemporaryDirectory() as folder:
+                    self.launch_studio_file(self.pdf_bundle.studio_file(row, folder))
+            except (OSError, bundle.BundleError) as exc:
+                self.toast(f'Could not open Studio: {exc}')
+            return
         if self.job is None:
             self.toast("Nothing to open: fix the layout first.")
             return
@@ -1691,6 +1729,40 @@ class Window(Adw.ApplicationWindow):
             f"- Sticky note hint: Cover bottom-left card during mark scan, remove before cutting"
         )
         self.guest_row.set_subtitle(guide_text)
+
+    def on_pick_studio_file(self, *_a):
+        chooser = Gtk.FileDialog(title='Open a Silhouette Studio file')
+        studio_filter = Gtk.FileFilter()
+        studio_filter.set_name('Silhouette Studio files')
+        for pattern in ('*.studio3', '*.STUDIO3', '*.studio', '*.STUDIO'):
+            studio_filter.add_pattern(pattern)
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(studio_filter)
+        chooser.set_filters(filters)
+
+        def opened(dialog, result):
+            try:
+                path = dialog.open_finish(result).get_path()
+            except GLib.Error:
+                return
+            if path is None:
+                self.toast('Choose a local Studio file.')
+                return
+            self.launch_studio_file(pathlib.Path(path))
+
+        chooser.open(self, None, opened)
+
+    def launch_studio_file(self, path):
+        try:
+            winboat.open_in_studio(path)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.toast(f'Could not open Studio: {exc}')
+            return
+        self.toast(f'Opening {path.name} in Silhouette Studio')
+        if path.suffix.lower() == '.dxf':
+            self.guest_row.set_subtitle('Set the page and registration marks from Read me.txt in the ZIP.')
+        else:
+            self.guest_row.set_subtitle(f'{path.name} · Opens with the page and marks stored in the file.')
 
 
 class Application(Adw.Application):

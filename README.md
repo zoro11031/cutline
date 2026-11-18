@@ -138,6 +138,12 @@ silhouette-control-center cut --from cards-print-and-cut.zip --bundle-sheet 2 --
 number in ProxyPress. In a duplex export, sheet 2 normally uses PDF front
 page 3. An export of sheet 2 alone uses PDF front page 1.
 
+**Studio → Open current sheet in Studio** opens the Studio file or DXF paired
+with the selected sheet in the ZIP. **Choose file…** in the Studio tab opens
+a standalone `.studio3` file. Earlier ProxyPress ZIPs with Studio files can
+be checked in **Sheet** and opened in **Studio**. For direct cutting, use a
+current ZIP that includes the physical cut SVG.
+
 Choose **Letter · MTG Cameo** or **A4 · MTG Cameo** in the window's
 Layout preset selector, or use:
 

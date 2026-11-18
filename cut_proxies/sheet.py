@@ -188,10 +188,8 @@ class SheetReport:
             spread = max(max(dxs) - min(dxs), max(dys) - min(dys))
             if spread > 2 * tolerance_mm:
                 out.append(
-                    f"the marks are not displaced together (spread "
-                    f"{spread:.2f} mm), which is a scaling or rotation "
-                    f"error rather than an offset - no calibration can "
-                    f"correct it")
+                    f"PDF mark displacement varies by {spread:.2f} mm. "
+                    "A single X/Y offset cannot correct the scaling or rotation mismatch.")
         return out
 
     def diagnosis(self) -> str:
@@ -207,12 +205,12 @@ class SheetReport:
         spread = max(max(dxs) - min(dxs), max(dys) - min(dys))
         shift = max(abs(sum(dxs) / len(dxs)), abs(sum(dys) / len(dys)))
         if spread > 1.0:
-            return ("marks displaced by differing amounts: the sheet was "
-                    "scaled or rotated on printing, not merely shifted")
+            return ("The PDF's registration marks are scaled or rotated "
+                    "relative to the template.")
         if shift > POSITION_TOLERANCE_MM:
             return (f"marks displaced together by about "
                     f"{sum(dxs) / len(dxs):+.2f}, {sum(dys) / len(dys):+.2f} "
-                    f"mm: a printer offset, correctable")
+                    f"mm: a uniform PDF offset, correctable")
         return "marks are where the template expects them"
 
 

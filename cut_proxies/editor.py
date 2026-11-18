@@ -108,9 +108,9 @@ def panel(width):
     return scroll, body
 
 
-class DesignWorkspace(Adw.ToolbarView):
+class DesignWorkspace:
     def __init__(self, parent, project, on_back, on_review):
-        super().__init__()
+        self.view = Adw.ToolbarView()
         self.parent = parent
         self.history = History(project)
         self.saved = project
@@ -126,10 +126,10 @@ class DesignWorkspace(Adw.ToolbarView):
         self.button(header, 'New', self.new_project, start=True)
         self.button(header, 'Open…', self.open_project)
         self.button(header, 'Save…', self.save)
-        self.add_top_bar(header)
+        self.view.add_top_bar(header)
 
         toolbar = Gtk.Box(spacing=6, margin_start=12, margin_end=12, margin_top=6, margin_bottom=6)
-        self.add_top_bar(toolbar)
+        self.view.add_top_bar(toolbar)
         self.undo_button = self.button(toolbar, 'Undo', lambda *_: self.change_history(self.history.undo))
         self.redo_button = self.button(toolbar, 'Redo', lambda *_: self.change_history(self.history.redo))
         self.button(toolbar, 'Import SVG or DXF…', self.import_vector)
@@ -196,7 +196,7 @@ class DesignWorkspace(Adw.ToolbarView):
         inspector.append(self.action)
         for child in (left, self.canvas, right):
             body.append(child)
-        self.set_content(body)
+        self.view.set_content(body)
 
         footer = Gtk.Box(spacing=8, margin_start=12, margin_end=12, margin_top=6, margin_bottom=8)
         self.status = Gtk.Label(xalign=0, hexpand=True, wrap=True)
@@ -207,7 +207,7 @@ class DesignWorkspace(Adw.ToolbarView):
         footer.append(self.review_action)
         self.review = self.button(footer, 'Review paths', self.review_paths)
         self.review.add_css_class('suggested-action')
-        self.add_bottom_bar(footer)
+        self.view.add_bottom_bar(footer)
         self.refresh_objects(0)
 
     @staticmethod

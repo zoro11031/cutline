@@ -37,6 +37,8 @@ class Bundle:
 
     def artwork(self, row):
         self.check_current()
+        if 'svg' not in row:
+            raise BundleError('This ZIP has a Studio cut file. Open it from Studio, or export a fresh ZIP for direct cutting.')
         try:
             with zipfile.ZipFile(self.path) as archive:
                 imported = importer.load_svg(io.BytesIO(archive.read(row['svg'])))
@@ -45,6 +47,28 @@ class Bundle:
         if len(imported.paths) != row['cards'] or not imported.page_size_mm:
             raise BundleError(f'Sheet {row["sheet"]} SVG does not match the export.')
         return imported
+
+    def marks(self):
+        opts = self.layout
+        size = geometry.SHEETS[opts['sheet']].size(opts['portrait'])
+        return regmarks.marks(*size, opts['mark_inset_mm'], opts['mark_length_mm'],
+                              opts['mark_thickness_mm'], opts['pattern'])
+
+    def studio_file(self, row, folder):
+        """Copy the paired Studio file or DXF into a caller-owned directory."""
+        self.check_current()
+        number = row['sheet']
+        name = row.get('cutFile')
+        if name not in (f'sheet-{number}.studio3', f'sheet-{number}.dxf'):
+            raise BundleError(f'Sheet {number} has no matching Studio or DXF file.')
+        target = pathlib.Path(folder) / name
+        try:
+            with zipfile.ZipFile(self.path) as archive, archive.open(name) as source:
+                with target.open('wb') as destination:
+                    copyfileobj(source, destination)
+        except (OSError, KeyError, zipfile.BadZipFile) as exc:
+            raise BundleError(f'Could not copy the Studio file for sheet {number}: {exc}') from exc
+        return target
 
     def check_current(self):
         try:
@@ -87,10 +111,13 @@ def load(path):
         signature = _signature(path)
         with zipfile.ZipFile(path) as archive:
             entries = set(archive.namelist())
+            if 'registration.json' not in entries:
+                raise BundleError('This ZIP is missing registration.json. In ProxyPress, use Download matching print and cut files.')
             with archive.open('registration.json') as manifest:
                 data = json.loads(manifest.read(1_048_577))
-        if (data['format'], data['version'], data['units'], data['origin']) != (
-                'proxypress-cameo', 1, 'mm', 'top left'):
+        legacy = 'format' not in data and 'version' not in data
+        if (data['units'], data['origin']) != ('mm', 'top left') or (
+                not legacy and (data.get('format'), data.get('version')) != ('proxypress-cameo', 1)):
             raise BundleError('This ZIP needs a supported ProxyPress export version.')
         pdf, page, mat, reg, rows = (data[key] for key in
                                    ('pdf', 'pdfPage', 'mat', 'registration', 'sheets'))
@@ -119,19 +146,27 @@ def load(path):
         page_number = 1
         for row in rows:
             n = row['sheet']
+            svg = row.get('svg')
+            cut_file = row.get('cutFile')
+            valid_source = (svg == f'sheet-{n}.svg' and svg in entries) or (
+                legacy and svg is None and cut_file in (f'sheet-{n}.studio3', f'sheet-{n}.dxf') and cut_file in entries)
             if (any(type(row[key]) is not int or row[key] < 1
                     for key in ('sheet', 'frontPage', 'cards')) or n in seen or
                     row['frontPage'] != page_number or
                     (row['backPage'] is not None and
                      (type(row['backPage']) is not int or row['backPage'] != page_number+1)) or
-                    row['svg'] != f'sheet-{n}.svg' or row['svg'] not in entries):
-                raise BundleError('A sheet number, PDF page or matching SVG is missing or invalid.')
+                    not valid_source):
+                raise BundleError(f'Sheet {n} has an invalid PDF page mapping or is missing its matching cut file.')
             seen.add(n)
             page_number += 2 if row['backPage'] is not None else 1
     except BundleError:
         raise
-    except (AttributeError, OSError, KeyError, TypeError, ValueError, zipfile.BadZipFile) as exc:
-        raise BundleError('Could not read a matched ProxyPress ZIP. Export it again with the current ProxyPress.') from exc
+    except zipfile.BadZipFile as exc:
+        raise BundleError('This file could not be read as a ZIP archive.') from exc
+    except KeyError as exc:
+        raise BundleError(f'The ZIP is missing a required registration field ({exc.args[0]}).') from exc
+    except (AttributeError, OSError, TypeError, ValueError) as exc:
+        raise BundleError(f'Could not read the ProxyPress ZIP: {exc}') from exc
     layout = dict(sheet=paper, portrait=portrait, mark_inset_mm=inset,
                   mark_length_mm=arm, mark_thickness_mm=weight, pattern=pattern)
     return Bundle(path, signature, pdf, tuple(rows), layout, turned)

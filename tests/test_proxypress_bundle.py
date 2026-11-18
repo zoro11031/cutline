@@ -52,6 +52,35 @@ class BundleRules(unittest.TestCase):
         with self.assertRaisesRegex(bundle.BundleError, 'PDF page'):
             bundle.load(self.path)
 
+    def test_unversioned_studio_zip_still_loads_its_pdf_and_studio_template(self):
+        del self.manifest['format']
+        del self.manifest['version']
+        row = self.manifest['sheets'][0]
+        del row['svg']
+        row['cutFile'] = 'sheet-2.studio3'
+        self.write()
+        with zipfile.ZipFile(self.path, 'a') as z:
+            z.writestr(row['cutFile'], b'silhouette05;fixture')
+        loaded = bundle.load(self.path)
+        self.assertEqual(loaded.marks().length_mm, 8.0264)
+        self.assertEqual(loaded.studio_file(loaded.row(), self.path.parent).name, row['cutFile'])
+        with self.assertRaisesRegex(bundle.BundleError, 'direct cutting'):
+            loaded.artwork(loaded.row())
+
+    def test_paired_studio_file_is_copied_byte_for_byte(self):
+        row = self.manifest['sheets'][0]
+        row['cutFile'] = 'sheet-2.studio3'
+        self.write()
+        payload = b'silhouette05;fixture'
+        with zipfile.ZipFile(self.path, 'a') as z:
+            z.writestr(row['cutFile'], payload)
+        loaded = bundle.load(self.path)
+        staged = loaded.studio_file(loaded.row(2), self.path.parent)
+        self.assertEqual(staged.name, row['cutFile'])
+        self.assertEqual(staged.read_bytes(), payload)
+        with self.assertRaisesRegex(bundle.BundleError, 'no matching Studio'):
+            loaded.studio_file(dict(row, cutFile='sheet-1.studio3'), self.path.parent)
+
     def test_cut_refuses_a_failed_pdf_check_and_accepts_a_matching_one(self):
         self.write()
         with mock.patch.object(bundle.Bundle, 'measure') as measure, \

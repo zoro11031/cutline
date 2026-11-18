@@ -466,11 +466,12 @@ def cmd_check_sheet(args):
         if path.suffix.lower() == '.zip':
             matched = bundle.load(path)
             row = matched.row(args.bundle_sheet)
-            j = build_from_args(args, matched, row)
-            report, _ = matched.measure(row, j.marks, args.dpi)
+            marks = matched.marks()
+            report, _ = matched.measure(row, marks, args.dpi)
         else:
             j = build_from_args(args)
-            report = sheet_mod.measure(path, j.marks, page=args.page, dpi=args.dpi)
+            marks = j.marks
+            report = sheet_mod.measure(path, marks, page=args.page, dpi=args.dpi)
     except (geometry.LayoutImpossible, sheet_mod.SheetError, bundle.BundleError) as exc:
         fail(str(exc))
 
@@ -478,15 +479,15 @@ def cmd_check_sheet(args):
     say(f"\nMeasured {pathlib.Path(report.pdf).name}, page {report.page}, at {report.dpi} dpi",
         style="bold")
     say(f"  page {report.page_w_mm:.1f} x {report.page_h_mm:.1f} mm "
-        f"(template expects {j.grid.sheet_w_mm:.1f} x "
-        f"{j.grid.sheet_h_mm:.1f})")
+        f"(template expects {marks.sheet_w_mm:.1f} x "
+        f"{marks.sheet_h_mm:.1f})")
     say()
     for m in report.marks:
         ok = m.is_credible and (m.error_mm or 0) <= args.tolerance
         say(f"  [{'ok  ' if ok else 'FAIL'}] {m.describe()}",
             style=None if ok else "bold red")
 
-    problems = report.problems(j.grid.sheet_w_mm, j.grid.sheet_h_mm,
+    problems = report.problems(marks.sheet_w_mm, marks.sheet_h_mm,
                                args.tolerance)
     say(f"\n  {report.diagnosis()}", style="bold")
     if not problems:
@@ -949,9 +950,12 @@ def cmd_studio(args):
         say("\n" + (" ".join(cmd)), style="dim")
         say(f"\nSilhouette Studio is opening in the guest with {path.name}."
             if not args.dry_run else "\nDry run: not launched.", style="bold")
-        say("\nIn Studio: set the page to the same size and orientation, turn on "
-            "registration\nmarks with the same inset, and check the template "
-            "imported at 100%.", style="dim")
+        if path.suffix.lower() in ('.studio', '.studio3'):
+            say("\nStudio opens the page and registration settings stored in the file.", style="dim")
+        else:
+            say("\nIn Studio: set the page to the same size and orientation, turn on "
+                "registration\nmarks with the same inset, and check the template "
+                "imported at 100%.", style="dim")
         return 0
 
     # No file: generate and stage DXF for the requested layout
@@ -1128,7 +1132,7 @@ def main(argv=None):
     s = sub.add_parser("studio", help="open a template in Silhouette Studio "
                                       "in the WinBoat guest")
     s.add_argument("file", nargs="?",
-                   help="specific DXF/SVG file to open (optional)")
+                   help="specific Studio, DXF or SVG file to open (optional)")
     common_layout_args(s)
     common_cut_args(s)
     s.add_argument("--app-only", action="store_true",
