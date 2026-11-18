@@ -274,10 +274,12 @@ def registration_mat_commands(device: Device, width_mm: float, height_mm: float)
 
 
 def captured_letter_scan(device, length, width, origin, mark_shape):
-    """Geometry of the successful Studio USB capture in docs/FINDINGS.md."""
-    geometry = (length, width, *origin, *(mark_shape or ()))
-    return device.product_id == 0x1137 and tuple(map(su, geometry)) == (
-        3918, 5188, 200, 200, 161, 20)
+    """The captured Letter window, including the standalone layout's 8 mm arms."""
+    if device.product_id != 0x1137 or mark_shape is None:
+        return False
+    arm, stroke = mark_shape
+    return (tuple(map(su, (length, width, *origin, stroke))) == (3918, 5188, 200, 200, 20)
+            and su(arm) in (160, 161))
 
 
 def registration_preamble(device: Device, mark_shape_mm: tuple[float, float] | None) -> tuple[str, ...]:

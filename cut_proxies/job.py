@@ -21,7 +21,7 @@ from __future__ import annotations
 import dataclasses
 import pathlib
 
-from . import config, geometry, graphtec, presets, regmarks, template, verify
+from . import config, geometry, graphtec, layout_presets, presets, regmarks, template, verify
 
 
 @dataclasses.dataclass
@@ -182,8 +182,10 @@ def build(sheet: str = config.DEFAULT_SHEET,
                  else float(marks_cfg["regInset"]))
         # 0 means auto in Proxy Press and None means auto here.
         length = mark_length_mm
-        if length is None and marks_cfg["regLen"]:
-            length = float(marks_cfg["regLen"])
+        if length is None and proxypress is None and not portrait:
+            preset = layout_presets.BUILTIN.get(f"mtg-cameo-{sheet.lower()}")
+            if preset is not None:
+                length = preset.arm_mm
         thickness = (mark_thickness_mm if mark_thickness_mm is not None
                      else float(marks_cfg["regThickness"]))
         # Both layout engines use the same standard registration patterns.

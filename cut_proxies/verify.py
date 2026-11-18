@@ -524,7 +524,7 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
         if d.scan_command == "TB123" and graphtec.captured_letter_scan(
                 device, mk.reg_length_mm, mk.reg_width_mm, mk.origin_mm,
                 (mk.length_mm, mk.thickness_mm)):
-            mat = ("TG1", "FN0", "TB50,0", "TB99", "TB52,2", "TB51,161", "TB53,20",
+            mat = ("TG1", "FN0", "TB50,0", "TB99", "TB52,2", f"TB51,{graphtec.su(mk.length_mm)}", "TB53,20",
                    "TB55,1", "TB123,3918,5188,118,118", "TB99")
             mat_commands = d.commands
         if mat:

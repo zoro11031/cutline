@@ -32,7 +32,7 @@ def proxypress_html() -> pathlib.Path | None:
 
 
 # Defaults, chosen to match the Silhouette preset Proxy Press already ships
-# (`BUILTIN_PRESETS`: Letter landscape, silhouette on, regInset 10, regLen 20).
+# (`BUILTIN_PRESETS`: Letter landscape, silhouette on, regInset 10, automatic arm length).
 DEFAULT_SHEET = "Letter"
 DEFAULT_CARD = "standard"
 
@@ -65,13 +65,7 @@ PROXYPRESS_8UP_MARKS = {
     "silhouette": True,
     "regPattern": 3,
     "regInset": 10,
-    # 20 mm, not auto. This has to be what Proxy Press actually *prints*, and
-    # Proxy Press now prints Silhouette's default 20 mm arm on these sheets --
-    # the same length every Card Maker cutting template uses. Leaving it auto
-    # let this side search for its own answer (7.25 mm on letter landscape,
-    # because the search subtracts a card-gap of safety from a 1.2 mm
-    # clearance) and then assume a sheet that was never printed.
-    "regLen": 20,
+    "regLen": 0,  # Auto in ProxyPress; stock landscape presets carry its resolved lengths.
     "regThickness": 1,
 }
 

@@ -268,7 +268,8 @@ class TestVerificationRefuses(unittest.TestCase):
 
     def test_cameo_4_sets_the_standard_mat_before_searching_for_marks(self):
         commands = verify.decode(self.stream).commands
-        self.assertEqual(commands[:5], ["TG1", "FN0", "TB50,0", "\\0,0", "Z6096,6096"])
+        self.assertEqual(commands[:5], ["TG1", "FN0", "TB50,0", "TB99", "TB52,2"])
+        self.assertIn("TB123,3918,5188,118,118", commands)
         search = next(i for i, cmd in enumerate(commands) if cmd.startswith("TB123,"))
         self.assertEqual(commands[search-3:search],
                          [f"TB51,{graphtec.su(self.mk.length_mm)}", "TB53,20", "TB55,1"])

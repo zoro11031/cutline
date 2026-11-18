@@ -21,7 +21,7 @@ class TestDesignWorkspace(unittest.TestCase):
         if not gui.Gtk.init_check() or Gdk.Display.get_default() is None:
             self.skipTest('a display is required to create GTK widgets')
         gui.Adw.init()
-        app = gui.Adw.Application(application_id='org.printing.DesignSmokeTest',
+        app = gui.Adw.Application(application_id=f'org.printing.DesignSmokeTest.{self._testMethodName}',
                                   flags=gui.Gio.ApplicationFlags.NON_UNIQUE)
         self.assertTrue(app.register(None))
         win = gui.Window(app)

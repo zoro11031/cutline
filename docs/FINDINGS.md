@@ -1598,3 +1598,29 @@ prefix sent 80 bytes in two writes and received the marks-found reply in
 14.51 seconds. No blade setup or path was sent. This verifies the direct
 Linux registration fix on this sheet. Several commands changed together,
 so the test does not isolate a single causative byte.
+
+### Bolas Lands-5: offline investigation, 2026-11-18
+
+On page one the five PDF rectangle operators give a 6 × 6 mm black square
+starting at (9.5, 9.5) mm. The two L marks have 1 mm strokes and 8.5264 mm
+outer ink spans, consistent with an 8.0264 mm arm plus half a stroke. At
+200 dpi the sheet checker found all three nominal corners within 0.03 mm.
+Bolas Lands-6 instead has a 5 × 5 mm square at (10, 10) mm. The checker
+recognizes both square footprints. This print difference alone cannot
+explain the reported success in Windows on the same physical sheet.
+
+With the standalone Bolas Lands DXF and default layout, Linux calculated
+8.000 mm arms and sent TB51,160. The adjacent native Studio template
+contains 8.0264 mm, which encodes as TB51,161. Before this change, that
+one-unit difference selected a different initialization sequence, blade
+setup before scanning, and TB123,3918,5188,0,0. The nominal 8 mm case now
+uses the same two-write registration sequence and 118,118 search start
+as the captured Letter case, with the configured arm length preserved.
+The stock ProxyPress engine also previously substituted a 20 mm arm.
+It now uses the existing Letter and A4 printed-sheet presets. Explicit
+mark lengths remain available.
+
+The standalone DXF and stock ProxyPress plans passed stream verification
+offline. There is no USB capture of the reported Bolas Lands-5 failure,
+and the cutter was disconnected during this investigation. The earlier
+physical success applies to the New deck sheet.
