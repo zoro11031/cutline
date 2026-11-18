@@ -40,7 +40,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
 from . import (bundle, config, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
-               template, transport, winboat)  # noqa: E402
+               template, testcut, toolpath, transport, winboat)  # noqa: E402
 
 APP_ID = "org.printing.SilhouetteControlCenter"
 
@@ -673,6 +673,16 @@ class Window(Adw.ApplicationWindow):
         g2.add(self.new_preset_name)
         page.add(g2)
 
+        paths = Adw.PreferencesGroup(title="Cut paths")
+        self.r_path_order = _combo("Cut order", list(toolpath.PATH_ORDERS.values()))
+        self.r_pass_order = _combo("Pass order", list(toolpath.PASS_ORDERS.values()))
+        self.r_alternate = _switch("Alternate pass direction", False)
+        self.r_overcut = _spin("Overcut (mm)", 0, 1000, 0, 0.1, 2,
+                               subtitle="Overlap the seam of each closed contour")
+        for row in (self.r_path_order, self.r_pass_order, self.r_alternate, self.r_overcut):
+            paths.add(row)
+        page.add(paths)
+
         g3 = Adw.PreferencesGroup(
             title="Silhouette's own material settings",
             description="Read from Studio's condition.csv. Coverstock is the "
@@ -691,11 +701,13 @@ class Window(Adw.ApplicationWindow):
         page.add(g3)
         self._load_materials()
 
-        self.r_cutter.connect("notify::selected", self.on_changed)
-        for r in (self.r_lift, self.r_corners):
+        for row in (self.r_cutter, self.r_path_order, self.r_pass_order):
+            row.connect("notify::selected", self.on_changed)
+        for r in (self.r_lift, self.r_corners, self.r_alternate):
             r.connect("notify::active", self.on_changed)
         for r in (self.r_force, self.r_speed, self.r_passes, self.r_depth, self.r_holder,
-                  self.r_acceleration, self.r_diameter, self.r_corner_start, self.r_corner_end):
+                  self.r_acceleration, self.r_diameter, self.r_corner_start, self.r_corner_end,
+                  self.r_overcut):
             r.connect("notify::value", self.on_changed)
 
         self.stack.add_titled_with_icon(page, "blade", "Blade",
@@ -738,6 +750,7 @@ class Window(Adw.ApplicationWindow):
         self.r_connection = _combo("Connection", ["USB", "Bluetooth LE"])
         self.r_bluetooth = _combo("Bluetooth cutter", ["Select a cutter"])
         self._bluetooth_devices = []
+        self.r_bluetooth.connect("notify::selected", self.on_bluetooth_selected)
         scan = Gtk.Button(label="Find Bluetooth cutters")
         scan.connect("clicked", self._scan_bluetooth)
         self.r_bluetooth.add_suffix(scan)
@@ -745,6 +758,14 @@ class Window(Adw.ApplicationWindow):
         g2.add(self.r_bluetooth)
         g2.add(self.status_row)
         page.add(g2)
+
+        media = Adw.PreferencesGroup(title="Media handling")
+        self.r_mat = _combo("Cutting mat", list(graphtec.MAT_OPTIONS.values()))
+        self.r_end_position = _combo("End position", list(graphtec.END_POSITIONS.values()))
+        for row in (self.r_mat, self.r_end_position):
+            media.add(row)
+            row.connect("notify::selected", self.on_changed)
+        page.add(media)
 
         gcal = Adw.PreferencesGroup(
             title="Calibration",
@@ -772,9 +793,10 @@ class Window(Adw.ApplicationWindow):
 
         gtest = Adw.PreferencesGroup(
             title="Find your settings",
-            description="A grid of small squares, each cut with its own "
-                        "force and pass count, on a blank offcut. Lift a "
-                        "corner of each without ejecting the mat.")
+            description="Cut each sample at its own force and pass count. "
+                        "Lift each sample without ejecting the mat.")
+        self.r_test_shape = _combo("Test shape", list(testcut.TEST_SHAPES.values()))
+        gtest.add(self.r_test_shape)
         self.r_test_force = Adw.EntryRow(title="Force values")
         self.r_test_force.set_text("25,29,33")
         self.r_test_passes = Adw.EntryRow(title="Pass counts")
@@ -945,6 +967,8 @@ class Window(Adw.ApplicationWindow):
             bleed_mm=self.r_bleed.get_value(),
             registration=self.r_register.get_active(),
             auto_search=self.r_auto.get_active(),
+            mat=list(graphtec.MAT_OPTIONS)[self.r_mat.get_selected()],
+            end_position=list(graphtec.END_POSITIONS)[self.r_end_position.get_selected()],
             skip=self._skip_indices(),
             offset_mm=(self.r_cal_x.get_value(), self.r_cal_y.get_value()),
             imported=self._selected_artwork(),
@@ -1005,7 +1029,11 @@ class Window(Adw.ApplicationWindow):
                     blade_diameter_mm=round(self.r_diameter.get_value(), 2),
                     lift_head=self.r_lift.get_active(), sharpen_corners=self.r_corners.get_active(),
                     corner_start_mm=round(self.r_corner_start.get_value(), 1),
-                    corner_end_mm=round(self.r_corner_end.get_value(), 1))
+                    corner_end_mm=round(self.r_corner_end.get_value(), 1),
+                    path_order=list(toolpath.PATH_ORDERS)[self.r_path_order.get_selected()],
+                    pass_order=list(toolpath.PASS_ORDERS)[self.r_pass_order.get_selected()],
+                    alternate_direction=self.r_alternate.get_active(),
+                    overcut_mm=round(self.r_overcut.get_value(), 2))
 
     def _load_blade_settings(self, settings):
         self.r_force.set_value(settings.force)
@@ -1019,6 +1047,10 @@ class Window(Adw.ApplicationWindow):
         self.r_corners.set_active(settings.sharpen_corners)
         self.r_corner_start.set_value(settings.corner_start_mm)
         self.r_corner_end.set_value(settings.corner_end_mm)
+        self.r_path_order.set_selected(list(toolpath.PATH_ORDERS).index(settings.path_order))
+        self.r_pass_order.set_selected(list(toolpath.PASS_ORDERS).index(settings.pass_order))
+        self.r_alternate.set_active(settings.alternate_direction)
+        self.r_overcut.set_value(settings.overcut_mm)
 
     def on_save_blade_preset(self, *_a, new_name=None):
         name = self._text(self.r_preset)
@@ -1587,10 +1619,10 @@ class Window(Adw.ApplicationWindow):
         self.rebuild()
 
     def on_test_cut(self, *_a):
-        if self._connection()[0] == "ble":
-            self.toast("Select USB for the settings test.")
+        connection = self._connection()
+        if connection == ("ble", None):
+            self.toast("Select a Bluetooth cutter first.")
             return
-        from . import testcut
         device = graphtec.device_by_name(self._text(self.r_cutter))
         opts = self.options()
         base = graphtec.CutSettings(force=opts["force"], speed=opts["speed"],
@@ -1603,24 +1635,26 @@ class Window(Adw.ApplicationWindow):
                 passes=self.r_test_passes.get_text(),
                 sheet_w_mm=self.job.grid.sheet_w_mm if self.job else 215.9,
                 sheet_h_mm=self.job.grid.sheet_h_mm if self.job else 279.4,
-                offset_mm=config.cut_offset())
+                offset_mm=opts["offset_mm"],
+                shape=list(testcut.TEST_SHAPES)[self.r_test_shape.get_selected()],
+                mat=opts["mat"], end_position=opts["end_position"])
         except ValueError as exc:
             self.toast(str(exc))
             return
         rows = "\n".join(f"{label}  {desc}" for label, desc in ts.map_rows())
+        label = "square-and-triangle" if ts.shape == "studio" else "square"
         dialog = Adw.AlertDialog(
-            heading=f"Cut {len(ts.cells)} test squares?",
-            body=("This moves the blade. Put a blank offcut of the real "
-                  "stock on the mat; registration is off.\n\n" + rows))
+            heading=f"Cut {len(ts.cells)} {label} test samples?",
+            body="Load a blank offcut of the material. Registration is off.\n\n" + rows)
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("cut", "Cut")
         dialog.set_response_appearance("cut",
                                        Adw.ResponseAppearance.DESTRUCTIVE)
         dialog.set_default_response("cancel")
-        dialog.connect("response", self._test_cut_response, ts)
+        dialog.connect("response", self._test_cut_response, ts, connection)
         dialog.present(self)
 
-    def _test_cut_response(self, _dialog, response, ts):
+    def _test_cut_response(self, _dialog, response, ts, connection):
         if response != "cut":
             return
         if self._sending or self._checking_status:
@@ -1630,7 +1664,12 @@ class Window(Adw.ApplicationWindow):
 
         def work():
             try:
-                with transport.open_transport("auto", device=ts.device) as tr:
+                mode, address = connection
+                with transport.open_transport(mode, device=ts.device, bluetooth_id=address) as tr:
+                    if tr.can_read:
+                        state = tr.status()
+                        if state != "ready":
+                            raise transport.TransportError(f"The cutter is not ready ({state}).")
                     sent = tr.run(ts.steps)
                 GLib.idle_add(self.toast, f"Test cut sent: {sent:,} bytes")
             except Exception as exc:              # noqa: BLE001
@@ -1654,7 +1693,7 @@ class Window(Adw.ApplicationWindow):
                                        for address, name in devices]))
             self.r_bluetooth.set_selected(0)
             if not devices:
-                self.toast("No Cameo 4 found over Bluetooth LE.")
+                self.toast("No Silhouette cutter found over Bluetooth LE.")
 
         def work():
             try:
@@ -1664,6 +1703,15 @@ class Window(Adw.ApplicationWindow):
 
         button.set_sensitive(False)
         threading.Thread(target=work, daemon=True).start()
+
+    def on_bluetooth_selected(self, *_args):
+        from . import ble
+
+        index = self.r_bluetooth.get_selected() - 1
+        if 0 <= index < len(self._bluetooth_devices):
+            model = ble.advertised_model(self._bluetooth_devices[index][1])
+            if model is not None:
+                self.r_cutter.set_selected(graphtec.DEVICES.index(model))
 
     def _connection(self):
         if self.r_connection.get_selected() == 0:

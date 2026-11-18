@@ -21,7 +21,7 @@ import pathlib
 import sys
 
 from . import (config, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
-               template, transport, verify, winboat)
+               template, testcut, toolpath, transport, verify, winboat)
 
 try:
     from rich.console import Console
@@ -162,6 +162,14 @@ def common_cut_args(p):
 
     p.add_argument("--depth", type=int, choices=range(-1, 11), help="AutoBlade depth 0–10; -1 leaves it unset")
     advanced_cut_args(p)
+    media_handling_args(p)
+
+
+def media_handling_args(p):
+    p.add_argument("--mat", choices=graphtec.MAT_OPTIONS, default="auto",
+                   help="select the physical cutting mat or use --mat none")
+    p.add_argument("--end-position", choices=graphtec.END_POSITIONS, default="below",
+                   help="park below the cut or return to the starting position")
 
 
 def advanced_cut_args(p):
@@ -174,11 +182,21 @@ def advanced_cut_args(p):
         p.add_argument(flag, type=float, choices=[i / 10 for i in range(1, 10)], metavar="MM",
                        help="corner extension from 0.1 to 0.9 mm")
 
+    p.add_argument("--path-order", choices=toolpath.PATH_ORDERS,
+                   help="preserve design order or choose the nearest starting point")
+    p.add_argument("--pass-order", choices=toolpath.PASS_ORDERS,
+                   help="repeat the whole sheet or finish each path first")
+    p.add_argument("--alternate-direction", action=argparse.BooleanOptionalAction, default=None,
+                   help="reverse the direction on every second pass")
+    p.add_argument("--overcut-mm", type=float, metavar="MM",
+                   help="overlap both sides of a closed contour's seam")
+
 
 def advanced_settings(args):
     options = {key: getattr(args, key) for key in
                ("holder", "acceleration", "blade_diameter_mm", "lift_head",
-                "sharpen_corners", "corner_start_mm", "corner_end_mm")
+                "sharpen_corners", "corner_start_mm", "corner_end_mm", "path_order",
+                "pass_order", "alternate_direction", "overcut_mm")
                if getattr(args, key, None) is not None}
     if options.get("acceleration") == -1:
         options["acceleration"] = None
@@ -211,6 +229,8 @@ def build_from_args(args, matched=None, bundle_row=None) -> job_mod.Job:
             warn(w)
     options = dict(
         imported=imported,
+        mat=getattr(args, "mat", "auto"),
+        end_position=getattr(args, "end_position", "below"),
         sheet=args.sheet, card=args.card, portrait=args.portrait,
         engine=args.engine,
         preset_name=getattr(args, "preset", config.DEFAULT_PRESET),
@@ -539,7 +559,6 @@ def cmd_check_sheet(args):
 # --------------------------------------------------------------------------
 
 def cmd_testcut(args):
-    from . import testcut
     device = graphtec.device_by_name(args.cutter)
     base = dataclasses.replace(presets.get(args.preset).cut_settings(), **advanced_settings(args))
     sheet = geometry.sheet(args.sheet)
@@ -550,11 +569,13 @@ def cmd_testcut(args):
             passes=args.passes, depths=args.depth, size_mm=args.size,
             gap_mm=args.gap, margin_mm=args.margin, cols=args.cols,
             sheet_w_mm=w, sheet_h_mm=h, registration=args.registration,
-            offset_mm=config.cut_offset())
+            offset_mm=config.cut_offset(), shape=args.shape, mat=args.mat,
+            end_position=args.end_position)
     except ValueError as exc:
         fail(str(exc))
 
-    say(f"\nTest sheet: {len(ts.cells)} squares of {args.size:g} mm on "
+    label = "square-and-triangle samples" if ts.shape == "studio" else "squares"
+    say(f"\nTest sheet: {len(ts.cells)} {label} of {ts.size_mm:g} mm on "
         f"{args.sheet}", style="bold")
     e = ts.extent()
     say(f"  occupies {e.w:.0f} x {e.h:.0f} mm from "
@@ -587,7 +608,8 @@ def cmd_testcut(args):
         return 0
 
     try:
-        tr = transport.open_transport(args.transport, device=ts.device)
+        tr = transport.open_transport(args.transport, device=ts.device,
+                                      bluetooth_id=args.bluetooth_id)
     except transport.TransportError as exc:
         say(f"\n{exc}", style="bold red")
         fail("No way to reach the cutter. Use --dry-run.")
@@ -595,8 +617,8 @@ def cmd_testcut(args):
         if tr.can_read:
             state = tr.status()
             say(f"\nCutter reports: {state}")
-            if state == "unloaded":
-                fail("The cutter says no media is loaded.")
+            if state != "ready":
+                fail(f"The cutter is not ready ({state}).")
         if not args.yes and not ask_yes("\nCut the test sheet now?", "n"):
             say("Cancelled.")
             return 0
@@ -1099,8 +1121,7 @@ def main(argv=None):
     cs.set_defaults(func=cmd_check_sheet)
 
     tc = sub.add_parser("testcut",
-                        help="a sheet of test squares, one per settings "
-                             "combination, to find your cut settings")
+                        help="cut one test shape per settings combination")
     tc.add_argument("--sheet", default=config.DEFAULT_SHEET,
                     choices=sorted(geometry.SHEETS))
     tc.add_argument("--landscape", action="store_true")
@@ -1112,8 +1133,12 @@ def main(argv=None):
     tc.add_argument("--speed", help="comma-separated")
     tc.add_argument("--passes", help="comma-separated")
     advanced_cut_args(tc)
+    media_handling_args(tc)
     tc.add_argument("--depth", help="comma-separated, AutoBlade only")
-    tc.add_argument("--size", type=float, default=15.0, metavar="MM")
+    tc.add_argument("--shape", choices=testcut.TEST_SHAPES, default="square",
+                    help="a plain square or Studio's square-and-triangle cut")
+    tc.add_argument("--size", type=float, metavar="MM",
+                    help="sample width (default 15 mm for square or 10 mm for Studio)")
     tc.add_argument("--gap", type=float, default=5.0, metavar="MM")
     tc.add_argument("--margin", type=float, default=15.0, metavar="MM")
     tc.add_argument("--cols", type=int, default=0)
@@ -1121,7 +1146,8 @@ def main(argv=None):
                     help="scan for marks first; off by default, because a "
                          "settings test should use a blank offcut")
     tc.add_argument("--transport", default="auto",
-                    choices=("auto", "pyusb", "usblp"))
+                    choices=("auto", "pyusb", "usblp", "ble"))
+    tc.add_argument("--bluetooth-id", metavar="ADDRESS")
     tc.add_argument("--out", help="also write a labelled map SVG here")
     tc.add_argument("--dump", metavar="PATH")
     tc.add_argument("--dry-run", action="store_true")

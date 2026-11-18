@@ -30,10 +30,12 @@ from __future__ import annotations
 
 import dataclasses
 import itertools
+import math
 
-from . import graphtec, template
+from . import graphtec, template, toolpath, verify
 from .geometry import Rect
 from .graphtec import CutSettings
+from .job import cutting_mat_errors
 
 # A square big enough to judge an edge on, small enough that a sheet holds a
 # useful number of them.
@@ -43,6 +45,15 @@ DEFAULT_GAP_MM = 5.0
 DEFAULT_MARGIN_MM = 15.0
 # Past this the sheet is a maze and the map is useless.
 MAX_CELLS = 60
+
+
+TEST_SHAPES = {"square": "Square", "studio": "Studio square and triangle"}
+# Captured Studio test cut documented in inkscape-silhouette/sendto_silhouette.py.
+# Coordinates include the 1 mm seam overlaps and 1.5 mm inset.
+STUDIO_TRIANGLE = ((6.0, 4.577), (6.5, 3.711), (9.721, 9.289),
+                   (3.279, 9.289), (6.5, 3.711), (7.0, 4.577))
+STUDIO_SQUARE = ((2.5, 1.5), (1.5, 1.5), (1.5, 11.5), (11.5, 11.5),
+                 (11.5, 1.5), (1.5, 1.5), (1.5, 2.5))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -75,11 +86,11 @@ class TestSheet:
     registration: bool
     stream: bytes
     steps: list
+    shape: str = "square"
 
     @property
     def paths(self) -> tuple:
-        return tuple(c_path for c in self.cells
-                     for c_path in (_square(c.rect),))
+        return tuple(path for cell in self.cells for path in _cell_paths(cell.rect, self.shape))
 
     def map_rows(self) -> list[tuple[str, str]]:
         return [(c.label, c.describe()) for c in self.cells]
@@ -95,6 +106,31 @@ def _square(rect: Rect) -> template.CutPath:
         ((rect.x, rect.y), (rect.x2, rect.y),
          (rect.x2, rect.y2), (rect.x, rect.y2)),
         closed=True, label="test square")
+
+
+def _cell_paths(rect: Rect, shape: str) -> tuple[template.CutPath, ...]:
+    if shape == "square":
+        return (_square(rect),)
+    scale = rect.w / 10
+    return tuple(template.CutPath(
+        tuple((rect.x + (x - 1.5) * scale, rect.y + (y - 1.5) * scale) for x, y in outline),
+        closed=False, label=label)
+        for outline, label in ((STUDIO_TRIANGLE, "test triangle"), (STUDIO_SQUARE, "test square")))
+
+
+def _check_geometry(stream, groups, device, origin, limit):
+    """Read every plotted vertex back, including every pass of every cell."""
+    ox, oy = origin
+    wanted = [[(graphtec.su(x - ox), graphtec.su(y - oy)) for x, y in points]
+              for settings, paths in groups
+              for _, points in toolpath.schedule(paths, settings.clamped(device), origin)]
+    got = [[(graphtec.su(x), graphtec.su(y)) for x, y in path]
+           for path in verify.decode(stream).paths]
+    if not wanted or got != wanted:
+        raise ValueError("The test cut stream does not match the requested geometry.")
+    width, height = map(graphtec.su, limit)
+    if any(not (0 <= x <= width and 0 <= y <= height) for path in got for x, y in path):
+        raise ValueError("A test cut path is outside the cut window. Check the mat and calibration.")
 
 
 def _parse_list(value, cast=int) -> list:
@@ -138,16 +174,32 @@ def combinations(base: CutSettings, forces=None, speeds=None, passes=None,
 
 def build(device: graphtec.Device, base: CutSettings, forces=None,
           speeds=None, passes=None, depths=None,
-          size_mm: float = DEFAULT_SIZE_MM, gap_mm: float = DEFAULT_GAP_MM,
+          size_mm: float | None = None, gap_mm: float = DEFAULT_GAP_MM,
           margin_mm: float = DEFAULT_MARGIN_MM, cols: int = 0,
           sheet_w_mm: float = 215.9, sheet_h_mm: float = 279.4,
           registration: bool = False,
-          offset_mm: tuple[float, float] = (0.0, 0.0)) -> TestSheet:
+          offset_mm: tuple[float, float] = (0.0, 0.0),
+          shape: str = "square", mat: str = "auto", end_position: str = "below") -> TestSheet:
     """Lay out the test squares and build the job.
 
     Raises `ValueError` rather than producing a sheet that will not fit or a
     map too long to read.
     """
+    if shape not in TEST_SHAPES:
+        raise ValueError(f"Unknown test cut shape {shape!r}.")
+    if size_mm is None:
+        size_mm = 10.0 if shape == "studio" else DEFAULT_SIZE_MM
+    if (not all(math.isfinite(v) for v in (size_mm, gap_mm, margin_mm, sheet_w_mm, sheet_h_mm, *offset_mm))
+            or size_mm <= 0 or gap_mm < 0 or margin_mm < 0):
+        raise ValueError("Use finite settings, a positive test cut size, and a nonnegative gap and margin.")
+    if sheet_w_mm > device.width_mm or sheet_h_mm > device.length_mm:
+        raise ValueError(f"The test sheet is too large for {device.name}.")
+    mat_errors = cutting_mat_errors(device, mat, sheet_w_mm, sheet_h_mm)
+    if mat_errors:
+        raise ValueError(mat_errors[0])
+    if shape == "studio":
+        # Finish the triangle while the outer square still holds the material.
+        base = dataclasses.replace(base, path_order="design", pass_order="path")
     settings = combinations(base, forces, speeds, passes, depths)
     if not settings:
         raise ValueError("no settings to test")
@@ -159,6 +211,8 @@ def build(device: graphtec.Device, base: CutSettings, forces=None,
     pitch = size_mm + gap_mm
     usable_w = sheet_w_mm - 2 * margin_mm
     usable_h = sheet_h_mm - 2 * margin_mm
+    if size_mm > usable_w:
+        raise ValueError("The test cut size and margins exceed the sheet width.")
     max_cols = max(1, int((usable_w + gap_mm) // pitch))
     cols = min(cols, max_cols) if cols > 0 else max_cols
     rows = -(-len(settings) // cols)
@@ -177,19 +231,20 @@ def build(device: graphtec.Device, base: CutSettings, forces=None,
                       size_mm, size_mm),
             settings=s))
 
+    origin = (margin_mm, margin_mm) if registration else (0.0, 0.0)
+    width, height = ((usable_w, usable_h) if registration else (sheet_w_mm, sheet_h_mm))
     job = graphtec.CutJob(
-        device, base, origin_mm=(margin_mm, margin_mm) if registration
-        else (0.0, 0.0),
-        reg_width_mm=sheet_w_mm - 2 * margin_mm,
-        reg_length_mm=sheet_h_mm - 2 * margin_mm,
+        device, base, origin_mm=origin, reg_width_mm=width, reg_length_mm=height,
         registration=registration, offset_mm=offset_mm,
-        sheet_size_mm=(sheet_w_mm, sheet_h_mm))
-    groups = [(c.settings, [_square(c.rect)]) for c in cells]
+        sheet_size_mm=(sheet_w_mm, sheet_h_mm), mat=mat, end_position=end_position)
+    groups = [(c.settings, _cell_paths(c.rect, shape)) for c in cells]
     steps = job.plan_matrix(groups)
     stream = b"".join(s.data for s in steps if s.kind == "write")
+    plot_origin = tuple(axis - offset for axis, offset in zip(origin, offset_mm))
+    _check_geometry(stream, groups, device, plot_origin, (width, height))
 
     return TestSheet(cells=tuple(cells), device=device, size_mm=size_mm,
-                     registration=registration, stream=stream, steps=steps)
+                     registration=registration, stream=stream, steps=steps, shape=shape)
 
 
 def write_proof(path, sheet: TestSheet, sheet_w_mm: float,
@@ -214,9 +269,15 @@ def write_proof(path, sheet: TestSheet, sheet_w_mm: float,
            f'stroke-width="0.2"/>']
     for c in sheet.cells:
         r = c.rect
-        out.append(f'  <rect x="{n(r.x)}" y="{n(r.y)}" width="{n(r.w)}" '
-                   f'height="{n(r.h)}" fill="none" stroke="#ff0000" '
-                   f'stroke-width="0.2"/>')
+        if sheet.shape == "square":
+            out.append(f'  <rect x="{n(r.x)}" y="{n(r.y)}" width="{n(r.w)}" '
+                       f'height="{n(r.h)}" fill="none" stroke="#ff0000" '
+                       f'stroke-width="0.2"/>')
+        else:
+            for sample in _cell_paths(r, sheet.shape):
+                points = " ".join(f"{n(x)},{n(y)}" for x, y in sample.points)
+                out.append(f'  <polyline points="{points}" fill="none" stroke="#ff0000" '
+                           f'stroke-width="0.2"/>')
         s = c.settings
         out.append(f'  <text x="{n(r.x + 0.8)}" y="{n(r.y + 3.4)}" '
                    f'font-family="sans-serif" font-size="2.6" '

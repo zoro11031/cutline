@@ -7,6 +7,7 @@ cut by exactly the amount asked for and no more.
 """
 
 import unittest
+from unittest import mock
 
 from cut_proxies import (geometry, graphtec, job as job_mod, presets,
                          testcut, verify)
@@ -200,6 +201,40 @@ class TestProofMap(unittest.TestCase):
         self.assertIn('width="215.9mm"', svg)
         self.assertIn('viewBox="0 0 215.9 279.4"', svg)
 
+
+
+class TestStudioPattern(unittest.TestCase):
+    def test_uses_captured_size_and_cuts_all_triangle_passes_first(self):
+        settings = CutSettings(passes=2, path_order="nearest")
+        sheet = testcut.build(cameo4(), settings, shape="studio", end_position="start")
+        self.assertEqual(sheet.size_mm, 10)
+        self.assertEqual([p.label for p in sheet.paths], ["test triangle", "test square"])
+        first, second, third, fourth = verify.decode(sheet.stream).paths
+        self.assertEqual(first, second)
+        self.assertEqual(third, fourth)
+        self.assertEqual(first[0], (19.5, 18.1))
+        self.assertEqual(third[:3], [(16, 15), (15, 15), (15, 25)])
+        self.assertTrue(sheet.stream.endswith(graphtec.frame("TB50,0")))
+        self.assertEqual(testcut.write_proof(None, sheet, 215.9, 279.4).count("<polyline"), 2)
+
+    def test_corrupt_motion_is_rejected(self):
+        original = graphtec.CutJob._path_commands
+
+        def wrong_position(*args):
+            commands = original(*args)
+            commands[1] = "D400,400"
+            return commands
+
+        with mock.patch.object(graphtec.CutJob, "_path_commands", wrong_position):
+            with self.assertRaisesRegex(ValueError, "does not match the requested geometry"):
+                testcut.build(cameo4(), CutSettings(), shape="studio")
+
+    def test_off_sheet_calibration_and_too_wide_samples_are_refused(self):
+        with self.assertRaisesRegex(ValueError, "outside the cut window"):
+            testcut.build(cameo4(), CutSettings(), shape="studio",
+                          margin_mm=1, offset_mm=(-3, 0))
+        with self.assertRaisesRegex(ValueError, "exceed the sheet width"):
+            testcut.build(cameo4(), CutSettings(), shape="studio", size_mm=200)
 
 if __name__ == "__main__":
     unittest.main()

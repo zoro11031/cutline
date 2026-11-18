@@ -67,12 +67,13 @@ A registration scan has to **read** the cutter's reply, and that is the one
 thing the `/dev/usb/lp*` path cannot be relied on for. For a registered cut,
 use `pyusb`.
 
-## Cameo 4 over Bluetooth LE
+## Bluetooth LE
 
 On Arch or CachyOS, install `python-bleak` and start the BlueZ Bluetooth
-service. Enable Bluetooth on the Cameo 4. In the desktop Cut tab, choose
-**Bluetooth LE**, find cutters, select the Cameo 4, and refresh its status.
-On the CLI:
+service. Enable Bluetooth on the cutter. In the desktop Cut tab, choose
+**Bluetooth LE**, find cutters, select yours, and refresh its status.
+The app selects the advertised model and confirms it against the cutter's
+firmware before sending any motion. On the CLI:
 
 ```sh
 cut-proxies status --transport ble
@@ -81,9 +82,12 @@ cut-proxies cut --transport ble --bluetooth-id AA:BB:CC:DD:EE:FF \
   --layout-preset mtg-cameo-letter --preset 'Plain paper test' --dry-run
 ```
 
-Use the address reported by discovery. Once the matching proof is printed
-at 100% and the cutter reports ready, remove `--dry-run` for the supervised
-proof. The settings-matrix test uses USB.
+Use the address reported by discovery and set `--cutter` to the matching model
+when it differs from the CLI's Cameo 4 default. The `testcut` command accepts
+the same connection flags. The model list follows the reference driver and
+includes Cameo 3, 4 and 5 variants and Portrait 2 through 4. The original
+Cameo 4 has been exercised. The expanded model matching has automated
+coverage, with physical tests pending.
 
 ## Printing the sheet
 
@@ -155,6 +159,25 @@ Two ways to avoid it entirely:
   two have to agree: a slot skipped here but printed leaves an uncut card,
   and a slot printed blank but not skipped gets cut out of nothing.
 
+## Cut paths and media handling
+
+In **Blade → Cut paths**, use **Nearest path** to reduce travel among
+independent contours. Use **Design order** when cut order matters, such as a
+design whose inside details should come out before its outer border. **Finish
+each path** completes its passes in place. **Alternate pass direction**
+reverses every other pass. **Overcut** overlaps the seam on closed paths by
+the requested distance on both sides, following the existing contour.
+
+In **Cut → Media handling**, choose the mat loaded in the machine or
+**No cutting mat**. The desktop and CLI check whether the sheet fits the
+selected mat. **Return to start** moves the head back to its starting
+position after the cut.
+
+```sh
+cut-proxies cut --path-order nearest --pass-order path --alternate-direction \
+  --overcut-mm 0.5 --mat cameo-12x12 --end-position start --dry-run
+```
+
 ## Finding your blade settings
 
 The reliable way, and the one the Card Maker guide describes, is to cut and
@@ -166,7 +189,10 @@ cut-proxies testcut --force 25,29,33 --passes 1,2,3 --out ~/Documents
 ```
 
 Nine 15 mm squares, each cut with its own settings, on a blank offcut of the
-real stock. It prints the map and writes a labelled SVG of it.
+real stock. It prints the map and writes a labelled SVG of it. For the
+Studio sample, choose **Studio square and triangle** or add `--shape studio`.
+It defaults to a 10 mm square and finishes the triangle first while the
+square still holds the material in place.
 
 Then, **without ejecting the mat**, lift a corner of each square and see
 which separated cleanly. The first combination that comes away with a light

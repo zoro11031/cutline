@@ -82,6 +82,52 @@ class TestRegistrationOnly(unittest.TestCase):
 
 
 
+class TestMediaHandling(unittest.TestCase):
+    def test_requested_long_mat_replaces_the_default_letter_sequence(self):
+        chosen = job.build(mat="cameo-12x24", offset_mm=(0, 0))
+        self.assertEqual(chosen.blocked, [])
+        self.assertIn(graphtec.frame(("TG2", "FN0", "TB50,0", r"\0,0", "Z12192,6096")), chosen.stream)
+        self.assertEqual(verify.decode(chosen.stream).scan_args_mm[-2:], (0, 0))
+        short = job.build(mat="cameo-12x12", offset_mm=(0, 0))
+        self.assertEqual(short.blocked, [])
+        self.assertEqual(short.registration_writes(), job.build(offset_mm=(0, 0)).registration_writes())
+
+    def test_matless_blank_sheet_explicitly_sets_the_device_boundary(self):
+        checked = job.build(mat="none", registration=False, offset_mm=(0, 0))
+        self.assertEqual(checked.blocked, [])
+        self.assertIn(graphtec.frame(("TG0", "FN0", "TB50,0", r"\0,0", "Z60000,6096")), checked.stream)
+        broken = checked.stream.replace(b"TG0", b"TG1")
+        ok, rows = verify.expectations_met(broken, checked.grid, checked.marks,
+                                           checked.settings, checked.device,
+                                           registration=False, mat="none")
+        self.assertFalse(ok)
+        self.assertIn("cutting mat setup", {row.label for row in rows if not row.ok})
+
+    def test_compatible_portrait_mat_allows_matching_sheet_and_refuses_wrong_size(self):
+        checked = job.build(cutter="Silhouette Portrait 4", mat="portrait-8.5x12",
+                            portrait=True, registration=False, offset_mm=(0, 0))
+        self.assertEqual(checked.blocked, [])
+        self.assertIn(graphtec.frame("TG11"), checked.stream)
+        refused = job.build(mat="portrait-8.5x12", portrait=False, offset_mm=(0, 0))
+        self.assertTrue(any("does not fit" in message for message in refused.blocked))
+        legacy = job.build(cutter="Silhouette Cameo 2", mat="cameo-12x12", offset_mm=(0, 0))
+        self.assertTrue(any("does not support software mat" in message for message in legacy.blocked))
+
+    def test_return_to_start_verifies_the_correct_trailer_for_each_dialect(self):
+        for cutter, trailer in (("Silhouette Cameo 4", ("L0", r"\0,0", "M0,0", "J0", "FN0", "TB50,0")),
+                                ("Silhouette Cameo 2", ("H",))):
+            with self.subTest(cutter=cutter):
+                checked = job.build(cutter=cutter, end_position="start", offset_mm=(0, 0))
+                self.assertEqual(checked.blocked, [])
+                self.assertTrue(checked.stream.endswith(graphtec.frame(trailer)))
+                broken = verify._corrupt_return_to_start(checked.stream)
+                ok, rows = verify.expectations_met(
+                    broken, checked.grid, checked.marks, checked.settings, checked.device,
+                    end_position="start")
+                self.assertFalse(ok)
+                self.assertIn("return to start", {row.label for row in rows if not row.ok})
+
+
 class ImmediateThread:
     def __init__(self, target, **kwargs):
         self.target = target

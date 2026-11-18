@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import dataclasses
 
-from . import graphtec
+from . import graphtec, toolpath
 from .geometry import Grid, Rect
 
 # A decoded card must measure its nominal size to within this.  One
@@ -286,8 +286,16 @@ def _drop_preamble(stream: bytes) -> bytes | None:
 
 def _drop_mat_setup(stream: bytes) -> bytes | None:
     head, cmds = _split(stream)
-    out = [cmd for cmd in cmds if cmd not in (b"TG1", b"TG2")]
+    out = [cmd for cmd in cmds if not cmd.startswith(b"TG")]
     return _rejoin(head, out) if len(out) != len(cmds) else None
+
+
+def _corrupt_return_to_start(stream: bytes) -> bytes | None:
+    head, cmds = _split(stream)
+    if not cmds or cmds[-1] not in (b"H", b"TB50,0"):
+        return None
+    cmds[-1] = b"SO0"
+    return _rejoin(head, cmds)
 
 
 def _corrupt_mark_arm(stream: bytes) -> bytes | None:
@@ -361,6 +369,9 @@ def _corrupt_imported_vertex(stream: bytes) -> bytes | None:
 
 IMPORTED_PROBES = (
     ("imported path geometry", _corrupt_imported_vertex),
+    ("scheduled path geometry", _corrupt_imported_vertex),
+    ("cutting mat setup", _drop_mat_setup),
+    ("return to start", _corrupt_return_to_start),
     ("cuts inside the sheet", _corrupt_outside),
 )
 
@@ -482,7 +493,8 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
                      mode: str = "rounded", cards=None,
                      offset_mm: tuple[float, float] = (0.0, 0.0),
                      registration: bool = True, expected_paths=None,
-                     auto_search: bool = True
+                     auto_search: bool = True, source_paths=None,
+                     mat: str = "auto", end_position: str = "below"
                      ) -> tuple[bool, list[Row]]:
     """Check a stream against the grid, marks and blade settings.
 
@@ -521,6 +533,12 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
         row("registration", "not used", "not used", True)
         row("no scan commands sent", "none",
             d.scan_command or "none", d.scan_command is None)
+        mat_setup = graphtec.cutting_mat_commands(
+            device, mat, grid.sheet_w_mm, grid.sheet_h_mm, False)
+        if mat_setup:
+            found = tuple(d.commands[:len(mat_setup)])
+            row("cutting mat setup", " ".join(mat_setup), " ".join(found),
+                found == mat_setup)
     else:
         row("registration preamble", "present",
             "present" if d.preamble_present else "missing",
@@ -532,19 +550,20 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
         scan_at = next((i for i, command in enumerate(d.commands)
                         if command.startswith(("TB123,", "TB124,", "TB23,"))), 0)
         before_scan = d.commands[:scan_at]
-        mat = graphtec.registration_mat_commands(device, mk.sheet_w_mm, mk.sheet_h_mm)
+        mat_setup = graphtec.cutting_mat_commands(device, mat, mk.sheet_w_mm, mk.sheet_h_mm, True)
         mat_commands = before_scan
-        captured = auto_search and graphtec.captured_letter_scan(
+        captured = auto_search and mat in ("auto", "cameo-12x12") and graphtec.captured_letter_scan(
                 device, mk.reg_length_mm, mk.reg_width_mm, mk.origin_mm,
                 (mk.length_mm, mk.thickness_mm))
         if captured:
-            mat = ("TG1", "FN0", "TB50,0", "TB99", "TB52,2", f"TB51,{graphtec.su(mk.length_mm)}", "TB53,20",
-                   "TB55,1", "TB123,3918,5188,118,118", "TB99")
+            mat_setup = ("TG1", "FN0", "TB50,0", "TB99", "TB52,2",
+                         f"TB51,{graphtec.su(mk.length_mm)}", "TB53,20",
+                         "TB55,1", "TB123,3918,5188,118,118", "TB99")
             mat_commands = d.commands
-        if mat:
-            row("registration mat setup", " ".join(mat),
-                " ".join(mat_commands[:len(mat)]) or "missing",
-                tuple(mat_commands[:len(mat)]) == mat)
+        if mat_setup:
+            found = tuple(mat_commands[:len(mat_setup)])
+            row("registration mat setup", " ".join(mat_setup),
+                " ".join(found) or "missing", found == mat_setup)
         shape = graphtec.registration_preamble(device, (mk.length_mm, mk.thickness_mm))[3:5]
         sent_shape = tuple(command for command in before_scan if command.startswith(("TB51,", "TB53,")))
         row("registration mark dimensions", " ".join(shape),
@@ -576,55 +595,47 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
             row("scan search start", want_start, got_start or "missing",
                 got_start == want_start)
 
-    # Geometry: the check that actually protects the stock.
-    passes = max(1, s.passes)
-    if expected_paths is not None:
-        ox, oy = mk.origin_mm if mk is not None and registration else (0.0, 0.0)
-        ox, oy = ox - offset_mm[0], oy - offset_mm[1]
-        expected = []
-        for path in expected_paths:
-            points = [(graphtec.su(x - ox), graphtec.su(y - oy))
-                      for x, y in path.points]
-            if path.closed:
-                points.append(points[0])
-            expected.append(points)
+    # Compare the wire stream to the requested contour schedule. The card
+    # checks below still measure the decoded size and location independently.
+    passes = s.passes
+    ox, oy = mk.origin_mm if mk is not None and registration else (0.0, 0.0)
+    ox -= offset_mm[0]
+    oy -= offset_mm[1]
+    paths_to_schedule = expected_paths if expected_paths is not None else source_paths
+    scheduled = None
+    if paths_to_schedule is not None:
+        scheduled = toolpath.schedule(paths_to_schedule, s, (ox, oy))
+        wanted = [[(graphtec.su(x - ox), graphtec.su(y - oy)) for x, y in points]
+                  for _, points in scheduled]
         got = [[(graphtec.su(x), graphtec.su(y)) for x, y in path] for path in d.paths]
-        wanted = expected * passes
         row("cut paths", len(wanted), len(got), len(wanted) == len(got))
-        matches = wanted == got
-        row("imported path geometry", "all vertices in order on every pass",
-            "matches" if matches else "path coordinates differ", matches)
+        label = "imported path geometry" if expected_paths is not None else "scheduled path geometry"
+        row(label, "all vertices in scheduled order",
+            "matches" if wanted == got else "path coordinates differ", wanted == got)
         if not registration:
             inside = all(-0.05 <= x <= grid.sheet_w_mm + 0.05
                          and -0.05 <= y <= grid.sheet_h_mm + 0.05
                          for path in d.paths for x, y in path)
             row("cuts inside the sheet", "inside", "inside" if inside else "outside", inside)
-    elif mode == "cross":
-        want_paths = (2 * grid.cols + 2 * grid.rows) * passes
-        row("cut paths", want_paths, len(d.paths),
-            len(d.paths) == want_paths)
-    else:
-        want_paths = len(cards) * passes
-        row("cut paths", want_paths, len(d.paths),
-            len(d.paths) == want_paths)
-        row("closed loops", want_paths, len(d.closed_paths),
-            len(d.closed_paths) == want_paths)
 
-        # Without registration the machine's origin is the sheet corner,
-        # so no mark shift is undone.
-        ox, oy = (mk.origin_mm if (mk is not None and registration)
-                  else (0.0, 0.0))
-        # Undo the calibration offset before measuring, or a correctly
-        # calibrated job reads as a position error exactly its own size.
-        ox -= offset_mm[0]
-        oy -= offset_mm[1]
+    if expected_paths is None and mode == "cross":
+        if scheduled is None:
+            want_paths = (2 * grid.cols + 2 * grid.rows) * passes
+            row("cut paths", want_paths, len(d.paths), len(d.paths) == want_paths)
+    elif expected_paths is None:
+        want_cards = [cards[index] for index, _ in scheduled] if scheduled is not None else cards * passes
+        if scheduled is None:
+            row("cut paths", len(want_cards), len(d.paths), len(d.paths) == len(want_cards))
+        # Overcut traces a full closed contour, with a lead-in and lead-out
+        # along its seam. The scheduled-geometry check verifies those vertices.
+        if not s.overcut_mm:
+            row("closed loops", len(want_cards), len(d.closed_paths),
+                len(d.closed_paths) == len(want_cards))
+
         worst_size = 0.0
         worst_pos = 0.0
         boxes = d.path_bboxes()
-        for index, box in enumerate(boxes):
-            if not cards:
-                break
-            rect = cards[index % len(cards)]
+        for rect, box in zip(want_cards, boxes):
             worst_size = max(worst_size,
                              abs(box.w - rect.w), abs(box.h - rect.h))
             worst_pos = max(worst_pos,
@@ -647,6 +658,12 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
             f"0..{mk.reg_width_mm:.1f} x 0..{mk.reg_length_mm:.1f} mm",
             f"{min(xs):.2f}..{max(xs):.2f} x {min(ys):.2f}..{max(ys):.2f} mm",
             inside)
+
+    if end_position == "start":
+        trailer = graphtec.return_to_start_commands(device)
+        got_trailer = tuple(d.commands[-len(trailer):])
+        row("return to start", " ".join(trailer), " ".join(got_trailer),
+            got_trailer == trailer)
 
     # The sheet has to fit the machine.
     row("sheet fits the cutter", f"<= {device.width_mm:g} mm wide",

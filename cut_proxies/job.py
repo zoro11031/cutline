@@ -20,8 +20,9 @@ from __future__ import annotations
 
 import dataclasses
 import pathlib
+import math
 
-from . import config, geometry, graphtec, layout_presets, presets, regmarks, template, verify
+from . import config, geometry, graphtec, layout_presets, presets, regmarks, template, toolpath, verify
 
 
 @dataclasses.dataclass
@@ -54,6 +55,8 @@ class Job:
     steps: tuple = ()
     registration: bool = True
     auto_search: bool = True
+    mat: str = "auto"
+    end_position: str = "below"
 
     # ---- reporting ---------------------------------------------------
     @property
@@ -68,7 +71,12 @@ class Job:
 
     @property
     def cut_length_mm(self) -> float:
-        return template.total_length_mm(self.paths) * self.settings.passes
+        if not self.settings.custom_toolpath:
+            return template.total_length_mm(self.paths) * self.settings.passes
+        origin = self.marks.origin_mm if self.registration else (0.0, 0.0)
+        start = tuple(axis - offset for axis, offset in zip(origin, self.offset_mm))
+        return sum(math.dist(a, b) for _, points in toolpath.schedule(self.paths, self.settings, start)
+                   for a, b in zip(points, points[1:]))
 
     def registration_steps(self) -> tuple:
         """Use the verified plan, stopping at the sensor's reply before paths."""
@@ -114,6 +122,13 @@ class Job:
         if self.device.detects_tools:
             tool.append("automatic acceleration" if s.acceleration is None
                         else f"acceleration {s.acceleration}")
+        if s.custom_toolpath:
+            tool.extend((toolpath.PATH_ORDERS[s.path_order], toolpath.PASS_ORDERS[s.pass_order]))
+            if s.alternate_direction:
+                tool.append("alternating direction")
+            if s.overcut_mm:
+                tool.append(f"{s.overcut_mm:g} mm overcut")
+
         return [
             ("Cutter", f"{self.device.name} "
                        f"({self.device.width_mm:g} mm cuttable)"),
@@ -127,6 +142,8 @@ class Job:
                      f"{self.grid.card.height_mm:g} mm, "
                      f"{self.grid.card.radius_mm:g} mm corners"),
             ("Marks", mk.describe()),
+            ("Cutting mat", graphtec.MAT_OPTIONS[self.mat]),
+            ("End position", graphtec.END_POSITIONS[self.end_position]),
             ("Origin shift", f"cut coordinates are measured from "
                              f"({mk.origin_mm[0]:g}, {mk.origin_mm[1]:g}) mm"
              if self.registration else "registration off; sheet coordinates"),
@@ -175,7 +192,8 @@ def build(sheet: str = config.DEFAULT_SHEET,
           auto_search: bool = True,
           skip: tuple[int, ...] = (),
           offset_mm: tuple[float, float] | None = None,
-          imported=None, blade_options=None) -> Job:
+          imported=None, blade_options=None, mat: str = "auto",
+          end_position: str = "below") -> Job:
     """Build and check a job.  Raises only on things that cannot be reported."""
     device = graphtec.device_by_name(cutter)
 
@@ -259,6 +277,8 @@ def build(sheet: str = config.DEFAULT_SHEET,
     hints = [h for h in regmarks.mask_hints(grid, mk)
              if h["index"] not in set(skip)]
 
+    off += cutting_mat_errors(device, mat, grid.sheet_w_mm, grid.sheet_h_mm)
+
     # 4. the settings and the stream
     preset = presets.get(preset_name)
     cut = dataclasses.replace(preset.cut_settings(), **(blade_options or {}))
@@ -282,16 +302,19 @@ def build(sheet: str = config.DEFAULT_SHEET,
         registration=registration, auto_search=auto_search,
         quad=window["quad"], offset_mm=offset,
         mark_shape_mm=(mk.length_mm, mk.thickness_mm),
-        sheet_size_mm=(grid.sheet_w_mm, grid.sheet_h_mm))
+        sheet_size_mm=(grid.sheet_w_mm, grid.sheet_h_mm),
+        mat=mat, end_position=end_position)
     steps = tuple(job.plan(paths))
     stream = b''.join(step.data for step in steps if step.kind == 'write')
 
     # 5. take it apart again
     verify_mode = mode if imported is None else "rounded"
     check_options = dict(cards=cut_cards, offset_mm=offset, registration=registration,
-                         auto_search=auto_search)
+                         auto_search=auto_search, mat=mat, end_position=end_position)
     if imported is not None:
         check_options["expected_paths"] = paths
+    elif cut.custom_toolpath:
+        check_options["source_paths"] = paths
     ok, rows = verify.expectations_met(stream, grid, mk, cut, device, verify_mode,
                                        **check_options)
     # ...and prove, in this same run, that those checks would have noticed if
@@ -314,7 +337,20 @@ def build(sheet: str = config.DEFAULT_SHEET,
                collisions=collisions, off_sheet=off, warnings=warnings,
                skip=skip, mask_hints=hints, offset_mm=offset,
                liveness_failures=liveness, steps=steps, registration=registration,
-               auto_search=auto_search)
+               auto_search=auto_search, mat=mat, end_position=end_position)
+
+
+def cutting_mat_errors(device, mat: str, sheet_w: float, sheet_h: float) -> list[str]:
+    if mat == "auto" or mat not in graphtec.MAT_OPTIONS:
+        return []
+    if not device.cameo3_on:
+        return [f"{device.name} does not support software mat selection. Choose Automatic."]
+    if mat in graphtec.MATS:
+        _, width, height = graphtec.MATS[mat]
+        if sheet_w > width or sheet_h > height:
+            return [f"The {sheet_w:g} × {sheet_h:g} mm sheet does not fit "
+                    f"the {graphtec.MAT_OPTIONS[mat]} mat."]
+    return []
 
 
 def imported_mode_errors(imported, mode: str) -> list[str]:

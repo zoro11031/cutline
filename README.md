@@ -78,6 +78,9 @@ proxies, on Linux, without the VM:
 | Material cut settings | `materials` — read from Studio's own database |
 | Send to the cutter with an optical mark scan | `cut` |
 | Test cut to dial in blade settings | `testcut` — every combination in one pass |
+| Studio square-and-triangle sample | `testcut --shape studio` |
+| Adjust path order, pass direction and seam overlap | Blade → Cut paths |
+| Select a cutting mat and finish position | Cut → Media handling |
 | Machine calibration | `calibrate` |
 | Open an SVG or DXF and cut it | `cut --from`, `import` |
 | Use an Inkscape Silhouette design | [Inkscape Print & Cut workflow](docs/SETUP.md#inkscape-silhouette-print--cut) |
