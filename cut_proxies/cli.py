@@ -639,7 +639,7 @@ def cmd_testcut(args):
 
 def _testcut(args, link, options):
     device = graphtec.device_by_name(args.cutter or "Silhouette Cameo 4")
-    base = dataclasses.replace(presets.get(args.preset).cut_settings(), **advanced_settings(args))
+    base = dataclasses.replace(presets.get(args.preset, device.name).cut_settings(), **advanced_settings(args))
     sheet = geometry.sheet(args.sheet)
     w, h = sheet.size(portrait=not args.landscape)
     try:

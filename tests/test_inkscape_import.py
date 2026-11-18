@@ -57,7 +57,8 @@ class TestInkscapeImport(unittest.TestCase):
 
     def test_corner_cut_uses_the_imported_registration_measurements(self):
         design = self.load_sheet(top=19, right=260, bottom=188)
-        active = job.build(imported=design, auto_search=False, offset_mm=(0, 0))
+        active = job.build(imported=design, auto_search=False, offset_mm=(0, 0),
+                           blade_options={'track_enhancing': False})
         sample = corner_test.build(active, artwork=design)
         self.assertEqual(sample.job.marks, active.marks)
         self.assertEqual(sample.job.registration_steps(), active.registration_steps())

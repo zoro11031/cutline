@@ -84,7 +84,7 @@ def resolve(paths, mode, assignments, preset, current, device) -> tuple[CutGroup
                              + ", ".join(available) + ".")
         seen.add(key)
         try:
-            group_preset = (preset if item.preset == CURRENT_SETTINGS else presets.get(item.preset))
+            group_preset = (preset if item.preset == CURRENT_SETTINGS else presets.get(item.preset, device.name))
         except KeyError:
             raise ValueError(f"Unknown preset {item.preset!r} in group {key!r}.") from None
         settings = current if item.preset == CURRENT_SETTINGS else group_preset.cut_settings()

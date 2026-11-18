@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest import mock
 
-from cut_proxies import cli, corner_test, editor_model, job, materials, transport
+from cut_proxies import cli, corner_test, editor_model, job, materials, presets, transport
 
 try:
     from PySide6.QtCore import Qt
@@ -52,6 +52,22 @@ class TestQtFrontend(unittest.TestCase):
         self.assertEqual(window.job.stream, expected.stream)
         self.assertEqual(window.job.blocked, [])
 
+    def test_send_workspace_quick_settings_and_blade_use_the_same_values(self):
+        window = self.window
+        window.send_workspace.click()
+        self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
+        self.assertEqual(window.send_preset.currentData(), presets.STARTING_NAME)
+        window.send_preset.setCurrentIndex(window.send_preset.findData("Coverstock"))
+        self.assertEqual(window.choice("preset"), "Coverstock")
+        window.send_blade["passes"].setValue(3)
+        window.blade["force"].setValue(22)
+        self.assertEqual(window.send_blade["force"].value(), 22)
+        self.assertEqual(window.blade["passes"].value(), 3)
+        self.assertEqual(window.job.settings.passes, 3)
+        window.send_blade["track_enhancing"].setChecked(False)
+        self.assertFalse(window.blade["track_enhancing"].isChecked())
+        self.assertFalse(window.job.settings.track_enhancing)
+
     def test_studio3_import_and_preview_keep_the_document_geometry(self):
         source = Path(__file__).parent / "fixtures" / "studio3" / "letter-catan-v2.studio3"
         window = self.window
@@ -83,7 +99,7 @@ class TestQtFrontend(unittest.TestCase):
         with mock.patch.object(QFileDialog, "getSaveFileName", return_value=(str(target), "")):
             self.assertTrue(design.save())
         self.assertEqual(editor_model.load_project(target), design.project)
-        design.review_button.click()
+        design.send_workspace.click()
         self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
         self.assertEqual(len(window.job.paths), 1)
         self.assertFalse(window.job.blocked)
@@ -182,6 +198,7 @@ class TestQtFrontend(unittest.TestCase):
         with mock.patch.object(window, "select_open", return_value=source):
             window.choose_material_csv()
         self.assertEqual(materials.find_condition_csv(), source)
+        self.assertGreaterEqual(window.controls["preset"].findData("Sample vinyl"), 0)
         window.material.setCurrentIndex(window.material.findData("Sample vinyl"))
         window.apply_material()
         self.assertEqual([window.blade[field].value() for field in ("force", "speed", "depth")], [16, 8, 3])
@@ -209,11 +226,29 @@ class TestQtFrontend(unittest.TestCase):
         with mock.patch.object(window.tasks, "run", side_effect=lambda work, done: done(work(), None)), \
              mock.patch.object(transport, "open_transport", return_value=fake):
             window.start_guide_pass(trial)
+            self.assertFalse(window.guide_send.isEnabled())
+            self.assertEqual(window.guide_outcome.currentData(), "")
+            window.guide_outcome.setCurrentIndex(window.guide_outcome.findData("rough"))
+            self.assertIn("Reduce force", window.guide_advice.text())
+            self.assertFalse(window.guide_send.isEnabled())
+            window.guide_outcome.setCurrentIndex(window.guide_outcome.findData("holding"))
+            self.assertTrue(window.guide_send.isEnabled())
             window.blade["force"].setValue(27)
             window.start_guide_pass(trial)
         self.assertEqual(fake.run.call_args_list, [mock.call(trial.sheet.steps, wait_done=True)] * 2)
         self.assertIn("2 completed passes", window.guide_status.text())
-        window.guide_use.click()
+        self.assertFalse(window.guide_use.isEnabled())
+        window.guide_outcome.setCurrentIndex(window.guide_outcome.findData("clean"))
+        with mock.patch.object(qt_gui, "QInputDialog") as dialog:
+            dialog.return_value.exec.return_value = 1
+            dialog.return_value.textValue.return_value = "310 gsm Matte"
+            window.guide_use.click()
+        dialog.return_value.setWindowTitle.assert_called_once_with("Save Material Preset?")
+        saved = presets.get("310 gsm Matte")
+        self.assertEqual(saved.origin, "measured")
+        self.assertEqual(saved.cut_settings(), window.guide.tested_settings)
+        self.assertTrue(saved.cut_settings().track_enhancing)
+        self.assertEqual(window.choice("preset"), "310 gsm Matte")
         self.assertEqual((window.blade["force"].value(), window.blade["passes"].value()), (25, 2))
         window.guide_next.click()
         self.assertEqual(window.guide.spot, 2)
@@ -224,6 +259,60 @@ class TestQtFrontend(unittest.TestCase):
             self.assertEqual(cli.main(["gui", "--frontend", "qt"]), 0)
             self.assertEqual(cli.main(["gui"]), 0)
         self.assertEqual(launch.call_args_list, [mock.call([]), mock.call([])])
+
+    def test_preview_zoom_survives_settings_edits_and_fit_restores_the_view(self):
+        window = self.window
+        window.show()
+        self.app.processEvents()
+        window.preview_zoom.in_button.click()
+        scale = window.preview.transform().m11()
+        self.assertEqual(window.preview_zoom.level.text(), "125%")
+        window.blade["speed"].setValue(12)
+        self.assertAlmostEqual(window.preview.transform().m11(), scale)
+        window.preview_zoom.fit_button.click()
+        self.assertEqual(window.preview_zoom.level.text(), "100%")
+
+    def test_material_guide_previews_fresh_spots_without_replacing_the_job(self):
+        window = self.window
+        window.show()
+        self.app.processEvents()
+        original = window.job
+        window.open_material_guide()
+        self.app.processEvents()
+        first = window.preview.trial.sheet.extent()
+        self.assertEqual(window.preview_title.text(), "Material test sheet")
+        self.assertFalse(window.send_button.isVisible())
+        window.guide_next.click()
+        self.assertFalse(window.preview.trial.sheet.extent().overlaps(first))
+        window.back_to_send.click()
+        self.assertIsNone(window.preview.trial)
+        self.assertTrue(window.send_button.isVisible())
+        self.assertIs(window.job, original)
+
+    def test_installed_tool_status_and_registration_failure_are_available_in_qt(self):
+        window = self.window
+        cutter = mock.MagicMock()
+        cutter.__enter__.return_value = cutter
+        cutter.can_read = True
+        cutter.device = window.job.device
+        cutter.status.return_value = "ready"
+        cutter.status_with_tools.return_value = "ready · Holder 1 AutoBlade"
+        cutter.run.side_effect = transport.RegistrationFailed()
+        with mock.patch.object(window.tasks, "run", side_effect=lambda work, done: done(work(), None)), \
+             mock.patch.object(transport, "open_transport", return_value=cutter):
+            window.detect_blades.click()
+        self.assertIn("Holder 1 AutoBlade", window.installed_tools.text())
+
+        def rejected(_work, done):
+            done(None, cutter.run.side_effect)
+
+        with mock.patch.object(window.tasks, "run", side_effect=rejected):
+            window.start_send(window.job, window.connection(), scan_only=True)
+        self.assertEqual(window.tabs.currentIndex(), window.tab("Sheet"))
+        self.assertFalse(window.scan_box.isHidden())
+        self.assertIn("Commands sent before the reply", window.scan_result.text())
+        window.copy_scan.click()
+        self.assertEqual(self.app.clipboard().text(), window.scan_result.text())
 
     def test_qt_preview_produces_a_nonempty_render(self):
         window = self.window

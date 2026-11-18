@@ -1,5 +1,7 @@
 # Inkscape Silhouette compatibility
 
+For everyday use, start with [Inkscape Print & Cut](SETUP.md#inkscape-silhouette-print--cut).
+
 The comparison uses [Inkscape Silhouette at `e782d59`](https://github.com/fablabnbg/inkscape-silhouette/tree/e782d599b799861b8e2aaacc49bb2ccc7ec78633).
 That extension controls Graphtec hardware from Inkscape SVG. Studio-specific
 features and file interchange are a separate part of Control Center.

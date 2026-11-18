@@ -5,7 +5,7 @@ from pathlib import Path
 import unittest
 import types
 from unittest import mock
-from cut_proxies import config, corner_test, graphtec, importer, job, presets
+from cut_proxies import config, corner_test, graphtec, importer, job, presets, starting_guide
 
 try:
     from cut_proxies import gui
@@ -35,7 +35,7 @@ class TestDesignWorkspace(unittest.TestCase):
         design = win.design
         self.assertIs(win.workspaces.get_visible_child(), design.view)
         self.assertTrue(design.project.shapes)
-        design.review.emit('clicked')
+        design.send_workspace.emit('clicked')
         self.assertEqual(win.stack.get_visible_child_name(), 'cut')
         self.assertIsNotNone(win.job)
         win.design_button.emit('clicked')
@@ -43,6 +43,44 @@ class TestDesignWorkspace(unittest.TestCase):
         win.close_design()
         self.assertEqual(win.workspaces.get_visible_child_name(), 'tools')
         self.assertIsNone(win.design)
+
+    def test_send_workspace_and_blade_share_material_and_cut_settings(self):
+        win = self.make_window()
+        win.send_workspace.emit('clicked')
+        self.assertEqual(win.stack.get_visible_child_name(), 'cut')
+        self.assertEqual(win._text(win.r_send_preset), presets.STARTING_NAME)
+        win.r_send_preset.set_selected(sorted(presets.all_presets()).index('Coverstock'))
+        self.assertEqual(win._text(win.r_preset), 'Coverstock')
+        win.send_controls['passes'].set_value(3)
+        win.r_force.set_value(22)
+        self.assertEqual(win.r_passes.get_value(), 3)
+        self.assertEqual(win.send_controls['force'].get_value(), 22)
+        self.assertEqual(win.job.settings.passes, 3)
+        self.assertEqual(win.job.settings.force, 22)
+        win.send_controls['track_enhancing'].set_active(False)
+        self.assertFalse(win.r_track.get_active())
+        self.assertFalse(win.job.settings.track_enhancing)
+
+    def test_material_guide_shows_fresh_spots_and_restores_the_cut_preview(self):
+        win = self.make_window()
+        win.preview.zoom_by(1.25)
+        self.assertEqual(win.preview_zoom.get_text(), '125%')
+        win.r_speed.set_value(18)
+        self.assertEqual(win.preview_zoom.get_text(), '125%')
+        win.preview.fit()
+        self.assertEqual(win.preview_zoom.get_text(), '100%')
+
+        original = win.job
+        win.open_material_guide()
+        first = win.preview.trial.sheet.extent()
+        self.assertEqual(win.preview_title.get_text(), 'Material test sheet')
+        self.assertFalse(win.cut_button.get_visible())
+        win.guide_next.emit('clicked')
+        self.assertFalse(win.preview.trial.sheet.extent().overlaps(first))
+        win.back_to_send.emit('clicked')
+        self.assertIsNone(win.preview.trial)
+        self.assertTrue(win.cut_button.get_visible())
+        self.assertIs(win.job, original)
 
     def test_design_page_setup_preserves_custom_page_mat_and_marks_in_send(self):
         from cut_proxies.editor_model import Shape
@@ -240,10 +278,15 @@ class TestDesignWorkspace(unittest.TestCase):
              mock.patch.object(gui.GLib, 'idle_add', side_effect=lambda callback, *args: callback(*args)), \
              mock.patch.object(gui.transport, 'open_transport', return_value=fake):
             win._guide_pass_response(None, 'cut', trial)
+            self.assertFalse(win.guide_send.get_sensitive())
+            win.guide_outcome.set_selected(tuple(starting_guide.OUTCOMES).index('holding'))
             win._guide_pass_response(None, 'cut', trial)
         self.assertEqual(fake.run.call_args_list, [mock.call(trial.sheet.steps, wait_done=True)] * 2)
         self.assertIn('2 completed passes', win.guide_status.get_title())
-        win.guide_use.emit('clicked')
+        win.guide_outcome.set_selected(tuple(starting_guide.OUTCOMES).index('clean'))
+        with mock.patch.object(win, 'offer_tested_preset') as prompt:
+            win.guide_use.emit('clicked')
+        prompt.assert_called_once()
         self.assertEqual(win.r_passes.get_value(), 2)
         win.guide_next.emit('clicked')
         self.assertEqual(win.guide.spot, 2)
@@ -272,7 +315,7 @@ class TestDesignWorkspace(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder, \
              mock.patch.object(config, "CONFIG_DIR", Path(folder)):
             win = self.make_window()
-            self.assertEqual(win.r_force.get_value(), 35)
+            self.assertEqual(win.r_force.get_value(), 25)
             win.r_force.set_value(32)
             win.r_speed.set_value(21)
             win.r_depth.set_value(-1)
@@ -304,7 +347,7 @@ class TestDesignWorkspace(unittest.TestCase):
             self.assertEqual(win._text(win.r_preset), "Green holder")
             self.assertEqual(presets.get("Green holder").cut_settings().force, 18)
             self.assertIsNone(presets.get("Green holder").cut_settings().depth)
-            self.assertEqual(presets.get(config.DEFAULT_PRESET).cut_settings().force, 35)
+            self.assertEqual(presets.get(config.DEFAULT_PRESET).cut_settings().force, 25)
             win.r_force.set_value(19)
             win.on_save_blade_preset(new_name="GREEN HOLDER")
             self.assertEqual(presets.get("Green holder").cut_settings().force, 18)

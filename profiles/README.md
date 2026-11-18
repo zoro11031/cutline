@@ -1,33 +1,35 @@
-# Bundled presets
+# Material presets
 
-Drop a `.json` file here to ship a preset with the project. A file in
-`~/.config/cut-proxies/presets/` with the same `name` overrides it, and both
-override the built-ins in `cut_proxies/presets.py`.
+For your own material, set up a clean test cut and choose **Use Tested
+Settings → Save Preset**. You can also edit settings in **Blade** and use
+**Save as New**. Both desktop apps use the same presets.
+
+## Sharing a preset
+
+Your presets are JSON files in `~/.config/cut-proxies/presets/`. Copy the
+file to that folder on another machine to use it there. Keep a distinct
+`name` for each material. A local preset with the same name as a factory
+preset takes precedence.
+
+Here’s an example file with made-up settings:
 
 ```json
 {
-  "name": "330 gsm black-core",
-  "description": "One line, shown in the picker.",
+  "name": "My matte cardstock",
+  "description": "Matte cardstock with a manual blade.",
   "origin": "derived",
-  "note": "Where these numbers came from. A 'derived' preset must say 'never cut'.",
+  "note": "Example settings. Never cut.",
   "settings": {
-    "force": 30,
-    "speed": 3,
-    "passes": 3,
+    "force": 25,
+    "speed": 8,
+    "passes": 2,
     "depth": null,
-    "acceleration": 1,
-    "blade_diameter_mm": 0.9,
-    "holder": 1,
-    "lift_head": true,
-    "sharpen_corners": false,
-    "media": 135
+    "holder": 1
   }
 }
 ```
 
-`origin` must be one of `silhouette`, `recovered`, `derived` or `measured`.
-Only use `measured` once a sheet has actually been cut on these numbers and
-the edge has been looked at; put the date in the note.
-
-`force` and `speed` are the machine's own unitless indices, the same numbers
-Silhouette Studio shows. There is no published mapping to grams or mm/s.
+Use a number for AutoBlade depth, or `null` when you set depth by hand.
+Use `measured` only after checking a clean cut, and add the date to the
+note. Factory values use `silhouette`. Other source labels used in the
+project are `guide`, `recovered`, and `derived`.
