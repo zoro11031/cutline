@@ -5,7 +5,7 @@ from pathlib import Path
 import unittest
 import types
 from unittest import mock
-from cut_proxies import config, corner_test, graphtec, importer, job, presets
+from cut_proxies import config, corner_test, graphtec, importer, job, presets, starting_guide
 
 try:
     from cut_proxies import gui
@@ -240,10 +240,15 @@ class TestDesignWorkspace(unittest.TestCase):
              mock.patch.object(gui.GLib, 'idle_add', side_effect=lambda callback, *args: callback(*args)), \
              mock.patch.object(gui.transport, 'open_transport', return_value=fake):
             win._guide_pass_response(None, 'cut', trial)
+            self.assertFalse(win.guide_send.get_sensitive())
+            win.guide_outcome.set_selected(tuple(starting_guide.OUTCOMES).index('holding'))
             win._guide_pass_response(None, 'cut', trial)
         self.assertEqual(fake.run.call_args_list, [mock.call(trial.sheet.steps, wait_done=True)] * 2)
         self.assertIn('2 completed passes', win.guide_status.get_title())
-        win.guide_use.emit('clicked')
+        win.guide_outcome.set_selected(tuple(starting_guide.OUTCOMES).index('clean'))
+        with mock.patch.object(win, 'offer_tested_preset') as prompt:
+            win.guide_use.emit('clicked')
+        prompt.assert_called_once()
         self.assertEqual(win.r_passes.get_value(), 2)
         win.guide_next.emit('clicked')
         self.assertEqual(win.guide.spot, 2)
@@ -272,7 +277,7 @@ class TestDesignWorkspace(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder, \
              mock.patch.object(config, "CONFIG_DIR", Path(folder)):
             win = self.make_window()
-            self.assertEqual(win.r_force.get_value(), 35)
+            self.assertEqual(win.r_force.get_value(), 25)
             win.r_force.set_value(32)
             win.r_speed.set_value(21)
             win.r_depth.set_value(-1)
@@ -304,7 +309,7 @@ class TestDesignWorkspace(unittest.TestCase):
             self.assertEqual(win._text(win.r_preset), "Green holder")
             self.assertEqual(presets.get("Green holder").cut_settings().force, 18)
             self.assertIsNone(presets.get("Green holder").cut_settings().depth)
-            self.assertEqual(presets.get(config.DEFAULT_PRESET).cut_settings().force, 35)
+            self.assertEqual(presets.get(config.DEFAULT_PRESET).cut_settings().force, 25)
             win.r_force.set_value(19)
             win.on_save_blade_preset(new_name="GREEN HOLDER")
             self.assertEqual(presets.get("Green holder").cut_settings().force, 18)

@@ -171,6 +171,10 @@ CASES += (
      ["tests.test_starting_guide.TestStartingGuide"]),
     (starting_guide.Guide, "refusal", lambda *a: "blocked", "every guide repeat refused",
      ["tests.test_starting_guide.TestStartingGuide"]),
+    (starting_guide.Guide, "can_cut", property(lambda *_: True), "guided repeats always allowed",
+     ["tests.test_starting_guide.TestStartingGuide"]),
+    (starting_guide.Guide, "can_cut", property(lambda *_: False), "guided repeats always refused",
+     ["tests.test_starting_guide.TestStartingGuide"]),
 )
 
 try:

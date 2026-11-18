@@ -6,18 +6,20 @@ from contextlib import contextmanager
 import io
 from pathlib import Path
 import sys
+from time import monotonic
 import zipfile
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, QSignalBlocker, Qt, QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QInputDialog,
-                               QLabel, QMainWindow, QMessageBox, QPlainTextEdit,
-                               QSplitter, QStackedWidget, QTabWidget, QVBoxLayout, QWidget)
+                               QMainWindow, QMessageBox, QPlainTextEdit,
+                               QSplitter, QStackedWidget, QStyle, QTabWidget, QVBoxLayout, QWidget)
 
 from . import (actions, bluetooth, bundle, config, corner_test, editor_model, geometry, graphtec, importer, job,
                layout_presets, materials, presets, regmarks, starting_guide, template, testcut, toolpath, transport)
-from .qt_canvas import PREVIEW_MODES, Preview
-from .qt_controls import Form, Page, Tasks, button, set_choices
+from .qt_canvas import PREVIEW_MODES, Preview, ZoomControls
+from .qt_controls import (WORKSPACE_STYLE, Form, Page, Tasks, bar, button, set_choices,
+                          styled_label, themed_icon, workspace_switch)
 
 APP_ID = "org.printing.SilhouetteControlCenter"
 ARTWORK_FILTER = "Cut artwork (*.svg *.SVG *.dxf *.DXF *.studio3 *.STUDIO3)"
@@ -26,9 +28,9 @@ DEVICES = {device.name: device.name.removeprefix("Silhouette ") for device in gr
 # Qt widgets use the same field names and units as the job builder.
 BLADE_NUMBERS = (
     ("force", "Force", 1, 40, 1, 0), ("speed", "Speed", 1, 30, 1, 0),
-    ("passes", "Passes", 0, 10, 1, 0), ("depth", "AutoBlade depth (−1 to skip)", -1, 10, 1, 0),
-    ("holder", "Tool holder", 1, 2, 1, 0), ("acceleration", "Acceleration (−1 for auto)", -1, 3, 1, 0),
-    ("blade_diameter_mm", "Blade diameter (mm)", 0, 2.3, 0.05, 2),
+    ("passes", "Passes", 0, 10, 1, 0), ("depth", "Blade Depth", -1, 10, 1, 0),
+    ("holder", "Tool Holder", 1, 2, 1, 0), ("acceleration", "Acceleration", -1, 3, 1, 0),
+    ("blade_diameter_mm", "Tool Offset (mm)", 0, 2.3, 0.05, 2),
     ("corner_start_mm", "Start Extension (mm)", 0, 0.9, 0.1, 1),
     ("corner_end_mm", "End Extension (mm)", 0, 0.9, 0.1, 1),
     ("overcut_mm", "Seam Overcut (mm)", 0, 1000, 0.1, 2),
@@ -43,18 +45,47 @@ BLADE_CHOICES = (
     ("pass_order", "Pass order", toolpath.PASS_ORDERS),
 )
 
+HELP = {
+    "force": "Pressure applied while cutting. Increase a little at a time if a test still has connected spots.",
+    "speed": "How quickly the carriage moves. Smaller or intricate shapes may benefit from a slower speed.",
+    "passes": "How many times each outline is cut. Start with one and count how many test passes separate the stock.",
+    "depth": "AutoBlade extension from 0 (retracted) to 10. Choose Manual / off to set depth directly on the tool.",
+    "holder": "The numbered slot on the cutter where you installed the tool.",
+    "acceleration": "Controls how quickly the carriage changes speed. Auto lets the cutter choose.",
+    "blade_diameter_mm": "The tool offset used to turn a drag blade through corners. Use 0 mm for a pen.",
+    "sharpen_corners": "Lift the blade at sharp turns and extend the cut by the Start and End values.",
+    "corner_start_mm": "Continue a little past the start of the segment so the cuts meet at the corner.",
+    "corner_end_mm": "Extend the end of the segment so the cuts meet at the corner.",
+    "track_enhancing": "Run the rollers before scanning or cutting. Use force 19 or higher.",
+    "path_order": "Choose whether to keep document order, shorten travel, or reduce roller movement.",
+    "pass_order": "Choose when repeated passes are made, such as finishing each shape before moving on.",
+    "interior_first": "Cut holes and other nested shapes before their surrounding outlines.",
+    "delicate_media": "Choose path starts and directions to reduce stress on delicate media.",
+    "overcut_mm": "Overlap the start and end of each closed outline to close any small gap.",
+    "registration": "Use the printed marks to line up the cut with your print. Turn off for blank media.",
+    "auto_search": "Search from the cutter's starting position. Turn off if you position the head over the first mark.",
+    "mark_inset_mm": "Distance from the paper edge to the printed marks. Match the document you printed.",
+    "mark_length_mm": "Length of each mark arm. Auto uses the longest arms that clear the layout.",
+    "mark_thickness_mm": "Width of the printed mark strokes. Match your print settings.",
+    "bleed_mm": "Printed artwork extending beyond each card edge. It is included in the clearance check.",
+    "mat": "Choose the mat you loaded, or Matless if your device and material support it.",
+    "end_position": "Return to Origin keeps the cutter at the starting point. Feed moves past the last cut.",
+    "end_feed_mm": "Distance to feed beyond the farthest cut when Feed is selected.",
+}
+
 
 class Window(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Silhouette Control Center")
-        self.resize(1160, 790)
+        self.resize(1210, 800)
         self.setWindowIcon(QIcon.fromTheme(APP_ID))
         self.tasks = Tasks(self)
         self.settings = config.load_settings()
         self.job = self.artwork = self.project_shapes = self.design = self.reviewed_design = None
         self.pdf = self.bundle = self.sheet_token = self.report = None
         self.bundle_checked = self.busy = self.loading = False
+        self.tuning = False
         self.guide = starting_guide.Guide()
         self.group_rows = {}
         self.group_choices = {}
@@ -64,75 +95,111 @@ class Window(QMainWindow):
 
         self.workspaces = QStackedWidget()
         self.setCentralWidget(self.workspaces)
+        self.workspaces.setStyleSheet(WORKSPACE_STYLE)
         setup = QWidget()
+        setup.setObjectName("workspace")
         self.workspaces.addWidget(setup)
         content = QVBoxLayout(setup)
-        top = QHBoxLayout()
-        self.design_button = button("Design", self.open_design)
-        top.addWidget(self.design_button)
+        content.setContentsMargins(14, 12, 14, 10)
+        content.setSpacing(9)
+        header, top = bar(setup)
+        top.addWidget(styled_label("Silhouette Control Center", "title"))
         top.addStretch(1)
-        content.addLayout(top)
+        setup_help = button("Setup Guide", self.show_setup_guide,
+                            icon=("help-contents", QStyle.StandardPixmap.SP_DialogHelpButton))
+        top.addWidget(setup_help)
+        switch, self.design_button, self.send_workspace = workspace_switch(
+            setup, self.open_design, self.open_send_workspace, active="Send")
+        self.design_button.setToolTip("Open the editor to draw, move or arrange cut paths.")
+        self.send_workspace.setToolTip("Review the cut, loaded material, and cutter connection.")
+        top.addWidget(switch)
+        content.addWidget(header)
         split = QSplitter(Qt.Orientation.Horizontal)
+        split.setChildrenCollapsible(False)
         content.addWidget(split, 1)
         self.tabs = QTabWidget()
-        self.tabs.currentChanged.connect(lambda: self.refresh_send())
-        split.addWidget(self.tabs)
+        self.tabs.setProperty("role", "settings")
+        self.tabs.setMinimumWidth(345)
+        self.tabs.setAccessibleName("Cut settings")
+        self.tabs.setDocumentMode(True)
+        self.tabs.currentChanged.connect(self.change_page)
 
         preview_panel = QWidget()
         right = QVBoxLayout(preview_panel)
-        right.setContentsMargins(4, 0, 0, 0)
-        preview_controls = QHBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(7)
+        preview_bar, preview_controls = bar(preview_panel)
+        self.preview_title = styled_label("Sheet preview")
+        preview_controls.addWidget(self.preview_title)
+        preview_controls.addStretch(1)
+        self.preview = Preview()
         self.preview_mode = QComboBox()
         set_choices(self.preview_mode, PREVIEW_MODES, "Overlay")
         self.preview_mode.currentIndexChanged.connect(lambda: self.change_preview())
         self.preview_mode.setAccessibleName("Sheet preview mode")
         self.preview_mode.hide()
         preview_controls.addWidget(self.preview_mode)
-        fit = button("Fit", lambda: self.preview.fit())
-        preview_controls.addWidget(fit)
-        preview_controls.addStretch()
-        self.colorblind = QCheckBox("Colorblind mode")
-        self.colorblind.setChecked(bool(self.settings.get("colorblind_mode")))
-        self.colorblind.toggled.connect(self.change_palette)
-        preview_controls.addWidget(self.colorblind)
-        right.addLayout(preview_controls)
-        self.preview = Preview()
-        self.preview.colorblind = self.colorblind.isChecked()
+        self.preview_zoom = ZoomControls(self.preview)
+        preview_controls.addWidget(self.preview_zoom)
+        right.addWidget(preview_bar)
+        self.preview.colorblind = bool(self.settings.get("colorblind_mode"))
         right.addWidget(self.preview, 1)
-        self.summary = QLabel()
+
+        self.summary_bar, summary_row = bar(preview_panel, (12, 8, 12, 8))
+        summary_text = QVBoxLayout()
+        summary_text.setSpacing(2)
+        self.summary_title = styled_label()
+        summary_text.addWidget(self.summary_title)
+        self.summary = styled_label(role="body")
         self.summary.setWordWrap(True)
-        self.summary.setTextFormat(Qt.TextFormat.PlainText)
-        right.addWidget(self.summary)
-        details_toggle = QCheckBox("Job details")
-        right.addWidget(details_toggle)
+        summary_text.addWidget(self.summary)
+        summary_row.addLayout(summary_text, 1)
+        options = QVBoxLayout()
+        options.setSpacing(4)
+        self.colorblind = QCheckBox("Colorblind mode")
+        self.colorblind.setToolTip("Use blue and orange paths with dashed lines and labels for failed checks.")
+        self.colorblind.setChecked(self.preview.colorblind)
+        self.colorblind.toggled.connect(self.change_palette)
+        options.addWidget(self.colorblind)
+        self.details_toggle = QCheckBox("Job details")
+        self.details_toggle.setToolTip("Show the geometry checks, cutter settings and registration warnings.")
+        options.addWidget(self.details_toggle)
+        summary_row.addLayout(options)
+        right.addWidget(self.summary_bar)
         self.details = QPlainTextEdit(readOnly=True)
+        self.details.setProperty("role", "diagnostics")
         self.details.setMaximumHeight(150)
         self.details.hide()
-        details_toggle.toggled.connect(self.details.setVisible)
+        self.details_toggle.toggled.connect(self.details.setVisible)
         right.addWidget(self.details)
         split.addWidget(preview_panel)
-        split.setStretchFactor(1, 1)
-        split.setSizes([420, 700])
+        split.addWidget(self.tabs)
+        split.setStretchFactor(0, 1)
+        split.setSizes([746, 424])
 
-        footer = QHBoxLayout()
-        self.footer_status = QLabel()
+        footer_bar, footer = bar(setup)
+        self.footer_status = styled_label(role="body")
         self.footer_status.setWordWrap(True)
         footer.addWidget(self.footer_status, 1)
-        self.review_button = button("Review Send", self.follow_review)
-        self.send_button = button("Send to Cutter", self.confirm_send)
+        self.review_button = button("Review Send", self.follow_review, primary=True)
+        self.send_button = button("Send to Cutter", self.confirm_send, primary=True,
+                                  icon=("media-playback-start", QStyle.StandardPixmap.SP_MediaPlay))
         self.send_button.setMinimumHeight(32)
-        primary = self.send_button.font()
-        primary.setBold(True)
-        self.send_button.setFont(primary)
+        self.back_to_send = button("Back to Send", self.close_material_guide, primary=True)
         footer.addWidget(self.review_button)
         footer.addWidget(self.send_button)
-        content.addLayout(footer)
+        footer.addWidget(self.back_to_send)
+        content.addWidget(footer_bar)
 
         with self.editing():
             self.layout_page()
             self.sheet_page()
             self.blade_page()
             self.send_page()
+        for field, description in HELP.items():
+            widget = self.blade.get(field) or self.controls.get(field)
+            widget.setToolTip(description)
+        self.skip.setToolTip("Comma-separated slot numbers, starting at 0 in the top-left. Skipped slots are left uncut.")
         self.rebuild()
 
     @contextmanager
@@ -148,7 +215,11 @@ class Window(QMainWindow):
         return self.pages[name]
 
     def install_page(self, name, page):
-        self.pages[name] = self.tabs.addTab(page.finish(), name)
+        icons = {"Layout": ("view-grid", QStyle.StandardPixmap.SP_FileIcon),
+                 "Sheet": ("document-print", QStyle.StandardPixmap.SP_FileDialogDetailedView),
+                 "Blade": ("configure", QStyle.StandardPixmap.SP_FileDialogContentsView),
+                 "Send": ("media-playback-start", QStyle.StandardPixmap.SP_MediaPlay)}
+        self.pages[name] = self.tabs.addTab(page.finish(), themed_icon(self, *icons[name]), name)
 
     def choose(self, form, field, label, choices, default=None, changed=None):
         self.controls[field] = form.choice(label, choices, default, changed or self.rebuild)
@@ -170,8 +241,8 @@ class Window(QMainWindow):
         page = Page()
         source = page.group("Cut artwork")
         self.source_label = source.note("Generated card layout")
-        source.push("Open SVG, DXF or Studio3…", self.open_artwork)
-        source.push("Use Generated Layout", self.reset_artwork)
+        source.push("Open Cut Artwork…", self.open_artwork)
+        self.use_generated = source.push("Use Generated Layout", self.reset_artwork)
         self.choose(source, "colour", "Line color", {"": "All colors"})
         layout = page.group("Media and cards")
         self.choose(layout, "layout_preset", "Layout preset",
@@ -186,7 +257,8 @@ class Window(QMainWindow):
         marks = page.group("Registration Marks")
         self.choose(marks, "pattern", "Pattern", {regmarks.THREE: "Type 1 (3 marks)", regmarks.FOUR: "4 marks"})
         self.number(marks, "mark_inset_mm", "Inset (mm)", 10, 2, 40, 0.1, 2)
-        self.number(marks, "mark_length_mm", "Length (mm, 0 for auto)", 0, 0, regmarks.MAX_LENGTH_MM, 0.1, 4)
+        self.number(marks, "mark_length_mm", "Arm length (mm)", 0, 0, regmarks.MAX_LENGTH_MM, 0.1, 4)
+        self.controls["mark_length_mm"].setSpecialValueText("Auto")
         self.number(marks, "mark_thickness_mm", "Thickness (mm)", 1, regmarks.MIN_THICKNESS_MM, regmarks.MAX_THICKNESS_MM, 0.05, 2)
         self.number(marks, "bleed_mm", "Bleed (mm)", 0, 0, 5, 0.25, 3)
         self.skip = marks.text("Skip slots (0-based)", changed=self.rebuild)
@@ -205,7 +277,12 @@ class Window(QMainWindow):
         form.push("Measure Registration Marks", self.measure_sheet)
         result = page.group("Registration results")
         self.sheet_result = result.note("Not measured")
-        self.scan_result = result.note("")
+        scan = page.group("Last cutter scan")
+        self.scan_box = scan.parentWidget()
+        self.scan_result = scan.note()
+        self.scan_result.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.copy_scan = scan.push("Copy Scan Details", self.copy_scan_details)
+        self.clear_scan_result()
         self.install_page("Sheet", page)
 
     def blade_page(self):
@@ -213,14 +290,18 @@ class Window(QMainWindow):
         profile = page.group("Material preset")
         self.choose(profile, "preset", "Preset", sorted(presets.all_presets()), config.DEFAULT_PRESET, self.load_preset)
         self.provenance = profile.note()
-        profile.push("Save Preset", self.save_preset)
-        profile.push("Save as New Preset…", self.save_new_preset)
+        profile.actions(button("Update Preset", self.save_preset), button("Save as New…", self.save_new_preset))
+        profile.push("Dial In a Material…", self.open_material_guide)
         tool = page.group("Cutter and blade")
         self.choose(tool, "cutter", "Cutter", DEVICES, "Silhouette Cameo 4", self.change_cutter)
         for key, label, lo, hi, step, decimals in BLADE_NUMBERS:
             self.blade[key] = tool.number(label, lo, lo, hi, step, decimals, self.rebuild)
+        self.blade["depth"].setSpecialValueText("Manual / off")
+        self.blade["acceleration"].setSpecialValueText("Auto")
         for key, label in BLADE_SWITCHES[:3]:
             self.blade[key] = tool.check(label, changed=self.rebuild)
+        self.installed_tools = tool.note("Cutter status not checked.")
+        self.detect_blades = tool.push("Detect Installed Tools", self.check_device)
         path_settings = page.group("Cut paths")
         for key, label, choices in BLADE_CHOICES:
             self.blade[key] = path_settings.choice(label, choices, changed=self.rebuild)
@@ -231,11 +312,12 @@ class Window(QMainWindow):
         self.number(weed, "weed_border_mm", "Weed border padding (mm)", 0, 0, 1000, 0.5, 2)
         self.choose(weed, "weed_lines", "Weed Lines", toolpath.WEED_LINES)
         table = page.group("Silhouette material database")
+        table.note("Import Studio’s condition.csv for the complete factory material list for your cutter.")
         self.divisions = table.choice("Show Cutter Divisions", {False: "Known Cutters", True: "All Cutters"},
                                      changed=self.load_materials)
         self.material = table.choice("Material", ())
-        table.push("Choose condition.csv…", self.choose_material_csv)
-        table.push("Apply Material", self.apply_material)
+        table.actions(button("Import Studio Materials…", self.choose_material_csv),
+                      button("Apply Material", self.apply_material))
         table.push("Restore Default Materials…", self.restore_materials)
         self.install_page("Blade", page)
         self.load_preset()
@@ -243,15 +325,7 @@ class Window(QMainWindow):
 
     def send_page(self):
         page = Page()
-        groups = page.group("Send by")
-        self.group_box = groups.parentWidget()
-        self.choose(groups, "send_mode", "Mode", actions.SEND_MODES, changed=self.change_group_mode)
-        self.group_details = QWidget()
-        self.group_layout = QVBoxLayout(self.group_details)
-        self.group_layout.setContentsMargins(0, 0, 0, 0)
-        groups.addRow(self.group_details)
-
-        cutter = page.group("Connection")
+        cutter = page.group("Cutter")
         self.link = cutter.choice("Transport", {"auto": "USB", **bluetooth.BLUETOOTH_MODES},
                                   changed=self.change_connection)
         self.detected = cutter.choice("Bluetooth devices", {"": "Select a cutter"}, changed=self.device_selected)
@@ -260,14 +334,40 @@ class Window(QMainWindow):
         self.channel = cutter.number("RFCOMM channel", 1, 1, 30, changed=self.change_target)
         self.discover = cutter.push("Find Bluetooth Cutters", self.find_cutters)
         self.connection_status = cutter.note("Cutter status not checked.")
-        cutter.push("Refresh Cutter Status", self.check_device)
+        self.refresh_cutter = cutter.push("Check Cutter Status", self.check_device)
         self.connection_form = cutter
+
+        groups = page.group("Send by")
+        self.group_box = groups.parentWidget()
+        self.choose(groups, "send_mode", "Mode", {**actions.SEND_MODES, "simple": "Standard"},
+                    changed=self.change_group_mode)
+        self.controls["send_mode"].setToolTip(
+            "Standard uses your current settings. Line, Fill and Layer assign settings to groups of paths.")
+        self.group_details = QWidget()
+        self.group_layout = QVBoxLayout(self.group_details)
+        self.group_layout.setContentsMargins(0, 0, 0, 0)
+        groups.addRow(self.group_details)
+
+        settings = page.group("Cut Settings")
+        self.send_preset = settings.choice("Material", (), changed=self.apply_send_preset)
+        self.send_blade = {}
+        for key, label, low, high, step, decimals in BLADE_NUMBERS[:5]:
+            self.send_blade[key] = settings.number(label, low, low, high, step, decimals,
+                                                    lambda field=key: self.apply_send_control(field))
+        self.send_blade["depth"].setSpecialValueText("Manual / off")
+        for key, label in (("sharpen_corners", "Line Segment Overcut"), ("track_enhancing", "Track Enhancing")):
+            self.send_blade[key] = settings.check(label, changed=lambda field=key: self.apply_send_control(field))
+        settings.actions(button("Advanced Blade Settings", lambda: self.tabs.setCurrentIndex(self.tab("Blade"))),
+                         button("Dial In a Material…", self.open_material_guide))
 
         registration = page.group("Registration")
         self.check(registration, "registration", "Scan for printed marks", True)
         self.check(registration, "auto_search", "Search automatically", True)
-        self.scan_button = registration.push("Test Registration", lambda: self.confirm_send(scan_only=True))
-        self.corner_button = registration.push("Corner Test Cut…", self.confirm_corner_test)
+        self.scan_button = button("Test Registration", lambda: self.confirm_send(scan_only=True))
+        self.corner_button = button("Corner Test Cut…", self.confirm_corner_test)
+        self.scan_button.setToolTip("Scan the printed marks without cutting.")
+        self.corner_button.setToolTip("Cut a single 3 mm square outside the artwork in a clear corner.")
+        registration.actions(self.scan_button, self.corner_button)
 
         media = page.group("Media handling")
         self.choose(media, "mat", "Cutting mat", graphtec.MAT_OPTIONS)
@@ -275,18 +375,37 @@ class Window(QMainWindow):
         self.number(media, "end_feed_mm", "Feed Distance (mm)", 0, 0, 3000, 0.5, 2)
         self.weed_visibility = media.choice("Show Weed Settings", ("Auto", "Always", "Never"),
                                           self.settings.get("show_weed_settings"), self.update_weed_preference)
-        guide = page.group("Starting Guide")
+        guide = page.group("Dial In a Material")
+        self.guide_box = guide.parentWidget()
         guide.note(starting_guide.GUIDE_TEXT)
-        self.guide_apply = guide.push("Apply Starting Settings", self.apply_guide_start)
+        self.guide_apply = button("Use Starting Settings", self.apply_guide_start)
+        self.guide_edit = button("Adjust in Blade", self.adjust_guide_settings)
+        self.guide_edit.setToolTip("Choose a material preset or adjust pressure, speed and depth for the next spot.")
+        guide.actions(self.guide_apply, self.guide_edit)
         self.guide_status = guide.note()
-        self.guide_send = guide.push("Cut One Pass…", self.confirm_guide_pass)
-        self.guide_use = guide.push("Use Tested Settings", self.use_guide_settings)
-        self.guide_next = guide.push("Next Test Spot", self.next_guide_spot)
-        self.guide_reset = guide.push("New Test Sheet", self.reset_guide)
+        self.guide_outcome_label = "How did the cut look?"
+        self.guide_outcome = guide.choice(self.guide_outcome_label, starting_guide.OUTCOMES,
+                                          changed=self.inspect_test_cut)
+        self.guide_form = guide
+        self.guide_advice = guide.note()
+        self.guide_send = button("Cut One Pass…", self.confirm_guide_pass, primary=True)
+        self.guide_use = button("Use Tested Settings…", self.use_guide_settings)
+        self.guide_use.setToolTip("Use the completed pass count and optionally save the tested settings for this material.")
+        guide.actions(self.guide_send, self.guide_use)
+        self.guide_next = button("Next Test Spot", self.next_guide_spot)
+        self.guide_next.setToolTip("Move to untouched stock before testing different settings.")
+        self.guide_reset = button("New Test Sheet", self.reset_guide)
+        guide.actions(self.guide_next, self.guide_reset)
+        tips_toggle = guide.check("Tips for adjusting the cut")
+        tips = guide.note(starting_guide.TUNING_TIPS)
+        tips.hide()
+        tips_toggle.toggled.connect(tips.setVisible)
         calibration = page.group("Calibration")
         dx, dy = config.cut_offset()
         self.cal_x = calibration.number("Offset X (mm)", dx, -5, 5, 0.05, 2, self.rebuild)
         self.cal_y = calibration.number("Offset Y (mm)", dy, -5, 5, 0.05, 2, self.rebuild)
+        self.cal_x.setToolTip("Move the cut horizontally after a pen alignment test. Positive is right.")
+        self.cal_y.setToolTip("Move the cut vertically after a pen alignment test. Positive is down.")
         calibration.push("Save Calibration", self.save_calibration)
         tests = page.group("Test-Cut Matrix")
         self.test_shape = tests.choice("Shape", testcut.TEST_SHAPES)
@@ -296,6 +415,77 @@ class Window(QMainWindow):
         page.group("Diagnostics").push("Save Raw Stream…", self.dump_stream)
         self.install_page("Send", page)
         self.change_connection()
+
+    def show_setup_guide(self):
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Set Up Your First Cut")
+        dialog.setText("Set up your first cut")
+        dialog.setInformativeText(
+            "1. Open SVG, DXF or Studio3 artwork in Layout, start in Design, or open a matched ZIP in Sheet.\n\n"
+            "2. In Send, connect your cutter and choose a material. Use Dial In a Material to test the same stock.\n\n"
+            "3. For a printed sheet, check the PDF in Sheet and test registration in Send. "
+            "Review the preview before sending the full cut.")
+        tune = dialog.addButton("Dial In a Material…", QMessageBox.ButtonRole.ActionRole)
+        dialog.addButton(QMessageBox.StandardButton.Close)
+        dialog.exec()
+        if dialog.clickedButton() is tune:
+            self.open_material_guide()
+
+    def open_material_guide(self):
+        index = self.tab("Send")
+        self.tabs.setCurrentIndex(index)
+        self.tuning = True
+        self.refresh_send()
+        scroll = self.tabs.widget(index)
+        QTimer.singleShot(0, self, lambda: scroll.verticalScrollBar().setValue(self.guide_box.y() - 12))
+
+    def open_send_workspace(self):
+        if self.tuning:
+            self.close_material_guide()
+        self.follow_review()
+
+    def close_material_guide(self):
+        self.tuning = False
+        self.tabs.widget(self.tab("Send")).verticalScrollBar().setValue(0)
+        self.refresh_send()
+
+    def change_page(self, index):
+        if index != self.pages.get("Send"):
+            self.tuning = False
+        self.refresh_send()
+
+    def apply_send_preset(self):
+        self.select("preset", self.send_preset.currentData())
+
+    def apply_send_control(self, field):
+        source = self.send_blade[field]
+        target = self.blade[field]
+        if isinstance(source, QCheckBox):
+            target.setChecked(source.isChecked())
+        else:
+            target.setValue(source.value())
+
+    def sync_send_controls(self):
+        catalog = self.controls["preset"]
+        names = tuple(catalog.itemData(index) for index in range(catalog.count()))
+        if names != tuple(self.send_preset.itemData(index) for index in range(self.send_preset.count())):
+            set_choices(self.send_preset, names, catalog.currentData())
+        with QSignalBlocker(self.send_preset):
+            self.send_preset.setCurrentIndex(self.send_preset.findData(catalog.currentData()))
+        for field, target in self.send_blade.items():
+            source = self.blade[field]
+            target.setToolTip(source.toolTip())
+            target.setEnabled(source.isEnabled())
+            with QSignalBlocker(target):
+                if isinstance(target, QCheckBox):
+                    target.setChecked(source.isChecked())
+                else:
+                    target.setValue(source.value())
+
+    def adjust_guide_settings(self):
+        if self.guide.trial:
+            self.next_guide_spot()
+        self.tabs.setCurrentIndex(self.tab("Blade"))
 
     def change_preview(self):
         self.preview.mode = self.preview_mode.currentData()
@@ -323,10 +513,13 @@ class Window(QMainWindow):
         self.save_settings("show_weed_settings", mode)
 
     def load_preset(self):
-        selected = presets.get(self.choice("preset"))
+        cutter = self.choice("cutter")
+        selected = presets.get(self.choice("preset"), cutter)
+        self.provenance.setText(selected.note)
+        self.set_blade_settings(selected.cut_settings())
+
+    def set_blade_settings(self, settings):
         with self.editing():
-            self.provenance.setText(selected.note)
-            settings = selected.cut_settings()
             for key, *_ in BLADE_NUMBERS:
                 value = getattr(settings, key)
                 self.blade[key].setValue(-1 if value is None else value)
@@ -341,17 +534,15 @@ class Window(QMainWindow):
         values = self.blade_values()
         try:
             saved = presets.save_blade_settings(
-                self.choice("preset"), new_name=name,
+                self.choice("preset"), new_name=name, cutter=self.choice("cutter"),
                 **{key: values.pop(key) for key in ("force", "speed", "depth", "passes")},
                 blade_options=values)
         except (OSError, ValueError) as error:
             self.message(str(error))
             return
         if saved is not None:
-            set_choices(self.controls["preset"], sorted(presets.all_presets()), name.strip() if name else None)
+            self.refresh_preset_choices(name.strip() if name else None)
             self.load_preset()
-            if self.group_rows:
-                self.change_group_mode()
         self.message("Preset saved." if saved else "Preset settings are already saved.")
 
     def save_new_preset(self):
@@ -367,6 +558,13 @@ class Window(QMainWindow):
             self.materials = {}
         set_choices(self.material, sorted(self.materials) or {"": "No Studio material database"})
 
+    def refresh_preset_choices(self, selected=None):
+        catalog = presets.all_presets(self.choice("cutter"))
+        names = (presets.STARTING_NAME, *sorted(set(catalog) - {presets.STARTING_NAME}))
+        set_choices(self.controls["preset"], names, selected)
+        if self.group_rows:
+            self.change_group_mode()
+
     def choose_material_csv(self):
         path = self.select_open("Choose Silhouette condition.csv", "CSV files (*.csv *.CSV)")
         if path:
@@ -376,15 +574,27 @@ class Window(QMainWindow):
                 self.message(str(error))
             else:
                 self.load_materials()
+                self.refresh_preset_choices()
+                self.message(f"Loaded {len(presets.factory_presets(self.choice('cutter')))} Studio materials.")
 
     def change_cutter(self):
         self.load_materials()
-        self.rebuild()
+        selected = self.choice("preset")
+        self.refresh_preset_choices()
+        if selected in presets.factory_presets(self.choice("cutter")) or self.choice("preset") != selected:
+            self.load_preset()
+        else:
+            self.rebuild()
 
     def apply_material(self):
         selected = self.materials.get(self.material.currentData())
         if selected is None:
-            self.message("Choose a local Silhouette condition.csv file first.")
+            self.message("Import Studio Materials and choose a material first.")
+            return
+        name = selected.name
+        if not self.divisions.currentData() and self.controls["preset"].findData(name) >= 0:
+            self.select("preset", name)
+            self.load_preset()
             return
         with self.editing():
             self.blade["force"].setValue(selected.force)
@@ -458,6 +668,7 @@ class Window(QMainWindow):
 
     def use_artwork(self, drawing, label, send_mode="simple"):
         self.artwork = drawing
+        self.clear_scan_result()
         self.group_choices.clear()
         self.source_label.setText(label + ("\n" + drawing.describe() if drawing else ""))
         if drawing and drawing.warnings:
@@ -497,7 +708,7 @@ class Window(QMainWindow):
                     key, (False, actions.CURRENT_SETTINGS, None, number))
                 self.group_rows[key] = (
                     form.check("Send this group", enabled, self.rebuild),
-                    form.choice("Preset", (actions.CURRENT_SETTINGS, *sorted(presets.all_presets())),
+                    form.choice("Preset", (actions.CURRENT_SETTINGS, *sorted(presets.all_presets(self.choice("cutter")))),
                                 profile, self.rebuild),
                     form.choice("Tool holder", {None: "Use preset", 1: "1", 2: "2"}, holder, self.rebuild),
                     form.number("Send order", order, 1, len(groups), changed=self.rebuild))
@@ -558,6 +769,8 @@ class Window(QMainWindow):
 
     def update_enabled_fields(self):
         device = graphtec.device_by_name(self.choice("cutter"))
+        for name, upper in (("force", device.max_pressure), ("speed", device.max_speed)):
+            self.blade[name].setToolTip(f"{HELP[name]} Range on {DEVICES[device.name]} is 1–{upper}.")
         self.blade["holder"].setEnabled(device.two_tools)
         self.blade["depth"].setEnabled(device.autoblade and self.blade["holder"].value() == 1)
         self.blade["acceleration"].setEnabled(device.detects_tools)
@@ -576,20 +789,25 @@ class Window(QMainWindow):
         self.controls["end_feed_mm"].setEnabled(self.choice("end_position") == "below")
         self.controls["auto_search"].setEnabled(self.controls["registration"].isChecked())
         self.group_box.setVisible(self.artwork is not None)
+        self.use_generated.setEnabled(self.artwork is not None or self.bundle is not None)
 
     def rebuild(self):
         if self.loading:
             return
         self.update_enabled_fields()
+        self.sync_send_controls()
         previous = self.job
         self.job = None
         problems = []
+        title = "Layout checked"
         if self.bundle and self.artwork is None:
+            title = "Legacy cut file"
             summary = "Save the legacy cut file from Sheet. A cut SVG is required for direct cutting."
         else:
             try:
                 self.job = job.build(**self.job_options())
             except (ValueError, KeyError) as error:
+                title = "Layout needs attention"
                 summary = str(error)
             else:
                 current = self.job
@@ -597,14 +815,25 @@ class Window(QMainWindow):
                 passes = "pass" if current.settings.passes == 1 else "passes"
                 caption = f"{len(current.action_groups)} Send groups" if current.action_groups else (
                     f"{current.preset.name} · {current.settings.passes} {passes}")
-                summary = (f"{current.grid.sheet_w_mm:g} × {current.grid.sheet_h_mm:g} mm · "
+                orientation = "portrait" if current.grid.portrait else "landscape"
+                summary = (f"{current.grid.sheet_name} {orientation} · "
+                           f"{current.grid.sheet_w_mm:g} × {current.grid.sheet_h_mm:g} mm · "
                            f"{len(current.paths)} paths\n{caption}")
-                if problems or current.warnings:
-                    summary += "\n" + (problems or current.warnings)[0]
+                if problems:
+                    title = "Layout needs attention"
+                    summary += "\n" + problems[0]
+                elif not current.registration:
+                    title = "Layout checked · Registration off"
+                    summary += "\nThe cutter uses sheet coordinates. Use a blank sheet."
+                elif current.mask_hints:
+                    summary += "\nArtwork is close to a registration mark."
+                elif current.warnings:
+                    summary += "\n" + current.warnings[0]
         marks = self.job.marks if self.job else None
         if self.pdf and not self.bundle and previous and previous.marks != marks:
             self.invalidate_measurement()
             self.sheet_result.setText("Registration geometry changed. Measure the PDF again.")
+        self.summary_title.setText(title)
         self.summary.setText(summary)
         diagnostics = ([f"{key}: {value}" for key, value in self.job.summary()] +
                        [f"{'OK' if row.ok else 'FAIL'} · {row.label}: {row.got}" for row in self.job.rows] +
@@ -657,15 +886,22 @@ class Window(QMainWindow):
         target = self.review_tab()
         index = self.tabs.currentIndex()
         self.review_button.setText(f"Review {target}")
-        self.review_button.setVisible(target == "Design" or index != self.tab(target))
-        self.send_button.setVisible(target == "Send" and index == self.tab("Send"))
+        self.back_to_send.setVisible(self.tuning)
+        self.review_button.setVisible(not self.tuning and (target == "Design" or index != self.tab(target)))
+        self.send_button.setVisible(not self.tuning and target == "Send" and index == self.tab("Send"))
         reason = self.send_refusal(self.job, self.connection())
         self.send_button.setEnabled(not reason)
         self.corner_button.setEnabled(not reason)
         self.scan_button.setEnabled(not self.send_refusal(self.job, self.connection(), scan_only=True))
         self.test_button.setEnabled(not self.busy)
+        can_check = not self.busy and (self.connection()[0] == "auto" or bool(self.connection()[1]))
+        self.refresh_cutter.setEnabled(can_check)
+        self.detect_blades.setEnabled(can_check)
+        if self.bundle and self.report is not None and not self.bundle_checked:
+            self.summary_title.setText("PDF registration needs attention")
         self.update_guide()
-        self.footer_status.setText(reason or (
+        self.update_tuning_preview()
+        self.footer_status.setText("Blank test stock · Registration off for samples" if self.tuning else reason or (
             f"{self.job.device.name} · {len(self.job.paths)} paths · "
             + ("Registration on" if self.job.registration else "Registration off")))
 
@@ -717,6 +953,7 @@ class Window(QMainWindow):
         self.sheet_token = self.report = None
         self.bundle_checked = False
         self.preview.report = None
+        self.clear_scan_result()
         if clear_image:
             self.preview.show_pdf()
             self.preview_mode.hide()
@@ -822,7 +1059,6 @@ class Window(QMainWindow):
         self.invalidate_measurement(clear_image=True)
         token = self.sheet_token = object()
         self.sheet_result.setText("Measuring…")
-        self.scan_result.clear()
         self.refresh_send()
         row = self.current_bundle_row()
         marks = matched.marks() if matched else current.marks
@@ -876,8 +1112,13 @@ class Window(QMainWindow):
         self.change_target()
 
     def change_target(self):
-        self.connection_status.setText("Cutter status not checked.")
+        self.set_cutter_status("Cutter status not checked.")
+        self.clear_scan_result()
         self.refresh_send()
+
+    def set_cutter_status(self, text):
+        self.connection_status.setText(text)
+        self.installed_tools.setText(text)
 
     def device_selected(self):
         identifier = self.detected.currentData()
@@ -917,7 +1158,7 @@ class Window(QMainWindow):
             self.message("Select a Bluetooth cutter.")
             return
         self.busy = True
-        self.connection_status.setText("Reading cutter status…")
+        self.set_cutter_status("Reading cutter status…")
         self.refresh_send()
 
         def work():
@@ -928,7 +1169,7 @@ class Window(QMainWindow):
         def done(value, error):
             self.busy = False
             if connection == self.connection():
-                self.connection_status.setText(str(error) if error else value[1])
+                self.set_cutter_status(f"Cutter detection unavailable. {error}" if error else value[1])
                 if not error and connection[0] != "auto":
                     self.select("cutter", value[0].name)
             self.refresh_send()
@@ -989,24 +1230,49 @@ class Window(QMainWindow):
         checked = corner.job if corner else plan
         steps = checked.registration_steps() if scan_only else checked.steps
         report, row, matched = self.report, self.current_bundle_row(), self.bundle
+        started = monotonic()
 
         def failed(error):
             notes = plan.registration_notes(report, matched.near_marks(row) if matched else None)
+            if report is None:
+                notes.insert(0, "Open the print PDF in Sheet to check each mark.")
             if matched:
                 notes.append(matched.mat_placement())
-            notes.extend(("Check the print scale and keep all marks visible.", *plan.registration_writes()))
-            self.scan_result.setText("\n".join((str(error), *notes)))
-            self.tabs.setCurrentIndex(self.tab("Sheet"))
+            notes.append("Check the print scale, keep all marks visible, and look for glare.")
+            route = bluetooth.BLUETOOTH_MODES.get(connection[0], "USB")
+            detail = "\n".join((f"{plan.device.name} · {route}",
+                                f"Scan failed after {monotonic() - started:.1f} s.",
+                                f"PDF front page {row['frontPage']}" if row else "",
+                                "Commands sent before the reply", *plan.registration_writes()))
+            self.show_scan_result("\n\n".join((str(error), *notes, detail)), reveal=True)
 
         success = ("Corner test sent." if corner else "Registration scan passed." if scan_only else "Cut sent.")
         self.send_steps(checked.device, connection, steps, success,
-                        on_registration_failure=failed, wait_done=corner is not None)
+                        on_registration_failure=failed, wait_done=corner is not None,
+                        on_success=(lambda: self.show_scan_result("Registration passed. No cut paths were sent."))
+                        if scan_only else None)
+
+    def clear_scan_result(self):
+        self.scan_result.clear()
+        self.scan_box.hide()
+
+    def show_scan_result(self, message, *, reveal=False):
+        self.scan_result.setText(message)
+        self.scan_box.show()
+        if reveal:
+            index = self.tab("Sheet")
+            self.tabs.setCurrentIndex(index)
+            self.tabs.widget(index).ensureWidgetVisible(self.scan_box, 0, 12)
+
+    def copy_scan_details(self):
+        QApplication.clipboard().setText(self.scan_result.text())
+        self.message("Scan details copied.")
 
     def send_steps(self, device, connection, steps, success, *, on_registration_failure=None,
-                   test=False, wait_done=False):
+                   on_success=None, test=False, wait_done=False):
         self.guide.invalidate()
         self.busy = True
-        self.scan_result.clear()
+        self.clear_scan_result()
         self.refresh_send()
 
         def work():
@@ -1024,18 +1290,51 @@ class Window(QMainWindow):
             self.refresh_send()
             if isinstance(error, transport.RegistrationFailed) and on_registration_failure:
                 on_registration_failure(error)
+            elif error is None and on_success:
+                on_success()
             self.message(str(error) if error else f"{success} {sent:,} bytes.")
 
         self.tasks.run(work, done)
 
     def update_guide(self):
         state = self.guide
-        for field in (self.guide_apply, self.guide_next, self.guide_reset):
+        for field in (self.guide_apply, self.guide_edit, self.guide_next, self.guide_reset):
             field.setEnabled(not self.busy)
-        self.guide_send.setEnabled(not self.busy and not state.interrupted)
-        self.guide_use.setEnabled(not self.busy and state.tested_settings is not None)
+        self.guide_send.setEnabled(not self.busy and state.can_cut)
+        self.guide_use.setEnabled(not self.busy and state.outcome == "clean" and state.tested_settings is not None)
         self.guide_send.setText("Repeat One Pass…" if state.completed else "Cut One Pass…")
-        self.guide_status.setText("Waiting for the cutter to finish…" if self.busy else state.status())
+        status = "Waiting for the cutter to finish…" if self.busy else state.status()
+        if state.awaiting_result and not self.busy:
+            status += "\nLeave the mat loaded and lift a corner to check the sample."
+        self.guide_status.setText(status)
+        blocked = self.guide_outcome.blockSignals(True)
+        self.guide_outcome.setCurrentIndex(self.guide_outcome.findData(state.outcome))
+        self.guide_outcome.blockSignals(blocked)
+        inspecting = state.completed > 0 and not state.interrupted
+        self.guide_form.setRowVisible(self.guide_outcome, inspecting)
+        self.guide_outcome.setEnabled(not self.busy)
+        advice = state.advice() if inspecting else ""
+        self.guide_advice.setText(advice)
+        self.guide_advice.setVisible(bool(advice))
+
+    def inspect_test_cut(self):
+        self.guide.inspect(self.guide_outcome.currentData())
+        self.update_guide()
+
+    def update_tuning_preview(self):
+        trial = None
+        if self.tuning:
+            trial = self.guide.trial
+            if trial is None:
+                try:
+                    trial = self.guide.prepare(self.connection(), self.job_options(), self.job, "square")
+                except (ValueError, KeyError):
+                    pass
+        self.preview.show_trial(trial)
+        self.preview_title.setText("Material test sheet" if trial else "Sheet preview")
+        self.preview_mode.setVisible(trial is None and not self.preview.pdf.isNull())
+        self.summary_bar.setVisible(not self.tuning)
+        self.details.setVisible(not self.tuning and self.details_toggle.isChecked())
 
     def set_guide_blade_values(self, values):
         with self.editing():
@@ -1044,6 +1343,8 @@ class Window(QMainWindow):
         self.rebuild()
 
     def apply_guide_start(self):
+        if self.guide.trial:
+            self.guide.next_spot()
         values = self.blade_values()
         device = graphtec.device_by_name(self.choice("cutter"))
         self.set_guide_blade_values(starting_guide.starting_values(
@@ -1053,30 +1354,51 @@ class Window(QMainWindow):
 
     def use_guide_settings(self):
         settings = self.guide.tested_settings
-        if settings is None:
+        if settings is None or self.guide.outcome != "clean":
             return
         device = graphtec.device_by_name(self.choice("cutter"))
         holder = self.blade["holder"].value() if device.two_tools else 1
         if device != self.guide.trial.sheet.device or settings.holder != holder:
             self.message("Select the tested cutter and tool holder first.")
             return
-        self.set_guide_blade_values({name: getattr(settings, name) for name in ("force", "speed", "depth", "passes")})
-        self.message(f"Applied the tested settings with {settings.passes} pass(es).")
+        self.set_blade_settings(settings)
+        self.message(f"Applied the tested settings with {settings.passes} {'pass' if settings.passes == 1 else 'passes'}.")
+        self.offer_tested_preset(settings, device.name)
+
+    def offer_tested_preset(self, settings, cutter):
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("Save Material Preset?")
+        dialog.setLabelText("Enter the material name to save the tested settings for future cuts.")
+        dialog.setOkButtonText("Save Preset")
+        dialog.setCancelButtonText("Use Without Saving")
+        while dialog.exec():
+            name = dialog.textValue().strip()
+            try:
+                presets.save_tested_settings(name, settings, cutter)
+            except (OSError, ValueError) as error:
+                dialog.setLabelText(str(error))
+            else:
+                self.refresh_preset_choices(name)
+                self.load_preset()
+                self.message(f"Saved {name}.")
+                break
 
     def next_guide_spot(self):
         self.guide.next_spot()
         self.update_guide()
+        self.update_tuning_preview()
 
     def reset_guide(self):
         if self.confirm("Start a New Test Sheet?", "Load a fresh blank sheet to start at the first spot."):
             self.guide.reset()
             self.update_guide()
+            self.update_tuning_preview()
 
     def confirm_guide_pass(self):
-        if self.busy:
+        if self.busy or not self.guide.can_cut:
             return
         try:
-            trial = self.guide.prepare(self.connection(), self.job_options(), self.job, self.test_shape.currentData())
+            trial = self.guide.prepare(self.connection(), self.job_options(), self.job, "square")
         except (ValueError, KeyError) as error:
             self.message(str(error))
             return
@@ -1085,10 +1407,10 @@ class Window(QMainWindow):
             self.start_guide_pass(trial)
 
     def start_guide_pass(self, trial):
-        if self.busy:
+        if self.busy or not self.guide.can_cut:
             return
         try:
-            current = self.guide.prepare(self.connection(), self.job_options(), self.job, self.test_shape.currentData())
+            current = self.guide.prepare(self.connection(), self.job_options(), self.job, "square")
         except (ValueError, KeyError) as error:
             self.message(str(error))
             return
@@ -1106,6 +1428,9 @@ class Window(QMainWindow):
             self.guide.record(trial, error)
             self.busy = False
             self.refresh_send()
+            if not error and self.guide_outcome.isVisible():
+                self.guide_outcome.setFocus()
+                self.tabs.widget(self.tab("Send")).ensureWidgetVisible(self.guide_outcome, 0, 20)
             self.message(str(error) if error else "Pass complete. Keep the mat loaded and lift a corner.")
 
         self.tasks.run(work, done)
@@ -1167,6 +1492,7 @@ class Window(QMainWindow):
         if not artwork.paths or any(path.length_mm() <= 0 for path in artwork.paths):
             self.design.message("Draw or resize the paths before reviewing.")
             return
+        self.tuning = False
         self.project_shapes = project.shapes
         self.reviewed_design = project
         with self.editing():
@@ -1184,6 +1510,16 @@ class Window(QMainWindow):
         self.use_artwork(artwork, f"Design · {action}", "layer" if grouped else "simple")
         self.tabs.setCurrentIndex(self.tab("Send"))
         self.leave_design()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.PaletteChange and hasattr(self, "preview"):
+            self.workspaces.setStyleSheet("")
+            self.workspaces.setPalette(self.palette())
+            self.workspaces.setStyleSheet(WORKSPACE_STYLE)
+            self.preview.render_sheet()
+            if self.design is not None:
+                self.design.canvas.redraw()
 
     def closeEvent(self, event):
         if self.busy:

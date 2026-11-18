@@ -50,6 +50,9 @@ silhouette-control-center gui --frontend qt
 
 Use `gui --frontend gtk` to switch to the GTK frontend. Both frontends use
 the same project files, presets, calibration, and checked cutter plans.
+In Qt, switch between **Design** and **Send** at the top of the window.
+Send keeps the sheet preview alongside the material, tool holder and common
+cut settings. **Setup Guide** walks through preparing a first cut.
 
 AppImage, RPM and Arch/AUR build recipes are in
 [packaging/README.md](packaging/README.md). Built artifacts go into
@@ -242,17 +245,19 @@ sheet. Control Center checks the active cut window, registration marks and
 card outlines before picking a corner. The confirmation shows the spot.
 The test uses the current tool settings for one pass and returns to origin.
 
-Open **Send → Starting Guide** and choose **Apply Starting Settings** to
-load the Card Maker starting point into Blade. On a Cameo 4 with an AutoBlade
-in holder 1, this sets force **25**, speed **25**, depth **7**, and **1 pass**.
+Open **Blade → Dial In a Material** in Qt or **Send → Starting Guide** in GTK.
+Choose a factory preset for your stock or start with force **25**, speed **25**,
+depth **7**, and **1 pass** on a Cameo 4 with an AutoBlade in holder 1.
 
 Load a blank sheet of the same stock on the mat and choose **Cut One Pass**.
 The cutter returns to origin, and the guide waits for it to report completion.
-Keep the mat loaded and lift a corner. If the cut still holds, choose
-**Repeat One Pass** to cut the same spot with the same settings. When it
-separates cleanly, **Use Tested Settings** copies the guide's blade numbers
-and completed pass count into **Blade**. Use **Next Test Spot** to try a
-different setting on fresh material on the same sheet.
+The Qt guide shows the current test spot on a blank sheet preview.
+Keep the mat loaded, lift a corner, and answer **How did the cut look?**
+If the sample is nearly cut through, repeat a pass over the same outline.
+The guide offers adjustments for shallow cuts, rough edges, skipping, and
+mat gouges. Use a fresh spot when changing settings. After a clean cut,
+**Use Tested Settings** applies the final pass count and asks whether
+to save a preset under the material's name.
 
 The test-cut matrix cuts multiple samples at once:
 
@@ -285,23 +290,19 @@ the wrong scale — no offset can correct that.
 
 ## Blade presets
 
-| Preset | For | Provenance |
-|---|---|---|
-| `Cameo 4 starting point` | where to begin, then tune | the Card Maker cutting guide |
-| `330 gsm black-core` | force 35, speed 25, depth 7, four passes | user-selected |
-| `310 gsm black-core` | force 35, speed 25, depth 7, four passes | user-selected |
-| `330 gsm black-core, laminated` | same, under a laminate pouch | extrapolated, **never cut** |
-| `300 gsm cardstock` | lighter card | extrapolated, **never cut** |
-| `Deep-cut blade, 330 gsm` | the 2.0 mm deep-cut blade | extrapolated, **never cut** |
-| `Plain paper test` | proofing alignment, costs nothing | from the recovered media table |
-| `Pen, no blade` | draw the cut instead of cutting it | from the recovered media table |
+The default is **Silhouette starting point**, from the Silhouette Card Maker
+community guide. The app includes verified Studio factory settings for
+cardstock, chipboard, print paper and the sketch pen. In **Blade**, use
+**Import Studio Materials** in Qt or **Choose condition.csv** in GTK to load
+the full factory catalog from your Studio installation. The presets then
+appear by material name and use the best matching cutter division in that file.
+Saved presets and older CLI preset names continue to open.
 
-In **Blade**, select a preset, edit its blade and tool settings, and click
-**Save preset**. To keep this combination under its own name, fill in
-**New preset name** and click **Save as new preset**. The local preset is available the next time you open the app
-and when you select the same preset from the CLI. The device limit still
-applies at send time. Control Center sends force 33 on a Cameo 4 when the
-saved value is 35.
+Use **Save as New** for your own settings. Saved presets are available the
+next time you open the app and from the CLI. Track Enhancing starts enabled
+for the starting profile and factory blade profiles with force 19 or higher.
+Turn it off in **Blade** when needed. The guided one-pass samples skip the
+roller enhancement so repeat passes can use the same loaded sheet.
 
 ### Studio cutting settings on the Cameo 4
 
@@ -339,7 +340,7 @@ Force and speed are unitless machine indices, the same numbers Studio shows.
 number copied from a modern guide means something very different on an older
 machine.
 
-Start at `Cameo 4 starting point` (force 25, speed 25, depth 7, one pass), cut
+Start at `Silhouette starting point` (force 25, speed 25, depth 7, one pass), cut
 a test sheet, and **without ejecting the mat** lift a corner and look at the
 cut. Re-send until it separates cleanly; the number of sends is your pass
 count. Tune in this order: **passes, force, speed, depth** — depth is only a

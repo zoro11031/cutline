@@ -842,7 +842,7 @@ class Window(Adw.ApplicationWindow):
         g3.add(restore)
         page.add(g3)
         self._load_materials()
-        self.r_cutter.connect("notify::selected", self._load_materials)
+        self.r_cutter.connect("notify::selected", self.on_material_cutter_changed)
 
         for row in (self.r_cutter, self.r_path_order, self.r_pass_order, self.r_weed_lines):
             row.connect("notify::selected", self.on_changed)
@@ -949,10 +949,21 @@ class Window(Adw.ApplicationWindow):
         self.guide_status = Adw.ActionRow(title="Test spot 1")
         self.guide_status.set_subtitle_lines(0)
         guide.add(self.guide_status)
+        self.guide_outcome = _combo("How did the cut look?", list(starting_guide.OUTCOMES.values()))
+        self.guide_outcome.connect("notify::selected", self.on_guide_outcome)
+        guide.add(self.guide_outcome)
+        self.guide_advice = Adw.ActionRow(title="What to try next")
+        self.guide_advice.set_subtitle_lines(0)
+        guide.add(self.guide_advice)
         self.guide_send = self.guide_button(guide, "Cut One Pass…", self.on_guide_pass)
-        self.guide_use = self.guide_button(guide, "Use Tested Settings", self.on_guide_use)
+        self.guide_use = self.guide_button(guide, "Use Tested Settings…", self.on_guide_use)
         self.guide_next = self.guide_button(guide, "Next Test Spot", self.on_guide_next)
         self.guide_reset = self.guide_button(guide, "New Test Sheet", self.on_guide_reset)
+        tips = Adw.ExpanderRow(title="Tips for adjusting the cut")
+        detail = Adw.ActionRow(title="One change at a time", subtitle=starting_guide.TUNING_TIPS)
+        detail.set_subtitle_lines(0)
+        tips.add_row(detail)
+        guide.add(tips)
         page.add(guide)
 
         gcal = Adw.PreferencesGroup(
@@ -1124,7 +1135,7 @@ class Window(Adw.ApplicationWindow):
         self.send_modes.set_visible(source is not None)
         self.r_colour.set_sensitive(source is not None and mode == "simple" and self.pdf_bundle is None)
         self.send_groups.set_visible(mode != "simple")
-        profiles = tuple(sorted(presets.all_presets())) if mode != "simple" else ()
+        profiles = tuple(sorted(presets.all_presets(self._text(self.r_cutter)))) if mode != "simple" else ()
         same_source = self._send_source is source
         if same_source and self._send_mode == mode and self._send_profiles == profiles:
             return
@@ -1268,7 +1279,7 @@ class Window(Adw.ApplicationWindow):
                 name, force=int(self.r_force.get_value()), speed=int(self.r_speed.get_value()),
                 depth=int(self.r_depth.get_value()) if self.r_depth.get_value() >= 0 else None,
                 passes=int(self.r_passes.get_value()), blade_options=self._blade_options(),
-                new_name=new_name)
+                new_name=new_name, cutter=self._text(self.r_cutter))
         except (OSError, ValueError) as exc:
             self.toast(f"Could not save preset: {exc}")
             return
@@ -1277,16 +1288,13 @@ class Window(Adw.ApplicationWindow):
             return
         if new_name is not None:
             name = new_name.strip()
-            names = sorted(presets.all_presets())
-            with self.r_preset.handler_block(self.preset_changed_id):
-                self.r_preset.set_model(Gtk.StringList.new(names))
-                self.r_preset.set_selected(names.index(name))
+            self.refresh_preset_choices(name)
             self.new_preset_name.set_text("")
         self.on_preset()
         self.toast(f"Saved {name}.")
 
     def on_preset(self, *_a):
-        p = presets.get(self._text(self.r_preset))
+        p = presets.get(self._text(self.r_preset), self._text(self.r_cutter))
         flag = {"measured": "measured on a real cut",
                 "silhouette": "from Silhouette's published settings",
                 "recovered": "from the recovered media table",
@@ -1298,6 +1306,15 @@ class Window(Adw.ApplicationWindow):
         self._load_blade_settings(p.cut_settings())
         self._suppress = was
         self.on_changed()
+
+    def refresh_preset_choices(self, name=None):
+        name = name or self._text(self.r_preset)
+        names = sorted(presets.all_presets(self._text(self.r_cutter)))
+        if name not in names:
+            name = config.DEFAULT_PRESET
+        with self.r_preset.handler_block(self.preset_changed_id):
+            self.r_preset.set_model(Gtk.StringList.new(names))
+            self.r_preset.set_selected(names.index(name))
 
     def rebuild(self):
         if self._suppress or self._building:
@@ -1849,12 +1866,22 @@ class Window(Adw.ApplicationWindow):
                 if path is not None:
                     materials.select_condition_csv(path)
                     self._load_materials()
+                    self.refresh_preset_choices()
+                    self.on_changed()
             except GLib.Error:
                 return
             except (OSError, ValueError) as error:
                 self.toast(str(error))
 
         dialog.open(self, None, done)
+
+    def on_material_cutter_changed(self, *_args):
+        self._load_materials()
+        selected = self._text(self.r_preset)
+        self.refresh_preset_choices()
+        if (selected in presets.factory_presets(self._text(self.r_cutter))
+                or self._text(self.r_preset) != selected):
+            self.on_preset()
 
     def _load_materials(self, *_args):
         selected = self._text(self.r_material)
@@ -1938,13 +1965,27 @@ class Window(Adw.ApplicationWindow):
         busy = self._sending or self._checking_status
         for field in (self.guide_apply, self.guide_next, self.guide_reset):
             field.set_sensitive(not busy)
-        self.guide_send.set_sensitive(not busy and not self.guide.interrupted)
-        self.guide_use.set_sensitive(not busy and self.guide.tested_settings is not None)
+        state = self.guide
+        self.guide_send.set_sensitive(not busy and state.can_cut)
+        self.guide_use.set_sensitive(not busy and state.outcome == "clean" and state.tested_settings is not None)
         label = "Repeat One Pass…" if self.guide.completed else "Cut One Pass…"
         self.guide_send.set_label(label)
         title, _, body = self.guide.status().partition("\n")
         self.guide_status.set_title(title)
+        if state.awaiting_result and not busy:
+            body += "\nLeave the mat loaded and lift a corner to check the sample."
         self.guide_status.set_subtitle("Waiting for the cutter to finish…" if self._sending else body)
+        inspecting = state.completed > 0 and not state.interrupted
+        self.guide_outcome.set_visible(inspecting)
+        self.guide_outcome.set_sensitive(not busy)
+        self.guide_outcome.set_selected(tuple(starting_guide.OUTCOMES).index(state.outcome))
+        advice = state.advice() if inspecting else ""
+        self.guide_advice.set_subtitle(advice)
+        self.guide_advice.set_visible(bool(advice))
+
+    def on_guide_outcome(self, row, *_args):
+        self.guide.inspect(tuple(starting_guide.OUTCOMES)[row.get_selected()])
+        self.update_guide()
 
     def set_guide_blade_values(self, values):
         fields = {"force": self.r_force, "speed": self.r_speed, "depth": self.r_depth, "passes": self.r_passes}
@@ -1957,6 +1998,8 @@ class Window(Adw.ApplicationWindow):
         self.on_changed()
 
     def on_guide_start(self, *_args):
+        if self.guide.trial:
+            self.guide.next_spot()
         device = graphtec.device_by_name(self._text(self.r_cutter))
         opts = self._blade_options()
         self.set_guide_blade_values(starting_guide.starting_values(device, opts["holder"], opts["blade_diameter_mm"]))
@@ -1965,14 +2008,47 @@ class Window(Adw.ApplicationWindow):
 
     def on_guide_use(self, *_args):
         settings = self.guide.tested_settings
-        if settings is None:
+        if settings is None or self.guide.outcome != "clean":
             return
         device = graphtec.device_by_name(self._text(self.r_cutter))
         if device != self.guide.trial.sheet.device or settings.holder != self._blade_options()["holder"]:
             self.toast("Select the tested cutter and tool holder first.")
             return
-        self.set_guide_blade_values({name: getattr(settings, name) for name in ("force", "speed", "depth", "passes")})
-        self.toast(f"Applied the tested settings with {settings.passes} pass(es).")
+        previous, self._suppress = self._suppress, True
+        try:
+            self._load_blade_settings(settings)
+        finally:
+            self._suppress = previous
+        self.on_changed()
+        self.offer_tested_preset(settings, device.name)
+
+    def offer_tested_preset(self, settings, cutter, name="", error=None):
+        dialog = Adw.AlertDialog(
+            heading="Save Material Preset?",
+            body=error or "Enter the material name to save the tested settings for future cuts.")
+        entry = Gtk.Entry(text=name, placeholder_text="Material name", activates_default=True)
+        dialog.set_extra_child(entry)
+        dialog.add_response("skip", "Use Without Saving")
+        dialog.add_response("save", "Save Preset")
+        dialog.set_response_appearance("save", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("save")
+        dialog.set_close_response("skip")
+
+        def save(_dialog, response):
+            if response != "save":
+                return
+            name = entry.get_text().strip()
+            try:
+                presets.save_tested_settings(name, settings, cutter)
+            except (OSError, ValueError) as problem:
+                self.offer_tested_preset(settings, cutter, name, str(problem))
+            else:
+                self.refresh_preset_choices(name)
+                self.on_preset()
+                self.toast(f"Saved {name}.")
+
+        dialog.connect("response", save)
+        dialog.present(self)
 
     def on_guide_next(self, *_args):
         self.guide.next_spot()
@@ -1995,11 +2071,10 @@ class Window(Adw.ApplicationWindow):
         dialog.present(self)
 
     def guide_proposal(self):
-        shape = list(testcut.TEST_SHAPES)[self.r_test_shape.get_selected()]
-        return self.guide.prepare(self._connection(), self.options(), self.job, shape)
+        return self.guide.prepare(self._connection(), self.options(), self.job, "square")
 
     def on_guide_pass(self, *_args):
-        if self._sending or self._checking_status:
+        if self._sending or self._checking_status or not self.guide.can_cut:
             return
         try:
             trial = self.guide_proposal()
@@ -2017,7 +2092,7 @@ class Window(Adw.ApplicationWindow):
         dialog.present(self)
 
     def _guide_pass_response(self, _dialog, response, trial):
-        if response != "cut" or self._sending or self._checking_status:
+        if response != "cut" or self._sending or self._checking_status or not self.guide.can_cut:
             return
         try:
             current = self.guide_proposal()

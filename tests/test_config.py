@@ -132,7 +132,7 @@ class TestBladePresets(unittest.TestCase):
 
 
     def test_restore_defaults_backs_up_shipped_overrides_and_keeps_custom_presets(self):
-        name = "330 gsm black-core"
+        name = "Coverstock"
         built_in = presets.get(name)
         override = presets.save_blade_settings(name, force=23, speed=8, passes=2, depth=3)
         personal = presets.save_blade_settings(name, force=24, speed=9, passes=3, depth=4,
@@ -144,6 +144,17 @@ class TestBladePresets(unittest.TestCase):
         self.assertTrue(personal.exists())
         self.assertEqual(json.loads((backup / override.name).read_text())["settings"]["force"], 23)
         self.assertEqual(presets.restore_default_materials(), (0, None))
+
+    def test_measured_material_can_use_a_retired_name_and_survives_factory_reset(self):
+        name = "330 gsm black-core"
+        self.assertNotIn(name, presets.all_presets())
+        tested = presets.get(presets.STARTING_NAME).cut_settings()
+        path = presets.save_tested_settings(name, tested, "Silhouette Cameo 4")
+        self.assertEqual(presets.restore_default_materials(), (0, None))
+        self.assertTrue(path.is_file())
+        self.assertEqual(presets.get(name).cut_settings(), tested)
+        with self.assertRaisesRegex(ValueError, "already exists"):
+            presets.save_tested_settings(name.upper(), tested, "Silhouette Cameo 4")
 
 
 class TestCutterDivisions(unittest.TestCase):

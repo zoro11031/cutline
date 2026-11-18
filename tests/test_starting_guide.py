@@ -51,6 +51,26 @@ class TestStartingGuide(unittest.TestCase):
         self.assertEqual(new.settings.force, 28)
         self.assertEqual(self.guide.completed, 0)
 
+    def test_inspection_offers_repeat_only_for_a_clean_edge_that_is_still_attached(self):
+        trial = self.prepare()
+        self.assertTrue(self.guide.can_cut)
+        self.guide.record(trial)
+        self.assertTrue(self.guide.awaiting_result)
+        self.assertFalse(self.guide.can_cut)
+        for outcome, suggestion in (("rough", "Reduce force"), ("shallow", "blade is seated"),
+                                    ("skipped", "power-cycle"), ("mat", "Reduce blade depth"),
+                                    ("clean", "Use the completed pass count")):
+            with self.subTest(outcome=outcome):
+                self.guide.inspect(outcome)
+                self.assertFalse(self.guide.can_cut)
+                self.assertIn(suggestion, self.guide.advice())
+        self.guide.inspect("holding")
+        self.assertTrue(self.guide.can_cut)
+        self.assertIn("same spot", self.guide.advice())
+        self.guide.record(trial)
+        self.assertTrue(self.guide.awaiting_result)
+        self.assertFalse(self.guide.can_cut)
+
     def test_changed_cutter_or_uncertain_pass_requires_a_fresh_spot(self):
         trial = self.prepare()
         self.guide.record(trial)

@@ -12,7 +12,7 @@ class TestCornerTest(unittest.TestCase):
     def test_letter_and_a4_use_one_verified_three_mm_square_and_keep_registration(self):
         for name in ("Letter", "A4"):
             with self.subTest(name=name):
-                active = job.build(sheet=name, passes=4)
+                active = job.build(sheet=name, passes=4, blade_options={'track_enhancing': False})
                 sample = corner_test.build(active)
                 checked = sample.job
                 self.assertEqual(checked.blocked, [])

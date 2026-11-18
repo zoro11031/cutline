@@ -250,15 +250,12 @@ def as_preset(material: Material, name: str = "", note: str = "") -> dict:
         "name": name or f"{material.name} (Silhouette)",
         "description": f"Silhouette's own setting for {material.name}.",
         "origin": "silhouette",
-        "note": (note or
-                 f"Read verbatim from Silhouette Studio's own material "
-                 f"database (Resources/Resources/SPEC_S/condition.csv, "
-                 f"cutter class {material.cutter_class!r}): "
-                 f"{material.describe()}. Published by the vendor, but for "
-                 f"their material, not for 330 gsm black-core stock."),
+        "note": (note or f"Silhouette Studio factory settings"
+                 f"{f' · {material.cutter_class}' if material.cutter_class else ''}. {material.describe()}."),
         "settings": {
             "force": s.force, "speed": s.speed, "passes": s.passes,
             "depth": s.depth, "blade_diameter_mm": s.blade_diameter_mm,
-            "lift_head": True,
+            "lift_head": bool(s.blade_diameter_mm),
+            "track_enhancing": bool(s.blade_diameter_mm and s.force >= 19),
         },
     }

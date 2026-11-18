@@ -1,55 +1,10 @@
-"""Blade presets, and where their numbers come from.
-
-**Read this before trusting a number in this file.**
-
-Silhouette publishes force/speed/pass recommendations per material, and its
-heaviest stock entry is "Cardstock, Textured" territory - around 270 gsm.  The
-330 gsm black-core stock this suite prints on is past the end of every
-published table, exactly as it is past the end of the Canon's paper-weight
-range.  The media table recovered by inkscape-silhouette stops at
-"Tag 100 lbs (275g)" with force 20, speed 10.
-
-So the presets here are **extrapolations, clearly labelled as such**, except
-where a note says a cut was looked at.  `origin` on every preset says which
-it is:
-
-  "silhouette"  - from Silhouette's own published material settings
-  "guide"       - from the Silhouette Card Maker cutting guide, which is
-                  community documentation measured on someone else's machine
-  "recovered"   - from inkscape-silhouette's media table
-  "derived"     - extrapolated here from the above, never cut
-  "measured"    - a sheet was cut on THIS machine and the edge was examined
-
-Nothing is "measured" yet, because there is no cutter on this machine to cut
-with.  When one is attached, cut the calibration sheet, look at the edge, and
-move the preset you used from "derived" to "measured" with the date - the same
-discipline `canon-suite/docs/FINDINGS.md` applies to the printer.
-
-**Scales, and an unresolved disagreement.** Force and speed are unitless
-machine indices. The machine accepts force 1-33 and, on the Cameo 4 and 5,
-speed 1-30. But Silhouette's *own* shipped material database never uses a
-speed above 10 for any material on any cutter class, the Cameo 4 and 5
-classes included, while the Card Maker community guide recommends 25 on a
-Cameo 5. Those cannot both be describing the same scale, and no cutter has
-been attached here to settle it. The black-core presets use the requested
-starting values. The project retains each cutter's force limit at send time.
-`docs/FINDINGS.md` section 11 records both speed references. AutoBlade depth is 0-10 and is a
-*ceiling*: it sets how far the blade can extend, and force and passes decide
-whether that depth is reached. The vendor's file gives depth in millimetres,
-and depth_mm x 10 lines up with the guide's index.
-
-**Tune in this order:** passes, then force, then speed, then depth. That is
-the guide's order and it matches what the machine actually does.
-
-Multi-pass beats force on heavy stock.  A single very high force pass pushes
-the blade deep enough to emboss the back of the sheet and to drag the card
-sideways in the gap between the mat and the blade housing; two or three passes
-at a moderate force cut cleaner and are kinder to both the blade and the mat.
-"""
+"""Factory, starting, and locally saved blade presets."""
 
 from __future__ import annotations
 
 import dataclasses
+from datetime import date
+from functools import lru_cache
 import hashlib
 import json
 import pathlib
@@ -71,7 +26,11 @@ class Preset:
         return CutSettings(**self.settings)
 
 
-BUILTIN: tuple[Preset, ...] = (
+STARTING_NAME = "Silhouette starting point"
+DEFAULT_CUTTER = "Silhouette Cameo 4"
+
+# Keep former names usable by existing projects and command lines.
+_LEGACY: tuple[Preset, ...] = (
     Preset(
         name="310 gsm black-core",
         description="User-selected 310 gsm black-core settings.",
@@ -224,7 +183,58 @@ BUILTIN: tuple[Preset, ...] = (
     ),
 )
 
-BUILTIN_BY_NAME = {p.name: p for p in BUILTIN}
+_LEGACY_BY_NAME = {p.name: p for p in _LEGACY}
+
+# The bundled subset is documented against Studio's material database.
+# Loading the factory file adds its complete catalog and current revisions.
+_STARTING = dataclasses.replace(
+    _LEGACY_BY_NAME["Card Maker starting point"], name=STARTING_NAME,
+    settings={**_LEGACY_BY_NAME["Card Maker starting point"].settings, "track_enhancing": True},
+    description="One-pass baseline from the Silhouette Card Maker community guide.",
+    note="Start here for the Card Maker method, or use a Studio factory preset for your material. "
+         "Cut a test on matching stock before sending the job.")
+
+_FACTORY_REFERENCE = {
+    "Coverstock": "Coverstock (Silhouette)",
+    "Cardstock": "Cardstock (Silhouette)",
+    "Print Paper": "Plain paper test",
+    "Silhouette Sketch Pen": "Pen, no blade",
+}
+
+BUILTIN = (_STARTING, *(dataclasses.replace(
+    _LEGACY_BY_NAME[previous], name=name,
+    settings={**_LEGACY_BY_NAME[previous].settings, "track_enhancing": name in ("Cardstock", "Coverstock")},
+    note="Recorded from the Silhouette Studio 5.0.556.1 factory material database.")
+    for name, previous in _FACTORY_REFERENCE.items()),
+    # Values recorded in docs/FINDINGS.md, section 15.
+    *(Preset(name, "Silhouette Studio factory setting.", "silhouette",
+             dict(force=force, speed=speed, passes=passes, depth=depth, track_enhancing=True),
+             "Recorded from the Silhouette Studio 5.0.556.1 factory material database.")
+      for name, force, speed, passes, depth in (
+          ("Adhesive-Backed Cardstock", 29, 3, 1, 4), ("Textured Cardstock", 30, 4, 1, 3),
+          ("Glitter Cardstock", 33, 3, 2, 6), ("Chipboard", 33, 1, 2, 5))))
+BUILTIN_BY_NAME = {preset.name: preset for preset in BUILTIN}
+
+
+@lru_cache(maxsize=4)
+def _factory_rows(path, signature):
+    from . import materials
+    return materials.load(path)
+
+
+def factory_presets(cutter=DEFAULT_CUTTER):
+    from . import materials
+
+    path = materials.find_condition_csv()
+    if path is None:
+        return {}
+    try:
+        stat = path.stat()
+        rows = _factory_rows(path, (stat.st_ino, stat.st_mtime_ns, stat.st_size))
+    except (OSError, ValueError):
+        return {}
+    return {name: Preset(**materials.as_preset(row, name))
+            for name, row in materials.cutter_divisions(rows, cutter, False).items()}
 
 
 def user_dir() -> pathlib.Path:
@@ -256,9 +266,9 @@ def _read_presets(folder: pathlib.Path):
         )
 
 
-def all_presets() -> dict[str, Preset]:
-    """Built-ins, then bundled JSON, then the user's own, last one winning."""
-    out = dict(BUILTIN_BY_NAME)
+def all_presets(cutter=DEFAULT_CUTTER) -> dict[str, Preset]:
+    """Starting point, factory materials for this cutter, and local presets."""
+    out = {**BUILTIN_BY_NAME, **factory_presets(cutter)}
     for folder in (bundled_dir(), user_dir()):
         out.update((preset.name, preset) for _, preset in _read_presets(folder))
     return out
@@ -270,37 +280,39 @@ ALIASES = {
     "cardstock + laminate": "Card Maker reference (cardstock + laminate)",
     "cardstock and laminate": "Card Maker reference (cardstock + laminate)",
     "scm reference": "Card Maker reference (cardstock + laminate)",
-    "scm starting point": "Card Maker starting point",
-    "starting point": "Card Maker starting point",
+    "scm starting point": STARTING_NAME,
+    "starting point": STARTING_NAME,
 }
 
 
-def get(name: str) -> Preset:
-    presets = all_presets()
+def get(name: str, cutter=DEFAULT_CUTTER) -> Preset:
+    presets = all_presets(cutter)
     if name in presets:
         return presets[name]
     # Be forgiving about case and spacing, since these get typed.
     want = name.lower().strip()
-    if want in ALIASES and ALIASES[want] in presets:
-        return presets[ALIASES[want]]
-    for key, value in presets.items():
-        if key.lower() == want:
-            return value
+    for catalog in (presets, _LEGACY_BY_NAME):
+        if ALIASES.get(want) in catalog:
+            return catalog[ALIASES[want]]
+        for key, value in catalog.items():
+            if key.lower() == want:
+                return value
     raise KeyError(f"unknown preset {name!r}; known: "
                    + ", ".join(sorted(presets)))
 
 
 def save_blade_settings(name: str, *, force: int, speed: int, depth: int | None,
-                        passes: int, blade_options=None, new_name: str | None = None) -> pathlib.Path | None:
+                        passes: int, blade_options=None, new_name: str | None = None,
+                        cutter=DEFAULT_CUTTER) -> pathlib.Path | None:
     """Save edited blade settings, retaining any unspecified preset options."""
-    preset = get(name)
+    preset = get(name, cutter)
     settings = dict(preset.settings, force=force, speed=speed, depth=depth, passes=passes)
     settings.update(blade_options or {})
     if new_name is not None:
         new_name = new_name.strip()
         if not new_name:
             raise ValueError("Enter a preset name.")
-        if any(new_name.casefold() == name.casefold() for name in all_presets()):
+        if any(new_name.casefold() == name.casefold() for name in all_presets(cutter)):
             raise ValueError("A preset with that name already exists.")
         preset = dataclasses.replace(preset, name=new_name)
     elif CutSettings(**settings) == preset.cut_settings():
@@ -310,10 +322,22 @@ def save_blade_settings(name: str, *, force: int, speed: int, depth: int | None,
         note="User-selected settings. Never cut as part of this project's verification."))
 
 
+def save_tested_settings(name, settings, cutter):
+    name = name.strip()
+    if not name:
+        raise ValueError("Enter a material name.")
+    if any(name.casefold() == existing.casefold() for existing in all_presets(cutter)):
+        raise ValueError("That preset name already exists. Add a detail such as the weight or finish.")
+    preset = Preset(name, f"Tested on {cutter}.", "measured", dataclasses.asdict(settings),
+                    f"Clean cut confirmed by the operator on {date.today().isoformat()} using {cutter}.")
+    return save(preset)
+
+
 def restore_default_materials() -> tuple[int, pathlib.Path | None]:
     """Restore shipped presets and back up the overridden user files."""
     folder = user_dir()
-    shipped = set(BUILTIN_BY_NAME) | {preset.name for _, preset in _read_presets(bundled_dir())}
+    shipped = set(BUILTIN_BY_NAME) | set(factory_presets())
+    shipped.update(preset.name for _, preset in _read_presets(bundled_dir()))
     overrides = [path for path, preset in _read_presets(folder) if preset.name in shipped]
     if not overrides:
         return 0, None

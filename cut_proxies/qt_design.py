@@ -8,12 +8,12 @@ from pathlib import Path
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence, QPen, QPolygonF
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QListWidget,
-                               QMessageBox, QSplitter, QTabWidget, QToolBar, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QInputDialog, QListWidget,
+                               QMessageBox, QSplitter, QStyle, QTabWidget, QToolBar, QVBoxLayout, QWidget)
 
 from . import editor_model as model, geometry, graphtec, importer, regmarks, template
-from .qt_canvas import SheetView, draw_marks, draw_path, pen, rect
-from .qt_controls import Page, button, set_choices
+from .qt_canvas import SheetView, ZoomControls, draw_marks, draw_paper, draw_path, pen, rect
+from .qt_controls import Page, bar, button, set_choices, styled_label, themed_icon, workspace_switch
 
 DESIGN_FILTER = "Design projects (*.scc-template);;Cut artwork (*.svg *.SVG *.dxf *.DXF *.studio3 *.STUDIO3)"
 TOOLS = ("Select", "Point Edit", *model.KINDS, "Polygon", "Freehand")
@@ -40,9 +40,7 @@ class Canvas(SheetView):
         mat_visible = editor.show_mat.isChecked() and mat is not None
         sizes = page.united(mat) if mat_visible else page
         bounds = sizes.adjusted(-19, -19, 12, 12)
-        refit = self.page_bounds != bounds
-        self.page_bounds = bounds
-        self.setSceneRect(bounds)
+        refit = self.set_page_bounds(bounds)
         scene.clear()
         if mat_visible:
             scene.addRect(mat.adjusted(-8, -13, 8, 8), pen("#59616a"), QBrush(QColor("#a2aab3")))
@@ -51,11 +49,12 @@ class Canvas(SheetView):
             arrow = QPolygonF([QPointF(mid + dx, y) for dx, y in (
                 (0, -11), (5, -6), (2, -6), (2, -2), (-2, -2), (-2, -6), (-5, -6))])
             scene.addPolygon(arrow, QPen(Qt.PenStyle.NoPen), QBrush(QColor("#535e68")))
-        scene.addRect(page, pen("#87939d"), QBrush(Qt.GlobalColor.white))
+        draw_paper(scene, page, shadow=not mat_visible)
         if editor.show_grid.isChecked():
             self.grid(scene, page, editor.spacing.value(), "#dce1e5")
         if editor.rulers.isChecked():
-            self.draw_rulers(scene, page)
+            text_color = "#222f3c" if mat_visible else self.palette().windowText().color()
+            self.draw_rulers(scene, page, text_color)
         marks = project.registration.on_page(project.width, project.height) if project.registration else None
         if marks:
             draw_marks(scene, marks)
@@ -98,11 +97,11 @@ class Canvas(SheetView):
             scene.addLine(0, y, box.width(), y, brush)
 
     @staticmethod
-    def draw_rulers(scene, page):
+    def draw_rulers(scene, page, color):
         for axis, length in enumerate((page.width(), page.height())):
             for tick in range(0, int(length) + 1, 20):
                 text = scene.addSimpleText(str(tick))
-                text.setBrush(QColor("#374151"))
+                text.setBrush(QColor(color))
                 text.setScale(0.35)
                 if axis == 0:
                     scene.addLine(tick, 0, tick, -2, pen("#59616a"))
@@ -318,28 +317,50 @@ class Design(QWidget):
         self.last_marks = project.registration or model.Registration.from_marks(
             regmarks.marks(project.width, project.height))
         self.setWindowTitle("Design")
+        self.setObjectName("workspace")
 
         body = QVBoxLayout(self)
-        bar = QToolBar()
-        body.addWidget(bar)
-        self.command(bar, "Back", back)
-        self.command(bar, "New", self.new_project, QKeySequence.StandardKey.New)
-        self.command(bar, "Open", self.open_project, QKeySequence.StandardKey.Open)
-        self.save_action = self.command(bar, "Save", self.save, QKeySequence.StandardKey.Save)
-        self.command(bar, "Save As…", lambda: self.save(as_new=True), QKeySequence.StandardKey.SaveAs)
-        self.command(bar, "Import…", self.import_art)
-        bar.addSeparator()
-        self.undo_action = self.command(bar, "Undo", self.undo, QKeySequence.StandardKey.Undo)
-        self.redo_action = self.command(bar, "Redo", self.redo, QKeySequence.StandardKey.Redo)
-        self.command(bar, "Fit", lambda: self.canvas.fit())
-        self.document_title = QLabel()
-        bar.addWidget(self.document_title)
+        body.setContentsMargins(14, 12, 14, 10)
+        body.setSpacing(8)
+        header, top = bar(self)
+        back_button = button("Back", back, icon=("go-previous", QStyle.StandardPixmap.SP_ArrowBack))
+        back_button.setToolTip("Return to the main workspace and keep this design open.")
+        top.addWidget(back_button)
+        self.document_title = styled_label(role="title")
+        top.addWidget(self.document_title, 1)
+        switch, _, self.send_workspace = workspace_switch(
+            self, lambda: self.canvas.setFocus(), lambda: self.review_button.click(), active="Design")
+        self.send_workspace.setToolTip("Review the selected action in the Send workspace.")
+        top.addWidget(switch)
+        body.addWidget(header)
+        toolbar = QToolBar()
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.command(toolbar, "New", self.new_project, QKeySequence.StandardKey.New,
+                     ("document-new", QStyle.StandardPixmap.SP_FileIcon))
+        self.command(toolbar, "Open…", self.open_project, QKeySequence.StandardKey.Open,
+                     ("document-open", QStyle.StandardPixmap.SP_DialogOpenButton))
+        self.save_action = self.command(toolbar, "Save", self.save, QKeySequence.StandardKey.Save,
+                                        ("document-save", QStyle.StandardPixmap.SP_DialogSaveButton))
+        self.command(toolbar, "Save As…", lambda: self.save(as_new=True), QKeySequence.StandardKey.SaveAs)
+        self.command(toolbar, "Import…", self.import_art)
+        toolbar.addSeparator()
+        self.undo_action = self.command(toolbar, "Undo", self.undo, QKeySequence.StandardKey.Undo)
+        self.redo_action = self.command(toolbar, "Redo", self.redo, QKeySequence.StandardKey.Redo)
+        tools = QHBoxLayout()
+        tools.setContentsMargins(0, 0, 0, 0)
+        tools.addWidget(toolbar, 1)
+        self.canvas = Canvas(self)
+        self.zoom = ZoomControls(self.canvas)
+        tools.addWidget(self.zoom)
+        body.addLayout(tools)
 
         panes = QSplitter(Qt.Orientation.Horizontal)
+        panes.setChildrenCollapsible(False)
         body.addWidget(panes, 1)
         left = Page()
         palette = left.group("Drawing")
         self.tool = palette.choice("Tool", TOOLS, changed=self.change_tool)
+        self.tool.setToolTip("Drag to draw or move objects. Shift-click extends the selection. Middle-drag pans the canvas.")
         palette.push("Add Shape", self.add_default)
         objects = left.group("Objects")
         self.objects = QListWidget()
@@ -355,12 +376,15 @@ class Design(QWidget):
         left_pane = left.finish()
         left_pane.setMinimumWidth(205)
         panes.addWidget(left_pane)
-        self.canvas = Canvas(self)
         panes.addWidget(self.canvas)
 
         self.inspector = QTabWidget()
+        self.inspector.setProperty("role", "settings")
+        self.inspector.setAccessibleName("Design properties")
+        self.inspector.setDocumentMode(True)
+        self.inspector.setUsesScrollButtons(True)
         for label, build in (("Page Setup", self.page_panel), ("Transform", self.transform_panel),
-                             ("Replicate", self.replicate_panel), ("Line & Fill", self.style_panel)):
+                             ("Replicate", self.replicate_panel), ("Line and Fill", self.style_panel)):
             panel = Page()
             build(panel)
             self.inspector.addTab(panel.finish(), label)
@@ -368,8 +392,8 @@ class Design(QWidget):
         panes.setStretchFactor(1, 1)
         panes.setSizes([205, 550, 328])
 
-        footer = QHBoxLayout()
-        self.status = QLabel()
+        footer_bar, footer = bar(self)
+        self.status = styled_label(role="body")
         self.status.setWordWrap(True)
         footer.addWidget(self.status, 1)
         self.action_picker = QComboBox(self)
@@ -377,9 +401,10 @@ class Design(QWidget):
         self.action_picker.setAccessibleName("Design Send action")
         self.action_picker.currentIndexChanged.connect(lambda: self.refresh_status())
         footer.addWidget(self.action_picker)
-        self.review_button = button("Review in Send", lambda: review(self.project, self.action_picker.currentData()))
+        self.review_button = button("Review in Send", lambda: review(self.project, self.action_picker.currentData()),
+                                    primary=True)
         footer.addWidget(self.review_button)
-        body.addLayout(footer)
+        body.addWidget(footer_bar)
 
         for label, key, callback in (("Select All", "Ctrl+A", lambda: self.select(
                     i for i, shape in enumerate(self.project.shapes) if shape.visible)),
@@ -392,8 +417,10 @@ class Design(QWidget):
             self.canvas.addAction(action)
         self.refresh((0,) if project.shapes else ())
 
-    def command(self, toolbar, label, callback, shortcut=None):
+    def command(self, toolbar, label, callback, shortcut=None, icon=None):
         action = toolbar.addAction(label)
+        if icon:
+            action.setIcon(themed_icon(self, *icon))
         if shortcut:
             action.setShortcut(QKeySequence(shortcut))
             action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -429,6 +456,7 @@ class Design(QWidget):
         self.mat = media.choice("Cutting mat", graphtec.MAT_OPTIONS, changed=self.change_mat)
         marks = page.group("Registration Marks")
         self.register = marks.check("Enable registration", changed=self.change_marks)
+        self.register.setToolTip("Show printed marks and use their location as the origin when sending this project.")
         self.pattern = marks.choice("Pattern", {regmarks.THREE: "Type 1 (3 marks)", regmarks.FOUR: "4 marks"},
                                     changed=self.change_marks)
         self.inset = marks.number("Inset (mm)", 10, 2, 40, 0.1, 3, self.change_marks)
@@ -439,9 +467,11 @@ class Design(QWidget):
         view = page.group("Canvas")
         self.show_mat = view.check("Show Cutting Mat", True, self.canvas.redraw)
         self.cut_border = view.check("Show Cut Border", True, self.canvas.redraw)
+        self.cut_border.setToolTip("Show where the cutter can reach on this page with the current mat and marks.")
         self.show_grid = view.check("Show Grid", True, self.canvas.redraw)
         self.rulers = view.check("Show Rulers", False, self.canvas.redraw)
         self.snap = view.check("Snap to Grid")
+        self.snap.setToolTip("Snap drawn points and object moves to the grid spacing.")
         self.spacing = view.number("Grid spacing (mm)", 5, 0.5, 100, 0.5, 2, self.canvas.redraw)
 
     def transform_panel(self, page):
@@ -566,11 +596,13 @@ class Design(QWidget):
         action = self.action_picker.currentData()
         count = len(project.artwork(action).paths)
         self.review_button.setEnabled(count > 0)
+        self.send_workspace.setEnabled(count > 0)
         self.undo_action.setEnabled(bool(self.history.past))
         self.redo_action.setEnabled(bool(self.history.future))
         self.save_action.setEnabled(self.path is None or self.saved != project)
-        name = self.path.name if self.path else self.source or "Design"
-        self.document_title.setText(name + (" · Unsaved changes" if project != self.saved else ""))
+        name = self.path.name if self.path else self.source or "Untitled"
+        self.document_title.setText(f"Design · {name}" + (" *" if project != self.saved else ""))
+        self.document_title.setToolTip("Unsaved changes" if project != self.saved else name)
         self.status.setText(f"{project.width:g} × {project.height:g} mm · {count} paths · "
                             f"{len(self.selection())} selected")
 

@@ -4,15 +4,39 @@ from dataclasses import dataclass, replace
 
 from . import geometry, graphtec, presets, testcut, transport
 
-STARTING = presets.BUILTIN_BY_NAME["Card Maker starting point"].cut_settings()
+STARTING = presets.BUILTIN_BY_NAME[presets.STARTING_NAME].cut_settings()
 GUIDE_TEXT = (
-    f"Start with Force {STARTING.force}, Speed {STARTING.speed}, Depth {STARTING.depth}, and 1 pass. "
-    "Use a blank test sheet of the same stock. Load it on the mat and send one pass.\n\n"
-    "After the cutter stops, keep the mat loaded. Lift a corner to check the cut. "
-    "If it still holds, repeat the same spot with the same settings. "
-    "When it separates cleanly, use the tested settings.\n\n"
-    "To try a different setting, move to the next spot before cutting again."
+    "Load a blank sheet of the same material. Choose a material preset or start with "
+    f"force {STARTING.force}, speed {STARTING.speed}, depth {STARTING.depth} and one pass. "
+    "Cut one pass, leave the mat loaded, then lift a corner of the sample and report what you see."
 )
+TUNING_TIPS = (
+    "Change one setting at a time on a fresh spot. Start with passes, then try force, speed and depth.\n\n"
+    "Blade depth limits how far the blade can extend. Start with enough exposure for the stock. "
+    "Excess exposure, force or passes can score the mat.\n\n"
+    "Avoid jumping straight to maximum force or speed. If the carriage skips or the mat shifts, "
+    "finish stopping the cutter and power-cycle it so the carriage can rehome."
+)
+OUTCOMES = {
+    "": "Choose what happened",
+    "clean": "Separated cleanly",
+    "holding": "Mostly cut, still attached",
+    "shallow": "Barely marked the material",
+    "rough": "Rough, jagged or rippled edge",
+    "skipped": "Carriage skipped or material shifted",
+    "mat": "Cut deeply into the mat",
+}
+ADVICE = {
+    "clean": "Use the completed pass count. Save these settings under this material’s name if you want to reuse them.",
+    "holding": "Keep the mat loaded and repeat one pass in the same spot. Each completed pass counts toward your total.",
+    "shallow": "Check that the blade is seated and set for the stock. Try slightly more force on a fresh spot. "
+               "If the blade cannot extend far enough to reach through the stock, increase depth one step.",
+    "rough": "Reduce force first on a fresh spot. For rippled laminate, try a small speed increase separately "
+             "once the cutter is tracking reliably. Add a pass if the cleaner cut still holds, and check the blade for wear.",
+    "skipped": "Wait for the cutter to stop, then power-cycle it to rehome. Reload the test sheet. "
+               "Try lower force first and reduce speed if needed. Check that the blade is not catching in the mat.",
+    "mat": "Reduce blade depth one step on a fresh spot. If the cut still gouges the mat, lower force or use fewer passes.",
+}
 MAX_JOB_PASSES = 10
 
 
@@ -41,6 +65,7 @@ class Trial:
     sheet: testcut.TestSheet
     connection: tuple
     placement: Placement
+    track_enhancing: bool = False
 
     @property
     def settings(self):
@@ -67,6 +92,24 @@ class Guide:
         self.trial = None
         self.completed = 0
         self.interrupted = False
+        self.outcome = ""
+
+    @property
+    def awaiting_result(self):
+        return self.completed > 0 and not self.interrupted and not self.outcome
+
+    @property
+    def can_cut(self):
+        return not self.interrupted and (
+            not self.completed or (self.outcome == "holding" and self.completed < MAX_JOB_PASSES))
+
+    def inspect(self, outcome):
+        self.outcome = outcome if outcome in OUTCOMES else ""
+
+    def advice(self):
+        if self.outcome == "holding" and self.completed >= MAX_JOB_PASSES:
+            return "This job supports up to 10 passes. Try a different setting on a fresh spot."
+        return ADVICE.get(self.outcome, "")
 
     def next_spot(self):
         self._set_spot(self.spot + 1)
@@ -101,7 +144,7 @@ class Guide:
                               sheet_w_mm=placement.width, sheet_h_mm=placement.height,
                               registration=False, offset_mm=placement.offset, shape=shape,
                               mat=placement.mat, end_position="start")
-        return Trial(sheet, connection, placement)
+        return Trial(sheet, connection, placement, options["blade_options"].get("track_enhancing", False))
 
     @staticmethod
     def make_placement(job, options):
@@ -125,6 +168,7 @@ class Guide:
             self.trial = trial
             self.placement = trial.placement
             self.completed += 1
+            self.outcome = ""
         elif isinstance(error, PassUnconfirmed):
             self.trial = trial
             self.placement = trial.placement
@@ -133,7 +177,7 @@ class Guide:
     @property
     def tested_settings(self):
         if self.trial and not self.interrupted and 1 <= self.completed <= MAX_JOB_PASSES:
-            return replace(self.trial.settings, passes=self.completed)
+            return replace(self.trial.settings, passes=self.completed, track_enhancing=self.trial.track_enhancing)
         return None
 
     def status(self):
