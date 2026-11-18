@@ -39,6 +39,8 @@ class DesignWorkspace:
         self.parent = parent
         self.history = History(project)
         self.saved = project
+        self.project_path = None
+        self.source_name = None
         self.on_review = on_review
         self.loading = False
         self.drag = None
@@ -57,21 +59,33 @@ class DesignWorkspace:
         self.button(header, 'Back', on_back, start=True)
         self.button(header, 'New', self.new_project, start=True)
         self.button(header, 'Open…', self.open_project)
-        self.button(header, 'Save…', self.save)
+        self.button(header, 'Save As…', self.save_as)
+        self.save_button = self.button(header, 'Save', self.save)
         self.view.add_top_bar(header)
+        shortcuts = Gtk.ShortcutController(scope=Gtk.ShortcutScope.MANAGED)
+        for trigger, callback in (("<Control>s", self.save), ("<Control><Shift>s", self.save_as)):
+            def invoke(_widget, _arguments, handler=callback):
+                handler(None)
+                return True
+
+            shortcut = Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string(trigger), Gtk.CallbackAction.new(invoke))
+            shortcuts.add_shortcut(shortcut)
+        self.view.add_controller(shortcuts)
 
         toolbar = Gtk.Box(spacing=6, margin_start=12, margin_end=12, margin_top=6, margin_bottom=6)
         self.view.add_top_bar(toolbar)
         self.undo_button = self.button(toolbar, 'Undo', lambda *_: self.change_history(self.history.undo))
         self.redo_button = self.button(toolbar, 'Redo', lambda *_: self.change_history(self.history.redo))
         self.button(toolbar, 'Import…', self.import_vector)
-        self.zoom = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0.5, 4, 0.1)
-        self.zoom.set_value(1)
-        self.zoom.set_size_request(105, -1)
-        self.zoom.set_tooltip_text('Canvas zoom')
-        self.zoom.connect('value-changed', self.zoom_changed)
-        toolbar.append(self.zoom)
-        self.button(toolbar, 'Fit', self.fit)
+        zoom_controls = Gtk.Box(css_classes=['linked'])
+        toolbar.append(zoom_controls)
+        zoom_out = self.button(zoom_controls, '−', lambda *_: self.canvas.zoom_by(1 / 1.25))
+        zoom_out.set_tooltip_text('Zoom out')
+        self.zoom_readout = Gtk.Label(label='100%', width_chars=5)
+        zoom_controls.append(self.zoom_readout)
+        zoom_in = self.button(zoom_controls, '+', lambda *_: self.canvas.zoom_by(1.25))
+        zoom_in.set_tooltip_text('Zoom in')
+        self.button(zoom_controls, 'Fit', self.fit)
 
         body = Gtk.Box()
         left, objects = panel(174)
@@ -124,7 +138,7 @@ class DesignWorkspace:
         self.review_action.set_tooltip_text('Action to review')
         self.review_action.connect('notify::selected', lambda *_: self.refresh_status())
         footer.append(self.review_action)
-        self.review = self.button(footer, 'Review paths', self.review_paths)
+        self.review = self.button(footer, 'Review in Send', self.review_paths)
         self.review.add_css_class('suggested-action')
         self.view.add_bottom_bar(footer)
         self.refresh_objects((0,))
@@ -346,7 +360,10 @@ class DesignWorkspace:
         selection = len(self.selected_indices())
         self.status.set_text(f'{p.width:g} × {p.height:g} mm · {count} {label} path(s)'
                              + (f' · {selection} selected' if selection else ''))
-        self.title.set_subtitle('Unsaved changes' if self.dirty else '')
+        name = self.project_path.name if self.project_path else self.source_name
+        self.title.set_title(name or 'Design')
+        self.title.set_subtitle('Unsaved changes' if self.dirty else ('Design' if name else ''))
+        self.save_button.set_sensitive(self.dirty or self.project_path is None)
         self.undo_button.set_sensitive(bool(self.history.past))
         self.redo_button.set_sensitive(bool(self.history.future))
         self.review.set_sensitive(count > 0)
@@ -552,13 +569,10 @@ class DesignWorkspace:
         except ValueError as error:
             self.status.set_text(str(error))
 
-    def zoom_changed(self, scale):
-        self.canvas.zoom = scale.get_value()
-        self.canvas.queue_draw()
-
     def fit(self, _button):
         self.canvas.pan = (0, 0)
-        self.zoom.set_value(1)
+        self.canvas.zoom = 1.0
+        self.zoom_readout.set_label('100%')
         self.canvas.queue_draw()
 
     @property
@@ -783,14 +797,22 @@ class DesignWorkspace:
         if not self.dirty:
             continuation()
             return
-        alert = Adw.AlertDialog(heading='Discard unsaved changes?',
-                                body='Save the project first to keep your edits.')
+        alert = Adw.AlertDialog(heading='Save changes to this design?')
         alert.add_response('cancel', 'Cancel')
         alert.add_response('discard', 'Discard')
+        alert.add_response('save', 'Save')
         alert.set_response_appearance('discard', Adw.ResponseAppearance.DESTRUCTIVE)
-        alert.set_default_response('cancel')
+        alert.set_response_appearance('save', Adw.ResponseAppearance.SUGGESTED)
+        alert.set_default_response('save')
         alert.set_close_response('cancel')
-        alert.connect('response', lambda _dialog, response: continuation() if response == 'discard' else None)
+
+        def respond(_dialog, response):
+            if response == 'save':
+                self.save(None, continuation=continuation)
+            elif response == 'discard':
+                continuation()
+
+        alert.connect('response', respond)
         alert.present(self.parent)
 
     def file_dialog(self, title, callback, *, filters=(), save_name=None):
@@ -836,6 +858,8 @@ class DesignWorkspace:
             def replace_project():
                 self.history = History(project)
                 self.saved = project
+                self.project_path = path if native_project else None
+                self.source_name = path.name
                 self.custom_page = False
                 if project.registration is not None:
                     self.last_registration = project.registration
@@ -855,21 +879,41 @@ class DesignWorkspace:
             project = replace(self.project, shapes=())
             self.history = History(project)
             self.saved = project
+            self.project_path = self.source_name = None
             self.fit(None)
             self.refresh_objects()
 
         self.confirm_discard(create)
 
-    def save(self, _button):
-        def saved(path):
-            if not path.suffix:
-                path = path.with_suffix('.scc-template')
-            save_project(path, self.project)
-            self.saved = self.project
-            self.refresh_status()
-            self.status.set_text(f'Saved {path.name}')
+    def save(self, _button, *, continuation=None):
+        if self.project_path is None:
+            self.save_as(None, continuation=continuation)
+        else:
+            self.write_design(self.project_path, continuation)
 
-        self.file_dialog('Save design project', saved, save_name='design.scc-template')
+    def save_as(self, _button, *, continuation=None):
+        name = self.project_path.name if self.project_path else (
+            Path(self.source_name).with_suffix('.scc-template').name if self.source_name else 'design.scc-template')
+        self.file_dialog('Save design project', lambda path: self.write_design(path, continuation),
+                         save_name=name)
+
+    def write_design(self, path, continuation):
+        if path.suffix.lower() != '.scc-template':
+            path = path.with_name(path.name + '.scc-template')
+            if path.exists():
+                self.status.set_text(f'Choose the full name {path.name} to confirm replacement.')
+                return
+        try:
+            save_project(path, self.project)
+        except (OSError, ValueError) as error:
+            self.status.set_text(f'Could not save {path.name}. {error}')
+            return
+        self.project_path = path
+        self.saved = self.project
+        self.refresh_status()
+        self.status.set_text(f'Saved {path.name}')
+        if continuation:
+            continuation()
 
     def import_vector(self, _button):
         def opened(path):

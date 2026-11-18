@@ -206,7 +206,8 @@ class TestGuiCheckedPlan(unittest.TestCase):
         window = types.SimpleNamespace(job=checked, _sending=False, _checking_status=False, pdf_bundle=None,
             cut_button=mock.Mock(), scan_button=mock.Mock(), scan_result=mock.Mock(),
             r_auto=mock.Mock(), toast=mock.Mock(),
-            rebuild=mock.Mock(), _send_done=mock.Mock())
+            rebuild=mock.Mock(), _send_done=mock.Mock(), update_send_actions=mock.Mock(),
+            _connection=lambda: ("auto", None))
         window.r_auto.get_active.return_value = True
         transport = mock.MagicMock()
         transport.__enter__.return_value = transport

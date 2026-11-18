@@ -112,8 +112,16 @@ projects use `.scc-template` and open projects saved by earlier releases.
 | Replicate | Make rows and columns of the selection with horizontal and vertical spacing in millimetres. |
 | Line and Fill | Set solid colors and the Cut, Score, or None action. Line and fill colors carry over to grouped Send. |
 
-**Review paths** previews a checked job. **All actions** places Cut and Score in
-separate groups so each can have its own preset, holder, and order.
+**Review in Send** previews a checked job. **All actions** places Cut and Score
+in separate groups so each can have its own preset, holder, and order.
+**Back** keeps the current design open. Use **Save** to update an existing
+project or **Save As** to write a copy. Use Ctrl+scroll to zoom around the
+pointer and **Fit** to restore the whole canvas.
+
+**Review Send** is available below the layout and preview. In **Send**,
+**Send to Cutter** stays visible as you scroll through job settings. The footer
+shows why a job requires attention. With a PDF loaded, the preview offers
+**Cut paths**, **Print PDF**, and **Overlay**.
 
 Studio Design features still open include text and font editing, raster Trace,
 Offset, Modify operations such as Weld and Subtract, compound paths, printer
@@ -146,7 +154,7 @@ Blade and cutter calibration are set locally. For a direct cut, load the
 front face-up with the paper aligned to the top-left of the mat grid. The
 placement for Studio's padded canvas can differ and is listed in the ZIP.
 
-**Cut → Test scan** runs the cutter's registration check before you send
+**Send → Test scan** runs the cutter's registration check before you send
 any cut paths. If the scan fails, **Review marks** opens the PDF check. It
 identifies missing, misshaped, or displaced PDF marks by corner. The Cameo's
 scan response gives an overall result, so the dialog lists nearby artwork

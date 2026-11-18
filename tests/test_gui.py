@@ -104,6 +104,124 @@ class TestDesignWorkspace(unittest.TestCase):
         design.undo_button.emit('clicked')
         self.assertEqual(len(design.project.shapes), 2)
 
+    def test_back_preserves_design_and_send_requires_review_of_new_edits(self):
+        from dataclasses import replace
+
+        win = self.make_window()
+        self.assertTrue(win.review_send.get_visible())
+        win.review_send.emit('clicked')
+        self.assertTrue(win.cut_button.get_visible())
+        win.on_edit_template()
+        design = win.design
+        design.review.emit('clicked')
+        self.assertTrue(win.cut_button.get_sensitive())
+        win.on_edit_template()
+        design.commit((replace(design.project.shapes[0], x=45),), (0,))
+        win.leave_design()
+        self.assertEqual(win.review_send.get_label(), 'Review Design')
+        self.assertFalse(win.cut_button.get_sensitive())
+        self.assertFalse(win.scan_button.get_sensitive())
+        win.review_send.emit('clicked')
+        self.assertIs(win.design, design)
+        self.assertEqual(design.project.shapes[0].x, 45)
+        self.assertTrue(design.dirty)
+        design.review.emit('clicked')
+        self.assertTrue(win.cut_button.get_sensitive())
+
+    def test_save_updates_the_open_project_without_opening_the_picker(self):
+        from cut_proxies.editor_model import load_project
+
+        win = self.make_window()
+        win.on_edit_template()
+        design = win.design
+        with tempfile.TemporaryDirectory() as folder:
+            dest = Path(folder) / 'cards.scc-template'
+            design.write_design(dest, None)
+            design.commit((), ())
+            self.assertTrue(design.dirty)
+            with mock.patch.object(design, 'file_dialog') as picker:
+                design.save(None)
+            self.assertEqual(picker.call_count, 0)
+            self.assertFalse(design.dirty)
+            self.assertEqual(load_project(dest), design.project)
+            self.assertEqual(design.title.get_title(), dest.name)
+
+    def test_zoom_keeps_the_point_under_the_pointer_and_fit_resets_the_view(self):
+        win = self.make_window()
+        win.on_edit_template()
+        design = win.design
+        canvas = design.canvas
+        with mock.patch.object(canvas, 'get_width', return_value=700), \
+             mock.patch.object(canvas, 'get_height', return_value=450):
+            anchor = (204, 135)
+            x, y, scale = canvas.viewport(700, 450)
+            location = (anchor[0] - x) / scale, (anchor[1] - y) / scale
+            canvas.zoom_by(1.25, anchor)
+            x, y, scale = canvas.viewport(700, 450)
+            self.assertAlmostEqual(x + location[0] * scale, anchor[0])
+            self.assertAlmostEqual(y + location[1] * scale, anchor[1])
+            self.assertEqual(design.zoom_readout.get_label(), '125%')
+            design.fit(None)
+        self.assertEqual((canvas.pan, canvas.zoom), ((0, 0), 1))
+        self.assertEqual(design.zoom_readout.get_label(), '100%')
+
+    def test_sheet_measurement_survives_blade_edits_but_not_registration_changes(self):
+        win = self.make_window()
+        win.pdf_path = Path('sample.pdf')
+        report = win.sheet_report = object()
+        token = win._sheet_token = object()
+        win.r_force.set_value(win.r_force.get_value() - 1)
+        self.assertIs(win.sheet_report, report)
+        self.assertIs(win._sheet_token, token)
+        win.r_inset.set_value(win.r_inset.get_value() + 1)
+        self.assertIsNone(win.sheet_report)
+        self.assertIsNone(win._sheet_token)
+
+    def test_preview_separates_cut_paths_from_print_and_restores_default_without_a_pdf(self):
+        import cairo
+        import io
+
+        win = self.make_window()
+        preview = win.preview
+        png = io.BytesIO()
+        print_image = cairo.ImageSurface(cairo.FORMAT_RGB24, 50, 50)
+        context = cairo.Context(print_image)
+        context.set_source_rgb(0.02, 0.62, 0.91)
+        context.paint()
+        print_image.write_to_png(png)
+        preview.set_pdf(png.getvalue(), 279.4, 215.9)
+        self.assertTrue(win.preview_mode.get_visible())
+
+        def render(mode):
+            win.preview_mode.set_selected(gui.PREVIEW_MODES.index(mode))
+            out = cairo.ImageSurface(cairo.FORMAT_RGB24, 320, 220)
+            preview._draw(preview, cairo.Context(out), 320, 220)
+            return bytes(out.get_data())
+
+        cut = render('Cut paths')
+        printed = render('Print PDF')
+        overlay = render('Overlay')
+        self.assertNotEqual(cut, printed)
+        self.assertNotEqual(overlay, printed)
+        preview.set_pdf()
+        self.assertFalse(win.preview_mode.get_visible())
+        self.assertEqual(render('Overlay'), cut)
+
+    def test_send_confirmation_is_invalidated_if_the_cutter_changes(self):
+        win = self.make_window()
+        checked = win.job
+        old_connection = win._connection()
+        win.r_connection.set_selected(1)
+        self.assertFalse(win.cut_button.get_sensitive())
+        self.assertIn('Select a Bluetooth cutter', win.send_status.get_label())
+        win.r_bluetooth_id.set_text('AB:00:00:00:00:01')
+        self.assertTrue(win.cut_button.get_sensitive())
+        with mock.patch.object(win, 'toast') as warning, \
+             mock.patch.object(gui.transport, 'open_transport') as open_transport:
+            win._cut_response(None, 'cut', checked, old_connection)
+            self.assertEqual(open_transport.call_count, 0)
+            self.assertIn('connection changed', warning.call_args.args[0])
+
     def test_save_preset_button_reloads_edited_blade_settings(self):
         with tempfile.TemporaryDirectory() as folder, \
              mock.patch.object(config, "CONFIG_DIR", Path(folder)):

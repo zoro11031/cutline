@@ -2,7 +2,7 @@
 
 import math
 
-from gi.repository import Adw, Gtk
+from gi.repository import Adw, Gdk, Gtk
 
 from . import editor_model
 
@@ -29,6 +29,7 @@ class DesignCanvas(Gtk.DrawingArea):
         self.editor = editor
         self.zoom = 1.0
         self.pan = (0.0, 0.0)
+        self.pointer = None
         self.set_draw_func(self.draw)
         move = Gtk.GestureDrag(button=1)
         move.connect('drag-begin', editor.drag_begin)
@@ -46,6 +47,34 @@ class DesignCanvas(Gtk.DrawingArea):
         keyboard = Gtk.EventControllerKey()
         keyboard.connect('key-pressed', editor.canvas_key)
         self.add_controller(keyboard)
+        pointer = Gtk.EventControllerMotion()
+        pointer.connect('motion', self.track_pointer)
+        pointer.connect('leave', lambda *_: setattr(self, 'pointer', None))
+        self.add_controller(pointer)
+        scroll = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.VERTICAL)
+        scroll.connect('scroll', self.scroll_zoom)
+        self.add_controller(scroll)
+
+    def track_pointer(self, _motion, x, y):
+        self.pointer = (x, y)
+
+    def scroll_zoom(self, controller, _dx, dy):
+        if not dy or not (controller.get_current_event_state() & Gdk.ModifierType.CONTROL_MASK):
+            return False
+        self.zoom_by(1.25 if dy < 0 else 1 / 1.25, self.pointer)
+        return True
+
+    def zoom_by(self, factor, anchor=None):
+        width, height = self.get_width(), self.get_height()
+        px, py = anchor if anchor is not None else (width / 2, height / 2)
+        x, y, scale = self.viewport(width, height)
+        paper_x, paper_y = (px - x) / scale, (py - y) / scale
+        self.zoom = max(0.5, min(8.0, self.zoom * factor))
+        x, y, scale = self.viewport(width, height)
+        self.pan = (self.pan[0] + px - x - paper_x * scale,
+                    self.pan[1] + py - y - paper_y * scale)
+        self.editor.zoom_readout.set_label(f'{self.zoom:.0%}')
+        self.queue_draw()
 
     def pan_update(self, _gesture, x, y):
         self.pan = self.pan_start[0] + x, self.pan_start[1] + y

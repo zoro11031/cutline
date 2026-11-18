@@ -37,12 +37,13 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 
 from . import (actions, bluetooth, bundle, config, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
                template, testcut, toolpath, transport, winboat)  # noqa: E402
 
 APP_ID = "org.printing.SilhouetteControlCenter"
+PREVIEW_MODES = ("Cut paths", "Print PDF", "Overlay")
 
 
 def cut_refusal(current, confirmed, sending):
@@ -58,6 +59,11 @@ def cut_refusal(current, confirmed, sending):
 
 def sheet_request_current(current, returned):
     return current is not None and returned is current
+
+
+def design_review_pending(window):
+    reviewed = getattr(window, "reviewed_design", None)
+    return reviewed is not None and window.design is not None and window.design.project != reviewed
 
 
 # --------------------------------------------------------------------------
@@ -123,16 +129,19 @@ class ControlPage(Gtk.ScrolledWindow):
 class Preview(Gtk.DrawingArea):
     """Draws the sheet, the marks, their exclusion zones and the cut paths."""
 
+    __gsignals__ = {"pdf-changed": (GObject.SignalFlags.RUN_LAST, None, ())}
+
     def __init__(self):
         super().__init__()
+        self.mode = "Overlay"
         self.job = None
         self.sheet = None          # a sheet.SheetReport, when a PDF is loaded
         self.pdf_surface = None
         self.pdf_size_mm = None
         self.colorblind = False
         self.set_draw_func(self._draw)
-        self.set_content_width(360)
-        self.set_content_height(460)
+        self.set_content_width(280)
+        self.set_content_height(300)
         self.set_hexpand(True)
         self.set_vexpand(True)
 
@@ -145,9 +154,16 @@ class Preview(Gtk.DrawingArea):
         self.queue_draw()
 
     def set_pdf(self, png=None, width_mm=None, height_mm=None):
+        had_pdf = self.pdf_surface is not None
         self.pdf_surface = (cairo.ImageSurface.create_from_png(io.BytesIO(png))
                             if png is not None else None)
         self.pdf_size_mm = (width_mm, height_mm) if png is not None else None
+        if had_pdf != (self.pdf_surface is not None):
+            self.emit("pdf-changed")
+        self.queue_draw()
+
+    def set_mode(self, mode):
+        self.mode = mode
         self.queue_draw()
 
     def set_colorblind(self, enabled):
@@ -165,8 +181,10 @@ class Preview(Gtk.DrawingArea):
         cr.set_source_rgb(*bg)
         cr.paint()
 
-        j = self.job
-        if j is None and self.pdf_size_mm is None:
+        pdf = self.pdf_surface if self.mode != "Cut paths" or self.job is None else None
+        pdf_size = self.pdf_size_mm if pdf is not None else None
+        j = self.job if self.mode != "Print PDF" or pdf is None else None
+        if j is None and pdf_size is None:
             cr.set_source_rgb(0.5, 0.5, 0.52)
             cr.select_font_face("Sans")
             cr.set_font_size(13)
@@ -176,9 +194,8 @@ class Preview(Gtk.DrawingArea):
             cr.show_text(msg)
             return
 
-        W, H = (j.grid.sheet_w_mm, j.grid.sheet_h_mm) if j else self.pdf_size_mm
-        canvas_w, canvas_h = (max(W, self.pdf_size_mm[0]), max(H, self.pdf_size_mm[1])) \
-            if self.pdf_size_mm is not None else (W, H)
+        W, H = (j.grid.sheet_w_mm, j.grid.sheet_h_mm) if j else pdf_size
+        canvas_w, canvas_h = (max(W, pdf_size[0]), max(H, pdf_size[1])) if pdf_size else (W, H)
         x, y, scale = self.viewport(width, height, canvas_w, canvas_h)
         if scale <= 0:
             return
@@ -190,11 +207,10 @@ class Preview(Gtk.DrawingArea):
         cr.set_source_rgb(1, 1, 1)
         cr.rectangle(0, 0, W, H)
         cr.fill()
-        if self.pdf_surface is not None:
+        if pdf is not None:
             cr.save()
-            cr.scale(self.pdf_size_mm[0] / self.pdf_surface.get_width(),
-                     self.pdf_size_mm[1] / self.pdf_surface.get_height())
-            cr.set_source_surface(self.pdf_surface)
+            cr.scale(pdf_size[0] / pdf.get_width(), pdf_size[1] / pdf.get_height())
+            cr.set_source_surface(pdf)
             cr.paint()
             cr.restore()
         cr.set_source_rgb(0.6, 0.6, 0.62)
@@ -208,25 +224,26 @@ class Preview(Gtk.DrawingArea):
         good_color = (0.0, 0.35, 0.75) if self.colorblind else (0.1, 0.55, 0.25)
         bad_color = (0.85, 0.35, 0.0) if self.colorblind else (0.85, 0.2, 0.15)
 
-        # exclusion zones, so a collision is visible rather than described
-        cr.set_source_rgba(*bad_color, 0.13)
-        for z in mk.corner_zones():
-            cr.rectangle(z.x, z.y, z.w, z.h)
-            cr.fill()
+        if j.registration:
+            # exclusion zones, so a collision is visible rather than described
+            cr.set_source_rgba(*bad_color, 0.13)
+            for z in mk.corner_zones():
+                cr.rectangle(z.x, z.y, z.w, z.h)
+                cr.fill()
 
-        # registration marks, at their printed size
-        cr.set_source_rgba(0, 0, 0, 0.0 if self.pdf_surface is not None else 1.0)
-        if mk.square is not None:
-            s = mk.square
-            cr.rectangle(s.x, s.y, s.w, s.h)
-            cr.fill()
-        cr.set_line_width(mk.thickness_mm)
-        cr.set_line_cap(1)      # butt
-        for ell in mk.ells:
-            for x1, y1, x2, y2 in ell.arms():
-                cr.move_to(x1, y1)
-                cr.line_to(x2, y2)
-                cr.stroke()
+            # registration marks, at their printed size
+            cr.set_source_rgba(0, 0, 0, 0.0 if pdf is not None else 1.0)
+            if mk.square is not None:
+                s = mk.square
+                cr.rectangle(s.x, s.y, s.w, s.h)
+                cr.fill()
+            cr.set_line_width(mk.thickness_mm)
+            cr.set_line_cap(1)      # butt
+            for ell in mk.ells:
+                for x1, y1, x2, y2 in ell.arms():
+                    cr.move_to(x1, y1)
+                    cr.line_to(x2, y2)
+                    cr.stroke()
 
         # Amber marks proximity, not a requirement to mask every such card.
         crowded = {h["index"] for h in j.mask_hints}
@@ -234,7 +251,7 @@ class Preview(Gtk.DrawingArea):
         for i, rect in enumerate(j.grid.cards):
             if i in skipped:
                 continue
-            if self.pdf_surface is not None:
+            if pdf is not None:
                 continue
             if i in crowded:
                 cr.set_source_rgba(0.90, 0.64, 0.23, 0.38)
@@ -265,7 +282,7 @@ class Preview(Gtk.DrawingArea):
 
         # where the marks actually are on a loaded PDF, against where the
         # template wants them. This is the whole alignment question, visible.
-        if self.sheet is not None:
+        if pdf is not None and self.sheet is not None and j.registration:
             for fm in self.sheet.marks:
                 if fm.ink_box is not None:
                     b = fm.ink_box
@@ -299,6 +316,8 @@ class Preview(Gtk.DrawingArea):
                     cr.stroke()
 
         # the registration origin: every cut coordinate is measured from here
+        if not j.registration:
+            return
         ox, oy = mk.origin_mm
         cr.set_source_rgb(0.9, 0.45, 0.1)
         cr.set_line_width(max(hair, 0.3))
@@ -332,6 +351,7 @@ class Window(Adw.ApplicationWindow):
         self._send_rows = []
         self.template_shapes = ()
         self.design = None
+        self.reviewed_design = None
         self._close_confirmed = False
         self._building = False
         self._sending = False
@@ -354,10 +374,6 @@ class Window(Adw.ApplicationWindow):
         header.set_title_widget(switcher)
         outer.add_top_bar(header)
 
-        self.build_button = Gtk.Button(label="Check")
-        self.build_button.add_css_class("suggested-action")
-        self.build_button.connect("clicked", lambda *_: self.rebuild())
-        header.pack_start(self.build_button)
         self.design_button = Gtk.Button(label='Design')
         self.design_button.connect('clicked', self.on_edit_template)
         header.pack_start(self.design_button)
@@ -375,17 +391,30 @@ class Window(Adw.ApplicationWindow):
         self.stack.set_hexpand(True)
 
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        right.set_size_request(400, -1)
+        right.set_size_request(320, -1)
         right.set_margin_top(12)
         right.set_margin_bottom(12)
         right.set_margin_start(6)
         right.set_margin_end(12)
         self.preview = Preview()
+        preview_bar = Gtk.Box(spacing=8)
+        preview_title = Gtk.Label(label="Preview", xalign=0, hexpand=True, css_classes=["heading"])
+        preview_bar.append(preview_title)
+        self.preview_mode = Gtk.DropDown.new_from_strings(PREVIEW_MODES)
+        self.preview_mode.set_selected(PREVIEW_MODES.index("Overlay"))
+        self.preview_mode.set_visible(False)
+        self.preview_mode.update_property([Gtk.AccessibleProperty.LABEL], ["Preview mode"])
+        self.preview_mode.connect("notify::selected", lambda picker, *_: self.preview.set_mode(
+            PREVIEW_MODES[picker.get_selected()]))
+        self.preview.connect("pdf-changed", lambda preview: self.preview_mode.set_visible(
+            preview.pdf_surface is not None))
+        preview_bar.append(self.preview_mode)
         self.colorblind_toggle = Gtk.CheckButton(label='Colorblind mode')
         self.colorblind_toggle.set_tooltip_text('Blue/orange outlines, dashed failures and OK/! labels')
         self.colorblind_toggle.connect('toggled', self.on_colorblind_changed)
         self.colorblind_toggle.set_active(bool(config.load_settings().get('colorblind_mode', False)))
-        right.append(self.colorblind_toggle)
+        preview_bar.append(self.colorblind_toggle)
+        right.append(preview_bar)
         frame = Gtk.Frame()
         frame.set_child(self.preview)
         right.append(frame)
@@ -435,14 +464,75 @@ class Window(Adw.ApplicationWindow):
         self._page_blade()
         self._page_cut()
         self._page_studio()
+        outer.add_bottom_bar(self._send_bar())
 
         self._suppress = False
         self.on_changed()
         self.stack.connect("notify::visible-child-name", self.on_page_changed)
 
     def on_page_changed(self, stack, _param):
+        self.update_send_actions()
         if stack.get_visible_child_name() == "blade":
             self.on_refresh_status()
+
+    def _send_bar(self):
+        bar = Gtk.ActionBar()
+        self.send_status = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, max_width_chars=68)
+        bar.pack_start(self.send_status)
+        self.review_send = Gtk.Button(label="Review Send")
+        self.review_send.add_css_class("suggested-action")
+        self.review_send.connect("clicked", self.on_review_send)
+        bar.pack_end(self.review_send)
+        self.cut_button = Gtk.Button(label="Send to Cutter")
+        self.cut_button.add_css_class("destructive-action")
+        self.cut_button.connect("clicked", self.on_cut)
+        bar.pack_end(self.cut_button)
+        return bar
+
+    def send_review_destination(self):
+        if design_review_pending(self):
+            return "design", "Review Design"
+        if self.pdf_bundle:
+            if self.imported is None:
+                return "studio", "Studio Options"
+            if not self.bundle_checked:
+                return "sheet", "Review Sheet"
+        return "cut", "Review Send"
+
+    def on_review_send(self, *_args):
+        destination, _ = self.send_review_destination()
+        if destination == "design":
+            self.on_edit_template()
+        else:
+            self.stack.set_visible_child_name(destination)
+
+    def update_send_actions(self):
+        if not hasattr(self, "send_status"):
+            return
+        page = self.stack.get_visible_child_name()
+        destination, label = self.send_review_destination()
+        self.review_send.set_label(label)
+        self.review_send.set_visible(page != destination)
+        self.cut_button.set_visible(page == "cut" and destination == "cut")
+        job = self.job
+        mode, identifier, *_ = self._connection()
+        reason = (
+            "Sending to the cutter…" if self._sending else
+            "Checking cutter status…" if self._checking_status else
+            "Review the latest edits in Design." if destination == "design" else
+            "Open the paired template in Studio." if destination == "studio" else
+            "Check the matching PDF in Sheet." if destination == "sheet" else
+            "Check this layout before sending." if job is None or job.blocked else
+            "Select a Bluetooth cutter." if mode in bluetooth.BLUETOOTH_MODES and not identifier else
+            ""
+        )
+        self.scan_button.set_sensitive(not reason and bool(job.registration_steps()))
+        if not reason and job.settings.passes <= 0:
+            reason = "Set at least one pass to send cut paths."
+        self.cut_button.set_sensitive(not reason)
+        status = reason or f"{len(job.paths)} paths · {job.device.name} · {'Registration on' if job.registration else 'Registration off'}"
+        self.send_status.set_label(status)
+        self.send_status.set_tooltip_text(status)
 
     # ---- pages -------------------------------------------------------
     def _page_layout(self):
@@ -758,6 +848,15 @@ class Window(Adw.ApplicationWindow):
 
     def _page_cut(self):
         page = ControlPage()
+        self.send_modes = Adw.PreferencesGroup(title="Send by")
+        self.r_send_mode = _combo("Mode", list(actions.SEND_MODES.values()))
+        self.r_send_mode.connect("notify::selected", self.on_changed)
+        self.send_modes.add(self.r_send_mode)
+        page.add(self.send_modes)
+        self.send_groups = Adw.PreferencesGroup(
+            title="Cut groups", description="Enable the groups to send and choose their order.")
+        page.add(self.send_groups)
+
         g = Adw.PreferencesGroup(
             title="Registration",
             description="The cutter finds the printed marks, then treats the "
@@ -779,7 +878,6 @@ class Window(Adw.ApplicationWindow):
         self.scan_button.connect("clicked", lambda *_: self.on_cut(scan_only=True))
         test_scan.add_suffix(self.scan_button)
         g.add(test_scan)
-        page.add(g)
         self.r_register.connect("notify::active", self.on_changed)
         self.r_auto.connect("notify::active", self.on_changed)
 
@@ -805,7 +903,10 @@ class Window(Adw.ApplicationWindow):
         g2.add(self.status_row)
         self.r_connection.connect("notify::selected", self.on_connection_changed)
         self.on_connection_changed()
+        self.r_bluetooth_id.connect("changed", self.on_connection_target_changed)
+        self.r_bluetooth_channel.connect("notify::value", self.on_connection_target_changed)
         page.add(g2)
+        page.add(g)
 
         media = Adw.PreferencesGroup(title="Media handling")
         self.r_mat = _combo("Cutting mat", list(graphtec.MAT_OPTIONS.values()))
@@ -872,19 +973,7 @@ class Window(Adw.ApplicationWindow):
         gtest.add(test_row)
         page.add(gtest)
 
-        modes = Adw.PreferencesGroup(title="Send by")
-        self.r_send_mode = _combo("Mode", list(actions.SEND_MODES.values()))
-        self.r_send_mode.connect("notify::selected", self.on_changed)
-        modes.add(self.r_send_mode)
-        page.add(modes)
-        self.send_groups = Adw.PreferencesGroup(
-            title="Cut groups", description="Enable the groups to send and choose their order.")
-        page.add(self.send_groups)
-
-        g3 = Adw.PreferencesGroup(
-            title="Send",
-            description="Cut stays locked until the job has been built and "
-                        "every check has passed for exactly these settings.")
+        g3 = Adw.PreferencesGroup(title="Export")
         dump = Adw.ActionRow(
             title="Save the raw stream",
             subtitle="Write the bytes to a file instead of cutting")
@@ -894,19 +983,9 @@ class Window(Adw.ApplicationWindow):
         dump.add_suffix(dump_btn)
         g3.add(dump)
 
-        cut = Adw.ActionRow(title="Register and cut",
-                            subtitle="This moves the blade")
-        self.cut_button = Gtk.Button(label="Cut")
-        self.cut_button.add_css_class("destructive-action")
-        self.cut_button.set_valign(Gtk.Align.CENTER)
-        self.cut_button.set_sensitive(False)
-        self.cut_button.connect("clicked", self.on_cut)
-        cut.add_suffix(self.cut_button)
-        g3.add(cut)
         page.add(g3)
 
-        self.stack.add_titled_with_icon(page, "cut", "Cut",
-                                        "media-playback-start-symbolic")
+        self.stack.add_titled_with_icon(page, "cut", "Send", "media-playback-start-symbolic")
 
     def _page_studio(self):
         page = ControlPage()
@@ -979,6 +1058,7 @@ class Window(Adw.ApplicationWindow):
         options = profile.options()
         was, self._suppress = self._suppress, True
         self.imported = None
+        self.reviewed_design = None
         self.template_shapes = ()
         self.import_row.set_title('Generated layout')
         self.import_row.set_subtitle('Using the sheet and card settings below')
@@ -1065,7 +1145,7 @@ class Window(Adw.ApplicationWindow):
     def _refresh_send_groups(self):
         source = self.imported
         mode = self._active_send_mode()
-        self.r_send_mode.set_sensitive(source is not None)
+        self.send_modes.set_visible(source is not None)
         self.r_colour.set_sensitive(source is not None and mode == "simple" and self.pdf_bundle is None)
         self.send_groups.set_visible(mode != "simple")
         profiles = tuple(sorted(presets.all_presets())) if mode != "simple" else ()
@@ -1134,21 +1214,24 @@ class Window(Adw.ApplicationWindow):
         for extension in (self.r_corner_start, self.r_corner_end):
             extension.set_sensitive(corner_capable and self.r_corners.get_active())
         self.r_feed.set_sensitive(self.r_end_position.get_selected() == 0)
+        self.r_auto.set_sensitive(self.r_register.get_active())
         self._update_weed_controls()
         self._refresh_send_groups()
-        self._sheet_token = None
-        self.bundle_checked = False
-        if self.sheet_report is not None:
-            self.sheet_report = None
-            self.preview.set_sheet(None)
-            self.sheet_result.set_title('Layout changed — measure again')
-        # Any change invalidates the checked job, so the Cut button has to go
-        # back to insensitive before anything else happens.
+        previous = self.job
         self.job = None
         self.cut_button.set_sensitive(False)
         self.rebuild()
-        if self.pdf_bundle:
+        if self.pdf_bundle and self._sheet_token is None:
             self.measure_sheet()
+        elif self.pdf_path and not self.pdf_bundle and (
+                (previous.marks if previous else None) != (self.job.marks if self.job else None)):
+            previously_measured = self.sheet_report is not None or self._sheet_token is not None
+            self._sheet_token = None
+            self.sheet_report = None
+            self.preview.set_sheet(None)
+            if previously_measured:
+                self.sheet_result.set_title('Registration settings changed')
+                self.sheet_result.set_subtitle('Measure the PDF again to compare the marks.')
 
     def _update_weed_controls(self):
         mode = self._text(self.r_show_weed)
@@ -1243,7 +1326,6 @@ class Window(Adw.ApplicationWindow):
     def rebuild(self):
         if self._suppress or self._building:
             return
-        self.scan_button.set_sensitive(False)
         if self.pdf_bundle and self.imported is None:
             self.job = None
             self.preview.set_job(None)
@@ -1253,7 +1335,7 @@ class Window(Adw.ApplicationWindow):
             self.summary_material.set_label('')
             self.summary_note.set_label('A newer ProxyPress ZIP includes SVG paths for direct cutting.')
             self.checks.set_text('')
-            self.cut_button.set_sensitive(False)
+            self.update_send_actions()
             self.banner.set_revealed(False)
             return
         self._building = True
@@ -1271,7 +1353,7 @@ class Window(Adw.ApplicationWindow):
             self.summary_note.set_label('Adjust the sheet or card layout to continue.')
             self.banner.set_title(str(exc))
             self.banner.set_revealed(True)
-            self.cut_button.set_sensitive(False)
+            self.update_send_actions()
             self._building = False
             return
         except Exception as exc:              # noqa: BLE001
@@ -1285,7 +1367,7 @@ class Window(Adw.ApplicationWindow):
             self.summary_note.set_label('Advanced details contains the diagnostic report.')
             self.banner.set_title(f"Could not build the job: {exc}")
             self.banner.set_revealed(True)
-            self.cut_button.set_sensitive(False)
+            self.update_send_actions()
             self._building = False
             return
 
@@ -1298,18 +1380,21 @@ class Window(Adw.ApplicationWindow):
             'Layout needs attention' if j.blocked else
             'PDF registration needs attention' if failed_pdf else 'Layout checked')
         orientation = 'portrait' if j.grid.portrait else 'landscape'
-        self.summary_layout.set_label(
-            f'{len(j.paths)} cut shapes · {j.grid.sheet_name} {orientation}\n'
-            f'{j.grid.card.width_mm:g} × {j.grid.card.height_mm:g} mm · '
-            f'{j.grid.card.radius_mm:g} mm corners')
-        self.summary_material.set_label(
-            f'{j.preset.name} · {j.settings.passes} '
-            f'{"pass" if j.settings.passes == 1 else "passes"}')
+        dimensions = f'{j.grid.sheet_w_mm:g} × {j.grid.sheet_h_mm:g} mm'
+        self.summary_layout.set_label(f'{j.grid.sheet_name} {orientation} · {dimensions}')
+        if j.action_groups:
+            holders = ", ".join(str(holder) for holder in sorted({group.settings.holder for group in j.action_groups}))
+            caption = f"{len(j.action_groups)} send groups · Tool holders: {holders}"
+        else:
+            passes = "pass" if j.settings.passes == 1 else "passes"
+            caption = f"{j.preset.name} · {j.settings.passes} {passes}"
+        self.summary_material.set_label(caption)
         self.summary_note.set_label(
             j.blocked[0] if j.blocked else
             'Open Sheet to see which marks failed the PDF check.' if failed_pdf else
-            ('Starting settings — test on an offcut first.'
-             if j.preset.origin == 'derived' else 'Geometry checks passed.'))
+            j.warnings[0] if j.warnings else
+            'Artwork is close to a registration mark.' if j.mask_hints else
+            'Test these material settings on an offcut.' if j.preset.origin == 'derived' else '')
 
         lines = [f"{label}: {value}" for label, value in j.summary()]
         lines.append("")
@@ -1337,18 +1422,10 @@ class Window(Adw.ApplicationWindow):
             self.banner.set_title(
                 "Registration is OFF: blade will cut in sheet coordinates (for blank sheets only)")
             self.banner.set_revealed(True)
-        elif j.warnings:
-            self.banner.set_title(j.warnings[0])
-            self.banner.set_revealed(True)
-        elif j.mask_hints:
-            self.banner.set_title("Artwork may be close to a registration mark. Check the sheet.")
-            self.banner.set_revealed(True)
         else:
             self.banner.set_revealed(False)
 
-        ready = not blocked and not self._sending and (not self.pdf_bundle or self.bundle_checked)
-        self.cut_button.set_sensitive(ready and j.settings.passes > 0)
-        self.scan_button.set_sensitive(ready and bool(j.registration_steps()))
+        self.update_send_actions()
         self._building = False
 
     # ---- actions ------------------------------------------------------
@@ -1465,16 +1542,21 @@ class Window(Adw.ApplicationWindow):
         grid = self.job.grid
         registration = Registration.from_marks(self.job.marks) if self.job.registration else None
         project = Project(grid.sheet_w_mm, grid.sheet_h_mm, shapes, registration, self.job.mat)
-        design = DesignWorkspace(self, project, self.close_design, self.review_design, cutter=self.job.device)
+        design = DesignWorkspace(self, project, self.leave_design, self.review_design, cutter=self.job.device)
         self.workspaces.add_named(design.view, 'design')
         self.design = design
         self.workspaces.set_visible_child(design.view)
+
+    def leave_design(self, *_args):
+        self.workspaces.set_visible_child_name('tools')
+        self.update_send_actions()
 
     def close_design(self, *_args):
         def discard():
             self.workspaces.set_visible_child_name('tools')
             self.workspaces.remove(self.design.view)
             self.design = None
+            self.update_send_actions()
 
         self.design.confirm_discard(discard)
 
@@ -1512,10 +1594,12 @@ class Window(Adw.ApplicationWindow):
         finally:
             self._suppress = False
         self.set_artwork(artwork, f'Design · {action}')
+        self.reviewed_design = project
         self.stack.set_visible_child_name('cut')
-        self.workspaces.set_visible_child_name('tools')
+        self.leave_design()
 
     def set_artwork(self, artwork, name):
+        self.reviewed_design = None
         self.imported = artwork
         self.import_row.set_title(name)
         lines = [artwork.describe(), *artwork.warnings] if artwork else ['Cut template for Silhouette Studio']
@@ -1595,6 +1679,9 @@ class Window(Adw.ApplicationWindow):
             self.toast(str(exc))
             return
         self.describe_bundle_sheet(row)
+        self.bundle_checked = False
+        self._sheet_token = self.sheet_report = None
+        self.preview.set_sheet(None)
         self.preview.set_pdf()
         self.set_artwork(artwork, row.get('svg') or row['cutFile'])
 
@@ -1640,6 +1727,8 @@ class Window(Adw.ApplicationWindow):
                 self.pdf_bundle = matched
                 self.lock_bundle_layout(True)
                 self.pdf_path = path
+                self._sheet_token = self.sheet_report = None
+                self.preview.set_sheet(None)
                 self.preview.set_pdf()
                 self.sheet_row.set_title(path.name)
                 self._suppress = True
@@ -1688,8 +1777,7 @@ class Window(Adw.ApplicationWindow):
         if matched:
             row = matched.rows[page-1]
             self.bundle_checked = False
-            self.cut_button.set_sensitive(False)
-            self.scan_button.set_sensitive(False)
+            self.update_send_actions()
         dpi = int(self._text(self.r_sheet_dpi))
         token = self._sheet_token = object()
         self.sheet_report = None
@@ -1888,7 +1976,12 @@ class Window(Adw.ApplicationWindow):
         self.r_bluetooth.set_visible(mode != "auto")
         self.r_bluetooth_id.set_visible(mode != "auto")
         self.r_bluetooth_channel.set_visible(mode == "bluetooth")
+        self.on_connection_target_changed()
+
+    def on_connection_target_changed(self, *_args):
         self.status_row.set_subtitle("Not checked")
+        self.tool_row.set_subtitle("Not checked")
+        self.update_send_actions()
 
     def _scan_bluetooth(self, button):
         from . import ble, rfcomm
@@ -1941,12 +2034,18 @@ class Window(Adw.ApplicationWindow):
             return
         connection = self._connection()
         mode, options = _transport_options(connection)
+        if mode in bluetooth.BLUETOOTH_MODES and not connection[1]:
+            self.status_row.set_subtitle("Select a Bluetooth cutter.")
+            self.tool_row.set_subtitle("Select a Bluetooth cutter.")
+            return
         self._checking_status = True
+        self.update_send_actions()
         self.status_row.set_subtitle("Checking…")
         self.tool_row.set_subtitle("Checking…")
 
         def done(text, device):
             self._checking_status = False
+            self.update_send_actions()
             if connection != self._connection():
                 return
             self.status_row.set_subtitle(text)
@@ -1969,6 +2068,9 @@ class Window(Adw.ApplicationWindow):
         threading.Thread(target=work, daemon=True).start()
 
     def on_cut(self, *_a, scan_only=False):
+        if design_review_pending(self):
+            self.toast('Review the latest edits in Design.')
+            return
         if self.pdf_bundle and not self.bundle_checked:
             self.toast('Check the matched PDF before cutting this sheet.')
             return
@@ -1976,6 +2078,9 @@ class Window(Adw.ApplicationWindow):
         refusal = cut_refusal(j, j, self._sending or self._checking_status)
         if refusal:
             self.toast(refusal)
+            return
+        if not scan_only and j.settings.passes <= 0:
+            self.toast("Set at least one pass to send cut paths.")
             return
         connection = self._connection()
         if connection[0] in bluetooth.BLUETOOTH_MODES and not connection[1]:
@@ -2016,12 +2121,21 @@ class Window(Adw.ApplicationWindow):
     def _cut_response(self, _dialog, response, j, connection=("auto", None), scan_only=False):
         if response != "cut":
             return
+        if design_review_pending(self):
+            self.toast('Review the latest edits in Design.')
+            return
         if self.pdf_bundle and not self.bundle_checked:
             self.toast('Check the matched PDF before cutting this sheet.')
             return
         refusal = cut_refusal(self.job, j, self._sending or self._checking_status)
         if refusal:
             self.toast(refusal)
+            return
+        if not scan_only and j.settings.passes <= 0:
+            self.toast("Set at least one pass to send cut paths.")
+            return
+        if connection != self._connection():
+            self.toast("The cutter connection changed. Review and confirm the job again.")
             return
         steps = j.registration_steps() if scan_only else j.steps
         if not steps:
@@ -2030,6 +2144,7 @@ class Window(Adw.ApplicationWindow):
         self._sending = True
         self.cut_button.set_sensitive(False)
         self.scan_button.set_sensitive(False)
+        self.update_send_actions()
         self.scan_result.set_visible(False)
         matched = self.pdf_bundle
         row = matched.rows[int(self.r_sheet_page.get_value()) - 1] if matched else None
