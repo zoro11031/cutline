@@ -310,6 +310,8 @@ class Window(Adw.ApplicationWindow):
         self._sheet_token = None
         self.imported = None
         self.template_shapes = ()
+        self.design = None
+        self._close_confirmed = False
         self._building = False
         self._sending = False
         self._suppress = True        # don't rebuild while constructing rows
@@ -318,7 +320,10 @@ class Window(Adw.ApplicationWindow):
         self.set_content(self.toasts)
 
         outer = Adw.ToolbarView()
-        self.toasts.set_child(outer)
+        self.workspaces = Gtk.Stack(hhomogeneous=False, vhomogeneous=False)
+        self.workspaces.add_named(outer, 'tools')
+        self.toasts.set_child(self.workspaces)
+        self.connect('close-request', self.confirm_window_close)
 
         header = Adw.HeaderBar()
         self.stack = Adw.ViewStack()
@@ -331,6 +336,9 @@ class Window(Adw.ApplicationWindow):
         self.build_button.add_css_class("suggested-action")
         self.build_button.connect("clicked", lambda *_: self.rebuild())
         header.pack_start(self.build_button)
+        design_button = Gtk.Button(label='Design')
+        design_button.connect('clicked', self.on_edit_template)
+        header.pack_start(design_button)
 
         self.banner = Adw.Banner(revealed=False)
         outer.add_top_bar(self.banner)
@@ -435,10 +443,6 @@ class Window(Adw.ApplicationWindow):
         clear_btn = Gtk.Button(label="Clear")
         clear_btn.set_valign(Gtk.Align.CENTER)
         clear_btn.connect("clicked", self.on_clear_artwork)
-        edit_btn = Gtk.Button(label="Template editor")
-        edit_btn.set_valign(Gtk.Align.CENTER)
-        edit_btn.connect("clicked", self.on_edit_template)
-        self.import_row.add_suffix(edit_btn)
         self.import_row.add_suffix(open_btn)
         self.import_row.add_suffix(clear_btn)
         gsrc.add(self.import_row)
@@ -1112,24 +1116,81 @@ class Window(Adw.ApplicationWindow):
         if self.pdf_bundle:
             self.toast('Clear the matched job before editing its paths.')
             return
-        if self.job is None:
-            self.toast("Select a sheet before opening the template editor.")
+        if self._sending:
+            self.toast('Wait for the current job to finish before opening Design.')
             return
-        from .editor import TemplateEditor
+        if self.design is not None:
+            self.workspaces.set_visible_child(self.design)
+            return
+        if self.job is None:
+            self.toast('Select a sheet before opening Design.')
+            return
+        from .editor import DesignWorkspace
+        from .editor_model import Project, Registration, editable_import, shapes_from_paths
 
-        def apply(shapes, artwork):
-            self.template_shapes = shapes
-            self._suppress = True
-            try:
-                self.r_orient.set_selected(1 if self.job.grid.portrait else 2)
-                self.r_mode.set_selected(0)
-                self.r_skip.set_text("")
-            finally:
-                self._suppress = False
-            self.set_artwork(artwork, "Custom template")
+        try:
+            shapes = self.template_shapes or (editable_import(self.imported)[0]
+                                             if self.imported else shapes_from_paths(self.job.paths))
+        except ValueError as error:
+            self.toast(str(error))
+            return
+        grid = self.job.grid
+        registration = Registration.from_marks(self.job.marks) if self.job.registration else None
+        project = Project(grid.sheet_w_mm, grid.sheet_h_mm, shapes, registration)
+        self.design = DesignWorkspace(self, project, self.close_design, self.review_design)
+        self.workspaces.add_named(self.design, 'design')
+        self.workspaces.set_visible_child(self.design)
 
-        TemplateEditor(self, self.job, self.options(), Preview(),
-                       self.template_shapes, apply).present()
+    def close_design(self, *_args):
+        def discard():
+            self.workspaces.set_visible_child_name('tools')
+            self.workspaces.remove(self.design)
+            self.design = None
+
+        self.design.confirm_discard(discard)
+
+    def confirm_window_close(self, *_args):
+        if self._close_confirmed or self.design is None or not self.design.dirty:
+            return False
+
+        def discard():
+            self._close_confirmed = True
+            self.close()
+
+        self.design.confirm_discard(discard)
+        return True
+
+    def review_design(self, project, action):
+        page = (project.width, project.height)
+        matching = next(((sheet, portrait) for sheet in geometry.SHEETS.values()
+                         for portrait in (True, False) if sheet.size(portrait) == page), None)
+        if matching is None:
+            self.design.status.set_text('Choose a supported paper size to review cut paths.')
+            return
+        artwork = project.artwork(action)
+        if any(path.length_mm() <= 0 for path in artwork.paths):
+            self.design.status.set_text('Resize any paths with no length before reviewing.')
+            return
+        sheet, portrait = matching
+        self.template_shapes = project.shapes
+        self._suppress = True
+        try:
+            self.r_layout_preset.set_selected(0)
+            self.r_sheet.set_selected(sorted(geometry.SHEETS).index(sheet.name))
+            self.r_orient.set_selected(1 if portrait else 2)
+            self.r_mode.set_selected(0)
+            self.r_skip.set_text('')
+            self.r_register.set_active(project.registration is not None)
+            if (marks := project.registration) is not None:
+                self.r_pattern.set_selected(regmarks.PATTERNS.index(marks.pattern))
+                self.r_inset.set_value(marks.inset_mm)
+                self.r_length.set_value(marks.length_mm)
+                self.r_thickness.set_value(marks.thickness_mm)
+        finally:
+            self._suppress = False
+        self.set_artwork(artwork, f'Design · {action}')
+        self.stack.set_visible_child_name('cut')
+        self.workspaces.set_visible_child_name('tools')
 
     def set_artwork(self, artwork, name):
         self.imported = artwork

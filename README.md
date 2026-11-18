@@ -93,6 +93,18 @@ that also carries the registration marks so it can be held against the printed
 sheet. **The proof is for looking at, not for cutting** — Studio would try to
 cut the marks.
 
+## Design workspace
+
+Open **Design** from the header to edit the current card layout or start with
+**New**. The canvas supports drag placement, millimetre coordinates, rotation,
+mirroring, a 5 mm grid, and undo and redo. SVG and DXF imports show their source
+scale before placement. Open v1 template projects on their saved page and
+save current projects as `.scc-template` v2.
+
+Assign each object **Cut**, **Score**, or **None**, then choose the action next
+to **Review paths**. Control Center checks that action in the existing Cut
+view. The blade and material controls there apply to the selected action.
+
 ## The sheet
 
 **Eight cards: four across, two down, Letter or A4 turned landscape.**
