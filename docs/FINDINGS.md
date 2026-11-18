@@ -1738,3 +1738,10 @@ This narrows the USB-attached observation: the unplug helped advertising,
 but did not establish a usable Linux BLE link. The host did not grant access
 to the HCI monitor, so the disconnect reason was not captured. No pairing,
 initialization, or cutter motion commands were sent.
+
+A second isolated launch produced a Windows FileIO trace containing the
+pathnames `SPEC_CUTTER/materials` and `user_materials/A.materials4`. The
+pathname scan found no `SPEC_S/condition.csv` marker in that recording.
+The raw trace was not decoded into process-attributed read events, so a
+missing marker does not prove the CSV is unused. The temporary trace,
+account, and profile were cleaned up.
