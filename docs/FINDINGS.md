@@ -1695,3 +1695,24 @@ Vendor rows stay local. The imported library is complete for this saved
 CSV. Whether Studio supplements it with newer model-, tool-, holder-, or
 action-specific data remains open. No GUI comparison with a clean Studio
 profile was performed in this pass.
+
+### Follow-up audit of the installed build
+
+After closing the occupied RDP session, a fresh installation inventory
+confirmed Studio 5.0.556.1 and the executable hash above. In addition to the
+legacy CSV, the installation contains a 3,333,472-byte
+`Resources/Resources/SPEC_CUTTER/materials` resource (SHA-256
+`2f809e26411866175b81b508306e74f85c9c1fd0cd98a9d885845a1e39b6a451`).
+It lacks a recognizable file header and has approximately 7.98 bits per byte
+of entropy. Its encoding and record count remain unresolved.
+
+Executable metadata exposes `Condition_root.generate_materials_list` with a
+division argument, material-action stand-in methods, a separate
+`user_defined_materials_folderitem` save path, and
+`CutJob.evaluate_track_enhancing`. These are static entry points for tracing.
+They do not establish runtime precedence, thresholds, or the relationship
+between the opaque resource and the CSV. The Bluetooth helper ships with
+`BluetoothIO.dll`, whose PE imports include Windows Bluetooth device
+enumeration and Winsock. These imports alone do not establish the Cameo 4
+connection path. An isolated clean profile, resource call tracing, and a
+same-cutter Studio traffic capture remain outstanding.
