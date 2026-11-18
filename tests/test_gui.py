@@ -1,10 +1,11 @@
 """GUI handlers and a display-backed Design button smoke test."""
 import os
+import tempfile
 from pathlib import Path
 import unittest
 import types
 from unittest import mock
-from cut_proxies import job
+from cut_proxies import config, job, presets
 
 try:
     from cut_proxies import gui
@@ -42,6 +43,25 @@ class TestDesignWorkspace(unittest.TestCase):
         win.close_design()
         self.assertEqual(win.workspaces.get_visible_child_name(), 'tools')
         self.assertIsNone(win.design)
+
+    def test_save_preset_button_reloads_edited_blade_settings(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             mock.patch.object(config, "CONFIG_DIR", Path(folder)):
+            win = self.make_window()
+            self.assertEqual(win.r_force.get_value(), 35)
+            win.r_force.set_value(32)
+            win.r_speed.set_value(21)
+            win.r_depth.set_value(0)
+            win.r_passes.set_value(5)
+            win.save_preset_btn.emit("clicked")
+            win.r_preset.set_selected(0)
+            names = sorted(presets.all_presets())
+            win.r_preset.set_selected(names.index(config.DEFAULT_PRESET))
+            self.assertEqual((win.r_force.get_value(), win.r_speed.get_value(),
+                              win.r_depth.get_value(), win.r_passes.get_value()),
+                             (32, 21, 0, 5))
+            self.assertIsNone(win.job.settings.depth)
+            self.assertEqual(win.job.settings.passes, 5)
 
     def test_registration_failure_opens_named_mark_diagnostics(self):
         win = self.make_window()

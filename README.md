@@ -227,13 +227,19 @@ the wrong scale — no offset can correct that.
 | Preset | For | Provenance |
 |---|---|---|
 | `Cameo 4 starting point` | where to begin, then tune | the Card Maker cutting guide |
-| `330 gsm black-core` | the stock this suite prints on | extrapolated, **never cut** |
-| `310 gsm black-core` | 310 gsm stock; force 33, speed 1, depth 7, two passes | extrapolated, **never cut** |
+| `330 gsm black-core` | force 35, speed 25, depth 7, four passes | user-selected |
+| `310 gsm black-core` | force 35, speed 25, depth 7, four passes | user-selected |
 | `330 gsm black-core, laminated` | same, under a laminate pouch | extrapolated, **never cut** |
 | `300 gsm cardstock` | lighter card | extrapolated, **never cut** |
 | `Deep-cut blade, 330 gsm` | the 2.0 mm deep-cut blade | extrapolated, **never cut** |
 | `Plain paper test` | proofing alignment, costs nothing | from the recovered media table |
 | `Pen, no blade` | draw the cut instead of cutting it | from the recovered media table |
+
+In **Blade**, select a preset, edit force, speed, depth or passes, and click
+**Save preset**. The local preset is available the next time you open the app
+and when you select the same preset from the CLI. The device limit still
+applies at send time. Control Center sends force 33 on a Cameo 4 when the
+saved value is 35.
 
 Force and speed are unitless machine indices, the same numbers Studio shows.
 **The Cameo 4 and 5 take speed 1–30; every earlier Cameo takes 1–10**, so a

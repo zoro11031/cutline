@@ -636,6 +636,14 @@ class Window(Adw.ApplicationWindow):
         for r in (self.r_cutter, self.r_force, self.r_speed, self.r_passes,
                   self.r_depth):
             g2.add(r)
+        save_preset = Adw.ActionRow(
+            title="Keep these settings",
+            subtitle="Save force, speed, depth and passes to the selected preset.")
+        self.save_preset_btn = Gtk.Button(label="Save preset")
+        self.save_preset_btn.set_valign(Gtk.Align.CENTER)
+        self.save_preset_btn.connect("clicked", self.on_save_blade_preset)
+        save_preset.add_suffix(self.save_preset_btn)
+        g2.add(save_preset)
         page.add(g2)
 
         g3 = Adw.PreferencesGroup(
@@ -951,13 +959,28 @@ class Window(Adw.ApplicationWindow):
         if self.pdf_bundle:
             self.measure_sheet()
 
+    def on_save_blade_preset(self, *_a):
+        name = self._text(self.r_preset)
+        try:
+            saved = presets.save_blade_settings(
+                name, force=int(self.r_force.get_value()), speed=int(self.r_speed.get_value()),
+                depth=int(self.r_depth.get_value()) or None, passes=int(self.r_passes.get_value()))
+        except OSError as exc:
+            self.toast(f"Could not save preset: {exc}")
+            return
+        if saved is None:
+            self.toast("Preset settings are already saved.")
+            return
+        self.on_preset()
+        self.toast(f"Saved {name}.")
+
     def on_preset(self, *_a):
         p = presets.get(self._text(self.r_preset))
         flag = {"measured": "measured on a real cut",
                 "silhouette": "from Silhouette's published settings",
                 "recovered": "from the recovered media table",
                 "guide": "from the Card Maker community guide; not measured here"}.get(
-                    p.origin, "EXTRAPOLATED - never cut")
+                    p.origin, "Starting settings")
         self.preset_note.set_subtitle(f"{flag}\n\n{p.note}")
         was = self._suppress
         self._suppress = True

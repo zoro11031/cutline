@@ -139,6 +139,9 @@ class Job:
         ]
 
 
+_USE_PRESET_DEPTH = object()
+
+
 def build(sheet: str = config.DEFAULT_SHEET,
           card: str = config.DEFAULT_CARD,
           portrait: bool | None = None,
@@ -154,7 +157,7 @@ def build(sheet: str = config.DEFAULT_SHEET,
           passes: int | None = None,
           force: int | None = None,
           speed: int | None = None,
-          depth: int | None = None,
+          depth: int | None | object = _USE_PRESET_DEPTH,
           bleed_mm: float = 0.0,
           proxypress: geometry.ProxyPressSettings | None = None,
           registration: bool = True,
@@ -249,7 +252,7 @@ def build(sheet: str = config.DEFAULT_SHEET,
         cut.force = force
     if speed is not None:
         cut.speed = speed
-    if depth is not None:
+    if depth is not _USE_PRESET_DEPTH:
         cut.depth = depth
     warnings = cut.warnings(device)
     cut = cut.clamped(device)
