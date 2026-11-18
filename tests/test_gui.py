@@ -61,6 +61,40 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertFalse(win.r_track.get_active())
         self.assertFalse(win.job.settings.track_enhancing)
 
+    def test_advanced_controls_and_tool_profiles_are_independent(self):
+        from cut_proxies.editor_model import Shape
+
+        win = self.make_window()
+        win.send_workspace.emit('clicked')
+        self.assertFalse(win.send_advanced.get_expanded())
+        self.assertTrue(win.corner_button.get_visible())
+        win.send_sliders['force'].set_value(28)
+        win.send_holder_buttons[2].set_active(True)
+        self.assertFalse(win.r_depth.get_sensitive())
+        win.send_sliders['force'].set_value(12)
+        win.send_holder_buttons[1].set_active(True)
+        self.assertEqual(win.send_sliders['force'].get_value(), 28)
+        self.assertEqual(win.job.settings.holder, 1)
+        win.send_advanced.set_expanded(True)
+        win.r_end_position.set_selected(list(graphtec.END_POSITIONS).index('start'))
+        win.send_advanced.set_expanded(False)
+        self.assertEqual(win.job.end_position, 'start')
+
+        win.on_edit_template()
+        design = win.design
+        design.commit((Shape('Rectangle', 30, 40), Shape('Line', 95, 40)), (0,))
+        design.menu_actions.lookup_action('holder-1').activate(None)
+        design.set_selection((1,))
+        design.menu_actions.lookup_action('holder-2').activate(None)
+        design.menu_actions.lookup_action('registration').activate(None)
+        self.assertTrue(design.page_advanced.get_expanded())
+        design.menu_actions.lookup_action('print-border').activate(None)
+        self.assertTrue(design.print_border.get_active())
+        design.send_workspace.emit('clicked')
+        self.assertFalse(win.job.blocked)
+        self.assertEqual([(group.settings.holder, group.settings.force) for group in win.job.action_groups],
+                         [(1, 28), (2, 12)])
+
     def test_material_guide_shows_fresh_spots_and_restores_the_cut_preview(self):
         win = self.make_window()
         win.preview.zoom_by(1.25)

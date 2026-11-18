@@ -69,10 +69,10 @@ See [Bluetooth testing notes](INKSCAPE_COMPATIBILITY.md) for model coverage.
 
 Print at **100%**. Keep the cut file and PDF from the same export. For
 ProxyPress, open its ZIP in **Sheet** and pick the front you printed. For a
-generated layout, use **Layout → Export** to save the cut files and proof.
+generated layout, use **Layout → Advanced Options → Export** to save the cut files and proof.
 
 Load the print face-up and square to the top-left grid of the mat. Choose
-that mat in **Send → Media handling**. Load it into the cutter and check
+that mat in **Send → Advanced Options → Media handling**. Load it into the cutter and check
 that the cutter says it’s ready.
 
 ## First cut on a new template
@@ -88,15 +88,15 @@ details. Print the marks dark and keep them clear of glare and nearby artwork.
 
 ## Cut paths and media handling
 
-Under **Blade → Cut paths**, you can cut holes first, shorten travel between
+Under **Send → Advanced Options → Cut paths**, you can cut holes first, shorten travel between
 shapes, or reduce roller movement. **Seam Overcut** overlaps the ends of a
 closed line. **Line Segment Overcut** helps cuts meet at sharp corners.
 
-Under **Send → Media handling**, select the mat and choose where the cutter
+Under **Send → Advanced Options → Media handling**, select the mat and choose where the cutter
 stops. **Return to Origin** parks it at the start. **Feed** moves it past the
 last cut.
 
-For imported artwork or a design, **Blade → Weed Settings** can add a border
+For imported artwork or a design, **Blade → Advanced Options → Weed Settings** can add a border
 or lines through open gaps. Look for blue dashed lines in the preview.
 
 ## Finding your blade settings
@@ -119,7 +119,7 @@ silhouette-control-center testcut --force 25,29,33 --passes 1,2,3 --out ~/Docume
 
 1. Print an alignment sheet and trace the cut lines with **Silhouette Sketch Pen**.
 2. Measure the move needed to bring the pen line onto the printed edge.
-3. Enter that move under **Send → Calibration**. Right and down are positive.
+3. Enter that move under **Send → Advanced Options → Calibration**. Right and down are positive.
 
 For example, if the pen lands 0.2 mm to the right, enter **X −0.2 mm**.
 Use `silhouette-control-center calibrate --x -0.2 --y 0` at the terminal.
@@ -127,10 +127,10 @@ If the error changes across the sheet, check the print size first.
 
 ## Exporting files and reading material settings
 
-Use **Layout → Export** for an SVG, DXF, and proof. Use **Sheet → Save Paired
+Use **Layout → Advanced Options → Export** for an SVG, DXF, and proof. Use **Sheet → Save Paired
 Cut File** to get the original cut file from a ProxyPress ZIP.
 
-To add Studio’s factory materials, choose **Blade → Import Studio Materials**.
+To add Studio’s factory materials, choose **Blade → Advanced Options → Import Studio Materials**.
 Look for `condition.csv` under `Resources/Resources/SPEC_S` in the Studio
 installation. You can also use `silhouette-control-center materials --file PATH`.
 [Saving and sharing presets](../profiles/README.md)
@@ -170,10 +170,11 @@ an editable `.scc-template` project. Choose **Send** to review the cut.
 
 ## Send by Line, Fill, or Layer
 
-Open artwork and choose **Send → Send by**. **Standard** uses the current
+Open artwork and choose **Send → Advanced Options → Send by**. **Standard** uses the current
 cut settings. **Line**, **Fill**, and **Layer** let you choose which groups
 to cut and set a material, holder, and order for each one. In Design,
-**All actions** gives Cut and Score their own groups.
+**All actions** gives Cut and Score their own groups. Use **Object → Tool
+Holder** to assign selected shapes to a holder before reviewing in Send.
 
 ```sh
 silhouette-control-center import design.svg --list-groups line

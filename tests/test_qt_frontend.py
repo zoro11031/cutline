@@ -68,6 +68,39 @@ class TestQtFrontend(unittest.TestCase):
         self.assertFalse(window.blade["track_enhancing"].isChecked())
         self.assertFalse(window.job.settings.track_enhancing)
 
+    def test_advanced_controls_and_tool_profiles_are_independent(self):
+        window = self.window
+        window.show()
+        window.send_workspace.click()
+        self.app.processEvents()
+        self.assertTrue(window.send_advanced.isHidden())
+        self.assertTrue(window.send_blade["acceleration"].slider.isVisible())
+        self.assertTrue(window.corner_button.isVisible())
+        window.send_blade["force"].slider.setValue(28)
+        window.send_blade["holder"].holders.button(2).click()
+        window.send_blade["force"].setValue(12)
+        self.assertFalse(window.send_blade["depth"].slider.isEnabled())
+        window.send_blade["holder"].holders.button(1).click()
+        self.assertEqual(window.send_blade["force"].slider.value(), 28)
+        self.assertEqual(window.job.settings.holder, 1)
+        window.send_advanced.disclosure.click()
+        window.select("end_position", "start")
+        window.send_advanced.disclosure.click()
+        self.assertEqual(window.job.end_position, "start")
+
+        window.open_design()
+        design = window.design
+        design.commit_shapes((editor_model.Shape("Rectangle", 30, 40, holder=1),
+                              editor_model.Shape("Line", 95, 40, holder=2)), (0,))
+        design.show_page_options()
+        self.assertTrue(design.page_advanced.disclosure.isChecked())
+        design.print_border.setChecked(True)
+        self.assertTrue(design.print_border.isChecked())
+        design.send_workspace.click()
+        self.assertFalse(window.job.blocked)
+        self.assertEqual([(group.settings.holder, group.settings.force) for group in window.job.action_groups],
+                         [(1, 28), (2, 12)])
+
     def test_studio3_import_and_preview_keep_the_document_geometry(self):
         source = Path(__file__).parent / "fixtures" / "studio3" / "letter-catan-v2.studio3"
         window = self.window

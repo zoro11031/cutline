@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence, QPen, QPolygonF
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QInputDialog, QListWidget,
+from PySide6.QtWidgets import (QAbstractItemView, QColorDialog, QComboBox, QFileDialog, QHBoxLayout, QInputDialog, QListWidget, QMenuBar,
                                QMessageBox, QSplitter, QStyle, QTabWidget, QToolBar, QVBoxLayout, QWidget)
 
 from . import editor_model as model, geometry, graphtec, importer, regmarks, template
@@ -50,6 +50,11 @@ class Canvas(SheetView):
                 (0, -11), (5, -6), (2, -6), (2, -2), (-2, -2), (-2, -6), (-5, -6))])
             scene.addPolygon(arrow, QPen(Qt.PenStyle.NoPen), QBrush(QColor("#535e68")))
         draw_paper(scene, page, shadow=not mat_visible)
+        if editor.print_border.isChecked():
+            margin = editor.print_margin.value()
+            print_area = page.adjusted(margin, margin, -margin, -margin)
+            if not print_area.isEmpty():
+                scene.addRect(print_area, pen("#4273a1", dashed=True))
         if editor.show_grid.isChecked():
             self.grid(scene, page, editor.spacing.value(), "#dce1e5")
         if editor.rulers.isChecked():
@@ -70,9 +75,12 @@ class Canvas(SheetView):
         for index, shape in enumerate(project.shapes):
             if not shape.visible:
                 continue
-            color = "#3c70c5" if index in selection else shape.stroke or "#313945"
+            color = "#3c70c5" if index in selection else shape.stroke or {1: "#b2323a", 2: "#244b9a"}.get(shape.holder, "#313945")
             fill = QColor(shape.fill) if shape.closed and shape.fill else Qt.BrushStyle.NoBrush
-            draw_path(scene, shape.path(), pen(color, dashed=shape.action == "Score"), fill)
+            line = pen(color, shape.line_width_mm, dashed=shape.action == "Score" or shape.line_style == "dashed")
+            if shape.line_style == "dotted":
+                line.setStyle(Qt.PenStyle.DotLine)
+            draw_path(scene, shape.path(), line, fill)
         if editor.tool.currentData() == "Point Edit" and len(selection) == 1:
             shape = project.shapes[selection[0]]
             if shape.kind in ("Line", "Path") and shape.visible:
@@ -200,7 +208,12 @@ class Canvas(SheetView):
         if self.edit == "move" and self.active:
             anchor = base[self.active[0]]
             x, y = self.point(QPointF(anchor.x + delta.x(), anchor.y + delta.y()))
-            self.draft = model.move(base, self.active, x - anchor.x, y - anchor.y)
+            dx, dy = x - anchor.x, y - anchor.y
+            if self.design.smart_snap.isChecked():
+                project = self.design.project
+                dx, dy = model.snap_move(base, self.active, dx, dy, project.width, project.height,
+                                         6 / max(0.02, self.transform().m11()))
+            self.draft = model.move(base, self.active, dx, dy)
         elif self.edit == "marquee":
             self.marquee = QRectF(self.start, point).normalized()
         elif self.edit == "point":
@@ -333,6 +346,8 @@ class Design(QWidget):
         self.send_workspace.setToolTip("Review the selected action in the Send workspace.")
         top.addWidget(switch)
         body.addWidget(header)
+        self.menu_bar = QMenuBar()
+        body.addWidget(self.menu_bar)
         toolbar = QToolBar()
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.command(toolbar, "New", self.new_project, QKeySequence.StandardKey.New,
@@ -368,11 +383,12 @@ class Design(QWidget):
         self.objects.itemSelectionChanged.connect(self.refresh_selection)
         objects.addRow(self.objects)
         self.duplicate_button = objects.push("Duplicate", self.duplicate)
-        self.group_button = objects.push("Group", self.group)
-        self.ungroup_button = objects.push("Ungroup", lambda: self.group(release=True))
         self.delete_button = objects.push("Delete", self.delete)
-        objects.push("Bring Forward", lambda: self.reorder(1))
-        objects.push("Send Backward", lambda: self.reorder(-1))
+        more_objects = left.advanced("Object Options").group("Arrange")
+        self.group_button = more_objects.push("Group", self.group)
+        self.ungroup_button = more_objects.push("Ungroup", lambda: self.group(release=True))
+        more_objects.push("Bring Forward", lambda: self.reorder(1))
+        more_objects.push("Send Backward", lambda: self.reorder(-1))
         left_pane = left.finish()
         left_pane.setMinimumWidth(205)
         panes.addWidget(left_pane)
@@ -388,6 +404,7 @@ class Design(QWidget):
             panel = Page()
             build(panel)
             self.inspector.addTab(panel.finish(), label)
+        self.build_design_menus()
         panes.addWidget(self.inspector)
         panes.setStretchFactor(1, 1)
         panes.setSizes([205, 550, 328])
@@ -447,6 +464,7 @@ class Design(QWidget):
 
     def page_panel(self, page):
         media = page.group("Media")
+        self.media_form = media
         names = (*geometry.SHEETS, "Custom")
         self.media = media.choice("Size", names, changed=self.change_size)
         self.orientation = media.choice("Orientation", {True: "Portrait", False: "Landscape"},
@@ -456,7 +474,9 @@ class Design(QWidget):
         self.mat = media.choice("Cutting mat", graphtec.MAT_OPTIONS, changed=self.change_mat)
         marks = page.group("Registration Marks")
         self.register = marks.check("Enable registration", changed=self.change_marks)
-        self.register.setToolTip("Show printed marks and use their location as the origin when sending this project.")
+        self.show_grid = marks.check("Show Grid", True, self.canvas.redraw)
+        self.page_advanced = advanced = page.advanced()
+        marks = advanced.group("Registration Marks")
         self.pattern = marks.choice("Pattern", {regmarks.THREE: "Type 1 (3 marks)", regmarks.FOUR: "4 marks"},
                                     changed=self.change_marks)
         self.inset = marks.number("Inset (mm)", 10, 2, 40, 0.1, 3, self.change_marks)
@@ -464,28 +484,33 @@ class Design(QWidget):
                                   regmarks.MAX_LENGTH_MM, 0.1, 4, self.change_marks)
         self.thickness = marks.number("Thickness (mm)", 1, regmarks.MIN_THICKNESS_MM,
                                      regmarks.MAX_THICKNESS_MM, 0.05, 3, self.change_marks)
-        view = page.group("Canvas")
+        view = advanced.group("Canvas")
         self.show_mat = view.check("Show Cutting Mat", True, self.canvas.redraw)
         self.cut_border = view.check("Show Cut Border", True, self.canvas.redraw)
-        self.cut_border.setToolTip("Show where the cutter can reach on this page with the current mat and marks.")
-        self.show_grid = view.check("Show Grid", True, self.canvas.redraw)
+        self.print_border = view.check("Show Print Border", False, self.canvas.redraw)
+        self.print_margin = view.number("Print margin (mm)", 5, 0, 25, 0.5, 1, self.canvas.redraw)
+        self.print_margin.setToolTip("Set the margin you use on your printer.")
         self.rulers = view.check("Show Rulers", False, self.canvas.redraw)
         self.snap = view.check("Snap to Grid")
         self.snap.setToolTip("Snap drawn points and object moves to the grid spacing.")
+        self.smart_snap = view.check("Enable Smart Snapping")
+        self.smart_snap.setToolTip("Line up moving shapes with nearby edges or centers.")
         self.spacing = view.number("Grid spacing (mm)", 5, 0.5, 100, 0.5, 2, self.canvas.redraw)
 
     def transform_panel(self, page):
         form = page.group("Position and size")
+        advanced = page.advanced().group("Shape options")
         self.fields = {}
         for key, label, lo, hi in (
                 ("x", "X (mm)", -1000, 1000), ("y", "Y (mm)", -1000, 1000),
                 ("width", "Width (mm)", -1000, 1000), ("height", "Height (mm)", -1000, 1000),
                 ("rotation", "Rotation (°)", -360, 360), ("radius", "Corner radius (mm)", 0, 1000)):
-            self.fields[key] = form.number(label, 0, lo, hi, 0.1, 3, lambda field=key: self.change_number(field))
+            target = advanced if key == "radius" else form
+            self.fields[key] = target.number(label, 0, lo, hi, 0.1, 3, lambda field=key: self.change_number(field))
         self.lock_ratio = form.check("Lock Aspect Ratio")
         self.flags = {}
         for key, label in (("flip_x", "Mirror Horizontally"), ("flip_y", "Mirror Vertically"), ("visible", "Visible")):
-            self.flags[key] = form.check(label, changed=lambda field=key: self.change_flag(field))
+            self.flags[key] = advanced.check(label, changed=lambda field=key: self.change_flag(field))
         align = page.group("Align and space")
         self.alignment = align.choice("Alignment", model.ALIGNMENTS)
         self.align_button = align.push("Apply Alignment", self.align)
@@ -504,7 +529,139 @@ class Design(QWidget):
         self.fill_color = style.text("Fill color", changed=lambda: self.change_color("fill", self.fill_color))
         for widget in (self.line_color, self.fill_color):
             widget.setPlaceholderText("#rrggbb or blank")
+        self.color_buttons = (button("Pick Line Color…", lambda: self.pick_color("stroke", self.line_color)),
+                              button("Pick Fill Color…", lambda: self.pick_color("fill", self.fill_color)))
+        style.actions(*self.color_buttons)
+        self.line_style = style.choice("Line Style", model.LINE_STYLES,
+                                       changed=lambda: self.change_selected(line_style=self.line_style.currentData()))
+        self.line_width = style.number("Line Width (mm)", 0, 0, 5, 0.1, 2,
+                                       lambda: self.change_selected(line_width_mm=self.line_width.value()))
+        self.line_style.setToolTip("Appearance only. The cutter follows the whole line.")
+        self.line_width.setSpecialValueText("Hairline")
         self.action = style.choice("Object action", model.ACTIONS, changed=self.change_action)
+
+    def pick_color(self, field, entry):
+        initial = QColor(entry.text() or "#313945")
+        picked = QColorDialog.getColor(initial, self)
+        if picked.isValid():
+            self.change_selected(**{field: picked.name()})
+
+    def build_design_menus(self):
+        def command(menu, label, callback, shortcut=None):
+            action = menu.addAction(label)
+            action.triggered.connect(lambda checked=False: callback())
+            if shortcut:
+                action.setShortcut(QKeySequence(shortcut))
+            return action
+
+        view = self.menu_bar.addMenu("View")
+        zoom = view.addMenu("Zoom")
+        for label, callback in (("Zoom In", lambda: self.canvas.zoom_by(1.25)),
+                                ("Zoom Out", lambda: self.canvas.zoom_by(0.8)), ("Fit", self.canvas.fit)):
+            command(zoom, label, callback)
+        rotate = view.addMenu("Rotate Page")
+        command(rotate, "Left", lambda: self.rotate_page(False))
+        command(rotate, "Right", lambda: self.rotate_page(True))
+        view.addSeparator()
+        for label, field in (("Show Grid", self.show_grid), ("Snap to Grid", self.snap),
+                             ("Enable Smart Snapping", self.smart_snap), ("Show Print Border", self.print_border),
+                             ("Show Cut Border", self.cut_border)):
+            action = view.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(field.isChecked())
+            action.toggled.connect(field.setChecked)
+            field.toggled.connect(action.setChecked)
+        for label in ("Grid Options…", "Registration Marks…"):
+            command(view, label, self.show_page_options)
+        command(view, "Show Design Page Settings…", lambda: self.inspector.setCurrentIndex(0), "Ctrl+F1")
+        command(view, "Show Send Page", lambda: self.review_button.click(), "Ctrl+F2")
+
+        panels = self.menu_bar.addMenu("Panels")
+        for label, index in (("Page Setup", 0), ("Fill Color", 3), ("Line Style", 3), ("Transform", 1), ("Replicate", 2)):
+            command(panels, label, lambda selected=index: self.inspector.setCurrentIndex(selected))
+        select = panels.addMenu("Select by Color")
+        command(select, "Same Line Color", lambda: self.select_color("stroke"))
+        command(select, "Same Fill Color", lambda: self.select_color("fill"))
+        command(panels, "Offset…", self.offset_selection)
+
+        objects = self.menu_bar.addMenu("Object")
+        mirror = objects.addMenu("Mirror")
+        command(mirror, "Horizontally", lambda: self.transform_objects("horizontal"))
+        command(mirror, "Vertically", lambda: self.transform_objects("vertical"))
+        arrange = objects.addMenu("Arrange")
+        command(arrange, "Bring Forward", lambda: self.reorder(1))
+        command(arrange, "Send Backward", lambda: self.reorder(-1))
+        align = objects.addMenu("Align")
+        for choice in model.ALIGNMENTS:
+            command(align, choice, lambda option=choice: self.align_objects(option))
+        rotate = objects.addMenu("Rotate")
+        command(rotate, "Left", lambda: self.transform_objects("left"))
+        command(rotate, "Right", lambda: self.transform_objects("right"))
+        command(objects, "Replicate…", lambda: self.inspector.setCurrentIndex(2))
+        command(objects, "Group", self.group)
+        command(objects, "Ungroup", lambda: self.group(release=True))
+        holders = objects.addMenu("Tool Holder")
+        command(holders, "Use Current Settings", lambda: self.change_selected(holder=None))
+        command(holders, "Tool Holder 1", lambda: self.change_selected(holder=1))
+        second = command(holders, "Tool Holder 2", lambda: self.change_selected(holder=2))
+        second.setEnabled(self.device.two_tools)
+        command(objects, "Convert to Path", self.convert_selection)
+        command(objects, "Simplify", lambda: self.convert_selection(True), "Ctrl+J")
+        modify = objects.addMenu("Modify")
+        command(modify, "Offset…", self.offset_selection)
+
+    def show_page_options(self):
+        self.inspector.setCurrentIndex(0)
+        self.page_advanced.disclosure.setChecked(True)
+        self.inspector.currentWidget().ensureWidgetVisible(self.page_advanced.disclosure)
+
+    def rotate_page(self, clockwise):
+        try:
+            project = model.rotate_page(self.project, clockwise)
+        except ValueError as error:
+            self.message(str(error))
+            return
+        self.history.commit(project)
+        self.refresh(self.selection())
+
+    def transform_objects(self, operation):
+        try:
+            shapes = model.transform_selection(self.project.shapes, self.selection(), operation)
+        except ValueError as error:
+            self.message(str(error))
+            return
+        self.commit_shapes(shapes, self.selection())
+
+    def align_objects(self, option):
+        self.alignment.setCurrentIndex(self.alignment.findData(option))
+        self.align()
+
+    def select_color(self, field):
+        self.select(model.matching_color(self.project.shapes, self.selection(), field))
+
+    def convert_selection(self, simplify=False):
+        selected = self.selection()
+        try:
+            shapes = tuple(model.convert_path(shape, simplify) if index in selected else shape
+                           for index, shape in enumerate(self.project.shapes))
+        except ValueError as error:
+            self.message(str(error))
+        else:
+            self.commit_shapes(shapes, selected)
+
+    def offset_selection(self):
+        if not self.selection():
+            return
+        amount, accepted = QInputDialog.getDouble(self, "Offset", "Distance (mm). Use a negative number to inset.",
+                                                   1, -20, 20, 2)
+        if accepted:
+            before = self.project.shapes
+            try:
+                copies = tuple(model.offset_shape(before[index], amount) for index in self.selection())
+            except ValueError as error:
+                self.message(str(error))
+            else:
+                self.commit_shapes(before + copies, range(len(before), len(before) + len(copies)))
 
     def message(self, text):
         self.status.setText(text)
@@ -526,6 +683,8 @@ class Design(QWidget):
         self.objects.clear()
         for number, shape in enumerate(self.project.shapes, 1):
             details = f" · Group {shape.group}" if shape.group else ""
+            if shape.holder:
+                details += f" · Tool {shape.holder}"
             self.objects.addItem(f"{number}. {shape.kind}{details}")
         self.sync_page()
         self.loading = prev
@@ -543,6 +702,7 @@ class Design(QWidget):
         for field, value in ((self.media_width, project.width), (self.media_height, project.height)):
             field.setValue(value)
             field.setEnabled(name == "Custom")
+            self.media_form.setRowVisible(field, name == "Custom")
         self.orientation.setCurrentIndex(self.orientation.findData(project.height >= project.width))
         self.mat.setCurrentIndex(self.mat.findData(project.mat))
         self.register.setChecked(project.registration is not None)
@@ -581,6 +741,11 @@ class Design(QWidget):
         roles = {shapes[i].action for i in indices}
         self.action.setEnabled(bool(indices))
         self.action.setCurrentIndex(self.action.findData(roles.pop()) if len(roles) == 1 else -1)
+        for widget in (*self.color_buttons, self.line_style, self.line_width):
+            widget.setEnabled(bool(indices))
+        styles = {shapes[i].line_style for i in indices}
+        self.line_style.setCurrentIndex(self.line_style.findData(styles.pop()) if len(styles) == 1 else -1)
+        self.line_width.setValue(shape.line_width_mm if shape else 0)
         for widget in (self.duplicate_button, self.delete_button, self.replicate_button):
             widget.setEnabled(bool(indices))
         enough = len(model.selected_units(shapes, indices)) > 1

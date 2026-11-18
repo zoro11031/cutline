@@ -23,13 +23,12 @@ Open **Setup Guide** in either app for a quick walkthrough. For your first cut:
 2. Open **Send** and choose your connection, material, and tool holder.
    Try **Dial In a Material** with a scrap of the same material.
 3. Cutting a printed sheet? Load it face-up, check the PDF in **Sheet**,
-   and choose **Test Registration** in **Send**.
+   and choose **Test Registration** at the bottom of **Send**.
 4. Check the preview and choose **Send to Cutter**.
 
 The preview has **Fit**, zoom buttons, and Ctrl+scroll zoom. When a PDF is
-open, choose **Cut paths**, **Print PDF**, or **Overlay**. **Job details**
-shows the checks. **Colorblind mode** adds blue and orange paths and labels
-or dashed outlines for failures.
+open, choose **Cut paths**, **Print PDF**, or **Overlay**. Open **Preview
+Options** for the job checks or colorblind mode.
 
 ### From the terminal
 
@@ -65,8 +64,14 @@ Choose **Send** at the top of Design to review the selected action.
 Choose **All actions** to give Cut and Score their own settings. **Back**
 keeps the design open so you can return to it.
 
-Text editing, raster tracing, and tools like Weld, Subtract, and Offset are
-still open. Studio3 import brings in supported vector outlines and page size.
+Use **View** for zoom, page rotation, grid, snapping, and borders. Set your
+printer margin under **Page Setup → Advanced Options** to see the print
+border. **Panels** jumps to colors, line styles, Transform, and Replicate.
+**Object** has alignment, path tools, and holder assignments. **Offset**
+works on simple closed shapes with no inward corners.
+
+Studio3 import brings in supported vectors and page size. Text editing,
+raster tools, and full compound-path and boolean editing are still open.
 
 ## Working with Proxy Press
 
@@ -115,7 +120,7 @@ Use the **Test-Cut Matrix** to try several settings on one blank sheet.
 
 The app includes the Silhouette starting point and a set of Studio factory
 presets for cardstock, chipboard, paper, and pens. To add the full factory
-list from your own Studio installation, go to **Blade → Import Studio Materials**
+list from your own Studio installation, go to **Blade → Advanced Options → Import Studio Materials**
 and choose its `condition.csv`. See [where to find it](docs/SETUP.md#exporting-files-and-reading-material-settings).
 
 **Save as New** keeps a copy of your settings under a new name. Presets stay
@@ -125,15 +130,21 @@ available after you quit. [About preset files](profiles/README.md)
 presets at force 19 or higher. The guided test skips that roller cycle so
 repeated passes use the same loaded spot.
 
+**Tool Holder 1** and **Tool Holder 2** keep separate settings while the app
+is open. Save named presets to keep those settings for later. **Standard**
+uses the selected holder. To use both, assign selected shapes under
+**Design → Object → Tool Holder** or choose holder settings for groups in
+**Send → Advanced Options → Send by**.
+
 ### Studio cutting settings on the Cameo 4
 
 | Setting | Where to find it |
 |---|---|
-| Force, Speed, Passes, Blade Depth, Tool Holder | **Send → Cut Settings** or **Blade** |
-| Track Enhancing and Line Segment Overcut | **Send → Cut Settings**. Find the extension lengths in **Blade**. |
-| Cut Order Sorting and Seam Overcut | **Blade → Cut paths** |
-| Cutting mat, Feed, Return to Origin | **Send → Media handling** |
-| Weed Border and Weed Lines | **Blade → Weed Settings** |
+| Force, Speed, Passes, Acceleration, Blade Depth, Tool Holder | **Send → Cut Settings** or **Blade** |
+| Track Enhancing and Line Segment Overcut | **Send → Cut Settings**. The extension lengths are under **Blade → Advanced Options**. |
+| Cut Order Sorting | **Send → Advanced Options → Cut paths** |
+| Seam Overcut and Weed Settings | **Blade → Advanced Options** |
+| Cutting mat, Feed, Return to Origin | **Send → Advanced Options → Media handling** |
 | Installed tools | **Blade → Detect Installed Tools** or check cutter status in **Send** |
 
 For a manual blade, choose **Manual / off** and set the depth on the tool.
@@ -142,7 +153,7 @@ Rotary tool actions still need Silhouette Studio.
 ## Calibration
 
 If the cut is off by the same amount everywhere, measure it with the sketch
-pen and save the correction under **Send → Calibration**. If the error grows
+pen and save the correction under **Send → Advanced Options → Calibration**. If the error grows
 across the page, check the print size or printer alignment first.
 [How to measure an offset](docs/SETUP.md#calibrating-the-machine)
 
