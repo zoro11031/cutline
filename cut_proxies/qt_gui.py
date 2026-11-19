@@ -481,6 +481,12 @@ class Window(QMainWindow):
         guide = self.guide_page.group("Dial In a Material")
         self.guide_box = guide.parentWidget()
         guide.note(starting_guide.GUIDE_TEXT)
+        self.guide_shape = guide.choice("Test shape", testcut.TEST_SHAPES, self.guide.shape,
+                                       self.change_guide_sample)
+        self.guide_size = guide.choice("Sample size", starting_guide.SAMPLE_SIZES, self.guide.size_mm,
+                                      self.change_guide_sample)
+        for field in (self.guide_shape, self.guide_size):
+            field.setToolTip("Changing the sample after a cut moves to a fresh spot.")
         self.guide_spot_selector = guide.number("Test Spot", 1, 1, 999, 1, 0,
                                                 self.on_guide_spot_selected)
         self.guide_spot_status = guide.note("Untouched stock")
@@ -1884,16 +1890,26 @@ class Window(QMainWindow):
         state = self.guide
         for field in (self.guide_apply, self.guide_edit, self.guide_next, self.guide_reset, self.exit_guide_btn):
             field.setEnabled(not self.busy)
+        self.guide_next.setEnabled(not self.busy and (
+            state.placement is None or any(number != state.spot for number in state.fresh_spots())))
+        used = state.current_spot
+        sample_shape = state.trial.sheet.shape if state.trial else state.shape
+        sample_size = used.rect.w if used else state.size_mm
+        for field, choice in ((self.guide_shape, sample_shape), (self.guide_size, sample_size)):
+            blocked = field.blockSignals(True)
+            field.setCurrentIndex(field.findData(choice))
+            field.blockSignals(blocked)
+            field.setEnabled(not self.busy)
         connected = starting_guide.has_cutter_endpoint(self.connection())
         self.guide_send.setEnabled(not self.busy and connected and state.can_cut)
         self.guide_use.setEnabled(not self.busy and state.tested_settings is not None)
-        self.guide_registration.setEnabled(not self.busy and state.placement is None)
+        self.guide_registration.setEnabled(not self.busy and not (state.spots or state.sheet_exported))
         self.guide_marked_sheet.setEnabled(not self.busy and state.registered)
         self.guide_send.setText("Repeat One Pass" if (state.completed and not state.interrupted) else "Cut One Pass…")
         if hasattr(self, "guide_spot_selector"):
             blocked = self.guide_spot_selector.blockSignals(True)
-            self.guide_spot_selector.setValue(state.spot)
             self.guide_spot_selector.setMaximum(max(state.max_spots, state.spot))
+            self.guide_spot_selector.setValue(state.spot)
             self.guide_spot_selector.blockSignals(blocked)
             differ = state.completed > 0 and state.settings_differ(self.job_options())
             status_text = f"{state.spot_status} · Settings changed (move to fresh spot)" if differ else state.spot_status
@@ -1923,7 +1939,12 @@ class Window(QMainWindow):
             return
         value = int(self.guide_spot_selector.value())
         if value != self.guide.spot:
-            self.guide.select_spot(value)
+            try:
+                self.guide.select_spot(value)
+            except ValueError as error:
+                self.update_guide()
+                self.message(str(error))
+                return
             self.persist_guide()
             self.update_guide()
             self.update_tuning_preview()
@@ -1944,18 +1965,31 @@ class Window(QMainWindow):
         self.guide.inspect(self.guide_outcome.currentData())
         self.update_guide()
 
+    def change_guide_sample(self):
+        if self.busy:
+            return
+        try:
+            self.guide.configure_sample(self.guide_shape.currentData(), self.guide_size.currentData())
+        except ValueError as error:
+            self.message(str(error))
+        else:
+            self.persist_guide()
+        self.update_guide()
+        self.update_tuning_preview()
+
     def update_tuning_preview(self):
         trial = None
         if self.tuning:
             trial = self.guide.trial
             if trial is None:
                 try:
-                    trial = self.guide.prepare(self.connection(), self.job_options(), self.job, "square")
+                    trial = self.guide.prepare(self.connection(), self.job_options(), self.job)
                 except (ValueError, KeyError):
                     pass
         placement = self.guide.placement if self.tuning else None
         active_rect = self.guide.spot_rect(self.guide.spot) if self.tuning else None
-        self.preview.show_trial(trial, self.guide.spots if self.tuning else (), placement, active_rect)
+        self.preview.show_trial(trial, self.guide.spots if self.tuning else (), placement, active_rect,
+                                grid=self.guide.fresh_spots() if self.tuning else {})
         self.preview_title.setText("Material test sheet" if self.preview.test_placement else "Sheet preview")
         self.preview_mode.setVisible(self.preview.test_placement is None and not self.preview.pdf.isNull())
         self.summary_bar.setVisible(not self.tuning)
@@ -2010,7 +2044,11 @@ class Window(QMainWindow):
     def next_guide_spot(self):
         if self.busy:
             return
-        self.guide.next_spot()
+        try:
+            self.guide.next_spot()
+        except ValueError as error:
+            self.message(str(error))
+            return
         self.persist_guide()
         self.update_guide()
         self.update_tuning_preview()
@@ -2018,6 +2056,7 @@ class Window(QMainWindow):
     def reset_guide(self):
         if not self.busy and self.confirm("Start a New Test Sheet?", "Load a fresh test sheet to start at the first spot."):
             self.guide.reset()
+            self.guide.placement = self.guide.make_placement(self.job, self.job_options())
             self.persist_guide()
             self.update_guide()
             self.update_tuning_preview()
@@ -2032,7 +2071,7 @@ class Window(QMainWindow):
 
     def change_guide_registration(self):
         self.guide.registered = self.guide_registration.isChecked()
-        if self.guide.placement is not None and self.guide.trial is None:
+        if self.guide.placement is not None and not self.guide.spots:
             from dataclasses import replace
             self.guide.placement = replace(self.guide.placement, registered=self.guide.registered)
         self.update_guide()
@@ -2083,7 +2122,7 @@ class Window(QMainWindow):
             self.offer_fresh_spot()
             return
         try:
-            trial = self.guide.prepare(self.connection(), self.job_options(), self.job, "square")
+            trial = self.guide.prepare(self.connection(), self.job_options(), self.job)
         except (ValueError, KeyError) as error:
             self.message(str(error))
             return
@@ -2094,7 +2133,7 @@ class Window(QMainWindow):
         if self.busy or not self.guide.can_cut:
             return
         try:
-            current = self.guide.prepare(self.connection(), self.job_options(), self.job, "square")
+            current = self.guide.prepare(self.connection(), self.job_options(), self.job)
         except (ValueError, KeyError) as error:
             self.message(str(error))
             return

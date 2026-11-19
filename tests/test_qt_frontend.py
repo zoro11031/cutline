@@ -734,6 +734,27 @@ class TestQtFrontend(unittest.TestCase):
         self.assertTrue(window.guide_send.isEnabled())
         self.assertNotIn("select a cutter", window.guide_status.text())
 
+    def test_material_guide_shape_and_size_controls_update_the_clickable_grid(self):
+        window = self.window
+        window.open_material_guide()
+        small = len(window.preview.test_grid)
+        window.guide_shape.setCurrentIndex(window.guide_shape.findData("card"))
+        window.guide_size.setCurrentIndex(window.guide_size.findData(88.0))
+        self.assertLess(len(window.preview.test_grid), small)
+        self.assertEqual(window.preview.trial.sheet.shape, "card")
+        self.assertEqual(window.preview.trial.sheet.size_mm, 88.0)
+        number, box = max(window.preview.test_grid.items())
+        self.assertTrue(window.on_preview_spot_clicked(box.x + 2, box.y + 2))
+        self.assertEqual(window.guide.spot, number)
+        self.assertEqual(window.preview.trial.sheet.cells[0].rect, box)
+
+        window.guide.record(window.preview.trial)
+        window.update_guide()
+        window.guide_shape.setCurrentIndex(window.guide_shape.findData("ring"))
+        self.assertNotEqual(window.guide.spot, number)
+        self.assertEqual(window.guide.spot_rect(number), box)
+        self.assertEqual(len(window.preview.trial.sheet.paths), 2)
+
     def test_material_guide_previews_fresh_spots_without_replacing_the_job(self):
         window = self.window
         window.show()
