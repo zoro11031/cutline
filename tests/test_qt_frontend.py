@@ -8,12 +8,13 @@ import unittest
 from unittest import mock
 
 from cut_proxies import cli, corner_test, editor_model, job, materials, presets, transport
+from tests.test_vector_editing import compound_project
 
 try:
-    from PySide6.QtCore import Qt
-    from PySide6.QtGui import QImage
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QColor, QImage, QPalette, QWheelEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QFileDialog
+    from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QFileDialog, QPlainTextEdit
     from cut_proxies import qt_gui
 except ImportError:
     qt_gui = None
@@ -102,6 +103,76 @@ class TestQtFrontend(unittest.TestCase):
         materials = window.tabs.widget(window.tab("Materials"))
         self.assertFalse(materials.isAncestorOf(window.controls["preset"]))
         self.assertFalse(materials.isAncestorOf(window.blade["force"]))
+
+    def test_wheel_moves_the_pane_without_changing_the_focused_setting(self):
+        window = self.window
+        window.resize(980, 620)
+        window.show()
+        window.send_workspace.click()
+        self.app.processEvents()
+        page = window.tabs.currentWidget()
+        scroll = page.verticalScrollBar()
+        self.assertGreater(scroll.maximum(), 0)
+        force = window.blade["force"]
+        for widget, value in ((force, force.value), (force.lineEdit(), force.value), (force.slider, force.value),
+                              (window.controls["preset"], window.controls["preset"].currentIndex)):
+            with self.subTest(widget=type(widget).__name__):
+                widget.setFocus()
+                scroll.setValue(0)
+                before = value()
+                center = widget.rect().center()
+                wheel = QWheelEvent(QPointF(center), QPointF(widget.mapToGlobal(center)), QPoint(), QPoint(0, -120),
+                                    Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                                    Qt.ScrollPhase.NoScrollPhase, False)
+                QApplication.sendEvent(widget, wheel)
+                self.assertEqual(value(), before)
+                self.assertGreater(scroll.value(), 0)
+
+    def test_workspace_uses_readable_text_on_disabled_and_accent_buttons(self):
+        import re
+        from cut_proxies.qt_controls import _contrast, workspace_style
+
+        for background, text in (("#f5f5f5", "#202020"), ("#222629", "#eeeeee")):
+            palette = QPalette()
+            palette.setColor(QPalette.ColorRole.Button, QColor(background))
+            palette.setColor(QPalette.ColorRole.ButtonText, QColor(text))
+            palette.setColor(QPalette.ColorRole.Highlight, QColor("#38afe0"))
+            palette.setColor(QPalette.ColorRole.HighlightedText, QColor("white"))
+            style = workspace_style(palette)
+            disabled = re.search(r'QPushButton:disabled \{ background: (#[0-9a-f]+); color: (#[0-9a-f]+)', style)
+            accent = re.search(r'background: palette\(highlight\); color: (#[0-9a-f]+)', style)
+            self.assertGreaterEqual(_contrast(*(QColor(color) for color in disabled.groups())), 4.5)
+            self.assertGreaterEqual(_contrast(QColor(accent[1]), QColor("#38afe0")), 4.5)
+
+    def test_compound_and_text_reopen_and_review_as_verified_contours(self):
+        window = self.window
+        window.open_design()
+        design = window.design
+        project = compound_project()
+        design.replace_document(project)
+
+        def apply_text(dialog):
+            dialog.findChild(QPlainTextEdit).setPlainText("O")
+            buttons = dialog.findChild(QDialogButtonBox)
+            buttons.button(QDialogButtonBox.StandardButton.Ok).click()
+            return dialog.result()
+
+        with mock.patch.object(QDialog, "exec", apply_text):
+            design.text_button.click()
+        self.assertEqual(design.text_button.text(), "Edit Text…")
+        self.assertEqual(design.project.shapes[1].text.value, "O")
+        design.change_selected(x=110, y=40)
+        path = self.config_path / "compounds.scc-template"
+        with mock.patch.object(QFileDialog, "getSaveFileName", return_value=(str(path), "")):
+            self.assertTrue(design.save())
+        reopened = editor_model.load_project(path)
+        with mock.patch.object(QFileDialog, "getOpenFileName", return_value=(str(path), "")):
+            design.open_project()
+        self.assertEqual(design.project, reopened)
+        design.review_button.click()
+        self.assertFalse(window.job.blocked)
+        self.assertCountEqual(window.job.paths, reopened.artwork().paths)
+        self.assertEqual(len(window.job.paths), 4)
 
     def test_workspace_switch_leaves_an_empty_design_open_without_reviewing_it(self):
         window = self.window

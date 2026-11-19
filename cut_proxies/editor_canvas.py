@@ -2,6 +2,8 @@
 
 import math
 
+import cairo
+
 from gi.repository import Adw, Gdk, Gtk
 
 from . import editor_model
@@ -152,8 +154,9 @@ class DesignCanvas(Gtk.DrawingArea):
             cr.stroke()
         if editor.active_tool == 'Point Edit' and len(indices) == 1:
             shape = project.shapes[indices[0]]
-            if shape.visible and shape.kind in ('Path', 'Line'):
-                self.draw_vertices(cr, shape.path().points, scale)
+            if shape.visible and shape.kind in editor_model.POINT_EDIT_KINDS:
+                for path in shape.paths():
+                    self.draw_vertices(cr, path.points, scale)
         if editor.polygon:
             cr.move_to(*editor.polygon[0])
             for point in editor.polygon[1:]:
@@ -241,15 +244,19 @@ class DesignCanvas(Gtk.DrawingArea):
 
     @staticmethod
     def draw_shape(cr, shape, selected, scale):
-        path = shape.path()
-        cr.move_to(*path.points[0])
-        for point in path.points[1:]:
-            cr.line_to(*point)
-        if path.closed:
-            cr.close_path()
-            if shape.fill:
-                cr.set_source_rgb(*_rgb(shape.fill))
-                cr.fill_preserve()
+        paths = shape.paths()
+        for path in paths:
+            cr.move_to(*path.points[0])
+            for point in path.points[1:]:
+                cr.line_to(*point)
+            if path.closed:
+                cr.close_path()
+        if paths[0].closed and shape.fill:
+            cr.save()
+            cr.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
+            cr.set_source_rgb(*_rgb(shape.fill))
+            cr.fill_preserve()
+            cr.restore()
         color = _rgb(shape.stroke or {1: '#b2323a', 2: '#244b9a'}.get(shape.holder, '#384552'))
         cr.set_source_rgb(*color)
         line_width = shape.line_width_mm or (2 if selected else 1.25) / scale

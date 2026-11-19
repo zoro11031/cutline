@@ -10,6 +10,7 @@ From the repository folder, try the app first.
 
 Install PySide6 for Qt, or GTK 4, libadwaita, PyGObject, and the Python Cairo
 binding for GTK. Use `gui --frontend qt` or `gui --frontend gtk` to pick one.
+Filled path editing uses GEOS 3.10 or later. Editable text uses Pango and Cairo.
 PDF checks also use Pillow and Poppler. For a packaged install, see
 [the RPM, Arch, and AppImage recipes](../packaging/README.md).
 

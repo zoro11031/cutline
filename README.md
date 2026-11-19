@@ -12,6 +12,7 @@ workflow and share projects, presets, and calibration.
 From a checkout, run `./bin/silhouette-control-center gui`. See the
 [setup guide](docs/SETUP.md#install) to install the desktop and USB
 dependencies, or use one of the [package recipes](packaging/README.md).
+For vector editing from a checkout, install GEOS 3.10 or later and Pango/Cairo.
 
 If you have both frontends installed, choose one with
 `gui --frontend qt` or `gui --frontend gtk`. The launcher tries Qt first.
@@ -59,7 +60,7 @@ In **File**, **Open** loads a project, SVG, DXF, or supported Studio3 file.
 | Panel | What you can do |
 |---|---|
 | Page Setup | Set paper size, orientation, mat, printed marks, and grid. |
-| Drawing Tool | Draw shapes or use Point Edit to move points on a line or path. |
+| Drawing Tool | Draw shapes, add text, or use Point Edit to move nodes on a path. |
 | Transform | Move, resize, rotate, mirror, align, or space objects. |
 | Replicate | Make rows and columns of the selection. |
 | Line and Fill | Set colors and pick Cut, Score, or None. |
@@ -73,11 +74,17 @@ Use **Edit** to undo, redo, duplicate, or delete objects. Use **View** for
 zoom, page rotation, grid, snapping, and borders. Set your
 printer margin under **Page Setup → Advanced Options** to see the print
 border. **Panels** jumps to colors, line styles, Transform, and Replicate.
-**Object** has alignment, path tools, and holder assignments. **Offset**
-works on simple closed shapes with no inward corners.
+**Object → Modify** has Weld, Subtract, Intersect, and Offset for closed shapes.
+Subtract keeps the lowest selected object and removes the parts covered by the
+other selected objects. **Make Compound Path** combines contours into one object
+with holes. **Release Compound Path** makes its outlines separate objects.
 
-Studio3 import brings in supported vectors and page size. Text editing,
-raster tools, and full compound-path and boolean editing are still open.
+Select a text object and choose **Edit Text** to change the words, font, or size.
+Projects save the exact outlines used for the preview and cut. If a font is
+missing, you can still cut the saved outlines. Install the font or choose a
+replacement to edit the text.
+
+Studio3 import brings in supported vectors and page size.
 
 ## Working with Proxy Press
 
