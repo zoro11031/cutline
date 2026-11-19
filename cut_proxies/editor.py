@@ -4,14 +4,14 @@ from dataclasses import dataclass, replace
 import math
 from pathlib import Path
 
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 from . import editor_model, geometry, graphtec, importer, regmarks, template
 from .editor_canvas import DesignCanvas
 from .editor_model import (ACTIONS, ALIGNMENTS, ALL_ACTIONS, KINDS, REVIEW_ACTIONS,
                            History, Registration, Shape,
                            import_shapes, load_project, save_project)
-from .gtk_controls import disclosure
+from .gtk_controls import disclosure, workspace_header, workspace_tools, zoom_controls
 
 
 @dataclass
@@ -35,7 +35,7 @@ def panel(width):
 
 
 class DesignWorkspace:
-    def __init__(self, parent, project, on_back, on_review, *, cutter=None):
+    def __init__(self, parent, project, open_send, on_review, *, cutter=None):
         self.view = Adw.ToolbarView()
         self.parent = parent
         self.history = History(project)
@@ -54,40 +54,22 @@ class DesignWorkspace:
         self.last_registration = project.registration or Registration.from_marks(
             regmarks.marks(project.width, project.height))
 
-        header = Adw.HeaderBar()
-        self.title = Adw.WindowTitle(title='Design')
-        header.set_title_widget(self.title)
-        self.button(header, 'Back', on_back, start=True)
-        workspace = Gtk.Box(spacing=4)
-        design = self.button(workspace, 'Design', lambda *_: self.canvas.grab_focus())
-        design.add_css_class('suggested-action')
-        self.send_workspace = self.button(workspace, 'Send', self.review_paths)
-        self.send_workspace.set_tooltip_text('Review this design in Send.')
-        header.pack_end(workspace)
+        header, self.design_workspace, self.send_workspace = workspace_header(
+            lambda *_: self.canvas.grab_focus(), open_send, active="Design")
         self.view.add_top_bar(header)
         shortcuts = Gtk.ShortcutController(scope=Gtk.ShortcutScope.MANAGED)
         self.view.add_controller(shortcuts)
 
-        toolbar = Gtk.Box(spacing=6, margin_start=12, margin_end=12, margin_top=6, margin_bottom=6)
-        menus = Gtk.Box(spacing=4, margin_start=12, margin_end=12, margin_top=4)
-        self.view.add_top_bar(menus)
+        toolbar = workspace_tools(margin_start=12, margin_end=12, margin_bottom=8)
         self.view.add_top_bar(toolbar)
-        self.button(toolbar, 'New', self.new_project)
-        self.button(toolbar, 'Open…', self.open_project)
+        self.document_title = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.MIDDLE,
+                                        css_classes=["heading"])
+        toolbar.append(self.document_title)
         self.save_button = self.button(toolbar, 'Save', self.save)
-        self.button(toolbar, 'Save As…', self.save_as)
-        self.button(toolbar, 'Import…', self.import_vector)
         self.undo_button = self.button(toolbar, 'Undo', lambda *_: self.change_history(self.history.undo))
         self.redo_button = self.button(toolbar, 'Redo', lambda *_: self.change_history(self.history.redo))
-        zoom_controls = Gtk.Box(css_classes=['linked'])
-        toolbar.append(zoom_controls)
-        zoom_out = self.button(zoom_controls, '−', lambda *_: self.canvas.zoom_by(1 / 1.25))
-        zoom_out.set_tooltip_text('Zoom out')
-        self.zoom_readout = Gtk.Label(label='100%', width_chars=5)
-        zoom_controls.append(self.zoom_readout)
-        zoom_in = self.button(zoom_controls, '+', lambda *_: self.canvas.zoom_by(1.25))
-        zoom_in.set_tooltip_text('Zoom in')
-        self.button(zoom_controls, 'Fit', self.fit)
+        zoom, self.zoom_readout = zoom_controls(lambda factor: self.canvas.zoom_by(factor), lambda: self.fit(None))
+        toolbar.append(zoom)
 
         left, objects = panel(174)
         objects.append(Gtk.Label(label='Drawing Tool', xalign=0, css_classes=['heading']))
@@ -151,7 +133,8 @@ class DesignWorkspace:
         self.review = self.button(footer, 'Review in Send', self.review_paths)
         self.review.add_css_class('suggested-action')
         self.view.add_bottom_bar(footer)
-        self.build_design_menus(menus, shortcuts)
+        self.menu_bar = self.build_design_menus(shortcuts)
+        header.pack_start(self.menu_bar)
         self.refresh_objects((0,))
         self.tool_changed()
 
@@ -255,7 +238,7 @@ class DesignWorkspace:
         self.fields['radius'] = self.spin(advanced, 'Radius (mm)', 0, 1000, 0)
         self.fields['radius'].connect('value-changed', self.change_field, 'radius')
 
-    def build_design_menus(self, toolbar, shortcuts):
+    def build_design_menus(self, shortcuts):
         self.menu_actions = Gio.SimpleActionGroup()
         self.view.insert_action_group('design', self.menu_actions)
 
@@ -309,7 +292,7 @@ class DesignWorkspace:
         command(view, 'Registration Marks…', 'registration', lambda: self.show_page_options(self.mark_pattern))
         command(view, 'Show Design Page Settings…', 'page-options', lambda: self.panel_switcher.set_selected(0),
                 '<Control>F1')
-        command(view, 'Show Send Page', 'send', lambda: self.review_paths(None), '<Control>F2')
+        command(view, 'Switch to Send', 'send', lambda: self.send_workspace.emit('clicked'), '<Control>F2')
 
         panels = Gio.Menu()
         for label, name, index in (('Page Setup', 'page-setup', 0), ('Fill Color', 'fill', 3),
@@ -354,7 +337,7 @@ class DesignWorkspace:
         for title, menu in (('_File', files), ('_Edit', edit), ('_View', view),
                             ('_Panels', panels), ('_Object', objects)):
             menus.append_submenu(title, menu)
-        toolbar.append(Gtk.PopoverMenuBar.new_from_model(menus))
+        return Gtk.PopoverMenuBar.new_from_model(menus)
 
     def show_page_options(self, field):
         self.panel_switcher.set_selected(0)
@@ -588,16 +571,15 @@ class DesignWorkspace:
         selection = len(self.selected_indices())
         self.status.set_text(f'{p.width:g} × {p.height:g} mm · {count} {label} path(s)'
                              + (f' · {selection} selected' if selection else ''))
-        name = self.project_path.name if self.project_path else self.source_name
-        self.title.set_title(name or 'Design')
-        self.title.set_subtitle('Unsaved changes' if self.dirty else ('Design' if name else ''))
+        name = self.project_path.name if self.project_path else self.source_name or "Untitled"
+        self.document_title.set_text(name + (" *" if self.dirty else ""))
+        self.document_title.set_tooltip_text(f'{name} (unsaved changes)' if self.dirty else name)
         self.save_button.set_sensitive(self.dirty or self.project_path is None)
         self.undo_button.set_sensitive(bool(self.history.past))
         self.redo_button.set_sensitive(bool(self.history.future))
         self.menu_actions.lookup_action('undo').set_enabled(bool(self.history.past))
         self.menu_actions.lookup_action('redo').set_enabled(bool(self.history.future))
         self.review.set_sensitive(count > 0)
-        self.send_workspace.set_sensitive(count > 0)
         self.canvas.queue_draw()
 
     def select_shape(self, *_args):

@@ -60,9 +60,10 @@ In **File**, **Open** loads a project, SVG, DXF, or supported Studio3 file.
 | Replicate | Make rows and columns of the selection. |
 | Line and Fill | Set colors and pick Cut, Score, or None. |
 
-Choose **Send** at the top of Design to review the selected action.
-Choose **All actions** to give Cut and Score their own settings. **Back**
-keeps the design open so you can return to it.
+Use the **Design / Send** switch to move between workspaces while keeping your
+draft open. Choose **Review in Send** to apply the design to the cut job.
+Choose **All actions** to give Cut and Score their own settings, then review
+them in **Cut Job** before sending them to the cutter.
 
 Use **Edit** to undo, redo, duplicate, or delete objects. Use **View** for
 zoom, page rotation, grid, snapping, and borders. Set your

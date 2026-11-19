@@ -5,7 +5,7 @@ import threading
 from PySide6.QtCore import QObject, Qt, Signal, Slot
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
-                               QLabel, QLineEdit, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QStyle,
+                               QLabel, QLineEdit, QMenuBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QStyle,
                                QToolButton, QVBoxLayout, QWidget)
 
 
@@ -19,7 +19,7 @@ QFrame#workspaceBar {
     border: 1px solid palette(midlight);
     border-radius: 9px;
 }
-QFrame#previewBar { border-bottom: 1px solid palette(midlight); }
+QFrame#workspaceTools { border-bottom: 1px solid palette(midlight); }
 QScrollArea[role="settings"], QWidget[role="settingsPage"] { background: palette(window); }
 QTabWidget[role="settings"]::pane { border: 0; border-top: 1px solid palette(midlight); }
 QTabWidget[role="settings"] QTabBar::tab {
@@ -51,10 +51,23 @@ QPushButton[role="workspaceTab"] {
 QPushButton[role="workspaceTab"]:hover, QPushButton[role="workspaceTab"]:focus {
     border-color: palette(highlight);
 }
+QPushButton[role="workspaceTab"][active="true"] {
+    background: palette(highlight); color: palette(highlighted-text); border-color: palette(highlight);
+}
+QPushButton[role="workspaceTool"], QToolButton[role="workspaceTool"] {
+    background: palette(button); border: 1px solid palette(midlight);
+    border-radius: 5px; padding: 4px 8px;
+}
+QPushButton[role="workspaceTool"]:hover, QPushButton[role="workspaceTool"]:focus,
+QToolButton[role="workspaceTool"]:hover, QToolButton[role="workspaceTool"]:focus {
+    border-color: palette(highlight);
+}
+QToolButton[role="workspaceTool"]:disabled { color: palette(mid); }
 QPushButton[role="holder"]:checked {
     background: palette(highlight); color: palette(highlighted-text); border-radius: 5px;
 }
-QPushButton[role="primary"], QPushButton[role="workspaceTab"][active="true"] {
+QPushButton:disabled { color: palette(mid); }
+QPushButton[role="primary"] {
     background: palette(highlight); color: palette(highlighted-text); font-weight: 650;
     border: 1px solid palette(highlight); border-radius: 6px; padding: 6px 14px;
 }
@@ -152,8 +165,35 @@ def bar(parent, margins=(12, 6, 12, 6)):
     return surface, layout
 
 
-def workspace_switch(parent, design, send, *, active):
-    switch = QWidget(parent)
+def workspace_layout(parent):
+    layout = QVBoxLayout(parent)
+    layout.setContentsMargins(14, 10, 14, 12)
+    layout.setSpacing(9)
+    return layout
+
+
+def workspace_tools(parent):
+    surface, layout = bar(parent, (2, 0, 2, 0))
+    surface.setObjectName("workspaceTools")
+    return surface, layout
+
+
+def workspace_tool_button(action):
+    widget = QToolButton()
+    widget.setDefaultAction(action)
+    widget.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+    widget.setProperty("role", "workspaceTool")
+    return widget
+
+
+def workspace_header(parent, design, send, *, active):
+    header, top = bar(parent, (6, 4, 8, 4))
+    menu = QMenuBar(header)
+    menu.setObjectName("workspaceMenu")
+    menu.setNativeMenuBar(False)
+    top.addWidget(menu)
+    top.addStretch(1)
+    switch = QWidget(header)
     row = QHBoxLayout(switch)
     row.setContentsMargins(0, 0, 0, 0)
     row.setSpacing(4)
@@ -166,7 +206,8 @@ def workspace_switch(parent, design, send, *, active):
             item.setAccessibleDescription("Current workspace")
         row.addWidget(item)
         buttons.append(item)
-    return switch, *buttons
+    top.addWidget(switch)
+    return header, menu, *buttons
 
 
 def set_choices(widget, choices, selected=None):

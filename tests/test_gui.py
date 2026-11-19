@@ -63,21 +63,67 @@ class TestDesignWorkspace(unittest.TestCase):
             self.assertIsNone(win._connection()[1])
             self.assertFalse(win.cut_button.get_sensitive())
 
-    def test_design_button_opens_reviews_and_reopens_the_workspace(self):
+    def test_workspace_switch_leaves_an_empty_design_open_without_reviewing_it(self):
         win = self.make_window()
+        original_job = win.job
         win.design_button.emit('clicked')
         self.assertIsNotNone(win.design)
         design = win.design
         self.assertIs(win.workspaces.get_visible_child(), design.view)
-        self.assertTrue(design.project.shapes)
+        design.commit((), ())
+        self.assertFalse(design.review.get_sensitive())
+        self.assertTrue(design.send_workspace.get_sensitive())
         design.send_workspace.emit('clicked')
         self.assertEqual(win.stack.get_visible_child_name(), 'cut')
-        self.assertIsNotNone(win.job)
+        self.assertIsNone(win.reviewed_design)
+        self.assertEqual(win.job.paths, original_job.paths)
         win.design_button.emit('clicked')
         self.assertIs(win.workspaces.get_visible_child(), design.view)
-        win.close_design()
+        self.assertFalse(design.project.shapes)
+        with mock.patch.object(design, 'confirm_discard', side_effect=lambda discard: discard()):
+            win.close_design()
         self.assertEqual(win.workspaces.get_visible_child_name(), 'tools')
         self.assertIsNone(win.design)
+
+    def test_file_menu_changes_pages_only_after_opening_the_print_file(self):
+        win = self.make_window()
+        win.send_workspace.emit('clicked')
+        action = win.workspace_actions.lookup_action('open-print')
+        with mock.patch.object(gui.Gtk, 'FileDialog') as chooser, \
+             mock.patch.object(win, 'measure_sheet') as measure:
+            action.activate(None)
+            dialog = chooser.return_value
+            dialog.open_finish.side_effect = gui.GLib.Error('Dismissed')
+            dialog.open.call_args.args[2](dialog, mock.Mock())
+            self.assertEqual(win.stack.get_visible_child_name(), 'cut')
+            self.assertIsNone(win.pdf_path)
+            action.activate(None)
+            dialog.open_finish.side_effect = None
+            dialog.open_finish.return_value = gui.Gio.File.new_for_path('/tmp/print.pdf')
+            dialog.open.call_args.args[2](dialog, mock.Mock())
+        self.assertEqual(win.stack.get_visible_child_name(), 'sheet')
+        self.assertEqual(win.pdf_path, Path('/tmp/print.pdf'))
+        measure.assert_called_once()
+
+    def test_apply_material_opens_the_cut_settings_with_the_selected_values(self):
+        from cut_proxies import materials
+
+        win = self.make_window()
+        win.stack.set_visible_child_name('materials')
+        with mock.patch.object(materials, 'load', return_value={}):
+            win._load_materials()
+        self.assertFalse(win.apply_material_button.get_sensitive())
+        sample = mock.Mock()
+        sample.cut_settings.return_value = graphtec.CutSettings(force=16)
+        sample.describe.return_value = 'Force 16'
+        win.r_cutter_divisions.set_selected(1)
+        with mock.patch.object(materials, 'load', return_value={}), \
+             mock.patch.object(materials, 'cutter_divisions', return_value={'Sample': sample}):
+            win._load_materials()
+        self.assertTrue(win.apply_material_button.get_sensitive())
+        win.apply_material_button.emit('clicked')
+        self.assertEqual(win.stack.get_visible_child_name(), 'cut')
+        self.assertEqual(win.job.settings.force, 16)
 
     def test_send_editors_update_the_job_from_the_same_controls(self):
         win = self.make_window()
@@ -143,6 +189,7 @@ class TestDesignWorkspace(unittest.TestCase):
         from cut_proxies.editor_model import Project, Shape
 
         win = self.make_window()
+        self.assertFalse(win.use_generated.get_sensitive())
         rows = [dict(sheet=n, frontPage=n, svg=f"sheet-{n}.svg") for n in (1, 2)]
         drawing = Project(279.4, 215.9, (Shape("Rectangle", 40, 40),)).artwork("Cut")
         matched = mock.Mock(rows=rows, layout={"sheet": "Letter", "portrait": False})
@@ -156,6 +203,8 @@ class TestDesignWorkspace(unittest.TestCase):
             dialog = chooser.return_value
             dialog.open_finish.return_value = gui.Gio.File.new_for_path("/tmp/project.zip")
             dialog.open.call_args.args[2](dialog, mock.Mock())
+            self.assertEqual(win.stack.get_visible_child_name(), 'sheet')
+            self.assertTrue(win.use_generated.get_sensitive())
             win.r_sheet_page.set_value(2)
             self.assertIs(win.pdf_bundle, matched)
             self.assertIsNone(win.imported)
@@ -220,7 +269,7 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertTrue(design.page_advanced.get_expanded())
         design.menu_actions.lookup_action('print-border').activate(None)
         self.assertTrue(design.print_border.get_active())
-        design.send_workspace.emit('clicked')
+        design.review.emit('clicked')
         self.assertFalse(win.job.blocked)
         self.assertEqual([(group.settings.holder, group.settings.force) for group in win.job.action_groups],
                          [(1, 28), (2, 12)])
@@ -324,7 +373,7 @@ class TestDesignWorkspace(unittest.TestCase):
         design.undo_button.emit('clicked')
         self.assertEqual(len(design.project.shapes), 2)
 
-    def test_back_preserves_design_and_send_requires_review_of_new_edits(self):
+    def test_switch_preserves_design_and_send_requires_review_of_new_edits(self):
         from dataclasses import replace
 
         win = self.make_window()
@@ -337,7 +386,8 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertTrue(win.cut_button.get_sensitive())
         win.on_edit_template()
         design.commit((replace(design.project.shapes[0], x=45),), (0,))
-        win.leave_design()
+        design.send_workspace.emit('clicked')
+        self.assertEqual(win.stack.get_visible_child_name(), 'cut')
         self.assertEqual(win.review_send.get_label(), 'Review Design')
         self.assertFalse(win.cut_button.get_sensitive())
         self.assertFalse(win.scan_button.get_sensitive())
@@ -364,7 +414,7 @@ class TestDesignWorkspace(unittest.TestCase):
             self.assertEqual(picker.call_count, 0)
             self.assertFalse(design.dirty)
             self.assertEqual(load_project(dest), design.project)
-            self.assertEqual(design.title.get_title(), dest.name)
+            self.assertEqual(design.document_title.get_text(), dest.name)
 
     def test_zoom_keeps_the_point_under_the_pointer_and_fit_resets_the_view(self):
         win = self.make_window()
