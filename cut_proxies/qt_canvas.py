@@ -189,9 +189,19 @@ class Preview(SheetView):
         self.trial = None
         self.test_placement = None
         self.test_spots = ()
+        self.active_spot_rect = None
+        self.on_spot_clicked = None
         self.pdf = QImage()
         self.mode = "Overlay"
         self.colorblind = False
+
+    def mousePressEvent(self, event):
+        if self.test_placement and self.on_spot_clicked:
+            scene_pos = self.mapToScene(event.pos())
+            if self.on_spot_clicked(scene_pos.x(), scene_pos.y()):
+                event.accept()
+                return
+        super().mousePressEvent(event)
 
     def show_job(self, job):
         self.job = job
@@ -202,10 +212,10 @@ class Preview(SheetView):
         self.pdf_size, self.report = size, report
         self.render_sheet()
 
-    def show_trial(self, trial, spots=(), placement=None):
+    def show_trial(self, trial, spots=(), placement=None, active_rect=None):
         placement = trial.placement if trial else placement
-        if (trial, spots, placement) != (self.trial, self.test_spots, self.test_placement):
-            self.trial, self.test_spots, self.test_placement = trial, spots, placement
+        if (trial, spots, placement, active_rect) != (self.trial, self.test_spots, self.test_placement, self.active_spot_rect):
+            self.trial, self.test_spots, self.test_placement, self.active_spot_rect = trial, spots, placement, active_rect
             self.render_sheet()
 
     def render_sheet(self):
@@ -250,8 +260,11 @@ class Preview(SheetView):
         if placement.marks:
             draw_marks(scene, placement.marks)
         active = self.trial.sheet.cells[0] if self.trial else None
-        if active:
-            scene.addRect(rect(active.rect), pen("#187289", 0.55), QBrush(QColor(46, 142, 177, 32)))
+        active_rect = active.rect if active else self.active_spot_rect
+        if active_rect:
+            box = rect(active_rect)
+            scene.addRect(box, pen("#000000", 0.75), QBrush(QColor(46, 142, 177, 45)))
+            scene.addRect(box.adjusted(0.35, 0.35, -0.35, -0.35), pen("#ffffff", 0.45, dashed=True))
         for spot in self.test_spots:
             box = rect(spot.rect)
             color = "#984d12" if spot.uncertain else "#166356"
@@ -261,13 +274,16 @@ class Preview(SheetView):
             label.setBrush(QColor(color))
             label.setScale(0.45)
             label.setPos(box.left() + 1, box.top() + 2)
-        if active and all(spot.number != active.index + 1 for spot in self.test_spots):
-            label = scene.addSimpleText(str(active.index + 1))
+        active_num = (active.index + 1) if active else None
+        if active_rect and (active_num is None or all(spot.number != active_num for spot in self.test_spots)):
+            label = scene.addSimpleText(str(active_num) if active_num else "")
             label.setBrush(QColor("#12394d"))
             label.setScale(0.45)
-            label.setPos(active.rect.x + 1, active.rect.y + 2)
+            label.setPos(active_rect.x + 1, active_rect.y + 2)
         if refit or self.fitted:
             self.fit()
+        elif active_rect:
+            self.ensureVisible(rect(active_rect), 20, 20)
 
     def draw_job(self, scene, job, image):
         good = "#1764ad" if self.colorblind else "#15784e"

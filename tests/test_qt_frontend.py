@@ -224,6 +224,7 @@ class TestQtFrontend(unittest.TestCase):
     def test_workspace_switch_leaves_an_empty_design_open_without_reviewing_it(self):
         window = self.window
         original_job = window.job
+        window.open_send_workspace()
         window.open_design()
         design = window.design
         design.commit_shapes((), ())
@@ -534,7 +535,7 @@ class TestQtFrontend(unittest.TestCase):
     def test_corner_test_sends_only_one_square_and_leaves_the_layout_in_place(self):
         window = self.window
         self.assertEqual(tuple(window.tabs.tabText(i) for i in range(window.tabs.count())),
-                         ("Layout", "Sheet", "Materials", "Cut Job"))
+                         ("Layout", "Sheet", "Material Presets", "Cut Job"))
         window.blade["passes"].setValue(4)
         plan = window.job
         sample = corner_test.build(plan, bleed_mm=window.controls["bleed_mm"].value())
@@ -673,17 +674,60 @@ class TestQtFrontend(unittest.TestCase):
         first = window.preview.trial.sheet.extent()
         self.assertEqual(window.preview_title.text(), "Material test sheet")
         self.assertFalse(window.send_button.isVisible())
+        self.assertFalse(window.scan_button.isVisible())
+        self.assertFalse(window.corner_button.isVisible())
+        self.assertTrue(window.settings_box.isVisible())
+        self.assertFalse(window.cutter_box.isVisible())
+
         window.guide_next.click()
         self.assertFalse(window.preview.trial.sheet.extent().overlaps(first))
+        self.assertEqual(window.guide_spot_selector.value(), 2)
+
+        window.guide_spot_selector.setValue(1)
+        self.assertEqual(window.guide.spot, 1)
+
+        spot2_rect = window.guide.spot_rect(2)
+        self.assertTrue(window.preview.on_spot_clicked(spot2_rect.x + 2, spot2_rect.y + 2))
+        self.assertEqual(window.guide.spot, 2)
+        self.assertEqual(window.guide_spot_selector.value(), 2)
+
         window.guide_edit.click()
         self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
         self.assertEqual(window.material_guide.text(), "Resume Material Test")
         window.material_guide.click()
         self.assertTrue(window.tuning)
+
+        # Changing cut settings while active does not silently advance spots
+        window.blade["force"].setValue(28)
+        self.assertEqual(window.guide.spot, 2)
+
         window.back_to_send.click()
         self.assertIsNone(window.preview.trial)
         self.assertTrue(window.send_button.isVisible())
-        self.assertIs(window.job, original)
+        self.assertTrue(window.scan_button.isVisible())
+        self.assertTrue(window.corner_button.isVisible())
+        self.assertTrue(window.cutter_box.isVisible())
+        self.assertEqual(window.job.settings.force, 28)
+
+    def test_qt_workspace_toggle_and_matched_zip_restrictions(self):
+        window = self.window
+        window.tabs.setCurrentIndex(window.tab("Materials"))
+        self.assertEqual(window.tabs.currentIndex(), window.tab("Materials"))
+        window.open_design()
+        self.assertIsNotNone(window.design)
+        window.leave_design()
+        self.assertEqual(window.tabs.currentIndex(), window.tab("Materials"))
+
+        # Matched ZIP locked dialog
+        window.bundle = mock.MagicMock()
+        with mock.patch("cut_proxies.qt_gui.QMessageBox") as msg_cls:
+            box = msg_cls.return_value
+            action_btn = mock.MagicMock()
+            box.addButton.side_effect = lambda text, role: action_btn if text == "Open Sheet" else mock.MagicMock()
+            box.clickedButton.return_value = action_btn
+            window.open_design()
+            box.setWindowTitle.assert_called_with("Matched ZIP Paths Locked")
+            self.assertEqual(window.tabs.currentIndex(), window.tab("Sheet"))
 
     def test_installed_tool_status_and_registration_failure_are_available_in_qt(self):
         window = self.window

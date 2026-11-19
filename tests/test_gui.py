@@ -430,17 +430,41 @@ class TestDesignWorkspace(unittest.TestCase):
         first = win.preview.trial.sheet.extent()
         self.assertEqual(win.preview_title.get_text(), 'Material test sheet')
         self.assertFalse(win.cut_button.get_visible())
+        self.assertFalse(win.scan_button.get_visible())
+        self.assertFalse(win.corner_button.get_visible())
+        self.assertTrue(win.cut_settings.get_visible())
+        self.assertFalse(win.send_cutter_group.get_visible())
+        self.assertFalse(win.send_advanced.get_visible())
+
         win.guide_next.emit('clicked')
         self.assertFalse(win.preview.trial.sheet.extent().overlaps(first))
+        self.assertEqual(int(win.guide_spot_selector.get_value()), 2)
+
+        win.guide_spot_selector.set_value(1)
+        self.assertEqual(win.guide.spot, 1)
+
+        spot2_rect = win.guide.spot_rect(2)
+        self.assertTrue(win.preview.on_spot_clicked(spot2_rect.x + 2, spot2_rect.y + 2))
+        self.assertEqual(win.guide.spot, 2)
+        self.assertEqual(int(win.guide_spot_selector.get_value()), 2)
+
         win.guide_edit.emit('clicked')
         self.assertEqual(win.stack.get_visible_child_name(), 'cut')
         self.assertEqual(win.material_guide.get_label(), 'Resume Material Test')
         win.material_guide.emit('clicked')
         self.assertTrue(win.tuning)
+
+        # Changing cut settings while active does not silently advance spots
+        win.r_force.set_value(28)
+        self.assertEqual(win.guide.spot, 2)
+
         win.back_to_send.emit('clicked')
         self.assertIsNone(win.preview.trial)
         self.assertTrue(win.cut_button.get_visible())
-        self.assertIs(win.job, original)
+        self.assertTrue(win.scan_button.get_visible())
+        self.assertTrue(win.corner_button.get_visible())
+        self.assertTrue(win.send_cutter_group.get_visible())
+        self.assertEqual(win.job.settings.force, 28)
 
     def test_design_page_setup_preserves_custom_page_mat_and_marks_in_send(self):
         from cut_proxies.editor_model import Shape
@@ -653,10 +677,38 @@ class TestDesignWorkspace(unittest.TestCase):
             win.guide_use.emit('clicked')
         prompt.assert_called_once()
         self.assertEqual(win.r_passes.get_value(), 2)
+
+        # Settings differ check on an already-cut spot
+        win.guide_spot_selector.set_value(1)
+        self.assertEqual(win.guide.spot, 1)
+        win.r_force.set_value(win.r_force.get_value() + 5)
+        with mock.patch.object(win, 'toast') as toast:
+            win.guide_send.emit('clicked')
+            toast.assert_called_with("Cut settings changed on this spot. Move to untouched stock before testing different settings.")
+
         win.guide_next.emit('clicked')
         self.assertEqual(win.guide.spot, 2)
         self.assertIn('Spot 1 · 2 passes', win.guide_history.get_subtitle())
         self.assertEqual(win.preview.test_spots[0].passes, 2)
+
+    def test_workspace_toggle_and_matched_zip_restrictions(self):
+        win = self.make_window()
+        win.stack.set_visible_child_name("materials")
+        self.assertEqual(win.stack.get_visible_child_name(), "materials")
+        win.design_button.emit('clicked')
+        self.assertIsNotNone(win.design)
+        win.leave_design()
+        self.assertEqual(win.stack.get_visible_child_name(), "materials")
+
+        # Matched ZIP locked dialog
+        win.pdf_bundle = mock.MagicMock()
+        with mock.patch.object(gui.Adw, "AlertDialog") as dialog_cls:
+            win.on_edit_template()
+            dialog = dialog_cls.return_value
+            self.assertEqual(dialog_cls.call_args.kwargs["heading"], "Matched ZIP Paths Locked")
+            _, response_handler = dialog.connect.call_args.args
+            response_handler(None, "sheet")
+            self.assertEqual(win.stack.get_visible_child_name(), "sheet")
 
     def test_guide_marked_sheet_export_uses_the_preview_placement(self):
         with tempfile.TemporaryDirectory() as folder, mock.patch.object(config, 'CONFIG_DIR', Path(folder)):

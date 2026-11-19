@@ -6,8 +6,8 @@ from PySide6.QtCore import QEvent, QObject, QPointF, Qt, Signal, Slot
 from PySide6.QtGui import QColor, QIcon, QPalette, QWheelEvent
 from PySide6.QtWidgets import (QAbstractScrollArea, QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox,
                                QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
-                               QLabel, QLineEdit, QMenuBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QStyle,
-                               QToolButton, QVBoxLayout, QWidget)
+                               QLabel, QLineEdit, QMenuBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QStackedWidget, QStyle,
+                               QTabBar, QToolButton, QVBoxLayout, QWidget)
 
 
 _WORKSPACE_STYLE = """
@@ -78,6 +78,23 @@ QPushButton[role="primary"]:hover, QPushButton[role="primary"]:focus {
 }
 QPushButton[role="primary"]:pressed { padding-top: 7px; padding-bottom: 5px; }
 QPushButton[role="primary"]:disabled {
+    background: @disabled_button; color: @disabled_text; border-color: palette(midlight);
+}
+QPushButton[role="secondary"] {
+    background: palette(button); color: palette(button-text);
+    border: 1px solid palette(midlight); border-radius: 6px; padding: 6px 14px;
+}
+QPushButton[role="secondary"]:hover, QPushButton[role="secondary"]:focus {
+    border-color: palette(highlight);
+}
+QPushButton[role="destructive"] {
+    background: #d9383a; color: #ffffff; font-weight: 650;
+    border: 1px solid #c92a2a; border-radius: 6px; padding: 6px 14px;
+}
+QPushButton[role="destructive"]:hover, QPushButton[role="destructive"]:focus {
+    background: #b8282a; border-color: #ffffff;
+}
+QPushButton[role="destructive"]:disabled {
     background: @disabled_button; color: @disabled_text; border-color: palette(midlight);
 }
 QPlainTextEdit[role="diagnostics"] { font-family: monospace; }
@@ -199,10 +216,13 @@ class Tasks(QObject):
         callback(value, error)
 
 
-def button(label, callback, *, primary=False, icon=None):
+def button(label, callback, *, primary=False, role=None, icon=None):
     widget = QPushButton(label)
     if primary:
         widget.setProperty("role", "primary")
+    elif role:
+        widget.setProperty("role", role)
+    widget.setMinimumHeight(32)
     if icon:
         widget.setIcon(themed_icon(widget, *icon))
     widget.clicked.connect(lambda: callback())
@@ -465,3 +485,87 @@ class Form(QFormLayout):
         for widget in buttons:
             row.addWidget(widget, 1)
         self.addRow(row)
+
+
+class ResponsiveInspector(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setProperty("role", "settings")
+        self.setAccessibleName("Design properties")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        header = QWidget()
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(4, 4, 4, 0)
+        header_layout.setSpacing(0)
+
+        self.tabs = QTabBar()
+        self.tabs.setDrawBase(False)
+        self.tabs.setExpanding(True)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+        header_layout.addWidget(self.tabs)
+
+        self.combo = QComboBox()
+        self.combo.setAccessibleName("Design properties section")
+        self.combo.currentIndexChanged.connect(self._on_combo_changed)
+        self.combo.hide()
+        header_layout.addWidget(self.combo)
+
+        layout.addWidget(header)
+
+        self.stack = QStackedWidget()
+        layout.addWidget(self.stack, 1)
+
+    def addTab(self, widget, label):
+        self.tabs.addTab(label)
+        self.combo.addItem(label)
+        self.stack.addWidget(widget)
+
+    def currentIndex(self):
+        return self.stack.currentIndex()
+
+    def setCurrentIndex(self, index):
+        self.stack.setCurrentIndex(index)
+        self.tabs.blockSignals(True)
+        self.tabs.setCurrentIndex(index)
+        self.tabs.blockSignals(False)
+        self.combo.blockSignals(True)
+        self.combo.setCurrentIndex(index)
+        self.combo.blockSignals(False)
+
+    def currentWidget(self):
+        return self.stack.currentWidget()
+
+    def count(self):
+        return self.stack.count()
+
+    def widget(self, index):
+        return self.stack.widget(index)
+
+    def setDocumentMode(self, enabled):
+        self.tabs.setDocumentMode(enabled)
+
+    def tabBar(self):
+        return self.tabs
+
+    def setUsesScrollButtons(self, enabled):
+        self.tabs.setUsesScrollButtons(enabled)
+
+    def _on_tab_changed(self, index):
+        self.setCurrentIndex(index)
+
+    def _on_combo_changed(self, index):
+        self.setCurrentIndex(index)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        total_tab_width = sum(self.tabs.tabRect(i).width() for i in range(self.tabs.count()))
+        narrow = self.width() < max(total_tab_width + 16, 275)
+        if narrow and not self.combo.isVisible():
+            self.tabs.hide()
+            self.combo.show()
+        elif not narrow and not self.tabs.isVisible():
+            self.combo.hide()
+            self.tabs.show()

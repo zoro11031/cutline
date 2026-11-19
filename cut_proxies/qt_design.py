@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComb
 
 from . import design_text, editor_model as model, geometry, graphtec, importer, regmarks, sticker_assets, sticker_print, sticker_trace, template
 from .qt_canvas import SheetView, ZoomControls, draw_contours, draw_feed_arrow, draw_marks, draw_paper, draw_path, pen, rect
-from .qt_controls import (Page, Tasks, bar, button, set_choices, styled_label, workspace_header,
+from .qt_controls import (Page, ResponsiveInspector, Tasks, bar, button, set_choices, styled_label, workspace_header,
                           workspace_layout, workspace_tool_button, workspace_tools)
 
 DESIGN_FILTER = "Design projects (*.scc-template);;Cut artwork (*.svg *.SVG *.dxf *.DXF *.studio3 *.STUDIO3)"
@@ -401,7 +401,7 @@ class Design(QWidget):
         panes.addWidget(left_pane)
         panes.addWidget(self.canvas)
 
-        self.inspector = QTabWidget()
+        self.inspector = ResponsiveInspector()
         self.inspector.setProperty("role", "settings")
         self.inspector.setAccessibleName("Design properties")
         self.inspector.setDocumentMode(True)

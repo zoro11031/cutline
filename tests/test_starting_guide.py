@@ -219,3 +219,53 @@ class TestStartingGuide(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "one settings combination"):
             testcut.build(self.device, base, forces=(20, 25), spot=2)
         self.assertEqual(testcut.build(self.device, base, spot=2).cells[0].label, "r1c2")
+
+    def test_spot_selection_and_keyboard_navigation_with_guarded_history(self):
+        # 1. Start on spot 1, record 2 passes
+        trial = self.prepare()
+        self.guide.record(trial)
+        self.guide.record(trial)
+        self.assertEqual(self.guide.spot, 1)
+        self.assertEqual(self.guide.completed, 2)
+        self.assertEqual(self.guide.spot_status, "2 completed passes")
+
+        # 2. Select a later untouched spot 5
+        self.guide.select_spot(5)
+        self.assertEqual(self.guide.spot, 5)
+        self.assertEqual(self.guide.completed, 0)
+        self.assertTrue(self.guide.can_cut)
+        self.assertFalse(self.guide.interrupted)
+        self.assertEqual(self.guide.spot_status, "Untouched stock")
+
+        # Record a pass on spot 5
+        trial5 = self.prepare()
+        self.guide.record(trial5)
+        self.assertEqual(self.guide.completed, 1)
+
+        # 3. Return to tested spot 1 on blank stock
+        self.guide.select_spot(1)
+        self.assertEqual(self.guide.spot, 1)
+        self.assertEqual(self.guide.completed, 2)
+        # On blank stock, returning to an archived spot is guarded (interrupted because registration is off)
+        self.assertTrue(self.guide.interrupted)
+        self.assertFalse(self.guide.can_cut)
+        self.assertEqual(self.guide.spot_status, "2 passes · Interrupted")
+
+        # 4. Next spot finds next untouched stock (skips 1 and 5)
+        self.guide.next_spot()
+        self.assertEqual(self.guide.spot, 2)
+        self.assertEqual(self.guide.completed, 0)
+        self.assertTrue(self.guide.can_cut)
+
+        # 5. Point lookup on placement
+        rect2 = self.guide.spot_rect(2)
+        self.assertIsNotNone(rect2)
+        self.assertEqual(self.guide.spot_for_point(rect2.x + 2, rect2.y + 2), 2)
+        self.assertIsNone(self.guide.spot_for_point(0, 0))
+
+        # 6. Settings differ detection
+        self.assertFalse(self.guide.settings_differ(self.options))
+        self.guide.record(self.prepare())
+        self.assertTrue(self.guide.settings_differ(dict(self.options, force=10)))
+        self.assertTrue(self.guide.settings_differ(dict(self.options, speed=5)))
+        self.assertTrue(self.guide.settings_differ(dict(self.options, depth=2)))
