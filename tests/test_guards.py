@@ -135,10 +135,19 @@ class TestInstalledTools(unittest.TestCase):
             cutter = self.cutter(b"2\x03", raw)
             self.assertEqual(cutter.status_with_tools(),
                              f"unloaded · Holder 1: {labels[0]} · Holder 2: {labels[1]}")
+            self.assertEqual(cutter.written, [b"\x1b\x05", b"\x1b\x15"])
         old = self.cutter(b"0\x03")
         old.device = graphtec.device_by_name("Silhouette Cameo 3")
         self.assertIn("unavailable", old.status_with_tools())
         self.assertEqual(old.written, [b"\x1b\x05"])
+
+    def test_status_and_tools_return_the_same_reply_without_polling_a_moving_cutter(self):
+        cutter = self.cutter(b"0\x03", b"2,0\x03")
+        self.assertEqual(cutter.status_and_tools(), ("ready · Holder 1: AutoBlade · Holder 2: Empty", (2, 0)))
+        self.assertEqual(cutter.written, [b"\x1b\x05", b"\x1b\x15"])
+        moving = self.cutter(b"1\x03")
+        self.assertEqual(moving.status_and_tools(), ("moving", None))
+        self.assertEqual(moving.written, [b"\x1b\x05"])
 
     def test_only_dual_carriage_models_accept_holder_two(self):
         settings = CutSettings(holder=2)

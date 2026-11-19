@@ -285,3 +285,22 @@ class TestEditorModel(unittest.TestCase):
             reopened = editor_model.load_project(target)
             self.assertEqual(reopened.shapes[0].layer, 'Crease')
             self.assertEqual(reopened.guides, (('h', 20.0),))
+
+    def test_legacy_stickers_with_layers_and_guides_reopen_and_save_at_version_five(self):
+        sticker = editor_model.Shape('Sticker', 10, 10, 20, 20, closed=True, layer='Print',
+                                     contours=(((0, 0), (1, 0), (1, 1)),),
+                                     sticker=sticker_assets.Sticker(_PNG, 'art.png'))
+        project = editor_model.Project(279.4, 215.9, (sticker,), guides=(('h', 20.0),))
+        with tempfile.TemporaryDirectory() as folder:
+            target = pathlib.Path(folder) / 'old.scc-template'
+            legacy = dict(editor_model.project_document(project), version=4)
+            target.write_text(json.dumps(legacy))
+            reopened = editor_model.load_project(target)
+            self.assertEqual(reopened, project)
+            editor_model.save_project(target, reopened)
+            self.assertEqual(json.loads(target.read_text())['version'], 5)
+            for guides in (None, False, {"h": 20}, [["q", 20]], [["h"]]):
+                with self.subTest(guides=guides):
+                    target.write_text(json.dumps(dict(legacy, guides=guides)))
+                    with self.assertRaisesRegex(ValueError, 'Invalid template guides'):
+                        editor_model.load_project(target)

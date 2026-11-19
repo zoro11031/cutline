@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -44,7 +45,9 @@ class TestStartingGuide(unittest.TestCase):
         self.assertNotIn(graphtec.frame("FY0"), trial.sheet.stream)
         self.assertEqual(trial.sheet.steps[-1].data, graphtec.frame(graphtec.return_to_start_commands(self.device)))
         self.guide.record(trial)
-        self.assertIs(self.prepare(force=32, offset_mm=(2, -1)), trial)
+        self.assertIs(self.prepare(offset_mm=(2, -1)), trial)
+        with self.assertRaisesRegex(ValueError, "settings changed"):
+            self.prepare(force=32)
         with self.assertRaisesRegex(ValueError, "tool holder"):
             self.prepare(blade_options={"holder": 2})
         self.guide.record(trial)
@@ -221,8 +224,6 @@ class TestStartingGuide(unittest.TestCase):
         self.assertEqual(testcut.build(self.device, base, spot=2).cells[0].label, "r1c2")
 
     def test_a_revisited_spot_on_a_marked_sheet_still_guards_changed_settings(self):
-        # A registered sheet keeps a revisited spot cuttable, so the settings it
-        # was cut with have to be remembered: there is no live trial to compare.
         self.guide.registered = True
         first = self.prepare()
         self.guide.record(first)
@@ -231,7 +232,7 @@ class TestStartingGuide(unittest.TestCase):
         self.guide.record(self.prepare(force=30))
         self.guide.select_spot(1)
 
-        self.assertIsNone(self.guide.trial)
+        self.assertEqual(self.guide.trial, first)
         self.assertEqual(self.guide.completed, 1)
         self.assertFalse(self.guide.interrupted)
         self.assertTrue(self.guide.can_cut)
@@ -240,10 +241,71 @@ class TestStartingGuide(unittest.TestCase):
         self.assertTrue(self.guide.settings_differ(dict(self.options, speed=5)))
         self.assertTrue(self.guide.settings_differ(dict(
             self.options, blade_options=dict(self.options["blade_options"], blade_diameter_mm=0.45))))
+        with self.assertRaisesRegex(ValueError, "settings changed"):
+            self.prepare(blade_options=dict(self.options["blade_options"], acceleration=1))
+        self.assertEqual(self.prepare(), first)
 
         self.guide.select_spot(2)
         self.assertTrue(self.guide.settings_differ(self.options))
         self.assertFalse(self.guide.settings_differ(dict(self.options, force=30)))
+
+    def test_a_revisited_marked_spot_survives_restart_and_repeats_its_original_path(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "marked.json"
+            self.guide = starting_guide.Guide(path)
+            self.guide.registered = True
+            connection = ("auto", (1, 2))
+            first = self.prepare(shape="studio", connection=connection, depth=None)
+            self.guide.record(first)
+            self.guide.select_spot(2)
+            self.guide.record(self.prepare(connection=connection, force=30))
+            self.guide.select_spot(1)
+            self.assertCountEqual([spot.number for spot in self.guide.spots], [1, 2])
+            self.guide.persist()
+
+            self.guide = starting_guide.Guide(path)
+            self.assertEqual(self.guide.completed, 1)
+            self.assertEqual(self.guide.tested_settings.depth, None)
+            self.assertTrue(self.guide.settings_differ(self.options))
+            with self.assertRaisesRegex(ValueError, "cutter changed"):
+                self.prepare(connection=("auto", (1, 3)), depth=None)
+            repeated = self.prepare(connection=connection, depth=None)
+            self.assertEqual(repeated, first)
+            self.guide.record(repeated)
+            self.assertEqual(self.guide.tested_settings.passes, 2)
+
+    def test_a_legacy_archived_spot_keeps_its_count_and_requires_a_fresh_spot(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "marked.json"
+            self.guide = starting_guide.Guide(path)
+            self.guide.registered = True
+            first = self.prepare()
+            self.guide.record(first)
+            self.guide.next_spot()
+            second = self.prepare(force=30)
+            self.guide.record(second)
+            self.guide.persist()
+            before = json.loads(path.read_text())
+            before.pop("spot_trials")
+            before["spot_settings"] = {"1": vars(first.settings)}
+            path.write_text(json.dumps(before))
+
+            self.guide = starting_guide.Guide(path)
+            self.assertEqual(self.prepare(force=30), second)
+            self.guide.select_spot(1)
+            self.assertEqual(self.guide.completed, 1)
+            self.assertFalse(self.guide.can_cut)
+            with self.assertRaisesRegex(ValueError, "original cutter and settings are unavailable"):
+                self.prepare()
+            self.guide.persist()
+
+            self.guide = starting_guide.Guide(path)
+            self.assertTrue(self.guide.registered)
+            self.assertEqual(self.guide.completed, 1)
+            self.guide.next_spot()
+            self.assertEqual(self.guide.spot, 3)
+            self.assertTrue(self.guide.can_cut)
+            self.assertEqual(self.prepare().settings.force, 25)
 
     def test_a_spot_beyond_the_sheet_is_refused_and_has_tests_sees_any_progress(self):
         fresh = starting_guide.Guide()

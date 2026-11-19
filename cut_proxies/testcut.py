@@ -179,6 +179,14 @@ def combinations(base: CutSettings, forces=None, speeds=None, passes=None,
     return out
 
 
+def settings_for_shape(base, shape):
+    if shape == "studio":
+        # Finish the triangle while the outer square still holds the material.
+        return dataclasses.replace(base, path_order="design", pass_order="path",
+                                   interior_first=False, delicate_media=False)
+    return base
+
+
 def build(device: graphtec.Device, base: CutSettings, forces=None,
           speeds=None, passes=None, depths=None,
           size_mm: float | None = None, gap_mm: float = DEFAULT_GAP_MM,
@@ -205,11 +213,7 @@ def build(device: graphtec.Device, base: CutSettings, forces=None,
     mat_errors = cutting_mat_errors(device, mat, sheet_w_mm, sheet_h_mm)
     if mat_errors:
         raise ValueError(mat_errors[0])
-    if shape == "studio":
-        # Finish the triangle while the outer square still holds the material.
-        base = dataclasses.replace(base, path_order="design", pass_order="path",
-                                   interior_first=False, delicate_media=False)
-    requested = combinations(base, forces, speeds, passes, depths)
+    requested = combinations(settings_for_shape(base, shape), forces, speeds, passes, depths)
     if any(setting.passes < 1 for setting in requested):
         raise ValueError("Set at least one cutting pass per sample.")
     settings = [setting.clamped(device) for setting in requested]

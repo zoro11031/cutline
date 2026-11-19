@@ -641,10 +641,15 @@ def load_project(path, legacy_registration=None):
     mat = document.get("mat", "auto")
     if not isinstance(mat, str) or mat not in graphtec.MAT_OPTIONS:
         raise ValueError("Invalid project cutting mat.")
+    # Older releases could emit guides and layers in v4 projects with stickers.
     if document["version"] < 4 and "guides" in document:
         raise ValueError("Guides need template project version 5.")
-    guides = tuple((str(g[0]), float(g[1])) for g in document.get("guides", ())
-                   if isinstance(g, (list, tuple)) and len(g) == 2 and g[0] in ("h", "v") and _number(g[1]))
+    guides_data = document.get("guides", [])
+    if not isinstance(guides_data, list) or any(
+            not isinstance(guide, list) or len(guide) != 2 or guide[0] not in ("h", "v") or not _number(guide[1])
+            for guide in guides_data):
+        raise ValueError("Invalid template guides.")
+    guides = tuple((axis, float(position)) for axis, position in guides_data)
     shapes = document.get("shapes" if legacy else "objects")
     if not isinstance(shapes, list):
         raise ValueError("Missing template shapes.")

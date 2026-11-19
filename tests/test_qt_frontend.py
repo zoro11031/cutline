@@ -46,13 +46,14 @@ class TestQtFrontend(unittest.TestCase):
         offline.start()
         self.addCleanup(offline.stop)
         self.window = qt_gui.Window()
-        self.window.refresh_usb()
+        with mock.patch.object(self.window, "detect_tools"):
+            self.window.refresh_usb()
         self.addCleanup(self.window.deleteLater)
 
     def test_multiple_usb_cutters_require_an_endpoint_choice(self):
         window = self.window
         device = qt_gui.graphtec.device_by_name("Silhouette Cameo 4")
-        with mock.patch.object(transport, "usb_endpoints",
+        with mock.patch.object(window, "detect_tools"), mock.patch.object(transport, "usb_endpoints",
                                return_value=[(device, "", (1, 2)), (device, "", (1, 3))]):
             window.refresh_usb()
             self.assertIsNone(window.connection()[1])
@@ -65,7 +66,7 @@ class TestQtFrontend(unittest.TestCase):
         window = self.window
         device = qt_gui.graphtec.device_by_name("Silhouette Cameo 4")
         first, other = (1, 2), (1, 3)
-        with mock.patch.object(transport, "usb_endpoints") as detect:
+        with mock.patch.object(window, "detect_tools"), mock.patch.object(transport, "usb_endpoints") as detect:
             detect.return_value = [(device, "", first), (device, "", other)]
             window.refresh_usb()
             window.detected.setCurrentIndex(window.detected.findData(first))
@@ -728,7 +729,8 @@ class TestQtFrontend(unittest.TestCase):
         self.assertFalse(window.guide_send.isEnabled())
         self.assertIn("select a cutter", window.guide_status.text())
 
-        window.detected.setCurrentIndex(window.detected.findData((1, 2)))
+        with mock.patch.object(window, "detect_tools"):
+            window.detected.setCurrentIndex(window.detected.findData((1, 2)))
         self.assertTrue(window.guide_send.isEnabled())
         self.assertNotIn("select a cutter", window.guide_status.text())
 
@@ -796,6 +798,47 @@ class TestQtFrontend(unittest.TestCase):
             window.open_design()
             box.setWindowTitle.assert_called_with("Matched ZIP Paths Locked")
             self.assertEqual(window.tabs.currentIndex(), window.tab("Sheet"))
+
+    def test_footer_actions_carry_their_roles_and_warnings_stay_readable(self):
+        from cut_proxies import qt_controls
+
+        window = self.window
+        roles = {"send_button": "primary", "review_button": "primary", "back_to_send": "primary",
+                 "scan_button": "secondary", "corner_button": "secondary",
+                 "pause_cut": "secondary", "cancel_cut": "destructive"}
+        for name, role in roles.items():
+            widget = getattr(window, name)
+            self.assertEqual(widget.property("role"), role, name)
+            self.assertGreaterEqual(widget.minimumHeight(), 32, name)
+
+        # Every role resolves against the theme, in light and in dark.
+        for name, window_color, text_color in (("light", "#f6f5f4", "#1b1b1b"), ("dark", "#1e1e1e", "#f2f2f2")):
+            with self.subTest(theme=name):
+                palette = QPalette()
+                palette.setColor(QPalette.ColorRole.Window, QColor(window_color))
+                palette.setColor(QPalette.ColorRole.WindowText, QColor(text_color))
+                palette.setColor(QPalette.ColorRole.Button, QColor(window_color))
+                palette.setColor(QPalette.ColorRole.ButtonText, QColor(text_color))
+                css = qt_controls.workspace_style(palette)
+                self.assertNotIn("@", css, "a theme token was left unresolved")
+                self.assertIn('QLabel[role="warning"]', css)
+                self.assertIn('QPushButton[role="destructive"]:pressed', css)
+                self.assertIn('QPushButton[role="secondary"]:pressed', css)
+
+        # A refusal is marked as a warning, not left to read as ordinary status.
+        window.pdf = Path("print.pdf")
+        window.controls["registration"].setChecked(True)
+        window.rebuild()
+        window.pdf_check_state = qt_gui.sheet.RegistrationDecision.FAILED
+        window.refresh_send()
+        self.assertEqual(window.footer_status.property("role"), "warning")
+        self.assertTrue(window.footer_status.text().startswith("⚠"))
+        self.assertIn("Registration check failed", window.footer_status.text())
+
+        window.pdf_check_state = qt_gui.sheet.RegistrationDecision.PASSED
+        window.refresh_send()
+        self.assertEqual(window.footer_status.property("role"), "body")
+        self.assertFalse(window.footer_status.text().startswith("⚠"))
 
     def test_the_material_test_survives_settings_edits_and_tab_switches(self):
         window = self.window
@@ -868,12 +911,14 @@ class TestQtFrontend(unittest.TestCase):
         cutter.can_read = True
         cutter.device = window.job.device
         cutter.status.return_value = "ready"
-        cutter.status_with_tools.return_value = "ready · Holder 1 AutoBlade"
+        cutter.status_and_tools.return_value = ("ready · Holder 1 AutoBlade", (2, 0))
         cutter.run.side_effect = transport.RegistrationFailed()
         with mock.patch.object(window.tasks, "run", side_effect=lambda work, done: done(work(), None)), \
              mock.patch.object(transport, "open_transport", return_value=cutter):
             window.refresh_cutter.click()
         self.assertIn("Holder 1 AutoBlade", window.connection_status.text())
+        cutter.status_and_tools.assert_called_once_with()
+        cutter.tool_codes.assert_not_called()
 
         def rejected(_work, done):
             done(None, cutter.run.side_effect)
@@ -1027,6 +1072,21 @@ class TestQtFrontend(unittest.TestCase):
         self.assertIn("Sheet", window.send_refusal(window.job, window.connection()))
         self.assertFalse(window.send_button.isEnabled())
 
+    def test_changing_pdf_orientation_mode_invalidates_the_check_with_unchanged_marks(self):
+        window = self.window
+        window.pdf = Path("print.pdf")
+        window.controls["registration"].setChecked(True)
+        window.rebuild()
+        with mock.patch.object(window.tasks, "run"):
+            window.measure_sheet()
+        marks = window.checked_marks
+        with mock.patch.object(qt_gui.layout_presets, "is_published", return_value=True):
+            window.rebuild()
+        self.assertEqual(window.job.marks, marks)
+        self.assertIsNone(window.sheet_token)
+        self.assertIn("Sheet", window.send_refusal(window.job, window.connection()))
+        self.assertFalse(window.send_button.isEnabled())
+
     def test_a_refused_connection_returns_the_window_to_an_editable_state(self):
         window = self.window
         plan, connection = window.job, window.connection()
@@ -1081,14 +1141,14 @@ class TestQtFrontend(unittest.TestCase):
         window.blade["depth"].setValue(7)
 
         window.apply_tool_detection((2, 0))
-        self.assertEqual(picker.button(1).text(), "Tool Holder 1 · AutoBlade")
-        self.assertEqual(picker.button(2).text(), "Tool Holder 2 · Empty")
+        self.assertEqual(picker.button(1).text(), "Tool Holder 1\nAutoBlade")
+        self.assertEqual(picker.button(2).text(), "Tool Holder 2\nEmpty")
         self.assertEqual(window.blade["depth"].value(), 7)
 
         with mock.patch.object(window, "message") as message:
             window.apply_tool_detection((1, 7))
-        self.assertEqual(picker.button(1).text(), "Tool Holder 1 · Ratchet blade")
-        self.assertEqual(picker.button(2).text(), "Tool Holder 2 · Pen")
+        self.assertEqual(picker.button(1).text(), "Tool Holder 1\nRatchet blade")
+        self.assertEqual(picker.button(2).text(), "Tool Holder 2\nPen")
         self.assertEqual(window.blade["depth"].value(), -1)
         self.assertIn("Ratchet blade", message.call_args.args[0])
 
@@ -1107,6 +1167,16 @@ class TestQtFrontend(unittest.TestCase):
         window.update_holder_labels()
         self.assertEqual(picker.button(1).text(), "Tool Holder 1")
         self.assertEqual(picker.button(2).text(), "Tool Holder 2")
+
+    def test_manual_depth_is_applied_when_returning_to_holder_one(self):
+        window = self.window
+        window.blade["depth"].setValue(7)
+        window.blade["holder"].setValue(2)
+        window.apply_tool_detection((1, 7))
+        self.assertEqual(window.blade["holder"].value(), 2)
+        self.assertIsNone(window.corrected_tools)
+        window.blade["holder"].setValue(1)
+        self.assertEqual(window.blade["depth"].value(), -1)
 
     def test_tools_are_read_once_per_connection_and_not_during_a_job(self):
         window = self.window
@@ -1140,6 +1210,20 @@ class TestQtFrontend(unittest.TestCase):
         link.assert_not_called()
         self.assertEqual(window.detected_tools, ())
 
+    def test_tool_probe_prevents_overlapping_commands_and_releases_after_failure(self):
+        window = self.window
+        with mock.patch.object(window.tasks, "run") as run:
+            window.detect_tools()
+            window.detect_tools()
+            window.check_device()
+            run.assert_called_once()
+            self.assertFalse(window.refresh_cutter.isEnabled())
+            self.assertFalse(window.send_button.isEnabled())
+            run.call_args.args[1](None, OSError("gone"))
+        self.assertTrue(window.refresh_cutter.isEnabled())
+        self.assertTrue(window.blade["force"].isEnabled())
+        self.assertFalse(window.busy)
+
     def test_active_and_paused_job_details_and_control_states_in_qt(self):
         window = self.window
         window.blade["force"].setValue(25)
@@ -1155,6 +1239,9 @@ class TestQtFrontend(unittest.TestCase):
         window.refresh_send()
 
         # Job controls are disabled while active
+        self.assertFalse(window.open_artwork_action.isEnabled())
+        self.assertFalse(window.open_print_button.isEnabled())
+        self.assertFalse(window.blade["holder"].holders.button(2).isEnabled())
         self.assertFalse(window.blade["force"].isEnabled())
         self.assertFalse(window.blade["speed"].isEnabled())
         self.assertFalse(window.controls["sheet"].isEnabled())
@@ -1249,6 +1336,76 @@ class TestQtDesignEditor(unittest.TestCase):
         design = qt_design.Design(project, device, lambda *_: None, lambda *_: None)
         self.addCleanup(design.deleteLater)
         return design
+
+    def test_the_inspector_is_usable_at_every_supported_window_size(self):
+        design = self.editor()
+        design.resize(1200, 760)
+        design.show()
+        self.app.processEvents()
+        inspector = design.inspector
+        self.assertFalse(inspector.combo.isVisibleTo(inspector), "wide windows keep the tabs")
+        self.assertTrue(inspector.tabs.isVisibleTo(inspector))
+
+        for width, height in ((850, 600), (720, 520)):
+            with self.subTest(size=(width, height)):
+                design.resize(width, height)
+                self.app.processEvents()
+                sections = [inspector.combo.itemText(i) for i in range(inspector.combo.count())]
+                self.assertEqual(sections, [inspector.tabs.tabText(i) for i in range(inspector.tabs.count())])
+                for index in range(inspector.count()):
+                    inspector.setCurrentIndex(index)
+                    self.app.processEvents()
+                    self.assertIs(inspector.currentWidget(), inspector.widget(index))
+                page = inspector.currentWidget()
+                if hasattr(page, "horizontalScrollBar"):
+                    self.assertFalse(page.horizontalScrollBar().isVisible(),
+                                     "a horizontal scrollbar hides inspector controls")
+                self.assertLessEqual(design.canvas.width(), design.width())
+                self.assertGreater(design.canvas.width(), 0)
+
+        # One presentation at a time, and the narrow one is the combo.
+        design.resize(560, 520)
+        self.app.processEvents()
+        self.assertTrue(inspector.wants_combo(inspector.width()))
+        self.assertNotEqual(inspector.tabs.isVisibleTo(inspector), inspector.combo.isVisibleTo(inspector))
+
+    def test_the_inspector_measures_the_tabs_it_wants_not_the_ones_it_has(self):
+        design = self.editor()
+        design.resize(1200, 760)
+        design.show()
+        self.app.processEvents()
+        inspector = design.inspector
+        natural = inspector.natural_tab_width()
+        self.assertGreater(natural, 0)
+        self.assertFalse(inspector.wants_combo(natural + 64))
+        self.assertTrue(inspector.wants_combo(natural - 40))
+
+        # Hysteresis: a width on the threshold does not flip back and forth.
+        edge = natural + 16
+        inspector.apply_width(edge + 40)
+        self.assertFalse(inspector.combo.isVisibleTo(inspector))
+        self.assertFalse(inspector.wants_combo(edge + 1))
+        inspector.apply_width(natural - 60)
+        self.assertTrue(inspector.combo.isVisibleTo(inspector))
+        self.assertTrue(inspector.wants_combo(edge + 1), "the combo holds until there is room to spare")
+        self.assertFalse(inspector.wants_combo(edge + inspector.SWITCH_MARGIN + 1))
+
+    def test_a_long_checkbox_label_wraps_instead_of_being_clipped(self):
+        design = self.editor()
+        design.show()
+        self.app.processEvents()
+        caption = getattr(design.register, "caption", None)
+        self.assertIsNotNone(caption, "the registration checkbox should carry a wrapping label")
+        self.assertEqual(caption.text(), "Enable registration")
+        self.assertTrue(caption.wordWrap())
+        self.assertEqual(design.register.accessibleName(), "Enable registration")
+        initial = design.register.isChecked()
+        QTest.mouseClick(caption, Qt.MouseButton.LeftButton)
+        self.assertEqual(design.register.isChecked(), not initial)
+        design.register.setDisabled(True)
+        self.assertFalse(caption.isEnabled())
+        QTest.mouseClick(caption, Qt.MouseButton.LeftButton)
+        self.assertEqual(design.register.isChecked(), not initial)
 
     def test_simplify_reduces_a_selected_path_without_an_error_message(self):
         curve = tuple((index / 24, (index / 24) ** 2) for index in range(25))

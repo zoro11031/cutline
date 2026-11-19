@@ -14,7 +14,7 @@ from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QInputDialog, QMenu,
                                QMainWindow, QMessageBox, QPlainTextEdit,
-                               QSplitter, QStackedWidget, QStyle, QTabWidget, QVBoxLayout, QWidget)
+                               QSizePolicy, QSplitter, QStackedWidget, QStyle, QTabWidget, QVBoxLayout, QWidget)
 
 from . import (actions, bluetooth, bundle, config, corner_test, editor_model, geometry, graphtec, importer, job,
                layout_presets, materials, presets, regmarks, sheet, starting_guide, template, testcut, toolpath, transport)
@@ -67,6 +67,7 @@ class Window(QMainWindow):
         self.bundle_checked = self.busy = self.loading = False
         self.pdf_check_state = sheet.RegistrationDecision.NONE
         self.checked_marks = None
+        self.checked_scm_orientation = False
         self.detected_tools = ()
         self.tools_connection = None
         self.corrected_tools = None
@@ -174,13 +175,17 @@ class Window(QMainWindow):
         self.footer = footer
         self.footer_status = styled_label(role="body")
         self.footer_status.setWordWrap(True)
+        # The status gives way first: at compact widths it wraps and shrinks so
+        # the actions stay visible, in order, rather than being pushed off.
+        self.footer_status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.footer_status.setMinimumWidth(0)
         footer.addWidget(self.footer_status, 1)
         self.review_button = button("Review Cut Job", self.follow_review, primary=True)
         self.send_button = button("Send to Cutter", self.confirm_send, primary=True,
                                   icon=("media-playback-start", QStyle.StandardPixmap.SP_MediaPlay))
         self.send_button.setMinimumHeight(32)
         self.back_to_send = button("Exit Material Test", self.close_material_guide, primary=True)
-        self.pause_cut = button("Pause Cut", lambda: self.cut_control.toggle_pause())
+        self.pause_cut = button("Pause Cut", lambda: self.cut_control.toggle_pause(), role="secondary")
         self.cancel_cut = button("Cancel Cut", lambda: self.cut_control.cancel(), role="destructive")
         footer.addWidget(self.review_button)
         footer.addWidget(self.send_button)
@@ -239,8 +244,8 @@ class Window(QMainWindow):
             return action
 
         files = self.menu_bar.addMenu("&File")
-        command(files, "Open Cut Artwork…", self.open_artwork)
-        command(files, "Open PDF or ZIP…", self.open_sheet)
+        self.open_artwork_action = command(files, "Open Cut Artwork…", self.open_artwork)
+        self.open_print_action = command(files, "Open PDF or ZIP…", self.open_sheet)
         self.close_print_action = command(files, "Close Print File", self.close_printed_sheet)
         self.paired_cut_action = command(files, "Save Paired Cut File…", self.save_bundle_file)
         files.addSeparator()
@@ -298,7 +303,7 @@ class Window(QMainWindow):
         page = Page()
         source = page.group("Cut artwork")
         self.source_label = source.note("Generated card layout")
-        source.push("Open Cut Artwork…", self.open_artwork)
+        self.open_artwork_button = source.push("Open Cut Artwork…", self.open_artwork)
         self.use_generated = source.push("Use Generated Layout", self.reset_artwork)
         layout = page.group("Media and cards")
         self.choose(layout, "layout_preset", "Layout preset",
@@ -329,7 +334,8 @@ class Window(QMainWindow):
         form = page.group("Printed sheet")
         self.sheet_file = form.note("Open a print PDF or a matched Print & Cut ZIP.")
         self.close_print = button("Close File", self.close_printed_sheet)
-        form.actions(button("Open PDF or ZIP…", self.open_sheet), self.close_print)
+        self.open_print_button = button("Open PDF or ZIP…", self.open_sheet)
+        form.actions(self.open_print_button, self.close_print)
         self.bundle_export = form.push("Save Paired Cut File…", self.save_bundle_file)
         self.bundle_print = form.push("Save Print PDF…", self.save_bundle_print)
         self.bundle_export.hide()
@@ -337,7 +343,6 @@ class Window(QMainWindow):
         self.sheet_page_number = form.number("Page", 1, 1, 999, changed=self.change_sheet_page)
         self.sheet_page_label = form.labelForField(self.sheet_page_number)
         self.measure_button = form.push("Measure Registration Marks", self.measure_sheet)
-        self.update_sheet_controls()
         result = page.group("Registration results")
         self.sheet_result = result.note("Not measured")
         scan = page.group("Last cutter scan")
@@ -348,6 +353,7 @@ class Window(QMainWindow):
         self.clear_scan_result()
         self.sheet_advanced = advanced = page.advanced()
         self.sheet_dpi = advanced.group("PDF check").choice("Measurement resolution", (150, 200, 300), 200, self.measure_sheet)
+        self.update_sheet_controls()
         self.install_page("Sheet", page)
 
     def materials_page(self):
@@ -618,7 +624,6 @@ class Window(QMainWindow):
         device = graphtec.device_by_name(self.choice("cutter"))
         holder = self.blade["holder"]
         slot = holder.value() if device.two_tools else 1
-        holder.holders.button(2).setEnabled(device.two_tools)
         if slot == self.holder_state.active:
             return
         fresh = slot not in self.holder_state.drafts
@@ -837,11 +842,15 @@ class Window(QMainWindow):
             self.use_artwork(None, "Generated card layout")
 
     def open_artwork(self):
+        if self.active_job is not None or self.busy:
+            return
         path, _ = QFileDialog.getOpenFileName(self, "Open Cut Artwork", "", ARTWORK_FILTER)
         if path:
             self.load_artwork(Path(path))
 
     def load_artwork(self, path, page=None):
+        if self.active_job is not None or self.busy:
+            return
         try:
             drawing = importer.load(path, page=page)
         except importer.InkscapePageRequired as error:
@@ -859,6 +868,8 @@ class Window(QMainWindow):
         self.use_artwork(drawing, path.name + (f" · Page {page}" if page else ""))
 
     def reset_artwork(self):
+        if self.active_job is not None or self.busy:
+            return
         self.clear_bundle()
         self.project_shapes = self.reviewed_design = None
         with self.editing():
@@ -974,6 +985,14 @@ class Window(QMainWindow):
 
     def update_enabled_fields(self):
         active = self.active_job is not None or self.busy
+        self.detected.setEnabled(not active)
+        device = graphtec.device_by_name(self.choice("cutter"))
+        holders = self.blade["holder"].holders
+        holders.button(1).setEnabled(not active and device.two_tools)
+        holders.button(2).setEnabled(not active and device.two_tools)
+        for group in self.group_rows.values():
+            for field in group:
+                field.setEnabled(not active)
         if active:
             for c in self.controls.values():
                 c.setEnabled(False)
@@ -1004,7 +1023,6 @@ class Window(QMainWindow):
             for key in self.BUNDLE_LOCKED:
                 self.controls[key].setEnabled(False)
             self.skip.setEnabled(False)
-        device = graphtec.device_by_name(self.choice("cutter"))
         for name, upper in (("force", device.max_pressure), ("speed", device.max_speed)):
             self.blade[name].setToolTip(f"{CONTROL_HELP[name]} Range on {DEVICES[device.name]} is 1–{upper}.")
         self.blade["holder"].setEnabled(device.two_tools)
@@ -1039,6 +1057,7 @@ class Window(QMainWindow):
             self.refresh_send()
             return
         self.restore_holder()
+        self.correct_detected_depth()
         self.update_enabled_fields()
         previous = self.job
         self.job = None
@@ -1075,9 +1094,10 @@ class Window(QMainWindow):
                 elif current.warnings:
                     summary += "\n" + current.warnings[0]
         marks = self.job.marks if self.job else None
+        orientation_changed = self.checked_scm_orientation != layout_presets.is_published(self.artwork)
         if (self.pdf and not self.bundle and self.checked_marks is not None
-                and self.checked_marks != marks):
-            self.invalidate_measurement()
+                and (self.checked_marks != marks or orientation_changed)):
+            self.invalidate_measurement(clear_image=orientation_changed)
             self.sheet_result.setText("Registration geometry changed. Measure the PDF again.")
         self.summary_title.setText(title)
         self.summary.setText(summary)
@@ -1159,9 +1179,16 @@ class Window(QMainWindow):
         self.settings_box.setVisible(True)
         self.guide_page.setVisible(self.tuning)
         self.review_button.setText(f"Review {'Cut Job' if target == 'Send' else target}")
-        self.close_print_action.setEnabled(self.pdf is not None)
+        editable = self.active_job is None and not self.busy
+        for control in (self.open_artwork_action, self.open_print_action,
+                        self.open_artwork_button, self.open_print_button):
+            control.setEnabled(editable)
+        self.close_print_action.setEnabled(editable and self.pdf is not None)
+        self.update_sheet_controls()
         self.paired_cut_action.setEnabled(self.bundle is not None)
-        self.reset_layout_action.setEnabled(self.artwork is not None or self.bundle is not None)
+        can_reset = editable and (self.artwork is not None or self.bundle is not None)
+        self.reset_layout_action.setEnabled(can_reset)
+        self.use_generated.setEnabled(can_reset)
         self.back_to_send.setText("Exit Material Test")
         self.back_to_send.setVisible(self.tuning)
         self.review_button.setVisible(not self.tuning and (target == "Design" or index != self.tab(target)))
@@ -1205,7 +1232,10 @@ class Window(QMainWindow):
             self.footer_status.setText(control.status_text)
         elif not self.tuning:
             display_job = self.active_job or self.job
-            self.footer_status.setText(reason or (
+            self.footer_status.setProperty("role", "warning" if reason else "body")
+            self.footer_status.style().unpolish(self.footer_status)
+            self.footer_status.style().polish(self.footer_status)
+            self.footer_status.setText((f"⚠ {reason}" if reason else "") or (
                 f"{display_job.device.name} · {len(display_job.paths)} paths · "
                 + ("Registration on" if display_job.registration else "Registration off")))
 
@@ -1282,10 +1312,12 @@ class Window(QMainWindow):
 
     def update_sheet_controls(self):
         loaded = self.pdf is not None
-        self.close_print.setEnabled(loaded)
-        self.measure_button.setEnabled(loaded and self.bundle_row_error is None)
+        editable = self.active_job is None and not self.busy
+        self.close_print.setEnabled(editable and loaded)
+        self.measure_button.setEnabled(editable and loaded and self.bundle_row_error is None)
+        self.sheet_dpi.setEnabled(editable and loaded)
         self.sheet_page_label.setText("Sheet in ZIP" if self.bundle else "PDF page")
-        self.sheet_page_number.setEnabled(loaded and (not self.bundle or len(self.bundle.rows) > 1))
+        self.sheet_page_number.setEnabled(editable and loaded and (not self.bundle or len(self.bundle.rows) > 1))
 
     def clear_printed_sheet(self):
         self.pdf = self.bundle_row_error = None
@@ -1298,6 +1330,8 @@ class Window(QMainWindow):
         self.update_sheet_controls()
 
     def close_printed_sheet(self):
+        if self.active_job is not None or self.busy:
+            return
         if self.bundle:
             self.reset_artwork()
         else:
@@ -1328,8 +1362,10 @@ class Window(QMainWindow):
                 self.message(str(error))
 
     def open_sheet(self):
+        if self.active_job is not None or self.busy:
+            return
         path = self.select_open("Open Printed Sheet", "Print PDF or matched ZIP (*.pdf *.PDF *.zip *.ZIP)")
-        if not path:
+        if not path or self.active_job is not None or self.busy:
             return
         if path.suffix.casefold() == ".zip" or zipfile.is_zipfile(path):
             try:
@@ -1382,7 +1418,7 @@ class Window(QMainWindow):
         return self.bundle.rows[self.sheet_page_number.value() - 1] if self.bundle else None
 
     def change_sheet_page(self):
-        if self.loading:
+        if self.loading or self.active_job is not None or self.busy:
             return
         if self.bundle:
             row = self.current_bundle_row()
@@ -1397,7 +1433,7 @@ class Window(QMainWindow):
 
     def measure_sheet(self):
         path, matched, current = self.pdf, self.bundle, self.job
-        if self.loading or path is None or self.bundle_row_error:
+        if self.loading or self.active_job is not None or self.busy or path is None or self.bundle_row_error:
             return
         if not matched and not current:
             self.message("Check the layout before measuring the sheet.")
@@ -1414,6 +1450,7 @@ class Window(QMainWindow):
         self.checked_marks = marks
         dpi, page = self.sheet_dpi.currentData(), self.sheet_page_number.value()
         orient_scm = layout_presets.is_published(self.artwork)
+        self.checked_scm_orientation = orient_scm
 
         def work():
             if matched:
@@ -1501,10 +1538,14 @@ class Window(QMainWindow):
         self.identifier.clear()
         set_choices(self.detected, {"": "Select a cutter"}, "")
         self.change_target()
-        if mode == "auto":
+        if mode == "auto" and not self.loading:
             self.refresh_usb()
 
     def change_target(self):
+        if self.tools_connection is not None and self.tools_connection != self.connection():
+            self.detected_tools = ()
+            self.tools_connection = self.corrected_tools = None
+            self.update_holder_labels()
         self.set_cutter_status("Cutter status not checked.")
         self.clear_scan_result()
         self.refresh_send()
@@ -1516,24 +1557,28 @@ class Window(QMainWindow):
         device = graphtec.device_by_name(self.choice("cutter"))
         labels = tooling.holder_labels(self.detected_tools, device)
         picker = self.blade["holder"].holders
-        for slot, label in enumerate(labels, 1):
-            picker.button(slot).setText(label)
-        if len(labels) < 2:
-            picker.button(2).setText("Tool Holder 2")
+        for slot in (1, 2):
+            label = labels[slot - 1] if slot <= len(labels) else f"Tool Holder {slot}"
+            tab = picker.button(slot)
+            tab.setText(label.replace(" · ", "\n", 1))
+            tab.setAccessibleName(label)
+            tab.setToolTip(label)
 
     def apply_tool_detection(self, codes):
         """Take a holder reply, label the tabs, and send depth back to manual once."""
         self.detected_tools = tuple(codes)
         self.tools_connection = self.connection()
         self.update_holder_labels()
-        if self.active_job is not None or self.busy:
+        self.correct_detected_depth()
+
+    def correct_detected_depth(self):
+        if self.active_job is not None or self.busy or not self.detected_tools:
             return
-        if self.corrected_tools == self.detected_tools:
+        device = graphtec.device_by_name(self.choice("cutter"))
+        if (device.two_tools and self.blade["holder"].value() != 1) or self.corrected_tools == self.detected_tools:
             return
         self.corrected_tools = self.detected_tools
-        holder = self.blade["holder"].value() if graphtec.device_by_name(
-            self.choice("cutter")).two_tools else 1
-        depth, reason = tooling.depth_correction(self.detected_tools, self.blade["depth"].value(), holder)
+        depth, reason = tooling.depth_correction(self.detected_tools, self.blade["depth"].value())
         if depth is None:
             return
         self.blade["depth"].setValue(depth)
@@ -1548,19 +1593,27 @@ class Window(QMainWindow):
                 or not device.detects_tools or self.tools_connection == connection):
             return
 
+        self.busy = True
+        self.update_enabled_fields()
+        self.refresh_send()
+
         def work():
             with self.open_link(connection) as cutter:
                 return cutter.tool_codes()
 
         def done(codes, error):
-            if connection != self.connection():
-                return
-            if error:
-                self.detected_tools = ()
-                self.tools_connection = connection
-                self.update_holder_labels()
-                return
-            self.apply_tool_detection(codes)
+            self.busy = False
+            self.update_enabled_fields()
+            if connection == self.connection():
+                if error:
+                    self.detected_tools = ()
+                    self.tools_connection = connection
+                    self.update_holder_labels()
+                else:
+                    self.apply_tool_detection(codes)
+            else:
+                self.detect_tools()
+            self.refresh_send()
 
         self.tasks.run(work, done)
 
@@ -1570,11 +1623,6 @@ class Window(QMainWindow):
         self.device_selected()
 
     def device_selected(self):
-        if self.tools_connection is not None and self.tools_connection != self.connection():
-            self.detected_tools = ()
-            self.tools_connection = None
-            self.corrected_tools = None
-            self.update_holder_labels()
         identifier = self.detected.currentData()
         if self.link.currentData() == "auto":
             model = cutters.auto_model(identifier, self.detected.currentText()) if identifier else None
@@ -1616,28 +1664,30 @@ class Window(QMainWindow):
 
     def check_device(self):
         connection = self.connection()
-        if self.busy:
+        if self.busy or self.active_job is not None:
             return
         if connection[0] != "auto" and not connection[1]:
             self.message("Select a Bluetooth cutter.")
             return
         self.busy = True
+        self.update_enabled_fields()
         self.set_cutter_status("Reading cutter status…")
         self.refresh_send()
 
         def work():
             with self.open_link(connection) as cutter:
                 version = f" · {cutter.firmware_version()}" if connection[0] != "auto" else ""
-                codes = cutter.tool_codes()
-                return cutter.device, f"{cutter.device.name} · {cutter.status_with_tools()}{version}", codes
+                status, codes = cutter.status_and_tools()
+                return cutter.device, f"{cutter.device.name} · {status}{version}", codes
 
         def done(value, error):
             self.busy = False
+            self.update_enabled_fields()
             if connection == self.connection():
                 self.set_cutter_status(f"Cutter detection unavailable. {error}" if error else value[1])
                 if not error and self.cutter_model.currentData() == cutters.AUTO:
                     self.select("cutter", value[0].name)
-                if not error:
+                if not error and value[2] is not None:
                     self.apply_tool_detection(value[2])
             self.refresh_send()
 
