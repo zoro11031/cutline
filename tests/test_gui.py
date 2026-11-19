@@ -1040,6 +1040,65 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertIsNone(win.checked_marks)
         self.assertIsNone(win._sheet_token)
 
+    def test_the_holder_tabs_name_the_detected_tool_and_depth_follows_it_in_gtk(self):
+        win = self.make_window()
+        buttons = win.send_holder_buttons
+        win.r_depth.set_value(7)
+
+        win.apply_tool_detection((2, 0))
+        self.assertEqual(buttons[1].get_label(), "Tool Holder 1 · AutoBlade")
+        self.assertEqual(buttons[2].get_label(), "Tool Holder 2 · Empty")
+        self.assertEqual(int(win.r_depth.get_value()), 7)
+
+        with mock.patch.object(win, "toast") as toast:
+            win.apply_tool_detection((4, 0))
+        self.assertEqual(buttons[1].get_label(), "Tool Holder 1 · Kraft blade")
+        self.assertEqual(int(win.r_depth.get_value()), -1)
+        self.assertIn("Kraft blade", toast.call_args.args[0])
+
+        # The same reply again does not fight an operator who sets depth back.
+        win.r_depth.set_value(5)
+        with mock.patch.object(win, "toast") as toast:
+            win.apply_tool_detection((4, 0))
+        toast.assert_not_called()
+        self.assertEqual(int(win.r_depth.get_value()), 5)
+
+        win.forget_tool_detection()
+        self.assertEqual(buttons[1].get_label(), "Tool Holder 1")
+        self.assertEqual(buttons[2].get_label(), "Tool Holder 2")
+
+    def test_tools_are_read_once_per_connection_and_not_during_a_job_in_gtk(self):
+        win = self.make_window()
+        cutter = mock.MagicMock()
+        cutter.__enter__.return_value = cutter
+        cutter.tool_codes.return_value = (2, 0)
+
+        class Immediate:
+            def __init__(self, target=None, daemon=False, **_kwargs):
+                self._target = target
+
+            def start(self):
+                self._target()
+
+        with mock.patch.object(gui.threading, "Thread", Immediate), \
+             mock.patch.object(gui.GLib, "idle_add", side_effect=lambda fn, *a: fn(*a)), \
+             mock.patch.object(gui.cutters, "open_link", return_value=cutter):
+            win.detect_tools()
+            self.assertEqual(win.detected_tools, (2, 0))
+            win.detect_tools()
+            self.assertEqual(cutter.tool_codes.call_count, 1)
+
+            win.tools_connection = None
+            win._sending = True
+            win.detect_tools()
+            self.assertEqual(cutter.tool_codes.call_count, 1)
+            win._sending = False
+
+            win.active_job = win.job
+            win.detect_tools()
+            self.assertEqual(cutter.tool_codes.call_count, 1)
+            win.active_job = None
+
     def test_active_and_paused_job_details_and_control_states_in_gtk(self):
         from cut_proxies import transport
         win = self.make_window()

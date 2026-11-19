@@ -41,7 +41,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 
 from . import (actions, bluetooth, bundle, config, corner_test, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
-               sheet as sheet_mod, starting_guide, template, testcut, toolpath, transport)  # noqa: E402
+               sheet as sheet_mod, starting_guide, template, testcut, toolpath, tooling, transport)  # noqa: E402
 from .desktop_help import BLADE_VALUE_TEXT, CONTROL_HELP, SETUP_STEPS  # noqa: E402
 from .editor_canvas import DesignCanvas, draw_feed_arrow  # noqa: E402
 from .gtk_controls import disclosure, protect_settings_wheel, workspace_header, workspace_tools, zoom_controls  # noqa: E402
@@ -519,6 +519,9 @@ class Window(Adw.ApplicationWindow):
         self.bundle_checked = False
         self.pdf_check_state = sheet_mod.RegistrationDecision.NONE
         self.checked_marks = None
+        self.detected_tools = ()
+        self.tools_connection = None
+        self.corrected_tools = None
         self._bundle_locked = False
         self._job_locked = False
         self.active_job = None
@@ -1640,6 +1643,7 @@ class Window(Adw.ApplicationWindow):
         self.r_holder.set_sensitive(device.two_tools)
         self.r_depth.set_sensitive(device.autoblade and (not device.two_tools or self.r_holder.get_value() == 1))
         self.r_acceleration.set_sensitive(device.detects_tools)
+        self.update_holder_labels()
         self.r_lift.set_sensitive(device.cameo3_on)
         corner_capable = device.cameo3_on and self.r_diameter.get_value() > 0
         self.r_corners.set_sensitive(corner_capable)
@@ -3093,6 +3097,9 @@ class Window(Adw.ApplicationWindow):
             if model and self.selected_cutter() == cutters.AUTO:
                 self.r_cutter.set_selected(graphtec.DEVICES.index(model))
             self.on_connection_target_changed()
+            if self.tools_connection is not None and self.tools_connection != self._connection():
+                self.forget_tool_detection()
+            self.detect_tools()
             return
         if 0 <= index < len(self._bluetooth_devices):
             identifier, name = self._bluetooth_devices[index]
@@ -3100,6 +3107,9 @@ class Window(Adw.ApplicationWindow):
             model = bluetooth.advertised_model(name)
             if model and self.selected_cutter() == cutters.AUTO:
                 self.r_cutter.set_selected(graphtec.DEVICES.index(model))
+            if self.tools_connection is not None and self.tools_connection != self._connection():
+                self.forget_tool_detection()
+            self.detect_tools()
 
     def _connection(self):
         mode = self._connection_mode()
@@ -3113,6 +3123,67 @@ class Window(Adw.ApplicationWindow):
             return mode, identifier, int(self.r_bluetooth_channel.get_value())
         return mode, identifier
 
+    def update_holder_labels(self):
+        buttons = getattr(self, "send_holder_buttons", None)
+        if not buttons:
+            return
+        device = graphtec.device_by_name(self._text(self.r_cutter))
+        labels = tooling.holder_labels(self.detected_tools, device)
+        for slot, button in buttons.items():
+            button.set_label(labels[slot - 1] if slot <= len(labels) else f"Tool Holder {slot}")
+
+    def apply_tool_detection(self, codes):
+        """Take a holder reply, label the tabs, and send depth back to manual once."""
+        self.detected_tools = tuple(codes)
+        self.tools_connection = self._connection()
+        self.update_holder_labels()
+        if self.active_job is not None or self._sending:
+            return
+        if self.corrected_tools == self.detected_tools:
+            return
+        self.corrected_tools = self.detected_tools
+        device = graphtec.device_by_name(self._text(self.r_cutter))
+        holder = int(self.r_holder.get_value()) if device.two_tools else 1
+        depth, reason = tooling.depth_correction(self.detected_tools, int(self.r_depth.get_value()), holder)
+        if depth is None:
+            return
+        self.r_depth.set_value(depth)
+        self.toast(reason)
+
+    def detect_tools(self):
+        """Read the installed tools once for this connection, in the background."""
+        connection = self._connection()
+        device = graphtec.device_by_name(self._text(self.r_cutter))
+        if (self._sending or self.active_job is not None or not connection[1]
+                or not device.detects_tools or self.tools_connection == connection):
+            return
+
+        def done(codes):
+            if connection != self._connection():
+                return
+            if codes is None:
+                self.detected_tools = ()
+                self.tools_connection = connection
+                self.update_holder_labels()
+                return
+            self.apply_tool_detection(codes)
+
+        def work():
+            try:
+                with cutters.open_link(connection) as cutter:
+                    codes = cutter.tool_codes()
+            except Exception:                     # noqa: BLE001
+                codes = None
+            GLib.idle_add(done, codes)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def forget_tool_detection(self):
+        self.detected_tools = ()
+        self.tools_connection = None
+        self.corrected_tools = None
+        self.update_holder_labels()
+
     def on_refresh_status(self, *_a):
         if self._sending or self._checking_status:
             return
@@ -3125,7 +3196,7 @@ class Window(Adw.ApplicationWindow):
         self.update_send_actions()
         self.connection_status.set_subtitle("Checking…")
 
-        def done(text, device):
+        def done(text, device, codes):
             self._checking_status = False
             self.update_send_actions()
             if connection != self._connection():
@@ -3133,18 +3204,22 @@ class Window(Adw.ApplicationWindow):
             self.connection_status.set_subtitle(text)
             if device is not None and self.selected_cutter() == cutters.AUTO:
                 self.r_cutter.set_selected(graphtec.DEVICES.index(device))
+            if codes is not None:
+                self.apply_tool_detection(codes)
 
         def work():
             device = None
+            codes = None
             try:
                 with cutters.open_link(connection) as cutter:
                     device = cutter.device
                     text = f"{device.name} · {cutter.status_with_tools()}"
+                    codes = cutter.tool_codes()
                     if mode in bluetooth.BLUETOOTH_MODES:
                         text += f" · {cutter.firmware_version()}"
             except Exception as exc:
                 text = f"Tool detection unavailable · {exc}"
-            GLib.idle_add(done, text, device)
+            GLib.idle_add(done, text, device, codes)
 
         threading.Thread(target=work, daemon=True).start()
 

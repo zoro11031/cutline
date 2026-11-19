@@ -19,7 +19,7 @@ cheap: nine sub-suites of a few tests each.
 import io
 import unittest
 
-from cut_proxies import corner_test, cutters, graphtec, job, regmarks, sheet, starting_guide, sticker_print, testcut, transport, verify
+from cut_proxies import corner_test, cutters, graphtec, job, regmarks, sheet, starting_guide, sticker_print, testcut, tooling, transport, verify
 
 
 def _run(class_paths):
@@ -209,6 +209,11 @@ CASES += (
      ["tests.test_qt_frontend.TestQtFrontend.test_standalone_pdf_registration_check_gates_hardware_actions_in_qt"]),
     (sheet.RegistrationDecision, "evaluate", classmethod(lambda *_: (False, "blocked")), "registration decision always refuses",
      ["tests.test_qt_frontend.TestQtFrontend.test_standalone_pdf_registration_check_gates_hardware_actions_in_qt"]),
+    (tooling, "depth_correction", lambda *a, **k: (None, ""), "every detected tool keeps automatic depth",
+     ["tests.test_tooling.TestDepthCorrection"]),
+    (tooling, "depth_correction", lambda *a, **k: (tooling.MANUAL_DEPTH, "manual"),
+     "every detected tool forces manual depth",
+     ["tests.test_tooling.TestDepthCorrection"]),
 )
 
 try:

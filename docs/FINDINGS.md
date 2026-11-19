@@ -1643,6 +1643,37 @@ The first field identifies holder 1 and the second identifies holder 2.
 The detection test sent only queries. The Kraft blade and aftermarket
 green holder were unavailable for physical identification.
 
+### Tool detection in the desktop frontends, 2026-11-19
+
+The reply above is now read by both frontends and shown on the tool
+holder tabs, as Silhouette Studio does. `cut_proxies/tooling.py` holds
+the two decisions: how to label a reply and when to put Blade Depth back
+to manual. Reading is deliberately infrequent — once per connection,
+when the selected cutter or endpoint changes, and on Check Status. There
+is no polling, and no query runs while a job is active.
+
+Blade Depth is an AutoBlade command. When holder 1 reports any other
+tool, the depth field is set to -1 (manual) once per distinct reply and
+the operator is told; the existing `transport.check_autoblade` refusal
+is unchanged, so a job that still carries a `TF` command for a manual
+blade is refused at the transport boundary as before. A reply the
+firmware could not produce — an empty one, or code 255 — changes
+nothing.
+
+On 2026-11-19 the attached Cameo 4 answered `cut-proxies status` with
+`pyusb: unloaded · Holder 1: AutoBlade · Holder 2: Empty`, the same
+` 2, 0` reply, through the read-only status path and with no job sent.
+
+What is verified: the query and its reply on a Cameo 4 (the section
+above, and the repeat on 2026-11-19), and that the frontends label and
+correct from a given reply
+(tests in `tests/test_tooling.py` and both frontend suites, with the
+decision hardwired both ways in `tests/test_discrimination.py`). What is
+not: no tool other than the AutoBlade has been put in this machine, so
+every code in `graphtec.TOOL_NAMES` except 2 and 0 is a name from
+inkscape-silhouette's table, not something this cutter has reported
+here.
+
 ## Cutter selection and local material import
 
 The WinBoat inventory identifies Studio file version 5.0.556.1, product

@@ -995,6 +995,71 @@ class TestQtFrontend(unittest.TestCase):
         self.assertIn("running", message.call_args.args[0])
         self.assertEqual(window.blade["force"].value(), 25)
 
+    def test_the_holder_tabs_name_the_detected_tool_and_depth_follows_it(self):
+        window = self.window
+        picker = window.blade["holder"].holders
+        window.blade["depth"].setValue(7)
+
+        window.apply_tool_detection((2, 0))
+        self.assertEqual(picker.button(1).text(), "Tool Holder 1 · AutoBlade")
+        self.assertEqual(picker.button(2).text(), "Tool Holder 2 · Empty")
+        self.assertEqual(window.blade["depth"].value(), 7)
+
+        with mock.patch.object(window, "message") as message:
+            window.apply_tool_detection((1, 7))
+        self.assertEqual(picker.button(1).text(), "Tool Holder 1 · Ratchet blade")
+        self.assertEqual(picker.button(2).text(), "Tool Holder 2 · Pen")
+        self.assertEqual(window.blade["depth"].value(), -1)
+        self.assertIn("Ratchet blade", message.call_args.args[0])
+
+        # The same reply again does not fight an operator who sets depth back.
+        window.blade["depth"].setValue(5)
+        with mock.patch.object(window, "message") as message:
+            window.apply_tool_detection((1, 7))
+        message.assert_not_called()
+        self.assertEqual(window.blade["depth"].value(), 5)
+
+    def test_an_unread_holder_is_not_reported_as_empty(self):
+        window = self.window
+        picker = window.blade["holder"].holders
+        window.apply_tool_detection((2, 0))
+        window.detected_tools = ()
+        window.update_holder_labels()
+        self.assertEqual(picker.button(1).text(), "Tool Holder 1")
+        self.assertEqual(picker.button(2).text(), "Tool Holder 2")
+
+    def test_tools_are_read_once_per_connection_and_not_during_a_job(self):
+        window = self.window
+        cutter = mock.MagicMock()
+        cutter.__enter__.return_value = cutter
+        cutter.tool_codes.return_value = (2, 0)
+        with mock.patch.object(window.tasks, "run", side_effect=lambda work, done: done(work(), None)), \
+             mock.patch.object(window, "open_link", return_value=cutter):
+            window.detect_tools()
+            self.assertEqual(window.detected_tools, (2, 0))
+            window.detect_tools()
+            self.assertEqual(cutter.tool_codes.call_count, 1)
+
+            window.active_job = window.job
+            window.tools_connection = None
+            window.detect_tools()
+            self.assertEqual(cutter.tool_codes.call_count, 1)
+
+            window.active_job = None
+            window.busy = True
+            window.detect_tools()
+            self.assertEqual(cutter.tool_codes.call_count, 1)
+            window.busy = False
+
+    def test_a_cutter_that_cannot_report_its_tools_is_never_queried(self):
+        window = self.window
+        window.select("cutter", "Silhouette Portrait 2")
+        self.assertFalse(qt_gui.graphtec.device_by_name("Silhouette Portrait 2").detects_tools)
+        with mock.patch.object(window, "open_link") as link:
+            window.detect_tools()
+        link.assert_not_called()
+        self.assertEqual(window.detected_tools, ())
+
     def test_active_and_paused_job_details_and_control_states_in_qt(self):
         window = self.window
         window.blade["force"].setValue(25)
