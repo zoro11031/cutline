@@ -322,12 +322,14 @@ class Page(QWidget):
         self.body.setContentsMargins(6, 9, 9, 12)
         self.body.setSpacing(12)
 
-    def group(self, title):
+    def group(self, title, *, action=None):
         box = QGroupBox(title)
         box.setProperty("role", "card")
         self.body.addWidget(box)
         form = Form(box)
         form.setContentsMargins(12, 15, 12, 10)
+        if action is not None:
+            form.header_action(action)
         return form
 
     def section(self):
@@ -383,6 +385,15 @@ class Form(QFormLayout):
         self.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.setHorizontalSpacing(10)
         self.setVerticalSpacing(7)
+
+    def header_action(self, widget):
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 4)
+        layout.addStretch(1)
+        layout.addWidget(widget)
+        self.addRow(row)
+        return widget
 
     def choice(self, label, choices, selected=None, changed=None):
         field = QComboBox()

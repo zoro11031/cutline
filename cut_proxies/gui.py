@@ -893,8 +893,8 @@ class Window(Adw.ApplicationWindow):
         self.material_guide.set_label("Resume Material Test")
         self.stack.set_visible_child_name("cut")
         self.tuning = True
+        self.send_page.get_vadjustment().set_value(0)
         self.update_send_actions()
-        GLib.idle_add(self.scroll_send_to, self.guide_group)
 
     def scroll_send_to(self, target):
         if target.get_mapped():
@@ -1096,19 +1096,17 @@ class Window(Adw.ApplicationWindow):
         page = ControlPage()
         g = Adw.PreferencesGroup(title="Material Presets",
                                  description="Choose and edit your cut settings in Send, then save them here.")
+        self.edit_settings_btn = Gtk.Button(label="Edit Cut Settings", valign=Gtk.Align.CENTER)
+        self.edit_settings_btn.connect("clicked", lambda *_: self.open_cut_settings())
+        g.set_header_suffix(self.edit_settings_btn)
         self.preset_note = Adw.ActionRow(title="About this preset", subtitle="")
         self.preset_note.set_subtitle_lines(0)
         g.add(self.preset_note)
         save_preset = Adw.ActionRow(
-            title="Preset cut settings")
-        actions_box = Gtk.Box(spacing=6)
-        edit_settings_btn = Gtk.Button(label="Edit Cut Settings", valign=Gtk.Align.CENTER)
-        edit_settings_btn.connect("clicked", lambda *_: self.open_cut_settings())
-        actions_box.append(edit_settings_btn)
+            title="Update selected preset")
         self.save_preset_btn = Gtk.Button(label="Update Preset", valign=Gtk.Align.CENTER)
         self.save_preset_btn.connect("clicked", self.on_save_blade_preset)
-        actions_box.append(self.save_preset_btn)
-        save_preset.add_suffix(actions_box)
+        save_preset.add_suffix(self.save_preset_btn)
         g.add(save_preset)
         self.new_preset_name = Adw.EntryRow(title="New preset name")
         create = Gtk.Button(label="Save as New", valign=Gtk.Align.CENTER)
@@ -1119,12 +1117,12 @@ class Window(Adw.ApplicationWindow):
         page.add(g)
 
         g3 = Adw.PreferencesGroup(
-            title="Studio materials",
-            description="Import Studio’s condition.csv to add its factory presets.")
+            title="Material Library",
+            description="Preloaded Studio materials and user presets.")
         self.r_cutter_divisions = _combo("Show Cutter Divisions", ["Known Cutters", "All Cutters"])
         self.r_cutter_divisions.connect("notify::selected", self._load_materials)
         g3.add(self.r_cutter_divisions)
-        self.r_material = _combo("Factory preset", ["No materials imported"])
+        self.r_material = _combo("Material preset", ["No materials imported"])
         self.apply_material_button = Gtk.Button(label="Apply to Cut Settings", halign=Gtk.Align.START)
         self.apply_material_button.connect("clicked", self.on_apply_material)
         g3.add(self.r_material)
@@ -2505,7 +2503,7 @@ class Window(Adw.ApplicationWindow):
         name = self._text(self.r_material)
         m = self._materials.get(name)
         if m is None:
-            self.toast("Import Studio materials, then choose a factory preset.")
+            self.toast("Select a material preset.")
             return
         if self.r_cutter_divisions.get_selected() == 0:
             self.refresh_preset_choices(name)

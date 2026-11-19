@@ -119,10 +119,13 @@ class Material:
 
 
 def find_condition_csv() -> pathlib.Path | None:
-    """Find the user's chosen CSV or a copy in the app configuration directory."""
+    """Find the user's chosen CSV, repo copy, or a copy in the app configuration directory."""
     snapshot = config.CONFIG_DIR / "studio-materials" / "condition.csv"
     if snapshot.is_file():
         return snapshot
+    repo_copy = pathlib.Path(__file__).parent / "assets" / "condition.csv"
+    if repo_copy.is_file():
+        return repo_copy
     selected = config.load_settings().get("material_csv")
     roots = [config.CONFIG_DIR, pathlib.Path("/Applications/Silhouette Studio.app/Contents")]
     if os.environ.get("ProgramFiles"):

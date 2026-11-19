@@ -329,16 +329,16 @@ class Window(QMainWindow):
 
     def materials_page(self):
         page = Page()
-        profile = page.group("Material Presets")
+        self.edit_settings_btn = button("Edit Cut Settings", self.open_cut_settings, role="secondary")
+        profile = page.group("Material Presets", action=self.edit_settings_btn)
         self.provenance = profile.note()
         profile.note("Choose and edit your cut settings in Send, then save them here.")
-        profile.actions(button("Edit Cut Settings", self.open_cut_settings),
-                        button("Update Preset", self.save_preset),
+        profile.actions(button("Update Preset", self.save_preset),
                         button("Save as New…", self.save_new_preset))
-        table = page.group("Studio materials")
+        table = page.group("Material Library")
         self.divisions = table.choice("Show Cutter Divisions", {False: "Known Cutters", True: "All Cutters"},
                                      changed=self.load_materials)
-        self.material = table.choice("Factory preset", ())
+        self.material = table.choice("Material preset", ())
         table.actions(button("Import CSV…", self.choose_material_csv),
                       button("Import Folder…", lambda: self.choose_material_csv(folder=True)))
         self.apply_material_button = table.push("Apply to Cut Settings", self.apply_material)
@@ -385,9 +385,9 @@ class Window(QMainWindow):
         self.group_layout.setContentsMargins(0, 0, 0, 0)
         groups.addRow(self.group_details)
 
-        settings = normal.group("Cut Settings")
+        self.material_guide = button("Dial In a Material…", self.open_material_guide, role="secondary")
+        settings = normal.group("Cut Settings", action=self.material_guide)
         self.settings_box = settings.parentWidget()
-        self.material_guide = settings.push("Dial In a Material…", self.open_material_guide)
         self.blade["holder"] = settings.holders(self.rebuild)
         self.choose(settings, "preset", "Material", sorted(presets.all_presets()), config.DEFAULT_PRESET,
                     self.load_preset)
@@ -660,7 +660,7 @@ class Window(QMainWindow):
             else:
                 self.load_materials()
                 self.refresh_preset_choices()
-                self.message(f"Loaded {len(presets.factory_presets(self.choice('cutter')))} Studio materials.")
+                self.message(f"Loaded {len(presets.factory_presets(self.choice('cutter')))} material presets.")
 
     def change_cutter(self):
         self.load_materials()
@@ -674,7 +674,7 @@ class Window(QMainWindow):
     def apply_material(self):
         selected = self.materials.get(self.material.currentData())
         if selected is None:
-            self.message("Import Studio materials, then choose a factory preset.")
+            self.message("Select a material preset.")
             return
         name = self.material.currentData()
         if not self.divisions.currentData() and self.controls["preset"].findData(name) >= 0:
@@ -1613,7 +1613,9 @@ class Window(QMainWindow):
             self.guide_spot_selector.setValue(state.spot)
             self.guide_spot_selector.setMaximum(max(state.max_spots, state.spot))
             self.guide_spot_selector.blockSignals(blocked)
-            self.guide_spot_status.setText(state.spot_status)
+            differ = state.completed > 0 and state.settings_differ(self.job_options())
+            status_text = f"{state.spot_status} · Settings changed (move to fresh spot)" if differ else state.spot_status
+            self.guide_spot_status.setText(status_text)
         has_tests = state.completed > 0 or len(state.history) > 0
         self.material_guide.setText("Resume Material Test" if has_tests else "Dial In a Material…")
         if self.tuning:
