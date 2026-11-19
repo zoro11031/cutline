@@ -521,6 +521,7 @@ class Window(Adw.ApplicationWindow):
         self.checked_marks = None
         self.checked_scm_orientation = False
         self.detected_tools = ()
+        self.tool_selection = tooling.ToolSelection()
         self.tools_connection = None
         self.corrected_tools = None
         self._bundle_locked = False
@@ -869,6 +870,7 @@ class Window(Adw.ApplicationWindow):
         mode, identifier, *_ = self._connection()
         can_check = bool(identifier) and not (self._sending or self._checking_status)
         self.check_cutter_status.set_sensitive(can_check)
+        self.r_tool_selection.set_sensitive(editable and can_check)
         pdf_refusal = ""
         if job and job.registration_steps() and self.pdf_path is not None:
             allowed, pdf_reason = sheet_mod.RegistrationDecision.evaluate(
@@ -1416,6 +1418,13 @@ class Window(Adw.ApplicationWindow):
         self.r_holder = _spin("Tool Holder", 1, 2, 1)
         self.r_holder.connect("notify::value", self.on_changed)
         self.send_holder_buttons = self.tool_holder_picker(group)
+        self.r_tool_selection = _combo("Blade", ["Detect automatically"])
+        self.r_tool_selection.set_tooltip_text(
+            "Choose the blade installed in this holder if detection is wrong. "
+            "Rotary and 3 mm Kraft blades select Holder 2 automatically.")
+        self.tool_picker_choices = ("",)
+        self.tool_picker_id = self.r_tool_selection.connect("notify::selected", self.on_tool_selection)
+        group.add(self.r_tool_selection)
         names = sorted(presets.all_presets())
         default = names.index(config.DEFAULT_PRESET) if config.DEFAULT_PRESET in names else 0
         self.r_preset = _combo("Material", names, default)
@@ -1563,6 +1572,7 @@ class Window(Adw.ApplicationWindow):
             passes=int(self.r_passes.get_value()),
             depth=(int(self.r_depth.get_value())
                    if self.r_depth.get_sensitive() and self.r_depth.get_value() >= 0 else None),
+            manual_depth=self.tool_selection.manual_depth,
             blade_options=self._blade_options(),
             bleed_mm=self.r_bleed.get_value(),
             registration=self.r_register.get_active(),
@@ -1666,11 +1676,12 @@ class Window(Adw.ApplicationWindow):
             control.set_sensitive(not fixed_layout)
         device = graphtec.device_by_name(self._text(self.r_cutter))
         self.restore_holder(device)
+        self.update_holder_labels()
         self.correct_detected_depth()
         self.r_holder.set_sensitive(device.two_tools)
-        self.r_depth.set_sensitive(device.autoblade and (not device.two_tools or self.r_holder.get_value() == 1))
+        self.r_depth.set_sensitive(device.autoblade and (not device.two_tools or self.r_holder.get_value() == 1)
+                                   and not self.tool_selection.manual_depth)
         self.r_acceleration.set_sensitive(device.detects_tools)
-        self.update_holder_labels()
         self.r_lift.set_sensitive(device.cameo3_on)
         corner_capable = device.cameo3_on and self.r_diameter.get_value() > 0
         self.r_corners.set_sensitive(corner_capable)
@@ -3131,10 +3142,15 @@ class Window(Adw.ApplicationWindow):
 
     def on_connection_target_changed(self, *_args):
         if self.tools_connection is not None and self.tools_connection != self._connection():
-            self.forget_tool_detection()
+            self.detected_tools = ()
+            self.tools_connection = self.corrected_tools = None
+        changed = self.update_holder_labels()
         self.connection_status.set_subtitle("Not checked")
         self.scan_result.set_visible(False)
-        self.update_send_actions()
+        if changed:
+            self.on_changed()
+        else:
+            self.update_send_actions()
 
     def _scan_bluetooth(self, button):
         from . import ble, rfcomm
@@ -3207,16 +3223,40 @@ class Window(Adw.ApplicationWindow):
     def update_holder_labels(self):
         buttons = getattr(self, "send_holder_buttons", None)
         if not buttons:
-            return
+            return False
         device = graphtec.device_by_name(self._text(self.r_cutter))
-        labels = tooling.holder_labels(self.detected_tools, device)
+        changed = self.tool_selection.bind(self._connection(), device)
+        holder = int(self.r_holder.get_value()) if device.two_tools else 1
+        choices = tooling.tool_choices(device)
+        with self.r_tool_selection.handler_block(self.tool_picker_id):
+            if tuple(choices) != self.tool_picker_choices:
+                self.tool_picker_choices = tuple(choices)
+                self.r_tool_selection.set_model(Gtk.StringList.new(list(choices.values())))
+            self.r_tool_selection.set_selected(self.tool_picker_choices.index(self.tool_selection.selected(holder)))
+        labels = tooling.holder_labels(self.detected_tools, device, self.tool_selection)
         for slot, button in buttons.items():
             label = labels[slot - 1] if slot <= len(labels) else f"Tool Holder {slot}"
             button.set_label(label.replace(" · ", "\n", 1))
             button.get_child().set_justify(Gtk.Justification.CENTER)
             button.get_child().set_wrap(True)
             button.update_property([Gtk.AccessibleProperty.LABEL], [label])
-            button.set_tooltip_text(label)
+            button.set_tooltip_text(f"{label} (manually selected)" if self.tool_selection.selected(slot) else label)
+        return changed
+
+    def on_tool_selection(self, *_args):
+        if self._suppress or self._sending or self._checking_status or self.active_job is not None:
+            return
+        if not self._connection()[1]:
+            return
+        device = graphtec.device_by_name(self._text(self.r_cutter))
+        holder = int(self.r_holder.get_value()) if device.two_tools else 1
+        choice = self.tool_picker_choices[self.r_tool_selection.get_selected()]
+        target = tooling.tool_holder(choice, holder)
+        self.tool_selection.select(target, choice)
+        if target == self.r_holder.get_value():
+            self.on_changed()
+        else:
+            self.r_holder.set_value(target)
 
     def apply_tool_detection(self, codes):
         """Take a holder reply, label the tabs, and send depth back to manual once."""
@@ -3226,10 +3266,20 @@ class Window(Adw.ApplicationWindow):
         self.correct_detected_depth()
 
     def correct_detected_depth(self):
-        if self.active_job is not None or self._sending or not self.detected_tools:
+        if self.active_job is not None or self._sending:
             return
         device = graphtec.device_by_name(self._text(self.r_cutter))
-        if (device.two_tools and self.r_holder.get_value() != 1) or self.corrected_tools == self.detected_tools:
+        if device.two_tools and self.r_holder.get_value() != 1:
+            return
+        if self.tool_selection.selected(1):
+            if self.tool_selection.manual_depth:
+                was, self._suppress = self._suppress, True
+                try:
+                    self.r_depth.set_value(tooling.MANUAL_DEPTH)
+                finally:
+                    self._suppress = was
+            return
+        if not self.detected_tools or self.corrected_tools == self.detected_tools:
             return
         self.corrected_tools = self.detected_tools
         depth, reason = tooling.depth_correction(self.detected_tools, int(self.r_depth.get_value()))

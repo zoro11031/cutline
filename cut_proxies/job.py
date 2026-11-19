@@ -218,7 +218,7 @@ def build(sheet: str = config.DEFAULT_SHEET,
           end_position: str = "below", end_feed_mm: float = 0.0,
           weed_border_mm: float = 0.0, weed_lines: str = "none",
           send_mode: str = "simple", assignments: tuple[actions.Assignment, ...] = (),
-          use_document_page: bool = False, holder_profiles=None) -> Job:
+          use_document_page: bool = False, holder_profiles=None, manual_depth: bool = False) -> Job:
     """Build and check a job.  Raises only on things that cannot be reported."""
     device = graphtec.device_by_name(cutter)
     preset = presets.get(preset_name, cutter)
@@ -231,6 +231,8 @@ def build(sheet: str = config.DEFAULT_SHEET,
         requested.speed = speed
     if depth is not _USE_PRESET_DEPTH:
         requested.depth = depth
+    if manual_depth and requested.holder == 1:
+        requested.depth = None
     if requested.passes < 1:
         raise ValueError("Set at least one cutting pass.")
 
@@ -245,7 +247,8 @@ def build(sheet: str = config.DEFAULT_SHEET,
             raise ValueError("Grouped Send requires imported or Design cut paths.")
         skipped = set(skip)
         candidates = tuple(path for index, path in enumerate(imported.paths) if index not in skipped)
-        groups = actions.resolve(candidates, send_mode, assignments, preset, requested, device, holder_profiles)
+        groups = actions.resolve(candidates, send_mode, assignments, preset, requested, device,
+                                 holder_profiles, manual_depth=manual_depth)
         imported = dataclasses.replace(imported, paths=tuple(path for group in groups for path in group.paths))
         skip = ()
 

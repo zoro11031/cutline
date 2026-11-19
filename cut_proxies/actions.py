@@ -69,7 +69,8 @@ def parse_assignment(value: str) -> Assignment:
     return Assignment(key.strip(), profile or CURRENT_SETTINGS)
 
 
-def resolve(paths, mode, assignments, preset, current, device, holder_profiles=None) -> tuple[CutGroup, ...]:
+def resolve(paths, mode, assignments, preset, current, device, holder_profiles=None,
+            *, manual_depth=False) -> tuple[CutGroup, ...]:
     available = group_paths(paths, mode)
     if not assignments:
         raise ValueError("Enable at least one cut group or choose Simple.")
@@ -100,6 +101,8 @@ def resolve(paths, mode, assignments, preset, current, device, holder_profiles=N
             settings = current if item.preset == CURRENT_SETTINGS else group_preset.cut_settings()
             if item.holder is not None:
                 settings = dataclasses.replace(settings, holder=item.holder)
+        if manual_depth and settings.holder == 1:
+            settings = dataclasses.replace(settings, depth=None)
         # A change of settings can adjust an installed AutoBlade between cuts,
         # but it cannot swap a pen and blade or undo physical manual depth.
         warnings = tuple(settings.warnings(device))

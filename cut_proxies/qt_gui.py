@@ -69,6 +69,7 @@ class Window(QMainWindow):
         self.checked_marks = None
         self.checked_scm_orientation = False
         self.detected_tools = ()
+        self.tool_selection = tooling.ToolSelection()
         self.tools_connection = None
         self.corrected_tools = None
         self.bundle_locked = False
@@ -426,12 +427,17 @@ class Window(QMainWindow):
         settings = normal.group("Cut Settings", action=self.material_guide)
         self.settings_box = settings.parentWidget()
         self.blade["holder"] = settings.holders(self.rebuild)
+        self.tool_picker = settings.choice("Blade", (), changed=self.change_tool_selection)
+        self.tool_picker.setToolTip(
+            "Choose the blade installed in this holder if detection is wrong. "
+            "Rotary and 3 mm Kraft blades select Holder 2 automatically.")
         self.choose(settings, "preset", "Material", sorted(presets.all_presets()), config.DEFAULT_PRESET,
                     self.load_preset)
         for key, label, low, high, step, decimals in BLADE_NUMBERS:
             if key in QUICK_NUMBERS:
                 self.blade[key] = settings.number(label, low, low, high, step, decimals, self.rebuild,
                                                   slider=True, special_text=BLADE_VALUE_TEXT.get(key, ""))
+        self.automatic_depth_maximum = self.blade["depth"].maximum()
         for key, label in BLADE_SWITCHES[1:3]:
             self.blade[key] = settings.check(label, changed=self.rebuild)
 
@@ -963,6 +969,9 @@ class Window(QMainWindow):
             values["holder"] = 1
         if not device.autoblade or values["holder"] != 1:
             options["depth"] = None
+        options["manual_depth"] = self.tool_selection.manual_depth
+        if options["manual_depth"] and values["holder"] == 1:
+            options["depth"] = None
         options["blade_options"] = values
         portrait = self.choice("portrait")
         source_sheet = self.choice("sheet")
@@ -986,6 +995,7 @@ class Window(QMainWindow):
     def update_enabled_fields(self):
         active = self.active_job is not None or self.busy
         self.detected.setEnabled(not active)
+        self.tool_picker.setEnabled(not active and bool(self.connection()[1]))
         device = graphtec.device_by_name(self.choice("cutter"))
         holders = self.blade["holder"].holders
         holders.button(1).setEnabled(not active and device.two_tools)
@@ -1027,7 +1037,14 @@ class Window(QMainWindow):
             self.blade[name].setToolTip(f"{CONTROL_HELP[name]} Range on {DEVICES[device.name]} is 1–{upper}.")
         self.blade["holder"].setEnabled(device.two_tools)
         self.update_holder_labels()
-        self.blade["depth"].setEnabled(device.autoblade and self.blade["holder"].value() == 1)
+        depth = self.blade["depth"]
+        maximum = tooling.MANUAL_DEPTH if self.tool_selection.manual_depth else self.automatic_depth_maximum
+        if depth.maximum() != maximum:
+            with self.editing():
+                depth.setMaximum(maximum)
+                depth.slider.setMaximum(maximum)
+        depth.setEnabled(device.autoblade and self.blade["holder"].value() == 1
+                         and not self.tool_selection.manual_depth)
         self.blade["acceleration"].setEnabled(device.detects_tools)
         for field in QUICK_NUMBERS:
             control = self.blade[field]
@@ -1057,8 +1074,8 @@ class Window(QMainWindow):
             self.refresh_send()
             return
         self.restore_holder()
-        self.correct_detected_depth()
         self.update_enabled_fields()
+        self.correct_detected_depth()
         previous = self.job
         self.job = None
         problems = []
@@ -1545,24 +1562,52 @@ class Window(QMainWindow):
         if self.tools_connection is not None and self.tools_connection != self.connection():
             self.detected_tools = ()
             self.tools_connection = self.corrected_tools = None
-            self.update_holder_labels()
+        changed = self.update_holder_labels()
+        self.tool_picker.setEnabled(not self.busy and self.active_job is None and bool(self.connection()[1]))
         self.set_cutter_status("Cutter status not checked.")
         self.clear_scan_result()
-        self.refresh_send()
+        if changed:
+            self.rebuild()
+        else:
+            self.refresh_send()
 
     def set_cutter_status(self, text):
         self.connection_status.setText(text)
 
     def update_holder_labels(self):
         device = graphtec.device_by_name(self.choice("cutter"))
-        labels = tooling.holder_labels(self.detected_tools, device)
+        changed = self.tool_selection.bind(self.connection(), device)
+        holder = self.blade["holder"].value() if device.two_tools else 1
+        choices = tooling.tool_choices(device)
+        selected = self.tool_selection.selected(holder)
+        if list(choices) != [self.tool_picker.itemData(i) for i in range(self.tool_picker.count())]:
+            set_choices(self.tool_picker, choices, selected)
+        else:
+            blocked = self.tool_picker.blockSignals(True)
+            self.tool_picker.setCurrentIndex(self.tool_picker.findData(selected))
+            self.tool_picker.blockSignals(blocked)
+        labels = tooling.holder_labels(self.detected_tools, device, self.tool_selection)
         picker = self.blade["holder"].holders
         for slot in (1, 2):
             label = labels[slot - 1] if slot <= len(labels) else f"Tool Holder {slot}"
             tab = picker.button(slot)
             tab.setText(label.replace(" · ", "\n", 1))
             tab.setAccessibleName(label)
-            tab.setToolTip(label)
+            tab.setToolTip(f"{label} (manually selected)" if self.tool_selection.selected(slot) else label)
+        return changed
+
+    def change_tool_selection(self):
+        if self.loading or self.active_job is not None or self.busy or not self.connection()[1]:
+            return
+        device = graphtec.device_by_name(self.choice("cutter"))
+        holder = self.blade["holder"].value() if device.two_tools else 1
+        choice = self.tool_picker.currentData()
+        target = tooling.tool_holder(choice, holder)
+        self.tool_selection.select(target, choice)
+        if target == self.blade["holder"].value():
+            self.rebuild()
+        else:
+            self.blade["holder"].setValue(target)
 
     def apply_tool_detection(self, codes):
         """Take a holder reply, label the tabs, and send depth back to manual once."""
@@ -1572,10 +1617,12 @@ class Window(QMainWindow):
         self.correct_detected_depth()
 
     def correct_detected_depth(self):
-        if self.active_job is not None or self.busy or not self.detected_tools:
+        if self.active_job is not None or self.busy or self.tool_selection.selected(1):
             return
         device = graphtec.device_by_name(self.choice("cutter"))
-        if (device.two_tools and self.blade["holder"].value() != 1) or self.corrected_tools == self.detected_tools:
+        if device.two_tools and self.blade["holder"].value() != 1:
+            return
+        if not self.detected_tools or self.corrected_tools == self.detected_tools:
             return
         self.corrected_tools = self.detected_tools
         depth, reason = tooling.depth_correction(self.detected_tools, self.blade["depth"].value())
