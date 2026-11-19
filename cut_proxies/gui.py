@@ -1128,6 +1128,7 @@ class Window(Adw.ApplicationWindow):
         actions(current, self.save_preset_btn, self.save_new_preset_btn)
         page.add(current)
 
+        advanced, _ = disclosure(page.controls)
         library = Adw.PreferencesGroup(title="Library and Defaults")
         choose = Gtk.Button(label="Import CSV…")
         choose.connect("clicked", self.on_choose_material_csv)
@@ -1137,7 +1138,7 @@ class Window(Adw.ApplicationWindow):
         restore_button = Gtk.Button(label="Restore Defaults…")
         restore_button.connect("clicked", self.on_restore_default_materials)
         actions(library, restore_button)
-        page.add(library)
+        advanced.append(library)
 
         self.stack.add_titled(page, "materials", "Material Presets")
 

@@ -349,7 +349,8 @@ class Window(QMainWindow):
         current.actions(self.edit_settings_btn)
         current.addRow(AdaptiveActions((self.save_preset_btn, self.save_new_preset_btn)))
 
-        library = page.group("Library and Defaults")
+        advanced = page.advanced()
+        library = advanced.group("Library and Defaults")
         library.addRow(AdaptiveActions((
             button("Import CSV…", self.choose_material_csv, role="secondary"),
             button("Import Folder…", lambda: self.choose_material_csv(folder=True), role="secondary"))))
