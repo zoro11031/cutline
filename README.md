@@ -175,6 +175,12 @@ Print & Cut on a Cameo 4, Control Center waits for the rollers to finish,
 then uses the same registration scan and cut area as it does with Track
 Enhancing off. The guided test skips the roller cycle.
 
+During a full desktop cut, **Pause Cut** holds the next command batch
+after the current cutter operation. Leave the mat loaded and choose
+**Resume Cut** to continue in the same session. **Cancel Cut** ends the
+job after the current operation. The cutter can finish motion it has
+already accepted.
+
 **Tool Holder 1** and **Tool Holder 2** keep separate settings while the app
 is open. Save named presets to keep those settings for later. **Standard**
 uses the selected holder. To use both, assign selected shapes under

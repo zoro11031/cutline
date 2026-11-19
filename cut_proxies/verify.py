@@ -109,7 +109,7 @@ def decode(stream: bytes) -> Decoded:
         elif cmd.startswith("FC"):
             parts = cmd[2:].split(",")
             # FC with one argument is the blade diameter; with three it is the
-            # per-holder cutter offset, which we do not check.
+            # per-holder cutter offset, tracked by _observed_motion_settings.
             if len(parts) == 1:
                 d.blade_diameter_mm = graphtec.su_to_mm(int(parts[0]))
         elif cmd == "TB99":
@@ -161,6 +161,16 @@ def _corrupt_force(stream: bytes) -> bytes | None:
             force, separator, rest = c[2:].partition(b",")
             new = max(1, (int(force) % 33) + 1)
             cmds[i] = b"FX%d%s%s" % (new, separator, rest)
+            return _rejoin(head, cmds)
+    return None
+
+
+def _corrupt_last_setting(stream: bytes, prefix: bytes) -> bytes | None:
+    head, cmds = _split(stream)
+    for i in range(len(cmds) - 1, -1, -1):
+        if cmds[i].startswith(prefix):
+            value, separator, rest = cmds[i][len(prefix):].partition(b",")
+            cmds[i] = prefix + str(int(value) ^ 1).encode() + separator + rest
             return _rejoin(head, cmds)
     return None
 
@@ -378,6 +388,10 @@ PROBES = (
     ("card position error", _corrupt_last_position),
     ("blade force", _corrupt_force),
     ("speed", _corrupt_speed),
+    ("active cutter settings", lambda stream: _corrupt_last_setting(stream, b"TJ")),
+    ("active cutter settings", lambda stream: _corrupt_last_setting(stream, b"FC")),
+    ("active cutter settings", lambda stream: _corrupt_last_setting(stream, b"FE")),
+    ("active cutter settings", lambda stream: _corrupt_last_setting(stream, b"TF")),
     ("card position error", _corrupt_position),
     ("card size error", _corrupt_size),
     ("cuts inside the marks", _corrupt_outside),
@@ -616,6 +630,12 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
                 round(s.corner_start_mm * 10), round(s.corner_end_mm * 10)))
             found = tuple(command for command in d.commands if command.startswith(("FE", "FF")))
             row("line segment overcut", " ".join(wanted), " ".join(found), found == wanted)
+        if device.max_speed > 10 and d.paths:
+            expected = _requested_motion_settings(s, device)
+            observed = _observed_motion_settings(d.commands)
+            matches = len(observed) == len(d.paths) and all(state == expected for state in observed)
+            row("active cutter settings", "requested holder and settings at each cut",
+                "matches" if matches else "tool settings differ", matches)
 
     track_indices = [i for i, command in enumerate(d.commands) if command == "FY0"]
     first_motion = next((i for i, command in enumerate(d.commands)

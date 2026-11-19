@@ -231,6 +231,8 @@ def build(sheet: str = config.DEFAULT_SHEET,
         requested.speed = speed
     if depth is not _USE_PRESET_DEPTH:
         requested.depth = depth
+    if requested.passes < 1:
+        raise ValueError("Set at least one cutting pass.")
 
     groups = ()
     if send_mode not in actions.SEND_MODES:

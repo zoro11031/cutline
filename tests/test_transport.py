@@ -1,3 +1,5 @@
+import concurrent.futures
+import threading
 import types
 import unittest
 from unittest import mock
@@ -100,6 +102,37 @@ class TestPathBatches(unittest.TestCase):
             self.cutter.run([graphtec.Step("write", park)], wait_done=True)
         self.assertEqual(events, [park, "status"])
 
+    def test_paused_path_batches_resume_without_replay_or_cancel_without_more_writes(self):
+        for resume in (True, False):
+            with self.subTest(resume=resume):
+                paused = threading.Event()
+                control = transport.CutControl(lambda: (
+                    paused.set() if control.state == "paused" else None))
+                self.cutter.can_read = True
+                self.cutter.write.reset_mock()
+                self.cutter.status.side_effect = None
+                self.cutter.write.side_effect = lambda data: (
+                    control.toggle_pause() if self.cutter.write.call_count == 1 else None) or len(data)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as worker:
+                    future = worker.submit(self.cutter.run, self.steps, wait_done=True, control=control)
+                    try:
+                        self.assertTrue(paused.wait(2))
+                        self.assertEqual(control.state, "paused")
+                        self.cutter.write.assert_called_once()
+                        self.cutter.status.assert_called()
+                        if resume:
+                            control.toggle_pause()
+                            self.assertEqual(future.result(timeout=2), len(self.data) + 4)
+                            self.assertEqual(b"".join(call.args[0] for call in self.cutter.write.call_args_list),
+                                             self.data + graphtec.frame("SO0"))
+                        else:
+                            control.cancel()
+                            with self.assertRaises(transport.CutCancelled):
+                                future.result(timeout=2)
+                            self.cutter.write.assert_called_once()
+                    finally:
+                        control.cancel()
+
     def test_track_enhancing_waits_for_ready_before_sending_a_scan(self):
         roller = graphtec.Step("write", graphtec.frame("FY0"), wait_ready=True)
         scan = graphtec.Step("write", graphtec.frame("TB123,100,100,0,0"))
@@ -166,3 +199,15 @@ class TestPathBatches(unittest.TestCase):
         with self.assertRaisesRegex(transport.TransportError, "incomplete"):
             self.cutter.run([graphtec.Step("write", self.data[:-1], pace=True)])
         self.cutter.write.assert_not_called()
+
+
+class TestUsbLpReplies(unittest.TestCase):
+    def test_lp_preserves_frames_across_fragmented_and_coalesced_reads(self):
+        cutter = transport.UsbLpTransport.__new__(transport.UsbLpTransport)
+        cutter._fd = 5
+        cutter.path = "/dev/usb/lp0"
+        cutter._reply_buffer = bytearray()
+        with mock.patch.object(transport.os, "read", side_effect=[b"  ", b"  0\x03" + b"0\x03"]) as read:
+            self.assertEqual(cutter.read(), graphtec.RESP_REGMARK_OK)
+            self.assertEqual(cutter.read(), b"0\x03")
+        self.assertEqual(read.call_count, 2)

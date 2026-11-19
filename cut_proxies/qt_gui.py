@@ -33,7 +33,7 @@ DEVICES = {device.name: device.name.removeprefix("Silhouette ") for device in gr
 # Qt widgets use the same field names and units as the job builder.
 BLADE_NUMBERS = (
     ("force", "Force", 1, 40, 1, 0), ("speed", "Speed", 1, 30, 1, 0),
-    ("passes", "Passes", 0, 10, 1, 0), ("depth", "Blade Depth", -1, 10, 1, 0),
+    ("passes", "Passes", 1, 10, 1, 0), ("depth", "Blade Depth", -1, 10, 1, 0),
     ("holder", "Tool Holder", 1, 2, 1, 0), ("acceleration", "Acceleration", -1, 3, 1, 0),
     ("blade_diameter_mm", "Tool Offset (mm)", 0, 2.3, 0.05, 2),
     ("corner_start_mm", "Start Extension (mm)", 0, 0.9, 0.1, 1),
@@ -64,6 +64,7 @@ class Window(QMainWindow):
         self.pdf = self.bundle = self.sheet_token = self.report = None
         self.bundle_row_error = None
         self.bundle_checked = self.busy = self.loading = False
+        self.cut_control = None
         self.tuning = False
         self.holder_state = HolderSettings()
         self.guide = starting_guide.Guide(config.CONFIG_DIR / "material-test.json")
@@ -158,8 +159,12 @@ class Window(QMainWindow):
                                   icon=("media-playback-start", QStyle.StandardPixmap.SP_MediaPlay))
         self.send_button.setMinimumHeight(32)
         self.back_to_send = button("Back to Send", self.close_material_guide, primary=True)
+        self.pause_cut = button("Pause Cut", lambda: self.cut_control.toggle_pause())
+        self.cancel_cut = button("Cancel Cut", lambda: self.cut_control.cancel())
         footer.addWidget(self.review_button)
         footer.addWidget(self.send_button)
+        footer.addWidget(self.pause_cut)
+        footer.addWidget(self.cancel_cut)
         footer.addWidget(self.back_to_send)
         content.addWidget(footer_bar)
 
@@ -981,9 +986,15 @@ class Window(QMainWindow):
         self.reset_layout_action.setEnabled(self.artwork is not None or self.bundle is not None)
         self.back_to_send.setVisible(self.tuning)
         self.review_button.setVisible(not self.tuning and (target == "Design" or index != self.tab(target)))
-        at_send = not self.tuning and index == self.tab("Send")
-        for control in (self.send_button, self.scan_button, self.corner_button):
-            control.setVisible(at_send)
+        control = self.cut_control
+        at_send = not self.tuning and index == self.tab("Send") and control is None
+        for button in (self.send_button, self.scan_button, self.corner_button):
+            button.setVisible(at_send)
+        for button in (self.pause_cut, self.cancel_cut):
+            button.setVisible(control is not None)
+            button.setEnabled(control is not None and control.state not in ("cancelling", "finishing"))
+        if control is not None:
+            self.pause_cut.setText("Resume Cut" if control.state in ("pausing", "paused") else "Pause Cut")
         reason = self.send_refusal(self.job, self.connection())
         self.send_button.setEnabled(not reason)
         self.corner_button.setEnabled(not reason)
@@ -995,7 +1006,9 @@ class Window(QMainWindow):
             self.summary_title.setText("PDF registration needs attention")
         self.update_guide()
         self.update_tuning_preview()
-        if not self.tuning:
+        if control is not None:
+            self.footer_status.setText(control.status_text)
+        elif not self.tuning:
             self.footer_status.setText(reason or (
                 f"{self.job.device.name} · {len(self.job.paths)} paths · "
                 + ("Registration on" if self.job.registration else "Registration off")))
@@ -1436,6 +1449,7 @@ class Window(QMainWindow):
         success = ("Corner test sent." if corner else "Registration scan passed." if scan_only else "Cut sent.")
         self.send_steps(checked.device, connection, steps, success,
                         on_registration_failure=failed, wait_done=corner is not None,
+                        controllable=not scan_only and corner is None,
                         on_success=(lambda: self.show_scan_result("Registration passed. No cut paths were sent."))
                         if scan_only else None)
 
@@ -1456,12 +1470,15 @@ class Window(QMainWindow):
         self.message("Scan details copied.")
 
     def send_steps(self, device, connection, steps, success, *, on_registration_failure=None,
-                   on_success=None, test=False, wait_done=False):
+                   on_success=None, test=False, wait_done=False, controllable=False):
         refusal = cutters.usb_refusal(connection, device, self.cutter_model.currentData())
         if refusal:
             self.message(refusal)
             return
         self.guide.moved()
+        control = self.cut_control = (transport.CutControl(
+            lambda: self.tasks.result.emit(lambda *_: self.refresh_send(), None, None))
+            if controllable else None)
         self.busy = True
         self.clear_scan_result()
         self.refresh_send()
@@ -1472,11 +1489,14 @@ class Window(QMainWindow):
                     state = cutter.status()
                     if state in ("moving", "unloaded") or (state != "ready" and (test or connection[0] != "auto")):
                         raise transport.TransportError(f"The cutter is not ready ({state}).")
+                if control is not None:
+                    return cutter.run(steps, wait_done=True, control=control)
                 if wait_done and cutter.can_read:
                     return cutter.run(steps, wait_done=True)
                 return cutter.run(steps)
 
         def done(sent, error):
+            self.cut_control = None
             self.busy = False
             self.refresh_send()
             if isinstance(error, transport.RegistrationFailed) and on_registration_failure:
@@ -1760,7 +1780,7 @@ class Window(QMainWindow):
 
     def closeEvent(self, event):
         if self.busy:
-            self.message("Wait for the cutter operation to finish before closing.")
+            self.message("Finish or cancel the cutter operation before closing.")
             event.ignore()
         elif self.design and not self.design.may_replace():
             event.ignore()

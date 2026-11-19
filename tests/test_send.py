@@ -130,6 +130,28 @@ class TestMediaHandling(unittest.TestCase):
 
 
 class TestStudioMediaControls(unittest.TestCase):
+    def test_active_cutter_settings_detect_corrupted_wire_values(self):
+        checked = job.build(force=27, speed=13, passes=2, depth=8,
+                            blade_options={"acceleration": 2, "blade_diameter_mm": 1.15,
+                                           "lift_head": False})
+        self.assertFalse(checked.blocked)
+        self.assertEqual(len(verify.decode(checked.stream).paths), 2 * len(checked.paths))
+        for checked_command, corrupted in (("TJ2", "TJ1"), ("FC23,1,1", "FC24,1,1"),
+                                           ("FE0,1", "FE1,1"), ("TF8,1", "TF7,1"),
+                                           ("!13,1", "!13,2")):
+            with self.subTest(command=checked_command):
+                source = graphtec.frame(checked_command)
+                self.assertIn(source, checked.stream)
+                stream = checked.stream.replace(source, graphtec.frame(corrupted))
+                ok, rows = verify.expectations_met(stream, checked.grid, checked.marks,
+                                                   checked.settings, checked.device)
+                self.assertFalse(ok)
+                self.assertIn("active cutter settings", {row.label for row in rows if not row.ok})
+
+    def test_zero_passes_is_rejected_instead_of_cutting_once(self):
+        with self.assertRaisesRegex(ValueError, "at least one cutting pass"):
+            job.build(passes=0)
+
     def test_cameo4_letter_keeps_the_working_registration_with_track_requested(self):
         requested = job.build(offset_mm=(0, 0), blade_options={"track_enhancing": True})
         off = job.build(offset_mm=(0, 0), blade_options={"track_enhancing": False})
