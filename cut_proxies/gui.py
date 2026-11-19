@@ -820,7 +820,7 @@ class Window(Adw.ApplicationWindow):
             title='Printed-sheet preset',
             description='Choose the layout you printed.')
         self.r_layout_preset = _combo(
-            'Layout preset', ['Custom'] + [p.name for p in layout_presets.BUILTIN.values()])
+            'Layout preset', ['Custom'] + [p.name for p in layout_presets.available().values()])
         self.r_layout_preset.connect('notify::selected', self.on_layout_preset)
         group.add(self.r_layout_preset)
         page.add(group)
@@ -931,10 +931,13 @@ class Window(Adw.ApplicationWindow):
         file_actions.append(pick)
         file_actions.append(self.close_print)
         g.add(Adw.PreferencesRow(child=file_actions, activatable=False, selectable=False))
-        self.bundle_export = Adw.ActionRow(title="Paired cut file")
-        save = Gtk.Button(label="Save Paired Cut File…", valign=Gtk.Align.CENTER)
-        save.connect("clicked", self.on_save_bundle_file)
-        self.bundle_export.add_suffix(save)
+        save_actions = Gtk.Box(spacing=6, margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
+        for label, callback in (("Save Print PDF…", self.on_save_bundle_print),
+                                ("Save Paired Cut File…", self.on_save_bundle_file)):
+            save = Gtk.Button(label=label)
+            save.connect("clicked", callback)
+            save_actions.append(save)
+        self.bundle_export = Adw.PreferencesRow(child=save_actions, activatable=False, selectable=False)
         self.bundle_export.set_visible(False)
         g.add(self.bundle_export)
 
@@ -1328,10 +1331,14 @@ class Window(Adw.ApplicationWindow):
             self.toast(f'Could not save colorblind preference: {exc}')
 
     def on_layout_preset(self, *_a):
+        if self._suppress:
+            return
         selected = self.r_layout_preset.get_selected()
         if selected == 0:
+            if layout_presets.is_published(self.imported):
+                self.on_clear_artwork()
             return
-        profile = list(layout_presets.BUILTIN.values())[selected - 1]
+        profile = tuple(layout_presets.available().values())[selected - 1]
         self.clear_bundle()
         options = profile.options()
         was, self._suppress = self._suppress, True
@@ -1342,10 +1349,10 @@ class Window(Adw.ApplicationWindow):
         self.import_row.set_subtitle('Using the sheet and card settings below')
         self.r_colour.set_model(Gtk.StringList.new(['all colours']))
         self.r_colour.set_selected(0)
-        self.r_engine.set_selected(1)
+        self.r_engine.set_selected(0 if options['engine'] == 'scm' else 1)
         self.r_sheet.set_selected(sorted(geometry.SHEETS).index(options['sheet']))
-        self.r_card.set_selected(sorted(geometry.CARDS).index('standard'))
-        self.r_orient.set_selected(2)
+        self.r_card.set_selected(sorted(geometry.CARDS).index(options['card']))
+        self.r_orient.set_selected(1 if options['portrait'] else 2)
         self.r_mode.set_selected(0)
         self.r_radius.set_value(options['radius_mm'])
         self.r_pattern.set_selected(0)
@@ -1357,7 +1364,11 @@ class Window(Adw.ApplicationWindow):
         self.r_register.set_active(True)
         self.r_auto.set_active(True)
         self._suppress = was
-        self.on_changed()
+        if isinstance(profile, layout_presets.PublishedTemplate):
+            self.set_artwork(profile.artwork(), profile.name)
+        else:
+            self._update_document_sheet(None)
+            self.on_changed()
 
     def _text(self, row):
         model = row.get_model()
@@ -1487,6 +1498,9 @@ class Window(Adw.ApplicationWindow):
     def on_changed(self, *_a):
         if self._suppress:
             return
+        fixed_layout = self.pdf_bundle or layout_presets.is_published(self.imported)
+        for control in (self.r_sheet, self.r_orient, self.r_engine, self.r_card, self.r_mode, self.r_radius):
+            control.set_sensitive(not fixed_layout)
         device = graphtec.device_by_name(self._text(self.r_cutter))
         self.restore_holder(device)
         self.r_holder.set_sensitive(device.two_tools)
@@ -1941,6 +1955,8 @@ class Window(Adw.ApplicationWindow):
         lines = [artwork.describe(), *artwork.warnings] if artwork else ['Cut template for Silhouette Studio']
         self.import_row.set_subtitle("\n".join(lines))
         was, self._suppress = self._suppress, True
+        if not layout_presets.is_published(artwork):
+            self.r_layout_preset.set_selected(0)
         self._update_document_sheet(artwork)
         self.r_colour.set_model(Gtk.StringList.new(["all colours", *(artwork.colours() if artwork else ())]))
         self.r_colour.set_selected(0)
@@ -1969,6 +1985,7 @@ class Window(Adw.ApplicationWindow):
         self.imported = None
         self.template_shapes = ()
         was, self._suppress = self._suppress, True
+        self.r_layout_preset.set_selected(0)
         self._update_document_sheet(None)
         self.r_colour.set_model(Gtk.StringList.new(["all colours"]))
         self.r_colour.set_selected(0)
@@ -2061,13 +2078,21 @@ class Window(Adw.ApplicationWindow):
         except bundle.BundleError as error:
             self.toast(str(error))
             return
-        dialog = Gtk.FileDialog(title="Save Paired Cut File", initial_name=name)
+        self.save_bundle_member("Save Paired Cut File", name, lambda path: matched.save_cut_file(row, path))
+
+    def on_save_bundle_print(self, *_args):
+        matched = self.pdf_bundle
+        if matched:
+            self.save_bundle_member("Save Print PDF", pathlib.Path(matched.pdf).name, matched.save_print_pdf)
+
+    def save_bundle_member(self, title, name, save):
+        dialog = Gtk.FileDialog(title=title, initial_name=name)
 
         def done(chooser, result):
             try:
                 path = chooser.save_finish(result).get_path()
                 if path is not None:
-                    self.toast(f"Saved {matched.save_cut_file(row, path).name}.")
+                    self.toast(f"Saved {save(path).name}.")
             except GLib.Error:
                 return
             except bundle.BundleError as error:
@@ -2097,7 +2122,7 @@ class Window(Adw.ApplicationWindow):
                 return
             filename = gfile.get_path()
             if filename is None:
-                self.toast('Choose a local PDF or ProxyPress ZIP.')
+                self.toast('Choose a local PDF or a matched Print & Cut ZIP.')
                 return
             path = pathlib.Path(filename)
             if path.suffix.lower() == '.zip' or zipfile.is_zipfile(path):
@@ -2173,6 +2198,7 @@ class Window(Adw.ApplicationWindow):
             self.bundle_checked = False
             self.update_send_actions()
         dpi = int(self._text(self.r_sheet_dpi))
+        orient_scm = layout_presets.is_published(self.imported)
         token = self._sheet_token = object()
         self.sheet_report = None
         self.preview.set_sheet(None)
@@ -2183,8 +2209,7 @@ class Window(Adw.ApplicationWindow):
                 if matched:
                     report, image = matched.measure(row, marks, dpi)
                 else:
-                    image = sheet_mod.render(path, page=page, dpi=dpi, colour=True)
-                    report = sheet_mod.measure(path, marks, page=page, dpi=dpi, image=image)
+                    report, image = sheet_mod.measure_preview(path, marks, page, dpi, orient_scm=orient_scm)
                 png = io.BytesIO()
                 image.save(png, format='PNG')
             except Exception as exc:              # noqa: BLE001
@@ -2213,6 +2238,8 @@ class Window(Adw.ApplicationWindow):
         self.preview.set_sheet(report)
         self.preview.set_pdf(png, report.page_w_mm, report.page_h_mm)
         lines = [m.describe() for m in report.marks]
+        if getattr(report, 'preview_rotation', 0) in (90, 270):
+            lines.insert(0, 'Load the printed sheet face-up in the orientation shown in the preview.')
         lines.append("")
         lines.append(report.diagnosis())
         for pr in problems:

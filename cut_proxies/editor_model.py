@@ -7,6 +7,7 @@ import re
 import tempfile
 
 from . import actions, geometry, graphtec, importer, regmarks, template, toolpath, vector_regions
+from .sticker_assets import Sticker
 
 
 KINDS = ("Rectangle", "Rounded rectangle", "Ellipse", "Line")
@@ -19,7 +20,7 @@ ALIGNMENTS = ("Align Left", "Center Horizontally", "Align Right",
               "Space Horizontally", "Space Vertically")
 SHAPE_LIMIT = 1000
 _COLOR = re.compile(r"#[0-9a-fA-F]{6}")
-MULTI_CONTOUR_KINDS = ("Compound", "Text")
+MULTI_CONTOUR_KINDS = ("Compound", "Text", "Sticker")
 POINT_EDIT_KINDS = ("Line", "Path", "Compound")
 PATH_OPERATIONS = ("Make Compound Path", "Release Compound Path", "Weld", "Subtract", "Intersect")
 
@@ -60,6 +61,7 @@ class Shape:
     line_width_mm: float = 0.0
     contours: tuple[tuple[tuple[float, float], ...], ...] = ()
     text: TextSpec | None = None
+    sticker: Sticker | None = None
 
     def paths(self):
         if self.kind not in MULTI_CONTOUR_KINDS:
@@ -89,6 +91,11 @@ class Shape:
         closed = self.closed if self.kind == "Path" else self.kind != "Line"
         return self._cut_path(points, closed)
 
+    def frame(self):
+        """Transformed image frame in top-left, top-right, bottom-right, bottom-left order."""
+        x, y, w, h = self.x, self.y, self.width, self.height
+        return self._cut_path(((x, y), (x + w, y), (x + w, y + h), (x, y + h)), True)
+
     def _cut_path(self, points, closed):
         if self.rotation or self.flip_x or self.flip_y:
             cx, cy = self.x + self.width/2, self.y + self.height/2
@@ -104,12 +111,12 @@ class Shape:
 
 def bounds(shapes):
     """Bounds of the actual transformed paths."""
-    xs, ys = zip(*(point for shape in shapes for path in shape.paths() for point in path.points))
+    xs, ys = zip(*(point for shape in shapes for path in _selection_paths(shape) for point in path.points))
     return geometry.Rect(min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
 
 
 def hit(shape, point, tolerance):
-    paths = shape.paths()
+    paths = _selection_paths(shape)
     closed_edges = [edge for path in paths if path.closed for edge in toolpath._edges(path.points, True)]
     if toolpath._inside(point, closed_edges):
         return True
@@ -121,6 +128,10 @@ def hit(shape, point, tolerance):
         if math.dist(point, (a[0] + t*dx, a[1] + t*dy)) <= tolerance:
             return True
     return False
+
+
+def _selection_paths(shape):
+    return (shape.frame(),) if shape.sticker else shape.paths()
 
 
 def move(shapes, indices, dx, dy):
@@ -195,6 +206,11 @@ def matching_color(shapes, indices, field):
 
 
 def convert_path(shape, simplify=False):
+    if shape.sticker:
+        if not shape.contours:
+            raise ValueError("Trace the sticker before converting its outlines to paths.")
+        if simplify:
+            raise ValueError("Convert the sticker’s outlines to paths before simplifying them.")
     paths = tuple(_simplify_path(path) if simplify else path for path in shape.paths())
     return styled_contours(paths, shape)
 
@@ -225,6 +241,8 @@ def offset_shape(shape, distance):
 
 def _closed_contours(shape):
     paths = shape.paths()
+    if not paths:
+        raise ValueError("Trace the sticker before working with its cut outline.")
     if any(not path.closed for path in paths):
         raise ValueError("Choose a closed shape. Open lines have no filled area.")
     return tuple(path.points for path in paths)
@@ -242,6 +260,8 @@ def modify_selection(shapes, indices, operation):
         if len(indices) < 2:
             raise ValueError(f"Select at least two closed objects for {operation.lower()}.")
         start = indices[0]
+        if any(shapes[i].sticker for i in indices):
+            raise ValueError("Convert sticker outlines to paths before combining them with other objects.")
         selected = tuple(_closed_contours(shapes[i]) for i in indices)
         if operation == "Make Compound Path":
             rings = vector_regions.outlines(tuple(ring for contours in selected for ring in contours), nonzero=False)
@@ -462,11 +482,14 @@ def save_project(path, project):
     for shape in project.shapes:
         fields = asdict(shape)
         for name, default in (("holder", None), ("line_style", "solid"), ("line_width_mm", 0.0),
-                              ("text", None), ("contours", ())):
+                              ("text", None), ("contours", ()), ("sticker", None)):
             if fields[name] == default:
                 del fields[name]
         objects.append(fields)
-    version = 3 if any(shape.kind in MULTI_CONTOUR_KINDS for shape in project.shapes) else 2
+    if any(shape.sticker for shape in project.shapes):
+        version = 4
+    else:
+        version = 3 if any(shape.kind in MULTI_CONTOUR_KINDS for shape in project.shapes) else 2
     document = {"version": version, "page_mm": [project.width, project.height],
                 "registration": asdict(project.registration) if project.registration else None,
                 "mat": project.mat, "objects": objects}
@@ -555,7 +578,7 @@ def move_vertex(shape, index, position):
 
 def load_project(path, legacy_registration=None):
     document = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(document, dict) or document.get("version") not in (1, 2, 3):
+    if not isinstance(document, dict) or document.get("version") not in (1, 2, 3, 4):
         raise ValueError("Unsupported template project version.")
     page = document.get("page_mm")
     if not isinstance(page, list) or len(page) != 2 or not all(_number(v, 1) for v in page):
@@ -583,14 +606,16 @@ def load_project(path, legacy_registration=None):
         try:
             fields = {"kind", "x", "y", "width", "height", "radius"} if legacy else Shape.__dataclass_fields__.keys()
             required = fields if legacy else fields - {"stroke", "fill", "group", "holder", "line_style",
-                                                        "line_width_mm", "contours", "text"}
+                                                        "line_width_mm", "contours", "text", "sticker"}
             if not isinstance(item, dict) or not required <= item.keys() <= fields:
                 raise TypeError("incomplete shape")
             shape = Shape(**item)
             numbers = (shape.x, shape.y, shape.width, shape.height, shape.radius)
             kinds = KINDS if legacy else (*KINDS, "Path")
-            if document["version"] == 3:
-                kinds += MULTI_CONTOUR_KINDS
+            if document["version"] >= 3:
+                kinds += ("Compound", "Text")
+            if document["version"] == 4:
+                kinds += ("Sticker",)
             valid = (shape.kind in kinds and
                      all(_number(v) for v in numbers) and shape.radius >= 0 and
                      _number(shape.rotation, -360, 360) and shape.action in ACTIONS and
@@ -610,7 +635,7 @@ def load_project(path, legacy_registration=None):
                 shape = replace(shape, points=())
             if shape.kind in MULTI_CONTOUR_KINDS:
                 rings = tuple(tuple(tuple(point) for point in ring) for ring in shape.contours)
-                valid = (valid and shape.closed and bool(rings) and all(
+                valid = (valid and shape.closed and (bool(rings) or shape.kind == "Sticker") and all(
                     len(set(ring)) >= 3 and all(len(point) == 2 and all(_number(v, 0, 1) for v in point)
                                                 for point in ring) for ring in rings))
                 spec = TextSpec(**shape.text) if shape.kind == "Text" else None
@@ -618,6 +643,12 @@ def load_project(path, legacy_registration=None):
                 shape = replace(shape, contours=rings, text=spec)
             else:
                 valid = valid and not shape.contours and shape.text is None
+            if shape.kind == "Sticker" and valid:
+                sticker = Sticker(**shape.sticker)
+                sticker.validate()
+                shape = replace(shape, sticker=sticker)
+            else:
+                valid = valid and shape.sticker is None
         except (TypeError, ValueError, OverflowError, AttributeError):
             valid = False
         if not valid:

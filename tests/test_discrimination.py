@@ -19,7 +19,7 @@ cheap: nine sub-suites of a few tests each.
 import io
 import unittest
 
-from cut_proxies import corner_test, cutters, graphtec, job, regmarks, sheet, starting_guide, testcut, transport, verify
+from cut_proxies import corner_test, cutters, graphtec, job, regmarks, sheet, starting_guide, sticker_print, testcut, transport, verify
 
 
 def _run(class_paths):
@@ -47,7 +47,15 @@ def refuse_depth(codes):
     raise transport.TransportError("refused")
 
 
+def refuse_sticker_ink(*args):
+    raise ValueError("registration marks")
+
+
 CASES = (
+    (sticker_print, "check_print_area", lambda *a: None, "sticker print guard always allows",
+     ["tests.test_sticker_print.TestStickerPrint.test_export_refuses_to_overwrite_archive_if_print_covers_a_mark"]),
+    (sticker_print, "check_print_area", refuse_sticker_ink, "sticker print guard always refuses",
+     ["tests.test_sticker_print.TestStickerPrint.test_export_refuses_to_overwrite_archive_if_print_covers_a_mark"]),
     (cutters, "usb_refusal", lambda *a: "", "every endpoint accepted",
      ["tests.test_cutter_detection.TestExactEndpoint.test_refusal_changes_with_endpoint_and_model"]),
     (cutters, "usb_refusal", lambda *a: "refused", "every endpoint refused",

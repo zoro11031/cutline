@@ -1,4 +1,4 @@
-"""Read the matched PDF, physical SVG and registration settings from ProxyPress."""
+"""Read matched print PDFs, physical cut SVGs and registration settings."""
 from __future__ import annotations
 
 import dataclasses
@@ -10,7 +10,9 @@ from shutil import copyfileobj
 import tempfile
 import zipfile
 
-from . import geometry, importer, regmarks, sheet
+from . import geometry, graphtec, importer, regmarks, sheet
+
+STICKER_FORMAT = 'scc-sticker-print'
 
 
 class BundleError(ValueError):
@@ -59,8 +61,12 @@ class Bundle:
     def mat_placement(self):
         orientation = 'portrait' if self.layout['portrait'] else 'landscape'
         square = ' The black square goes at the top-left.' if self.layout['pattern'] == regmarks.THREE else ''
+        mat = self.layout.get('mat', 'auto')
+        if mat == 'none':
+            return f'Load the printed front face-up in {orientation}, aligned with the cutter’s loading guide.{square}'
+        mat_note = f' Mat: {graphtec.MAT_OPTIONS[mat]}.' if mat not in ('auto', 'none') else ''
         return (f"Load the printed front face-up in {orientation}, aligned with "
-                f"the top-left of the mat grid.{square}")
+                f"the top-left of the mat grid.{square}{mat_note}")
 
     def near_marks(self, row):
         hints = row.get('nearMarks')
@@ -81,8 +87,13 @@ class Bundle:
 
     def save_cut_file(self, row, path):
         """Export the paired cut file unchanged to a user-selected path."""
+        return self._save_member(self.cut_file_name(row), path)
+
+    def save_print_pdf(self, path):
+        return self._save_member(self.pdf, path)
+
+    def _save_member(self, name, path):
         self.check_current()
-        name = self.cut_file_name(row)
         target = pathlib.Path(path)
         if target.resolve() == self.path.resolve():
             raise BundleError("Choose a destination separate from the source ZIP.")
@@ -94,7 +105,7 @@ class Bundle:
                 copyfileobj(source, destination)
             temporary.replace(target)
         except (OSError, KeyError, zipfile.BadZipFile) as exc:
-            raise BundleError(f'Could not save the cut file for sheet {row["sheet"]}: {exc}') from exc
+            raise BundleError(f'Could not save {name}: {exc}') from exc
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
@@ -145,13 +156,15 @@ def load(path):
         with zipfile.ZipFile(path) as archive:
             entries = set(archive.namelist())
             if 'registration.json' not in entries:
-                raise BundleError('This ZIP is missing registration.json. In ProxyPress, use Download matching print and cut files.')
+                raise BundleError('This ZIP is missing registration.json. Open a matched Print & Cut ZIP.')
             with archive.open('registration.json') as manifest:
                 data = json.loads(manifest.read(1_048_577))
         legacy = 'format' not in data and 'version' not in data
+        format_id = data.get('format')
+        sticker = (format_id, data.get('version')) == (STICKER_FORMAT, 1)
         if (data['units'], data['origin']) != ('mm', 'top left') or (
-                not legacy and (data.get('format'), data.get('version')) != ('proxypress-cameo', 1)):
-            raise BundleError('This ZIP needs a supported ProxyPress export version.')
+                not legacy and not sticker and (format_id, data.get('version')) != ('proxypress-cameo', 1)):
+            raise BundleError('This ZIP needs a supported Print & Cut export version.')
         pdf, page, mat, reg, rows = (data[key] for key in
                                    ('pdf', 'pdfPage', 'mat', 'registration', 'sheets'))
         if not pdf.lower().endswith('.pdf') or pdf not in entries or not rows:
@@ -161,16 +174,20 @@ def load(path):
         turned = mat['orientation'] != page['orientation']
         expected = (height, width) if turned else (width, height)
         if (any(o['orientation'] not in ('portrait', 'landscape') for o in (mat, page)) or
-                portrait != (width < height) or
+                portrait != ((width <= height) if sticker else (width < height)) or
                 any(not math.isclose(float(page[k]), value, abs_tol=0.01)
                     for k, value in zip(('width', 'height'), expected))):
             raise BundleError('The PDF and cutter orientations do not match the sheet dimensions.')
         # SCM's raster page can be one layout pixel smaller than nominal paper.
         # Recognize the paper name while retaining the PDF and SVG's frame.
         matched_sheet = geometry.match_sheet((width, height))
-        if matched_sheet is None:
+        if not sticker and matched_sheet is None:
             raise BundleError('This paper size is unavailable in Control Center.')
-        paper, _ = matched_sheet
+        paper = matched_sheet[0] if matched_sheet else 'Document Size'
+        cutting_mat = data.get('cuttingMat', 'auto')
+        if sticker and (not all(1 <= edge <= 1000 for edge in (width, height)) or turned
+                        or cutting_mat not in graphtec.MAT_OPTIONS or len(rows) != 1):
+            raise BundleError('Invalid paper size, mat or page count for a sticker sheet.')
         pattern = {3: regmarks.THREE, 4: regmarks.FOUR}[reg['pattern']]
         inset, arm, weight = (float(reg[k]) for k in ('inset', 'armLength', 'thickness'))
         if (not (0 < inset < min(width, height)/2) or
@@ -200,7 +217,9 @@ def load(path):
     except KeyError as exc:
         raise BundleError(f'The ZIP is missing a required registration field ({exc.args[0]}).') from exc
     except (AttributeError, OSError, TypeError, ValueError) as exc:
-        raise BundleError(f'Could not read the ProxyPress ZIP: {exc}') from exc
+        raise BundleError(f'Could not read the Print & Cut ZIP: {exc}') from exc
     layout = dict(sheet=paper, portrait=portrait, use_document_page=not legacy, mark_inset_mm=inset,
                   mark_length_mm=arm, mark_thickness_mm=weight, pattern=pattern)
+    if sticker:
+        layout['mat'] = cutting_mat
     return Bundle(path, signature, pdf, tuple(rows), layout, turned, (width, height))

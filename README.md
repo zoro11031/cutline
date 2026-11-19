@@ -86,6 +86,19 @@ replacement to edit the text.
 
 Studio3 import brings in supported vectors and page size.
 
+## Sticker Print & Cut
+
+1. In **Design**, choose **File → New** for a blank sheet. Choose **Place Image** and open a PNG, JPEG, or WebP. Move or resize it on the sheet.
+2. Select the image and choose **Trace and Bleed**. Automatic uses transparency when present. Use **Dark artwork** or **Light artwork** for opaque images, and choose whether to cut interior holes. Bleed extends the print past the cut path in millimetres.
+3. Choose **Export Print & Cut** to save the ZIP. It contains the full-size PDF with registration marks and a separate SVG of the Cut outlines. The project keeps the source image, so it can be reopened and traced again.
+4. Open the ZIP in **Send → Sheet**, choose **Save Print PDF**, and print at **Actual size** or **100%**. Load the sheet face-up as shown. Check the registration marks before sending the cut job.
+
+## Silhouette Card Maker templates
+
+Under **Send → Layout → Layout preset**, choose an **SCM** template for an existing Silhouette Card Maker print. Letter and A4 each include Standard, Poker, Japanese, Bridge, Catan, Tarot, and nine-card Standard Borderless. Match the paper, card size, and borderless setting used to print your sheet.
+
+These templates use cut outlines and registration settings from Alan Cha’s Silhouette Card Maker. Open the matching PDF in **Sheet** to check the marks and see which edge goes into the cutter. The preview turns sideways PDFs into the template’s loading orientation. [Upstream templates](https://github.com/Alan-Cha/silhouette-card-maker/tree/main/cutting_templates)
+
 ## Working with Proxy Press
 
 ![Checking printed registration marks and cut alignment](screenshots/sheet-alignment.png)
