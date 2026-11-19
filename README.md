@@ -5,6 +5,8 @@ cutter from Linux. Use **Design** to draw or edit a template and **Send** to
 choose a material, check the cutter, and cut. Both Qt and GTK have the same
 workflow and share projects, presets, and calibration.
 
+![Silhouette Control Center Send workspace](screenshots/send-workspace.png)
+
 ## Install
 
 From a checkout, run `./bin/silhouette-control-center gui`. See the
@@ -47,6 +49,8 @@ visual guide and send the separate cut SVG or DXF to your cutter.
 
 ## Design workspace
 
+![Silhouette Control Center Design workspace](screenshots/design-workspace.png)
+
 Open **Design** to edit the current layout or choose **New** for a blank page.
 In **File**, **Open** loads a project, SVG, DXF, or supported Studio3 file.
 **Import Artwork** adds paths to the open project. **Save** keeps shapes editable in an
@@ -77,6 +81,8 @@ raster tools, and full compound-path and boolean editing are still open.
 
 ## Working with Proxy Press
 
+![Checking printed registration marks and cut alignment](screenshots/sheet-alignment.png)
+
 Open the export in **Sheet → Open PDF or ZIP** and choose the printed sheet
 number. The ZIP supplies its matching PDF page, artwork, and mark settings.
 Load the print face-up, aligned with the top-left of the mat grid.
@@ -101,6 +107,8 @@ silhouette-control-center cut --from cards-print-and-cut.zip --bundle-sheet 2 --
 For Inkscape layouts, see [Inkscape Silhouette Print & Cut](docs/SETUP.md#inkscape-silhouette-print--cut).
 
 ## Finding your settings
+
+![Guided material tuning and test cuts](screenshots/material-guide.png)
 
 Open **Send → Dial In a Material**. Choose a factory preset for your stock
 or try **Silhouette starting point**. With an AutoBlade in holder 1 on a
