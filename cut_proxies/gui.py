@@ -43,7 +43,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 from . import (actions, bluetooth, bundle, config, corner_test, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
                starting_guide, template, testcut, toolpath, transport)  # noqa: E402
 from .desktop_help import BLADE_VALUE_TEXT, CONTROL_HELP, SETUP_STEPS  # noqa: E402
-from .editor_canvas import draw_feed_arrow  # noqa: E402
+from .editor_canvas import DesignCanvas, draw_feed_arrow  # noqa: E402
 from .gtk_controls import disclosure, protect_settings_wheel, workspace_header, workspace_tools, zoom_controls  # noqa: E402
 from .holder_settings import HolderSettings, for_holder  # noqa: E402
 
@@ -173,6 +173,8 @@ class Preview(Gtk.DrawingArea):
         self.mode = "Overlay"
         self.job = None
         self.trial = None
+        self.test_placement = None
+        self.test_spots = ()
         self.zoom = 1.0
         self.pan = self.pan_start = (0, 0)
         self.sheet = None          # a sheet.SheetReport, when a PDF is loaded
@@ -199,17 +201,18 @@ class Preview(Gtk.DrawingArea):
             self.fit()
         self.queue_draw()
 
-    def set_trial(self, trial):
-        if trial != self.trial:
+    def set_trial(self, trial, spots=(), placement=None):
+        placement = trial.placement if trial else placement
+        if (trial, spots, placement) != (self.trial, self.test_spots, self.test_placement):
             previous = self.page_size()
-            self.trial = trial
+            self.trial, self.test_spots, self.test_placement = trial, spots, placement
             if self.page_size() != previous:
                 self.fit()
             self.queue_draw()
 
     def page_size(self):
-        if self.trial:
-            return self.trial.placement.width, self.trial.placement.height
+        if self.test_placement:
+            return self.test_placement.width, self.test_placement.height
         if self.job:
             return self.job.grid.sheet_w_mm, self.job.grid.sheet_h_mm
         return self.pdf_size_mm
@@ -282,16 +285,33 @@ class Preview(Gtk.DrawingArea):
         cr.set_source_rgb(0.55, 0.62, 0.68)
         cr.stroke()
         self.draw_orientation(cr, sheet_w, scale)
-        sample = self.trial.sheet.cells[0].rect
-        cr.rectangle(sample.x, sample.y, sample.w, sample.h)
-        cr.set_source_rgba(0.18, 0.56, 0.69, 0.17)
-        cr.fill_preserve()
-        cr.set_source_rgb(0.10, 0.43, 0.53)
-        cr.stroke()
+        marks = self.test_placement.marks
+        if marks:
+            DesignCanvas.draw_marks(cr, marks, scale)
+        active = self.trial.sheet.cells[0] if self.trial else None
+        cr.set_line_width(0.45)
         cr.select_font_face("Sans")
-        cr.set_font_size(max(3, 11 / scale))
-        cr.move_to(sample.x2 + 2, sample.y + 5)
-        cr.show_text("Test cut")
+        cr.set_font_size(min(6, max(4, 11 / scale)))
+        if active:
+            sample = active.rect
+            cr.rectangle(sample.x, sample.y, sample.w, sample.h)
+            cr.set_source_rgba(0.18, 0.56, 0.69, 0.17)
+            cr.fill_preserve()
+            cr.set_source_rgb(0.10, 0.43, 0.53)
+            cr.stroke()
+            if all(spot.number != active.index + 1 for spot in self.test_spots):
+                cr.move_to(sample.x + 1, sample.y + 6)
+                cr.show_text(str(active.index + 1))
+        for spot in self.test_spots:
+            box = spot.rect
+            color = (0.60, 0.30, 0.07) if spot.uncertain else (0.09, 0.39, 0.34)
+            cr.rectangle(box.x, box.y, box.w, box.h)
+            cr.set_source_rgba(*color, 0.12)
+            cr.fill_preserve()
+            cr.set_source_rgb(*color)
+            cr.stroke()
+            cr.move_to(box.x + 1, box.y + 6)
+            cr.show_text(f"{spot.number}: {spot.passes}{'?' if spot.uncertain else ''}")
 
     @staticmethod
     def draw_orientation(cr, width, scale):
@@ -304,7 +324,7 @@ class Preview(Gtk.DrawingArea):
         bg = (0.14, 0.15, 0.17) if dark else (0.89, 0.90, 0.92)
         cr.set_source_rgb(*bg)
         cr.paint()
-        if self.trial:
+        if self.test_placement:
             self.draw_trial(cr, width, height)
             return
 
@@ -484,7 +504,7 @@ class Window(Adw.ApplicationWindow):
         self._checking_status = False
         self.tuning = False
         self.holder_state = HolderSettings()
-        self.guide = starting_guide.Guide()
+        self.guide = starting_guide.Guide(config.CONFIG_DIR / "material-test.json")
         self._suppress = True        # don't rebuild while constructing rows
 
         self.toasts = Adw.ToastOverlay()
@@ -755,10 +775,11 @@ class Window(Adw.ApplicationWindow):
             reason = "Set at least one pass to send cut paths."
         self.cut_button.set_sensitive(not reason)
         self.corner_button.set_sensitive(not reason)
-        status = ("Blank test stock · Registration off for samples" if self.tuning else reason or
-                  f"{len(job.paths)} paths · {job.device.name} · {'Registration on' if job.registration else 'Registration off'}")
-        self.send_status.set_label(status)
-        self.send_status.set_tooltip_text(status)
+        if not self.tuning:
+            status = reason or (
+                f"{len(job.paths)} paths · {job.device.name} · {'Registration on' if job.registration else 'Registration off'}")
+            self.send_status.set_label(status)
+            self.send_status.set_tooltip_text(status)
         self.update_guide()
         self.update_tuning_preview()
 
@@ -805,8 +826,9 @@ class Window(Adw.ApplicationWindow):
                     trial = self.guide_proposal()
                 except (ValueError, KeyError):
                     pass
-        self.preview.set_trial(trial)
-        self.preview_title.set_label("Material test sheet" if trial else "Sheet preview")
+        placement = self.guide.placement if self.tuning else None
+        self.preview.set_trial(trial, self.guide.spots if self.tuning else (), placement)
+        self.preview_title.set_label("Material test sheet" if self.preview.test_placement else "Sheet preview")
         self.preview_mode.set_visible(not self.tuning and self.preview.pdf_surface is not None)
         self.summary_card.set_visible(not self.tuning)
         self.preview_options.set_visible(not self.tuning)
@@ -1171,23 +1193,33 @@ class Window(Adw.ApplicationWindow):
         self.guide_status = Adw.ActionRow(title="Test spot 1")
         self.guide_status.set_subtitle_lines(0)
         guide.add(self.guide_status)
-        self.guide_outcome = _combo("How did the cut look?", list(starting_guide.OUTCOMES.values()))
-        self.guide_outcome.connect("notify::selected", self.on_guide_outcome)
-        guide.add(self.guide_outcome)
-        self.guide_advice = Adw.ActionRow(title="What to try next")
-        self.guide_advice.set_subtitle_lines(0)
-        guide.add(self.guide_advice)
         self.guide_send, self.guide_use = self.guide_buttons(
             guide, ("Cut One Pass…", self.on_guide_pass), ("Use Tested Settings…", self.on_guide_use))
+        self.guide_send.add_css_class("suggested-action")
         self.guide_next = self.guide_button(guide, "Next Test Spot", self.on_guide_next)
         self.guide_view.append(guide)
         extras, self.guide_advanced = disclosure(self.guide_view, "Test Options")
         tips = Adw.PreferencesGroup(title="Test sheet")
+        self.guide_registration = Adw.SwitchRow(title="Use Registration Marks", active=self.guide.registered)
+        self.guide_registration.connect("notify::active", self.change_guide_registration)
+        tips.add(self.guide_registration)
+        self.guide_marked_sheet = self.guide_button(tips, "Save Marked Test Sheet…", self.save_guide_marked_sheet)
         self.guide_reset = self.guide_button(tips, "New Test Sheet", self.on_guide_reset)
+        self.guide_history = Adw.ActionRow(title="Pass counts by spot")
+        self.guide_history.set_subtitle_lines(0)
+        tips.add(self.guide_history)
+        extras.append(tips)
+        help_group = Adw.PreferencesGroup(title="Troubleshooting")
+        self.guide_outcome = _combo("Optional symptom", list(starting_guide.OUTCOMES.values()))
+        self.guide_outcome.connect("notify::selected", self.on_guide_outcome)
+        help_group.add(self.guide_outcome)
+        self.guide_advice = Adw.ActionRow(title="What to try next")
+        self.guide_advice.set_subtitle_lines(0)
+        help_group.add(self.guide_advice)
         detail = Adw.ActionRow(title="One change at a time", subtitle=starting_guide.TUNING_TIPS)
         detail.set_subtitle_lines(0)
-        tips.add(detail)
-        extras.append(tips)
+        help_group.add(detail)
+        extras.append(help_group)
 
         gcal = Adw.PreferencesGroup(
             title="Calibration", description="Use a pen test to measure how far to shift the cut.")
@@ -2384,26 +2416,25 @@ class Window(Adw.ApplicationWindow):
         state = self.guide
         connected = starting_guide.has_cutter_endpoint(self._connection())
         self.guide_send.set_sensitive(not busy and connected and state.can_cut)
-        self.guide_use.set_sensitive(not busy and state.outcome == "clean" and state.tested_settings is not None)
-        for button in (self.guide_send, self.guide_use):
-            if button.get_sensitive():
-                button.add_css_class("suggested-action")
-            else:
-                button.remove_css_class("suggested-action")
-        label = "Repeat One Pass…" if self.guide.completed else "Cut One Pass…"
+        self.guide_use.set_sensitive(not busy and state.tested_settings is not None)
+        self.guide_registration.set_sensitive(not busy and state.placement is None)
+        self.guide_marked_sheet.set_sensitive(not busy and state.registered)
+        if self.tuning:
+            self.send_status.set_label(state.sheet_status)
+            self.send_status.set_tooltip_text(state.sheet_status)
+        label = "Repeat One Pass" if state.completed else "Cut One Pass…"
         self.guide_send.set_label(label)
         title, _, body = self.guide.status().partition("\n")
         self.guide_status.set_title(title)
-        if state.awaiting_result and not busy:
-            body += "\nLeave the mat loaded and lift a corner to check the sample."
-        elif not connected:
-            body += "\nGo back to Send and select a cutter to run a test pass."
+        if not connected:
+            body = "\n".join(filter(None, (body, "Go back to Send and select a cutter to run a test pass.")))
+        if state.resume_error:
+            body = "\n".join(filter(None, (body, state.resume_error)))
         self.guide_status.set_subtitle("Waiting for the cutter to finish…" if self._sending else body)
-        inspecting = state.completed > 0 and not state.interrupted
-        self.guide_outcome.set_visible(inspecting)
+        self.guide_history.set_subtitle(state.history_text() or "Completed passes appear here.")
         self.guide_outcome.set_sensitive(not busy)
         self.guide_outcome.set_selected(tuple(starting_guide.OUTCOMES).index(state.outcome))
-        advice = state.advice() if inspecting else ""
+        advice = state.advice()
         self.guide_advice.set_subtitle(advice)
         self.guide_advice.set_visible(bool(advice))
 
@@ -2423,7 +2454,7 @@ class Window(Adw.ApplicationWindow):
 
     def on_guide_start(self, *_args):
         if self.guide.trial:
-            self.guide.next_spot()
+            self.on_guide_next()
         device = graphtec.device_by_name(self._text(self.r_cutter))
         opts = self._blade_options()
         self.set_guide_blade_values(starting_guide.starting_values(device, opts["holder"], opts["blade_diameter_mm"]))
@@ -2432,7 +2463,7 @@ class Window(Adw.ApplicationWindow):
 
     def on_guide_use(self, *_args):
         settings = self.guide.tested_settings
-        if settings is None or self.guide.outcome != "clean":
+        if self._sending or self._checking_status or settings is None:
             return
         device = graphtec.device_by_name(self._text(self.r_cutter))
         if device != self.guide.trial.sheet.device or settings.holder != self._blade_options()["holder"]:
@@ -2475,13 +2506,16 @@ class Window(Adw.ApplicationWindow):
         dialog.present(self)
 
     def on_guide_next(self, *_args):
+        if self._sending or self._checking_status:
+            return
         self.guide.next_spot()
+        self.persist_guide()
         self.update_guide()
         self.update_tuning_preview()
 
     def on_guide_reset(self, *_args):
         dialog = Adw.AlertDialog(heading="Start a New Test Sheet?",
-                                 body="Load a fresh blank sheet to start at the first spot.")
+                                 body="Load a fresh test sheet to start at the first spot.")
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("new", "New Sheet")
         dialog.set_default_response("cancel")
@@ -2490,11 +2524,45 @@ class Window(Adw.ApplicationWindow):
         def reset(_dialog, response):
             if response == "new" and not (self._sending or self._checking_status):
                 self.guide.reset()
+                self.persist_guide()
                 self.update_guide()
                 self.update_tuning_preview()
 
         dialog.connect("response", reset)
         dialog.present(self)
+
+    def persist_guide(self):
+        try:
+            self.guide.persist()
+        except OSError as error:
+            self.toast(f"Could not save the marked test sheet history. {error}")
+            return False
+        return True
+
+    def change_guide_registration(self, row, *_args):
+        self.guide.registered = row.get_active()
+        self.update_guide()
+        self.update_tuning_preview()
+
+    def save_guide_marked_sheet(self, *_args):
+        dialog = Gtk.FileDialog(title="Save Marked Test Sheet", initial_name="material-test.svg")
+
+        def chosen(chooser, result):
+            try:
+                path = chooser.save_finish(result).get_path()
+                if path is None:
+                    return
+                self.guide.write_marked_sheet(path, self.job, self.options())
+            except GLib.Error:
+                return
+            except (OSError, ValueError, KeyError) as error:
+                self.toast(str(error))
+            else:
+                self.toast("Saved the marked test sheet. Print at actual size.")
+            self.update_guide()
+            self.update_tuning_preview()
+
+        dialog.save(self, None, chosen)
 
     def guide_proposal(self):
         return self.guide.prepare(self._connection(), self.options(), self.job, "square")
@@ -2507,8 +2575,10 @@ class Window(Adw.ApplicationWindow):
         except (ValueError, KeyError) as error:
             self.toast(str(error))
             return
-        prompt = self.guide.prompt(trial)
-        dialog = Adw.AlertDialog(heading="Send One Test Pass?", body=prompt)
+        if self.guide.completed:
+            self._guide_pass_response(None, "cut", trial)
+            return
+        dialog = Adw.AlertDialog(heading="Send One Test Pass?", body=self.guide.prompt(trial))
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("cut", "Cut")
         dialog.set_response_appearance("cut", Adw.ResponseAppearance.DESTRUCTIVE)
@@ -2532,13 +2602,20 @@ class Window(Adw.ApplicationWindow):
         if refusal:
             self.toast(refusal)
             return
+        if trial.placement.registered:
+            try:
+                self.guide.persist(pending=trial)
+            except OSError as error:
+                self.toast(f"Could not save the marked test sheet history. {error}")
+                return
         self._sending = True
         self.update_send_actions()
 
         def done(error=None):
             self.guide.record(trial, error)
             self._send_done()
-            self.toast(str(error) if error else "Pass complete. Keep the mat loaded and lift a corner.")
+            if self.persist_guide():
+                self.toast(str(error) if error else "Pass complete.")
 
         def work():
             try:
@@ -2594,7 +2671,7 @@ class Window(Adw.ApplicationWindow):
         if self._sending or self._checking_status:
             self.toast("The cutter connection is busy.")
             return
-        self.guide.invalidate()
+        self.guide.moved()
         refusal = cutters.usb_refusal(connection, ts.device, self.selected_cutter())
         if refusal:
             self.toast(refusal)
@@ -2898,7 +2975,7 @@ class Window(Adw.ApplicationWindow):
         if not steps:
             self.toast("This job does not use registration.")
             return
-        self.guide.invalidate()
+        self.guide.moved()
         self._sending = True
         self.cut_button.set_sensitive(False)
         self.scan_button.set_sensitive(False)

@@ -180,11 +180,11 @@ def build(device: graphtec.Device, base: CutSettings, forces=None,
           registration: bool = False,
           offset_mm: tuple[float, float] = (0.0, 0.0),
           shape: str = "square", mat: str = "auto", end_position: str = "below",
-          end_feed_mm: float = 0.0, spot: int | None = None) -> TestSheet:
+          end_feed_mm: float = 0.0, spot: int | None = None, from_bottom: bool = False) -> TestSheet:
     """Lay out the test squares and build the job.
 
     An explicit spot places one settings combination at a numbered cell.
-    Spots are numbered left to right, then top to bottom, starting at one.
+    Spots are numbered left to right, starting at one.
     """
     if shape not in TEST_SHAPES:
         raise ValueError(f"Unknown test cut shape {shape!r}.")
@@ -235,10 +235,10 @@ def build(device: graphtec.Device, base: CutSettings, forces=None,
     cells = []
     for i, s in enumerate(settings, first):
         row, col = divmod(i, cols)
+        y = sheet_h_mm - margin_mm - size_mm - row * pitch if from_bottom else margin_mm + row * pitch
         cells.append(Cell(
             index=i, row=row, col=col,
-            rect=Rect(margin_mm + col * pitch, margin_mm + row * pitch,
-                      size_mm, size_mm),
+            rect=Rect(margin_mm + col * pitch, y, size_mm, size_mm),
             settings=s))
 
     origin = (margin_mm, margin_mm) if registration else (0.0, 0.0)
