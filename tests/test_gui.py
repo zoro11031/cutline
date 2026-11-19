@@ -108,24 +108,27 @@ class TestDesignWorkspace(unittest.TestCase):
         measure.assert_called_once()
 
     def test_apply_material_opens_the_cut_settings_with_the_selected_values(self):
-        from cut_proxies import materials
-
-        win = self.make_window()
-        win.stack.set_visible_child_name('materials')
-        with mock.patch.object(materials, 'load', return_value={}):
+        with tempfile.TemporaryDirectory() as folder, \
+             mock.patch.object(config, "CONFIG_DIR", Path(folder)), \
+             mock.patch.object(presets, "factory_presets", return_value={}):
+            win = self.make_window()
+            win.stack.set_visible_child_name("materials")
+            presets.save_blade_settings(presets.STARTING_NAME, new_name="Sample", force=16,
+                                        speed=5, depth=None, passes=2)
+            win.refresh_preset_choices()
             win._load_materials()
-        self.assertFalse(win.apply_material_button.get_sensitive())
-        sample = mock.Mock()
-        sample.cut_settings.return_value = graphtec.CutSettings(force=16)
-        sample.describe.return_value = 'Force 16'
-        win.r_cutter_divisions.set_selected(1)
-        with mock.patch.object(materials, 'load', return_value={}), \
-             mock.patch.object(materials, 'cutter_divisions', return_value={'Sample': sample}):
-            win._load_materials()
-        self.assertTrue(win.apply_material_button.get_sensitive())
-        win.apply_material_button.emit('clicked')
-        self.assertEqual(win.stack.get_visible_child_name(), 'cut')
-        self.assertEqual(win.job.settings.force, 16)
+            self.assertEqual(win._text(win.r_material), presets.STARTING_NAME)
+            win.r_material.set_selected(0)
+            self.assertEqual(win._text(win.r_material), "Sample")
+            self.assertFalse(win.save_preset_btn.get_sensitive())
+            self.assertEqual(win.job.settings.force, 25)
+            self.assertIn("Manual / off", win.preset_note.get_subtitle())
+            self.assertTrue(win.apply_material_button.get_sensitive())
+            win.apply_material_button.emit("clicked")
+            self.assertEqual(win.stack.get_visible_child_name(), "cut")
+            self.assertEqual(win._text(win.r_preset), "Sample")
+            self.assertEqual(win.job.settings.force, 16)
+            self.assertTrue(win.save_preset_btn.get_sensitive())
 
     def test_material_presets_page_selection_and_delete_state(self):
         win = self.make_window()
@@ -139,6 +142,7 @@ class TestDesignWorkspace(unittest.TestCase):
             custom = presets.save_blade_settings(
                 presets.STARTING_NAME, force=18, speed=10, depth=2, passes=1,
                 new_name="Custom GTK Test")
+            win.r_force.set_value(28)
             win._load_materials()
             model = win.r_material.get_model()
             names = [model.get_string(i) for i in range(model.get_n_items())]
@@ -152,6 +156,7 @@ class TestDesignWorkspace(unittest.TestCase):
                 win.on_delete_selected_preset()
             self.assertFalse(custom.exists())
             self.assertFalse(win.delete_preset_btn.get_sensitive())
+            self.assertEqual(win.job.settings.force, 28)
 
     def test_send_editors_update_the_job_from_the_same_controls(self):
         win = self.make_window()
@@ -808,6 +813,7 @@ class TestDesignWorkspace(unittest.TestCase):
             win.r_depth.set_value(-1)
             win.on_save_blade_preset(new_name=" Green holder ")
             self.assertEqual(win._text(win.r_preset), "Green holder")
+            self.assertEqual(win.job.preset.name, "Green holder")
             self.assertEqual(presets.get("Green holder").cut_settings().force, 18)
             self.assertIsNone(presets.get("Green holder").cut_settings().depth)
             self.assertEqual(presets.get(config.DEFAULT_PRESET).cut_settings().force, 25)

@@ -4,8 +4,8 @@ import threading
 
 from PySide6.QtCore import QEvent, QObject, QPointF, Qt, Signal, Slot
 from PySide6.QtGui import QColor, QIcon, QPalette, QWheelEvent
-from PySide6.QtWidgets import (QAbstractScrollArea, QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox,
-                               QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
+from PySide6.QtWidgets import (QAbstractScrollArea, QAbstractSpinBox, QApplication, QBoxLayout, QButtonGroup, QCheckBox,
+                               QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QLayout,
                                QLabel, QLineEdit, QMenuBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QStackedWidget, QStyle,
                                QTabBar, QToolButton, QVBoxLayout, QWidget)
 
@@ -86,6 +86,9 @@ QPushButton[role="secondary"] {
 }
 QPushButton[role="secondary"]:hover, QPushButton[role="secondary"]:focus {
     border-color: palette(highlight);
+}
+QPushButton[role="secondary"]:disabled {
+    background: @disabled_button; color: @disabled_text; border-color: palette(midlight);
 }
 QPushButton[role="destructive"] {
     background: #d9383a; color: #ffffff; font-weight: 650;
@@ -376,6 +379,36 @@ class Note(QLabel):
     def resize_contents(self):
         if self.width() > 0:
             self.setMinimumHeight(max(0, self.heightForWidth(self.width())))
+
+
+class AdaptiveActions(QWidget):
+    """Keep action labels intact when a settings pane gets narrow."""
+
+    def __init__(self, buttons):
+        super().__init__()
+        self.buttons = buttons
+        self.row = QBoxLayout(QBoxLayout.Direction.LeftToRight, self)
+        self.row.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
+        self.row.setContentsMargins(0, 0, 0, 0)
+        self.row.setSpacing(6)
+        for item in buttons:
+            self.row.addWidget(item, 1)
+
+    def minimumSizeHint(self):
+        hint = super().minimumSizeHint()
+        hint.setWidth(max(item.minimumSizeHint().width() for item in self.buttons))
+        return hint
+
+    def event(self, event):
+        if event.type() in (QEvent.Type.Resize, QEvent.Type.LayoutRequest):
+            needed = sum(item.minimumSizeHint().width() for item in self.buttons)
+            needed += self.row.spacing() * (len(self.buttons) - 1)
+            direction = (QBoxLayout.Direction.TopToBottom if self.width() < needed
+                         else QBoxLayout.Direction.LeftToRight)
+            if self.row.direction() != direction:
+                self.row.setDirection(direction)
+                self.updateGeometry()
+        return super().event(event)
 
 
 class Form(QFormLayout):

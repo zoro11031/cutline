@@ -164,15 +164,36 @@ class TestBladePresets(unittest.TestCase):
         custom = presets.save_blade_settings(name, force=20, speed=10, passes=1, depth=2,
                                              new_name="Deletable Custom")
         self.assertTrue(presets.is_deletable("Deletable Custom"))
+        self.assertEqual(presets.removal_action("Deletable Custom"), "delete")
         self.assertTrue(presets.delete_preset("Deletable Custom"))
         self.assertFalse(custom.exists())
         self.assertFalse(presets.is_deletable("Deletable Custom"))
 
         override = presets.save_blade_settings(name, force=29, speed=12, passes=2, depth=4)
         self.assertTrue(presets.is_deletable(name))
+        self.assertEqual(presets.removal_action(name), "restore")
         self.assertTrue(presets.delete_preset(name))
         self.assertFalse(override.exists())
         self.assertFalse(presets.is_deletable(name))
+
+    def test_factory_and_same_named_personal_preset_are_updated_and_removed_independently(self):
+        factory = presets.Preset("Sample", "", "silhouette", {"force": 12}, factory_id="sample")
+        with mock.patch.object(presets, "factory_presets", return_value={factory.name: factory}):
+            personal = presets.save(presets.Preset("Sample", "", "derived", {"force": 15}))
+            alias = "Sample · Personal"
+            override = presets.save_blade_settings("Sample", force=22, speed=2, passes=1, depth=2)
+            self.assertEqual(presets.removal_action("Sample"), "restore")
+            self.assertEqual(presets.removal_action(alias), "delete")
+            self.assertEqual(presets.save_blade_settings(alias, force=24, speed=2, passes=1, depth=2), personal)
+            self.assertEqual(presets.get(alias).cut_settings().force, 24)
+            self.assertTrue(presets.delete_preset("Sample"))
+            self.assertFalse(override.exists())
+            self.assertTrue(personal.exists())
+            self.assertEqual(presets.get("Sample").cut_settings().force, 12)
+            self.assertTrue(presets.delete_preset(alias))
+            self.assertFalse(personal.exists())
+            self.assertEqual(presets.get("Sample").cut_settings().force, 12)
+
 
 
 class TestCutterDivisions(unittest.TestCase):
