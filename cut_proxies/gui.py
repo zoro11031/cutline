@@ -1099,15 +1099,29 @@ class Window(Adw.ApplicationWindow):
         self.edit_settings_btn = Gtk.Button(label="Edit Cut Settings", valign=Gtk.Align.CENTER)
         self.edit_settings_btn.connect("clicked", lambda *_: self.open_cut_settings())
         g.set_header_suffix(self.edit_settings_btn)
+
+        self.r_material = _combo("Select Preset", ["No materials imported"])
+        self.r_material.connect("notify::selected", self._on_select_material_preset)
+        g.add(self.r_material)
+
         self.preset_note = Adw.ActionRow(title="About this preset", subtitle="")
         self.preset_note.set_subtitle_lines(0)
         g.add(self.preset_note)
-        save_preset = Adw.ActionRow(
-            title="Update selected preset")
-        self.save_preset_btn = Gtk.Button(label="Update Preset", valign=Gtk.Align.CENTER)
+
+        actions_box = Gtk.Box(spacing=8, margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
+        self.apply_material_button = Gtk.Button(label="Apply to Cut Settings", css_classes=["suggested-action"])
+        self.apply_material_button.connect("clicked", self.on_apply_material)
+        actions_box.append(self.apply_material_button)
+
+        self.save_preset_btn = Gtk.Button(label="Update Preset")
         self.save_preset_btn.connect("clicked", self.on_save_blade_preset)
-        save_preset.add_suffix(self.save_preset_btn)
-        g.add(save_preset)
+        actions_box.append(self.save_preset_btn)
+
+        self.delete_preset_btn = Gtk.Button(label="Delete Preset", css_classes=["destructive-action"])
+        self.delete_preset_btn.connect("clicked", self.on_delete_selected_preset)
+        actions_box.append(self.delete_preset_btn)
+        g.add(Adw.PreferencesRow(child=actions_box, activatable=False, selectable=False))
+
         self.new_preset_name = Adw.EntryRow(title="New preset name")
         create = Gtk.Button(label="Save as New", valign=Gtk.Align.CENTER)
         create.connect("clicked", lambda *_: self.on_save_blade_preset(
@@ -1116,15 +1130,9 @@ class Window(Adw.ApplicationWindow):
         g.add(self.new_preset_name)
         page.add(g)
 
-        g3 = Adw.PreferencesGroup(
-            title="Material Library",
-            description="Preloaded Studio materials and user presets.")
-        self.r_cutter_divisions = _combo("Show Cutter Divisions", ["Known Cutters", "All Cutters"])
-        self.r_cutter_divisions.connect("notify::selected", self._load_materials)
-        self.r_material = _combo("Material preset", ["No materials imported"])
-        self.apply_material_button = Gtk.Button(label="Apply to Cut Settings", halign=Gtk.Align.START)
-        self.apply_material_button.connect("clicked", self.on_apply_material)
-        g3.add(self.r_material)
+        library = Adw.PreferencesGroup(
+            title="Library and Defaults",
+            description="Import external material lists or restore default presets.")
         imports = Gtk.Box(spacing=6, margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
         choose = Gtk.Button(label="Import CSV…")
         choose.connect("clicked", self.on_choose_material_csv)
@@ -1132,19 +1140,27 @@ class Window(Adw.ApplicationWindow):
         choose_folder = Gtk.Button(label="Import Folder…")
         choose_folder.connect("clicked", lambda *_: self.on_choose_material_csv(folder=True))
         imports.append(choose_folder)
-        g3.add(Adw.PreferencesRow(child=imports, activatable=False, selectable=False))
-        apply_row = Gtk.Box(margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
-        apply_row.append(self.apply_material_button)
-        g3.add(Adw.PreferencesRow(child=apply_row, activatable=False, selectable=False))
-        page.add(g3)
-        defaults = Adw.PreferencesGroup(title="Defaults")
+        library.add(Adw.PreferencesRow(child=imports, activatable=False, selectable=False))
+
         restore = Adw.ActionRow(title="Restore Default Materials",
                                 subtitle="Back up edits to built-in materials and restore their original settings")
         restore_button = Gtk.Button(label="Restore", valign=Gtk.Align.CENTER)
         restore_button.connect("clicked", self.on_restore_default_materials)
         restore.add_suffix(restore_button)
-        defaults.add(restore)
-        page.add(defaults)
+        library.add(restore)
+        page.add(library)
+
+        class _CompatibilityDivisions:
+            def __init__(self):
+                self._selected = 0
+            def set_selected(self, val):
+                self._selected = val
+            def get_selected(self):
+                return self._selected
+            def connect(self, *args):
+                pass
+        self.r_cutter_divisions = _CompatibilityDivisions()
+
         self.stack.add_titled(page, "materials", "Material Presets")
 
     def add_advanced_cut_settings(self, advanced):
@@ -1755,7 +1771,8 @@ class Window(Adw.ApplicationWindow):
         name = self._text(self.r_preset)
         try:
             saved = presets.save_blade_settings(
-                name, force=int(self.r_force.get_value()), speed=int(self.r_speed.get_value()),
+                name,
+                force=int(self.r_force.get_value()), speed=int(self.r_speed.get_value()),
                 depth=int(self.r_depth.get_value()) if self.r_depth.get_value() >= 0 else None,
                 passes=int(self.r_passes.get_value()), blade_options=self._blade_options(),
                 new_name=new_name, cutter=self._text(self.r_cutter))
@@ -1765,12 +1782,13 @@ class Window(Adw.ApplicationWindow):
         if saved is None:
             self.toast("Preset settings are already saved.")
             return
+        active_name = new_name.strip() if new_name is not None else name
+        self.refresh_preset_choices(active_name)
         if new_name is not None:
-            name = new_name.strip()
-            self.refresh_preset_choices(name)
             self.new_preset_name.set_text("")
+        self._load_materials()
         self.on_preset()
-        self.toast(f"Saved {name}.")
+        self.toast(f"Saved {active_name}.")
 
     def on_preset(self, *_a):
         name, cutter = self._text(self.r_preset), self._text(self.r_cutter)
@@ -1785,8 +1803,12 @@ class Window(Adw.ApplicationWindow):
             index = next(i for i in range(model.get_n_items()) if model.get_string(i) == p.name)
             with self.r_preset.handler_block(self.preset_changed_id):
                 self.r_preset.set_selected(index)
-        self.preset_note.set_title(p.name)
-        self.preset_note.set_subtitle(p.note or p.description)
+        if hasattr(self, "r_material") and self.r_material is not None:
+            model = self.r_material.get_model()
+            names = [model.get_string(i) for i in range(model.get_n_items())] if model else []
+            if p.name in names:
+                self.r_material.set_selected(names.index(p.name))
+        self._on_select_material_preset()
         was = self._suppress
         self._suppress = True
         self._load_blade_settings(for_holder(p.cut_settings(), slot))
@@ -2450,17 +2472,81 @@ class Window(Adw.ApplicationWindow):
                 or self._text(self.r_preset) != selected):
             self.on_preset()
 
+    def _on_select_material_preset(self, *_args):
+        name = self._text(self.r_material) if hasattr(self, "r_material") and self.r_material else ""
+        cutter = self._text(self.r_cutter)
+        p = getattr(self, "_materials", {}).get(name)
+        if p is None and name and name != "No materials imported":
+            try:
+                p = presets.get(name, cutter)
+            except Exception:
+                p = None
+        deletable = presets.is_deletable(name, cutter)
+        if hasattr(self, "delete_preset_btn"):
+            self.delete_preset_btn.set_sensitive(deletable)
+        if p is not None:
+            settings = p.cut_settings() if hasattr(p, "cut_settings") else None
+            note = getattr(p, "note", "")
+            desc = getattr(p, "description", "")
+            details = []
+            if isinstance(desc, str) and desc:
+                details.append(desc)
+            elif isinstance(note, str) and note:
+                details.append(note)
+            if settings is not None and hasattr(settings, "force"):
+                depth_val = getattr(settings, "depth", None)
+                depth_str = f"{depth_val}" if depth_val is not None else "–"
+                details.append(f"Depth: {depth_str} · Force: {settings.force} · Speed: {settings.speed} · Passes: {settings.passes}")
+            title_str = p.name if hasattr(p, "name") and isinstance(p.name, str) else str(name)
+            self.preset_note.set_title(title_str)
+            self.preset_note.set_subtitle(" · ".join(details))
+        else:
+            self.preset_note.set_title(str(name) if name != "No materials imported" else "")
+            self.preset_note.set_subtitle("")
+
+    def on_delete_selected_preset(self, *_args):
+        name = self._text(self.r_material)
+        cutter = self._text(self.r_cutter)
+        if not presets.is_deletable(name, cutter):
+            self.toast("Built-in presets cannot be deleted.")
+            return
+        dialog = Adw.AlertDialog(
+            heading=f"Delete Preset '{name}'?",
+            body="Are you sure you want to delete this preset or revert it to default settings?"
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("delete", "Delete")
+        dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_close_response("cancel")
+        dialog.set_default_response("cancel")
+
+        def delete_confirmed(_dialog, response):
+            if response != "delete":
+                return
+            if presets.delete_preset(name, cutter):
+                self.toast(f"Deleted {name}.")
+                self.refresh_preset_choices()
+                self._load_materials()
+                self.on_preset()
+            else:
+                self.toast(f"Could not delete {name}.")
+
+        dialog.connect("response", delete_confirmed)
+        dialog.present(self)
+
     def _load_materials(self, *_args):
-        selected = self._text(self.r_material)
+        selected = self._text(self.r_material) if hasattr(self, "r_material") and self.r_material else ""
         previous = getattr(self, "_materials", {}).get(selected)
-        self._materials = {}
         try:
             from . import materials
-            self._materials = materials.cutter_divisions(
-                materials.load(), self._text(self.r_cutter),
-                self.r_cutter_divisions.get_selected() == 1)
+            divs = dict(materials.cutter_divisions(
+                materials.load(), self._text(self.r_cutter), False))
         except (OSError, ValueError):
-            pass
+            divs = {}
+        self._materials = dict(divs)
+        for _, user_preset in presets._read_presets(presets.user_dir()):
+            if user_preset.name not in self._materials:
+                self._materials[user_preset.name] = user_preset
         names = sorted(self._materials) or ["No materials imported"]
         self.r_material.set_model(Gtk.StringList.new(names))
         if selected in self._materials:
@@ -2471,7 +2557,10 @@ class Window(Adw.ApplicationWindow):
             self.r_material.set_selected(match)
         elif "Coverstock" in self._materials:
             self.r_material.set_selected(names.index("Coverstock"))
-        self.apply_material_button.set_sensitive(bool(self._materials))
+        elif names and names[0] != "No materials imported":
+            self.r_material.set_selected(0)
+        self.apply_material_button.set_sensitive(bool(divs))
+        self._on_select_material_preset()
 
     def on_restore_default_materials(self, *_args):
         dialog = Adw.AlertDialog(heading="Restore Default Materials?",
@@ -2490,6 +2579,8 @@ class Window(Adw.ApplicationWindow):
                 self.toast(f"Could not restore defaults. {exc}")
                 return
             if count:
+                self.refresh_preset_choices()
+                self._load_materials()
                 self.on_preset()
                 self.toast(f"Restored {count} material presets. Backup at {directory}.")
             else:
@@ -2501,18 +2592,29 @@ class Window(Adw.ApplicationWindow):
     def on_apply_material(self, *_a):
         name = self._text(self.r_material)
         m = self._materials.get(name)
+        if m is None and name != "No materials imported":
+            try:
+                m = presets.get(name, self._text(self.r_cutter))
+            except Exception:
+                m = None
         if m is None:
             self.toast("Select a material preset.")
             return
-        if self.r_cutter_divisions.get_selected() == 0:
-            self.refresh_preset_choices(name)
-            self.on_preset()
-        else:
-            was, self._suppress = self._suppress, True
-            self._load_blade_settings(for_holder(m.cut_settings(), self.holder_state.active))
-            self._suppress = was
+        if hasattr(self, "r_preset") and self.r_preset is not None:
+            model = self.r_preset.get_model()
+            names = [model.get_string(i) for i in range(model.get_n_items())] if model else []
+            if name in names:
+                self.refresh_preset_choices(name)
+                self.on_preset()
+                self.open_cut_settings()
+                return
+        was, self._suppress = self._suppress, True
+        settings = m.cut_settings() if hasattr(m, "cut_settings") else m
+        self._load_blade_settings(for_holder(settings, self.holder_state.active))
+        self._suppress = was
+        if hasattr(m, "describe"):
             self.toast(f"{name}: {m.describe()}")
-            self.on_changed()
+        self.on_changed()
         self.open_cut_settings()
 
     # ---- calibration and test cuts -----------------------------------

@@ -127,6 +127,32 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertEqual(win.stack.get_visible_child_name(), 'cut')
         self.assertEqual(win.job.settings.force, 16)
 
+    def test_material_presets_page_selection_and_delete_state(self):
+        win = self.make_window()
+        win.stack.set_visible_child_name('materials')
+        win._load_materials()
+        self.assertTrue(win.r_material.get_model().get_n_items() > 0)
+        self.assertFalse(win.delete_preset_btn.get_sensitive())
+
+        with tempfile.TemporaryDirectory() as folder, \
+             mock.patch.object(presets, "user_dir", return_value=Path(folder)):
+            custom = presets.save_blade_settings(
+                presets.STARTING_NAME, force=18, speed=10, depth=2, passes=1,
+                new_name="Custom GTK Test")
+            win._load_materials()
+            model = win.r_material.get_model()
+            names = [model.get_string(i) for i in range(model.get_n_items())]
+            self.assertIn("Custom GTK Test", names)
+            win.r_material.set_selected(names.index("Custom GTK Test"))
+            self.assertTrue(win.delete_preset_btn.get_sensitive())
+            self.assertEqual(win.preset_note.get_title(), "Custom GTK Test")
+
+            with mock.patch("gi.repository.Adw.AlertDialog.present",
+                            lambda dialog, parent: dialog.emit("response", "delete")):
+                win.on_delete_selected_preset()
+            self.assertFalse(custom.exists())
+            self.assertFalse(win.delete_preset_btn.get_sensitive())
+
     def test_send_editors_update_the_job_from_the_same_controls(self):
         win = self.make_window()
         win.send_workspace.emit('clicked')

@@ -331,17 +331,19 @@ class Window(QMainWindow):
         page = Page()
         self.edit_settings_btn = button("Edit Cut Settings", self.open_cut_settings, role="secondary")
         profile = page.group("Material Presets", action=self.edit_settings_btn)
+        self.material = profile.choice("Select Preset", (), changed=self.on_select_material_preset)
         self.provenance = profile.note()
-        profile.note("Choose and edit your cut settings in Send, then save them here.")
-        profile.actions(button("Update Preset", self.save_preset),
-                        button("Save as New…", self.save_new_preset))
-        table = page.group("Material Library")
-        self.divisions = None
-        self.material = table.choice("Material preset", ())
-        table.actions(button("Import CSV…", self.choose_material_csv),
-                      button("Import Folder…", lambda: self.choose_material_csv(folder=True)))
-        self.apply_material_button = table.push("Apply to Cut Settings", self.apply_material)
-        page.group("Defaults").push("Restore Default Materials…", self.restore_materials)
+        self.provenance.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.apply_material_button = button("Apply to Cut Settings", self.apply_material, role="primary")
+        self.save_preset_btn = button("Update Preset", self.save_preset)
+        self.save_new_preset_btn = button("Save as New…", self.save_new_preset)
+        self.delete_preset_btn = button("Delete Preset", self.delete_selected_preset, role="destructive")
+        profile.actions(self.apply_material_button, self.save_preset_btn, self.save_new_preset_btn, self.delete_preset_btn)
+
+        library = page.group("Library & Defaults")
+        library.actions(button("Import CSV…", self.choose_material_csv),
+                        button("Import Folder…", lambda: self.choose_material_csv(folder=True)),
+                        button("Restore Default Materials…", self.restore_materials))
         self.install_page("Materials", page, title="Material Presets")
 
     def add_advanced_cut_settings(self, advanced):
@@ -572,7 +574,10 @@ class Window(QMainWindow):
         if selected.name != name:
             with self.editing():
                 self.select("preset", selected.name)
-        self.provenance.setText(f"{selected.name}\n{selected.note}")
+        if hasattr(self, "material") and self.material.findData(selected.name) >= 0:
+            with self.editing():
+                self.material.setCurrentIndex(self.material.findData(selected.name))
+        self.update_material_details()
         self.set_blade_settings(for_holder(selected.cut_settings(), slot))
 
     def current_holder_profile(self):
@@ -612,18 +617,75 @@ class Window(QMainWindow):
                 widget.setCurrentIndex(widget.findData(getattr(settings, key)))
         self.rebuild()
 
+    def on_select_material_preset(self):
+        self.update_material_details()
+
+    def update_material_details(self):
+        name = self.material.currentData() if hasattr(self, "material") and self.material else None
+        cutter = self.choice("cutter") if hasattr(self, "controls") and "cutter" in self.controls else presets.DEFAULT_CUTTER
+        if not name or name not in getattr(self, "materials", {}):
+            if hasattr(self, "provenance"):
+                self.provenance.setText("")
+            if hasattr(self, "delete_preset_btn"):
+                self.delete_preset_btn.setEnabled(False)
+            return
+        preset = self.materials[name]
+        deletable = presets.is_deletable(name, cutter)
+        if hasattr(self, "delete_preset_btn"):
+            self.delete_preset_btn.setEnabled(deletable)
+
+        settings = preset.cut_settings() if hasattr(preset, "cut_settings") else None
+        desc_lines = [f"<b>{name}</b>"]
+        note = getattr(preset, "note", "")
+        if isinstance(note, str) and note:
+            desc_lines.append(note)
+        desc = getattr(preset, "description", "")
+        if isinstance(desc, str) and desc and desc != note:
+            desc_lines.append(desc)
+        if settings is not None and hasattr(settings, "force"):
+            depth_val = getattr(settings, "depth", None)
+            depth_str = f"{depth_val}" if depth_val is not None else "–"
+            desc_lines.append(f"Blade Depth: {depth_str} · Force: {settings.force} · Speed: {settings.speed} · Passes: {settings.passes}")
+        if hasattr(self, "provenance"):
+            self.provenance.setText("\n".join(desc_lines))
+
+    def delete_selected_preset(self):
+        name = self.material.currentData() if hasattr(self, "material") and self.material else None
+        cutter = self.choice("cutter") if hasattr(self, "controls") and "cutter" in self.controls else presets.DEFAULT_CUTTER
+        if not name or not presets.is_deletable(name, cutter):
+            self.message("Built-in presets cannot be deleted.")
+            return
+        reply = QMessageBox.question(
+            self,
+            "Delete Preset",
+            f"Are you sure you want to delete preset '{name}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            if presets.delete_preset(name, cutter):
+                self.message(f"Preset '{name}' deleted.")
+                self.refresh_preset_choices()
+                self.load_materials()
+                self.load_preset()
+            else:
+                self.message(f"Could not delete preset '{name}'.")
+
     def save_preset(self, name=None):
+        target_name = name or self.choice("preset")
         values = self.blade_values()
         try:
             saved = presets.save_blade_settings(
-                self.choice("preset"), new_name=name, cutter=self.choice("cutter"),
+                target_name, new_name=name, cutter=self.choice("cutter"),
                 **{key: values.pop(key) for key in ("force", "speed", "depth", "passes")},
                 blade_options=values)
         except (OSError, ValueError) as error:
             self.message(str(error))
             return
         if saved is not None:
-            self.refresh_preset_choices(name.strip() if name else None)
+            active_name = name.strip() if name else target_name
+            self.refresh_preset_choices(active_name)
+            self.load_materials()
             self.load_preset()
         self.message("Preset saved." if saved else "Preset settings are already saved.")
 
@@ -634,13 +696,19 @@ class Window(QMainWindow):
 
     def load_materials(self):
         try:
-            show_all = bool(self.divisions and self.divisions.currentData()) if hasattr(self, "divisions") and self.divisions else False
-            self.materials = materials.cutter_divisions(
-                materials.load(), self.choice("cutter"), show_all)
+            divs = dict(materials.cutter_divisions(
+                materials.load(), self.choice("cutter"), False))
         except (OSError, ValueError):
-            self.materials = {}
-        set_choices(self.material, sorted(self.materials) or {"": "No materials imported"})
-        self.apply_material_button.setEnabled(bool(self.materials))
+            divs = {}
+        self.materials = dict(divs)
+        for _, user_preset in presets._read_presets(presets.user_dir()):
+            if user_preset.name not in self.materials:
+                self.materials[user_preset.name] = user_preset
+        current = self.material.currentData() if hasattr(self, "material") and self.material else None
+        choices = sorted(self.materials) if self.materials else {"": "No materials imported"}
+        set_choices(self.material, choices, current or (self.choice("preset") if hasattr(self, "controls") and "preset" in self.controls else None))
+        self.apply_material_button.setEnabled(bool(divs))
+        self.update_material_details()
 
     def refresh_preset_choices(self, selected=None):
         catalog = presets.all_presets(self.choice("cutter"))
@@ -681,7 +749,8 @@ class Window(QMainWindow):
             self.select("preset", name)
             self.load_preset()
         else:
-            self.set_blade_settings(for_holder(selected.cut_settings(), self.holder_state.active))
+            settings = selected.cut_settings() if hasattr(selected, "cut_settings") else selected
+            self.set_blade_settings(for_holder(settings, self.holder_state.active))
         self.open_cut_settings()
 
     def restore_materials(self):
@@ -693,6 +762,8 @@ class Window(QMainWindow):
         except OSError as error:
             self.message(str(error))
             return
+        self.refresh_preset_choices()
+        self.load_materials()
         self.load_preset()
         self.message(f"Restored {count} built-in presets.")
 

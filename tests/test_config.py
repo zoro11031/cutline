@@ -156,6 +156,24 @@ class TestBladePresets(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already exists"):
             presets.save_tested_settings(name.upper(), tested, "Silhouette Cameo 4")
 
+    def test_is_deletable_and_delete_preset(self):
+        name = presets.STARTING_NAME
+        self.assertFalse(presets.is_deletable(name))
+        self.assertFalse(presets.delete_preset(name))
+
+        custom = presets.save_blade_settings(name, force=20, speed=10, passes=1, depth=2,
+                                             new_name="Deletable Custom")
+        self.assertTrue(presets.is_deletable("Deletable Custom"))
+        self.assertTrue(presets.delete_preset("Deletable Custom"))
+        self.assertFalse(custom.exists())
+        self.assertFalse(presets.is_deletable("Deletable Custom"))
+
+        override = presets.save_blade_settings(name, force=29, speed=12, passes=2, depth=4)
+        self.assertTrue(presets.is_deletable(name))
+        self.assertTrue(presets.delete_preset(name))
+        self.assertFalse(override.exists())
+        self.assertFalse(presets.is_deletable(name))
+
 
 class TestCutterDivisions(unittest.TestCase):
     def test_known_prefers_matching_material_division_and_all_lists_vendor_rows(self):

@@ -354,6 +354,39 @@ def restore_default_materials() -> tuple[int, pathlib.Path | None]:
     return len(moved), backup
 
 
+def is_deletable(name: str, cutter=DEFAULT_CUTTER) -> bool:
+    """True if the preset is a user-created preset or a user-overridden factory preset."""
+    folder = user_dir()
+    if not folder.is_dir():
+        return False
+    factory = factory_presets(cutter)
+    target_factory_id = factory[name].factory_id if name in factory else None
+    for path, preset in _read_presets(folder):
+        if preset.name == name:
+            return True
+        if target_factory_id and preset.factory_id == target_factory_id:
+            return True
+    return False
+
+
+def delete_preset(name: str, cutter=DEFAULT_CUTTER) -> bool:
+    """Delete a user-saved preset or user override, reverting to factory/builtin if applicable."""
+    folder = user_dir()
+    if not folder.is_dir():
+        return False
+    factory = factory_presets(cutter)
+    target_factory_id = factory[name].factory_id if name in factory else None
+    deleted = False
+    for path, preset in _read_presets(folder):
+        if preset.name == name or (target_factory_id and preset.factory_id == target_factory_id):
+            try:
+                path.unlink(missing_ok=True)
+                deleted = True
+            except OSError:
+                return False
+    return deleted
+
+
 def save(preset: Preset) -> pathlib.Path:
     folder = user_dir()
     folder.mkdir(parents=True, exist_ok=True)

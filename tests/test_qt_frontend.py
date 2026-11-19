@@ -272,6 +272,30 @@ class TestQtFrontend(unittest.TestCase):
         self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
         self.assertEqual(window.job.settings.force, 16)
 
+    def test_material_presets_page_selection_and_delete_state(self):
+        window = self.window
+        window.tabs.setCurrentIndex(window.tab("Materials"))
+        window.load_materials()
+        self.assertTrue(window.material.count() > 0)
+        self.assertIn("Blade Depth", window.provenance.text())
+        self.assertFalse(window.delete_preset_btn.isEnabled())
+
+        with TemporaryDirectory() as folder, \
+             mock.patch.object(presets, "user_dir", return_value=Path(folder)):
+            custom = presets.save_blade_settings(
+                presets.STARTING_NAME, force=18, speed=10, depth=2, passes=1,
+                new_name="Custom Qt Test")
+            window.load_materials()
+            index = window.material.findData("Custom Qt Test")
+            self.assertGreaterEqual(index, 0)
+            window.material.setCurrentIndex(index)
+            self.assertTrue(window.delete_preset_btn.isEnabled())
+            self.assertIn("Custom Qt Test", window.provenance.text())
+            with mock.patch.object(qt_gui.QMessageBox, "question", return_value=qt_gui.QMessageBox.StandardButton.Yes):
+                window.delete_selected_preset()
+            self.assertFalse(custom.exists())
+            self.assertFalse(window.delete_preset_btn.isEnabled())
+
     def test_manual_depth_fits_with_a_large_font(self):
         window = self.window
         font = self.app.font()

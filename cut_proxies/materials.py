@@ -60,6 +60,15 @@ from .graphtec import CutSettings, su_to_mm
 # closest published analogue to 330 gsm black-core stock.
 HEAVIEST_PAPER = "Coverstock"
 
+STUDIO_TITLES = {
+    "media_SilhouetteHeatTransferFlocked_title": "Heat Transfer Material (Flocked)",
+    "media_SilhouetteHeatTransferSmooth_title": "Heat Transfer Material (Smooth)",
+    "media_SilhouettePrintableHeatTransferSheetDark_title": "Printable Heat Transfer Material (Dark)",
+    "media_SilhouettePrintableHeatTransferSheetLight_title": "Printable Heat Transfer Material (Light)",
+    "media_CottonCanvas_title": "Fabric (Cotton Canvas)",
+    "media_FabricWithInterfacing_title": "Fabric (with Interfacing)",
+}
+
 
 @dataclasses.dataclass(frozen=True)
 class Material:
@@ -228,7 +237,9 @@ def load(path=None) -> list[Material]:
     for lineno, row in enumerate(rows[2:], start=3):
         if _cell(row, idx, "category") != "leaf":
             continue
-        name = (names.get(_cell(row, idx, "parent_uuid"))
+        name_id = _cell(row, idx, "name_id")
+        name = (STUDIO_TITLES.get(name_id)
+                or names.get(_cell(row, idx, "parent_uuid"))
                 or _cell(row, idx, "name_resolved"))
         force = number(row, "(force.pressure)")
         speed = number(row, "(speed)")
@@ -314,11 +325,23 @@ def cutter_divisions(rows, cutter_name: str, show_all: bool) -> dict[str, Materi
         for row in variants:
             label = name
             if show_all or len(variants) > 1:
-                details = " · ".join(filter(None, (row.cutter_class, row.tool, row.action,
-                                                    f"Holder {row.holder}" if row.holder else "")))
-                label = f"{name} · {details or 'General'}"
+                parts = []
+                if show_all and row.cutter_class:
+                    parts.append(row.cutter_class)
+                if row.tool and row.tool != "adjustable":
+                    parts.append(row.tool)
+                if row.action:
+                    parts.append(row.action)
+                if row.holder and (row.holder > 1 or len(variants) > 1):
+                    parts.append(f"Holder {row.holder}")
+                details = " · ".join(filter(None, parts))
+                if details:
+                    label = f"{name} · {details}"
                 if label in choices:
-                    label += f" · {row.source_id or len(choices) + 1}"
+                    idx_num = 2
+                    while f"{label} ({idx_num})" in choices:
+                        idx_num += 1
+                    label = f"{label} ({idx_num})"
             choices[label] = row
     return choices
 
