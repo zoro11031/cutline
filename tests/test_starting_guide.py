@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -175,6 +176,36 @@ class TestStartingGuide(unittest.TestCase):
             restored.next_spot()
             self.assertTrue(restored.history[0].uncertain)
             self.assertTrue(restored.can_cut)
+
+    def test_legacy_archived_spot_keeps_count_and_refuses_repeat(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "marked.json"
+            # Version 1 before the clickable grid saved counts and geometry
+            # for past spots, but kept trial settings only for the active spot.
+            path.write_text(json.dumps({
+                "version": 1,
+                "spot": 2,
+                "completed": 0,
+                "interrupted": False,
+                "placement": {"width": 215.9, "height": 279.4, "offset": [0, 0],
+                              "mat": "cameo-12x12", "registered": True},
+                "history": [{"number": 1, "rect": {"x": 20, "y": 244.4, "w": 15, "h": 15},
+                             "passes": 2, "uncertain": False}],
+            }), encoding="utf-8")
+            self.guide = starting_guide.Guide(path)
+            self.assertEqual(self.guide.resume_error, "")
+            self.assertTrue(self.guide.select_spot(1))
+            self.assertIn("Spot 1 · 2 passes", self.guide.history_text())
+            self.assertIsNone(self.guide.tested_settings)
+            with self.subTest(check="cut button"):
+                self.assertFalse(self.guide.can_cut)
+            with self.subTest(check="build a plan"):
+                with self.assertRaisesRegex(ValueError, "original settings.*unavailable"):
+                    self.prepare(connection=("auto", (1, 2)), force=32)
+            self.assertTrue(self.guide.select_spot(2))
+            self.assertTrue(self.guide.can_cut)
+            fresh = self.prepare(connection=("auto", (1, 2)), force=32)
+            self.assertEqual((fresh.sheet.cells[0].index, fresh.settings.force), (1, 32))
 
     def test_larger_sample_changes_grid_and_is_saved_with_marked_spots(self):
         with tempfile.TemporaryDirectory() as folder:
