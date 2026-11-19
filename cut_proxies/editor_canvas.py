@@ -1,5 +1,7 @@
 """Design page, mat, registration overlay and live drawing feedback."""
 
+from functools import lru_cache
+from io import BytesIO
 import math
 
 import cairo
@@ -7,6 +9,11 @@ import cairo
 from gi.repository import Adw, Gdk, Gtk
 
 from . import editor_model
+
+
+@lru_cache(maxsize=4)
+def _sticker_surface(png):
+    return cairo.ImageSurface.create_from_png(BytesIO(png))
 
 
 def _rgb(value):
@@ -244,7 +251,18 @@ class DesignCanvas(Gtk.DrawingArea):
 
     @staticmethod
     def draw_shape(cr, shape, selected, scale):
+        if shape.sticker:
+            image = _sticker_surface(shape.sticker.png_bytes())
+            (x, y), (rx, ry), _, (bx, by) = shape.frame().points
+            cr.save()
+            cr.transform(cairo.Matrix((rx - x) / image.get_width(), (ry - y) / image.get_width(),
+                                      (bx - x) / image.get_height(), (by - y) / image.get_height(), x, y))
+            cr.set_source_surface(image, 0, 0)
+            cr.paint()
+            cr.restore()
         paths = shape.paths()
+        if not paths:
+            return
         for path in paths:
             cr.move_to(*path.points[0])
             for point in path.points[1:]:

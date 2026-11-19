@@ -9,6 +9,7 @@ from unittest import mock
 
 from cut_proxies import cli, corner_test, editor_model, job, materials, presets, transport
 from tests.test_vector_editing import compound_project
+from tests.test_sticker_print import make_image
 
 try:
     from PySide6.QtCore import QPoint, QPointF, Qt
@@ -103,6 +104,52 @@ class TestQtFrontend(unittest.TestCase):
         materials = window.tabs.widget(window.tab("Materials"))
         self.assertFalse(materials.isAncestorOf(window.controls["preset"]))
         self.assertFalse(materials.isAncestorOf(window.blade["force"]))
+
+    def test_published_template_is_selected_in_layout_and_can_be_cleared(self):
+        window = self.window
+        window.select("layout_preset", "scm-a4-standard-borderless")
+        self.assertEqual(len(window.job.paths), 9)
+        self.assertEqual(window.job.marks.inset_mm, 3.5)
+        self.assertFalse(window.controls["card"].isEnabled())
+        self.assertIn("SCM A4", window.source_label.text())
+        window.use_generated.click()
+        self.assertIsNone(window.artwork)
+        self.assertEqual(window.choice("layout_preset"), "")
+        self.assertTrue(window.controls["card"].isEnabled())
+
+    def test_sticker_workspace_traces_exports_and_loads_paired_geometry(self):
+        window = self.window
+        window.open_design()
+        design = window.design
+        design.replace_document(editor_model.Project(215.9, 279.4))
+        image = self.config_path / "sticker.png"
+        make_image(image)
+        with mock.patch.object(QFileDialog, "getOpenFileName", return_value=(str(image), "")):
+            design.place_sticker()
+        self.assertTrue(design.trace_button.isEnabled())
+        self.assertFalse(design.project.artwork().paths)
+
+        def apply_trace(dialog):
+            buttons = dialog.findChild(QDialogButtonBox)
+            buttons.button(QDialogButtonBox.StandardButton.Ok).click()
+            return dialog.result()
+
+        with mock.patch.object(QDialog, "exec", apply_trace):
+            design.trace_button.click()
+        self.assertEqual(len(design.project.artwork().paths), 3)
+        self.assertIn("Export Print", design.review_button.text())
+        target = self.config_path / "stickers.zip"
+        with mock.patch.object(QFileDialog, "getSaveFileName", return_value=(str(target), "")), \
+             mock.patch.object(design.export_tasks, "run", side_effect=lambda work, done: done(work(), None)):
+            design.review_button.click()
+        design.send_workspace.click()
+        with mock.patch.object(window, "select_open", return_value=target), \
+             mock.patch.object(window.tasks, "run", side_effect=lambda work, done: done(work(), None)):
+            window.open_sheet()
+        self.assertEqual(window.tabs.currentIndex(), window.tab("Sheet"))
+        self.assertTrue(window.bundle_checked)
+        self.assertEqual(len(window.job.paths), 3)
+        self.assertFalse(window.job.blocked)
 
     def test_wheel_moves_the_pane_without_changing_the_focused_setting(self):
         window = self.window

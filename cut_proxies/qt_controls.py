@@ -68,6 +68,7 @@ QPushButton[role="holder"]:checked {
     background: palette(highlight); color: @accent_text; border-radius: 5px;
 }
 QPushButton:disabled { background: @disabled_button; color: @disabled_text; }
+QComboBox:disabled { background: @disabled_button; color: @disabled_text; }
 QPushButton[role="primary"] {
     background: palette(highlight); color: @accent_text; font-weight: 650;
     border: 1px solid palette(highlight); border-radius: 6px; padding: 6px 14px;

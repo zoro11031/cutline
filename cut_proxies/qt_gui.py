@@ -270,7 +270,7 @@ class Window(QMainWindow):
         self.use_generated = source.push("Use Generated Layout", self.reset_artwork)
         layout = page.group("Media and cards")
         self.choose(layout, "layout_preset", "Layout preset",
-                    {"": "Custom", **{key: value.name for key, value in layout_presets.BUILTIN.items()}},
+                    {"": "Custom", **{key: value.name for key, value in layout_presets.available().items()}},
                     changed=self.apply_layout_preset)
         self.choose(layout, "sheet", "Sheet", sorted(geometry.SHEETS), config.DEFAULT_SHEET)
         self.choose(layout, "portrait", "Orientation", {"best": "Best fit", True: "Portrait", False: "Landscape"})
@@ -295,11 +295,13 @@ class Window(QMainWindow):
     def sheet_page(self):
         page = Page()
         form = page.group("Printed sheet")
-        self.sheet_file = form.note("Open a print PDF or a matched ProxyPress ZIP.")
+        self.sheet_file = form.note("Open a print PDF or a matched Print & Cut ZIP.")
         self.close_print = button("Close File", self.close_printed_sheet)
         form.actions(button("Open PDF or ZIP…", self.open_sheet), self.close_print)
         self.bundle_export = form.push("Save Paired Cut File…", self.save_bundle_file)
+        self.bundle_print = form.push("Save Print PDF…", self.save_bundle_print)
         self.bundle_export.hide()
+        self.bundle_print.hide()
         self.sheet_page_number = form.number("Page", 1, 1, 999, changed=self.change_sheet_page)
         self.sheet_page_label = form.labelForField(self.sheet_page_number)
         self.measure_button = form.push("Measure Registration Marks", self.measure_sheet)
@@ -678,21 +680,28 @@ class Window(QMainWindow):
         self.message("Calibration saved.")
 
     def apply_layout_preset(self):
-        profile = layout_presets.BUILTIN.get(self.choice("layout_preset"))
+        if self.loading:
+            return
+        profile = layout_presets.available().get(self.choice("layout_preset"))
         if profile is None:
+            if layout_presets.is_published(self.artwork):
+                self.reset_artwork()
             return
         settings = profile.options()
-        self.reset_artwork()
+        self.clear_bundle()
+        self.project_shapes = self.reviewed_design = None
         with self.editing():
-            for key, value in (("sheet", settings["sheet"]), ("card", "standard"), ("engine", "proxypress"),
-                               ("portrait", False), ("mode", template.ROUNDED), ("pattern", regmarks.THREE)):
-                self.select(key, value)
+            for key in ("sheet", "card", "engine", "portrait", "mode", "pattern"):
+                self.select(key, settings[key])
             for key in ("radius_mm", "mark_inset_mm", "mark_length_mm", "mark_thickness_mm", "bleed_mm"):
                 self.controls[key].setValue(settings[key])
             self.controls["registration"].setChecked(True)
             self.controls["auto_search"].setChecked(True)
             self.skip.clear()
-        self.rebuild()
+        if isinstance(profile, layout_presets.PublishedTemplate):
+            self.use_artwork(profile.artwork(), profile.name)
+        else:
+            self.use_artwork(None, "Generated card layout")
 
     def open_artwork(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open Cut Artwork", "", ARTWORK_FILTER)
@@ -712,11 +721,15 @@ class Window(QMainWindow):
             return
         self.clear_bundle()
         self.project_shapes = self.reviewed_design = None
+        with self.editing():
+            self.select("layout_preset", "")
         self.use_artwork(drawing, path.name + (f" · Page {page}" if page else ""))
 
     def reset_artwork(self):
         self.clear_bundle()
         self.project_shapes = self.reviewed_design = None
+        with self.editing():
+            self.select("layout_preset", "")
         self.use_artwork(None, "Generated card layout")
 
     def use_artwork(self, drawing, label, send_mode="simple", group_defaults=None):
@@ -827,6 +840,9 @@ class Window(QMainWindow):
         return options
 
     def update_enabled_fields(self):
+        fixed_layout = self.bundle or layout_presets.is_published(self.artwork)
+        for key in ("sheet", "portrait", "engine", "card", "mode", "radius_mm"):
+            self.controls[key].setEnabled(not fixed_layout)
         device = graphtec.device_by_name(self.choice("cutter"))
         for name, upper in (("force", device.max_pressure), ("speed", device.max_speed)):
             self.blade[name].setToolTip(f"{CONTROL_HELP[name]} Range on {DEVICES[device.name]} is 1–{upper}.")
@@ -1044,6 +1060,7 @@ class Window(QMainWindow):
         if self.bundle:
             self.bundle = None
             self.bundle_export.hide()
+            self.bundle_print.hide()
             self.lock_bundle_controls(False)
             self.clear_printed_sheet()
 
@@ -1057,7 +1074,7 @@ class Window(QMainWindow):
     def clear_printed_sheet(self):
         self.pdf = self.bundle_row_error = None
         self.invalidate_measurement(clear_image=True)
-        self.sheet_file.setText("Open a print PDF or a matched ProxyPress ZIP.")
+        self.sheet_file.setText("Open a print PDF or a matched Print & Cut ZIP.")
         self.sheet_result.setText("Not measured")
         with self.editing():
             self.sheet_page_number.setRange(1, 999)
@@ -1083,8 +1100,19 @@ class Window(QMainWindow):
         except bundle.BundleError as error:
             self.message(str(error))
 
+    def save_bundle_print(self):
+        matched = self.bundle
+        if matched is None:
+            return
+        path = self.choose_output("Save Print PDF", Path(matched.pdf).name)
+        if path:
+            try:
+                self.message(f"Saved {matched.save_print_pdf(path).name}. Print at actual size.")
+            except bundle.BundleError as error:
+                self.message(str(error))
+
     def open_sheet(self):
-        path = self.select_open("Open Printed Sheet", "Print PDF or ProxyPress ZIP (*.pdf *.PDF *.zip *.ZIP)")
+        path = self.select_open("Open Printed Sheet", "Print PDF or matched ZIP (*.pdf *.PDF *.zip *.ZIP)")
         if not path:
             return
         if path.suffix.casefold() == ".zip" or zipfile.is_zipfile(path):
@@ -1112,9 +1140,11 @@ class Window(QMainWindow):
         self.clear_bundle()
         self.bundle, self.pdf = matched, path
         self.bundle_export.show()
+        self.bundle_print.show()
         self.reviewed_design = self.project_shapes = None
         self.lock_bundle_controls(True)
         with self.editing():
+            self.select("layout_preset", "")
             self.sheet_page_number.setRange(1, len(matched.rows))
             self.sheet_page_number.setValue(1)
         self.use_bundle_row(row, drawing)
@@ -1165,13 +1195,13 @@ class Window(QMainWindow):
         row = self.current_bundle_row()
         marks = matched.marks() if matched else current.marks
         dpi, page = self.sheet_dpi.currentData(), self.sheet_page_number.value()
+        orient_scm = layout_presets.is_published(self.artwork)
 
         def work():
             if matched:
                 report, image = matched.measure(row, marks, dpi)
             else:
-                image = sheet.render(path, page=page, dpi=dpi, colour=True)
-                report = sheet.measure(path, marks, page=page, dpi=dpi, image=image)
+                report, image = sheet.measure_preview(path, marks, page, dpi, orient_scm=orient_scm)
             png = io.BytesIO()
             image.save(png, format="PNG")
             return report, report.problems(marks.sheet_w_mm, marks.sheet_h_mm), png.getvalue()
@@ -1185,8 +1215,10 @@ class Window(QMainWindow):
                 report, issues, png = value
                 self.report = report
                 self.bundle_checked = bool(matched) and not issues
-                self.sheet_result.setText("\n".join(
-                    [report.diagnosis(), *(mark.describe() for mark in report.marks), *issues]))
+                details = [report.diagnosis()]
+                if report.preview_rotation in (90, 270):
+                    details.append("Load the printed sheet face-up in the orientation shown in the preview.")
+                self.sheet_result.setText("\n".join([*details, *(mark.describe() for mark in report.marks), *issues]))
                 self.preview.show_pdf(png, (report.page_w_mm, report.page_h_mm), report)
                 self.preview_mode.show()
             self.refresh_send()

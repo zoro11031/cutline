@@ -1,7 +1,9 @@
+import os
+from pathlib import Path
 import unittest
 from unittest import mock
 
-from cut_proxies import cli, config, job, layout_presets
+from cut_proxies import cli, config, importer, job, layout_presets
 
 
 class TestProxyPressCameoPreset(unittest.TestCase):
@@ -50,3 +52,42 @@ class TestProxyPressCameoPreset(unittest.TestCase):
         self.assertEqual(options['bleed_mm'], 0.625)
         self.assertEqual(options['force'], 20)
         self.assertEqual(options['preset_name'], config.DEFAULT_PRESET)
+
+
+class TestPublishedTemplates(unittest.TestCase):
+    def test_common_letter_and_a4_templates_build_with_their_published_registration(self):
+        expected = {'letter': (8, 8, 8, 8, 9, 4, 9), 'a4': (8, 8, 9, 9, 10, 4, 9)}
+        cards = ('standard', 'poker', 'japanese', 'bridge', 'catan', 'tarot', 'standard-borderless')
+        for paper, counts in expected.items():
+            for card, count in zip(cards, counts, strict=True):
+                key = f'scm-{paper}-{card}'
+                with self.subTest(template=key):
+                    preset = layout_presets.available()[key]
+                    plan = job.build(**preset.options(), imported=preset.artwork(), use_document_page=True)
+                    self.assertEqual(len(plan.paths), count)
+                    self.assertEqual((plan.marks.inset_mm, plan.marks.length_mm), (preset.inset_mm, preset.arm_mm))
+                    self.assertFalse(plan.blocked, plan.blocked)
+                    self.assertFalse(plan.liveness_failures)
+
+    @unittest.skipUnless(os.environ.get('SCM_REFERENCE_DIR'), 'requires upstream Studio3 templates')
+    def test_installed_paths_match_original_studio3_coordinates(self):
+        source = Path(os.environ['SCM_REFERENCE_DIR'])
+        for preset in layout_presets.available().values():
+            if not isinstance(preset, layout_presets.PublishedTemplate):
+                continue
+            with self.subTest(source=preset.source):
+                original = importer.load(source / preset.source)
+                shift = 10 - preset.inset_mm
+                for original_path, built_in in zip(original.paths, preset.paths, strict=True):
+                    self.assertEqual(original_path.closed, built_in.closed)
+                    for a, b in zip(original_path.points, built_in.points, strict=True):
+                        for actual, expected in zip(b, a, strict=True):
+                            self.assertAlmostEqual(actual, expected - shift, delta=0.00001)
+
+    def test_cli_selects_published_template_without_user_artwork(self):
+        with mock.patch.object(cli.job_mod, 'build', wraps=job.build) as build, mock.patch.object(cli, 'say'):
+            self.assertEqual(cli.main(['cut', '--layout-preset', 'scm-a4-bridge', '--dry-run']), 0)
+        options = build.call_args.kwargs
+        self.assertTrue(layout_presets.is_published(options['imported']))
+        self.assertTrue(options['use_document_page'])
+        self.assertTrue(options['portrait'])

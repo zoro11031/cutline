@@ -7,6 +7,7 @@ import types
 from unittest import mock
 from cut_proxies import config, corner_test, graphtec, importer, job, presets, starting_guide
 from tests.test_vector_editing import compound_project
+from tests.test_sticker_print import make_image
 
 try:
     from cut_proxies import gui
@@ -142,6 +143,67 @@ class TestDesignWorkspace(unittest.TestCase):
         materials = win.stack.get_child_by_name("materials")
         self.assertFalse(win.r_force.is_ancestor(materials))
         self.assertFalse(win.r_preset.is_ancestor(materials))
+
+    def test_published_template_is_selected_in_layout_and_can_be_cleared(self):
+        from cut_proxies import layout_presets
+
+        win = self.make_window()
+        position = tuple(layout_presets.available()).index('scm-a4-standard-borderless') + 1
+        win.r_layout_preset.set_selected(position)
+        self.assertEqual(len(win.job.paths), 9)
+        self.assertEqual(win.job.marks.inset_mm, 3.5)
+        self.assertFalse(win.r_card.get_sensitive())
+        self.assertIn('SCM A4', win.import_row.get_title())
+        win.use_generated.emit('clicked')
+        self.assertIsNone(win.imported)
+        self.assertEqual(win.r_layout_preset.get_selected(), 0)
+        self.assertTrue(win.r_card.get_sensitive())
+
+    def test_sticker_workspace_traces_exports_and_loads_paired_geometry(self):
+        from cut_proxies import editor_model
+
+        win = self.make_window()
+        win.present()
+        win.on_edit_template()
+        design = win.design
+        design.history = editor_model.History(editor_model.Project(215.9, 279.4))
+        design.refresh_objects()
+        with tempfile.TemporaryDirectory() as folder:
+            image = Path(folder) / 'sticker.png'
+            make_image(image)
+            with mock.patch.object(design, 'file_dialog', side_effect=lambda _title, opened, **_: opened(image)):
+                design.place_sticker()
+            self.assertTrue(design.trace_button.get_sensitive())
+            self.assertFalse(design.project.artwork().paths)
+            design.trace_button.emit('clicked')
+            dialog = win.get_visible_dialog()
+            self.assertIsNotNone(dialog)
+
+            def children(widget):
+                yield widget
+                current = widget.get_first_child()
+                while current is not None:
+                    yield from children(current)
+                    current = current.get_next_sibling()
+
+            trace = next(widget for widget in children(dialog) if isinstance(widget, gui.Gtk.Button) and
+                         widget.get_label() == 'Trace')
+            trace.emit('clicked')
+            self.assertEqual(len(design.project.artwork().paths), 3)
+            self.assertIn('Export Print', design.review.get_label())
+            target = Path(folder) / 'stickers.zip'
+            with mock.patch.object(design, 'file_dialog', side_effect=lambda _title, opened, **_: opened(target)), \
+                 mock.patch.object(gui.threading, 'Thread', side_effect=lambda target, **_: mock.Mock(start=target)):
+                design.review.emit('clicked')
+                design.send_workspace.emit('clicked')
+                with mock.patch.object(gui.Gtk, 'FileDialog') as chooser:
+                    win.on_pick_pdf()
+                    handle = chooser.return_value
+                    handle.open_finish.return_value = gui.Gio.File.new_for_path(str(target))
+                    handle.open.call_args.args[2](handle, mock.Mock())
+            self.assertEqual(win.stack.get_visible_child_name(), 'sheet')
+            self.assertEqual(len(win.job.paths), 3)
+            self.assertFalse(win.job.blocked)
 
     def test_wheel_is_captured_on_settings_and_scrolls_the_pane(self):
         win = self.make_window()

@@ -139,6 +139,7 @@ class SheetReport:
     page_h_mm: float
     dpi: int
     marks: list[FoundMark]
+    preview_rotation: int = 0
 
     @property
     def found(self) -> list[FoundMark]:
@@ -375,6 +376,24 @@ def mark_ink_matches(image, box: Rect, dpi: int, ell=None) -> bool:
     return (filled((0, y, width, y+band)) >= 0.35
             and filled((x, 0, x+band, height)) >= 0.35
             and filled((inner_x0, inner_y0, inner_x1, inner_y1)) <= 0.25)
+
+
+def measure_preview(pdf, marks, page=1, dpi=DEFAULT_DPI, *, orient_scm=False):
+    """Render an overlay in cutter coordinates and measure its registration marks."""
+    image = render(pdf, page=page, dpi=dpi, colour=True)
+    turn = 0
+    if orient_scm:
+        nominal = tuple(edge * dpi / 25.4 for edge in (marks.sheet_w_mm, marks.sheet_h_mm))
+
+        def matches(size):
+            return all(abs(actual - expected) <= 1.5 for actual, expected in zip(size, nominal))
+
+        if not matches(image.size) and matches(image.size[::-1]):
+            turn = 270 if marks.sheet_w_mm < marks.sheet_h_mm else 90
+            image = image.rotate(turn, expand=True)
+    report = measure(pdf, marks, page=page, dpi=dpi, image=image, swap_page_axes=bool(turn))
+    report.preview_rotation = turn
+    return report, image
 
 
 def measure(pdf, mk: Marks, page: int = 1, dpi: int = DEFAULT_DPI,
