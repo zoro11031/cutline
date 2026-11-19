@@ -7,6 +7,20 @@ from cut_proxies import ble, config, cutters, graphtec, materials, presets, rfco
 
 
 class TestExactEndpoint(unittest.TestCase):
+    def test_automatic_selection_prefers_the_only_usb_cutter(self):
+        cameo = graphtec.device_by_name("Silhouette Cameo 4")
+        usb, second_usb = (1, 2), (1, 3)
+        wireless = ("ble", "A")
+        records = [(cameo, "", usb)]
+        with mock.patch.object(transport, "usb_endpoints", return_value=records):
+            choices = {**cutters.usb_choices(), wireless: "CAMEO 4-499341P · Bluetooth LE · A"}
+            self.assertEqual(cutters.detected_choice(choices, None), usb)
+            self.assertEqual(cutters.detected_choice(choices, wireless), wireless)
+            self.assertEqual(cutters.detected_choice({wireless: choices[wireless]}, None), wireless)
+            records.append((cameo, "", second_usb))
+            choices.update(cutters.usb_choices())
+            self.assertIsNone(cutters.detected_choice(choices, None))
+
     def test_refusal_changes_with_endpoint_and_model(self):
         cameo = graphtec.device_by_name("Silhouette Cameo 4")
         portrait = graphtec.device_by_name("Silhouette Portrait 4")

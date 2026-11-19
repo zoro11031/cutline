@@ -97,11 +97,16 @@ def auto_model(endpoint, label):
 
 
 def detected_choice(choices, preferred):
-    """Keep an explicit choice and only auto-select an unambiguous known cutter."""
+    """Keep an explicit choice or prefer an unambiguous USB connection."""
+    from . import bluetooth
+
     if preferred is not None:
         return preferred if preferred in choices else None
-    if len(choices) == 1:
-        endpoint, label = next(iter(choices.items()))
+    usb = {endpoint: label for endpoint, label in choices.items()
+           if endpoint[0] not in bluetooth.BLUETOOTH_MODES}
+    candidates = usb or choices
+    if len(candidates) == 1:
+        endpoint, label = next(iter(candidates.items()))
         if auto_model(endpoint, label):
             return endpoint
     return None
