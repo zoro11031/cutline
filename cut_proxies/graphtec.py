@@ -524,6 +524,12 @@ class CutJob:
         self.sheet_size_mm = sheet_size_mm or (reg_width_mm + 2*x, reg_length_mm + 2*y)
         # A four-mark scan only exists on hardware that has it.
         self.quad = quad and device.quad_regmarks
+        self.uses_captured_letter_scan = (
+            self.registration and self.auto_search and not self.quad and self.search_mm is None
+            and self.mat in ("auto", "cameo-12x12")
+            and captured_letter_scan(device, reg_length_mm, reg_width_mm, origin_mm, mark_shape_mm))
+        if self.uses_captured_letter_scan and self.settings.track_enhancing:
+            self.settings = dataclasses.replace(self.settings, track_enhancing=False)
 
     # ---- pieces ------------------------------------------------------
     def _setup_commands(self, settings: CutSettings | None = None) -> list[str]:
@@ -649,10 +655,9 @@ class CutJob:
 
     def _registered_setup(self, settings):
         track_enhancing = settings is not None and settings.track_enhancing
-        if (self.registration and self.auto_search and not self.quad and self.search_mm is None
-                and not track_enhancing and self.mat in ("auto", "cameo-12x12")
-                and captured_letter_scan(self.device, self.reg_length_mm, self.reg_width_mm,
-                                         self.origin_mm, self.mark_shape_mm)):
+        if self.uses_captured_letter_scan:
+            # The generic roller sequence displaced cuts on this Letter
+            # setup. Keep the working scan and registered window together.
             # First two bulk writes and post-registration clip in the Studio
             # trace. The cutter must answer before any blade setup or paths.
             preamble = registration_preamble(self.device, self.mark_shape_mm)

@@ -130,15 +130,25 @@ class TestMediaHandling(unittest.TestCase):
 
 
 class TestStudioMediaControls(unittest.TestCase):
+    def test_cameo4_letter_keeps_the_working_registration_with_track_requested(self):
+        requested = job.build(offset_mm=(0, 0), blade_options={"track_enhancing": True})
+        off = job.build(offset_mm=(0, 0), blade_options={"track_enhancing": False})
+        self.assertEqual(requested.blocked, [])
+        self.assertFalse(requested.settings.track_enhancing)
+        self.assertIn("Track Enhancing is off", requested.warnings[0])
+        self.assertEqual(requested.steps, off.steps)
+        found = next(i for i, step in enumerate(requested.steps) if step.kind == "expect")
+        self.assertEqual(requested.steps[found + 1].data, graphtec.frame((r"\0,0", "Z3918,5188")))
+
     def test_track_enhancing_has_one_waited_roller_step_before_registration(self):
-        checked = job.build(offset_mm=(0, 0))
+        checked = job.build(sheet="A4", offset_mm=(0, 0))
         self.assertEqual(checked.blocked, [])
         [enhance] = [step for step in checked.steps if step.data == graphtec.frame("FY0")]
         self.assertTrue(enhance.wait_ready)
         self.assertIn(enhance, checked.registration_steps())
         self.assertLess(checked.stream.index(b"FX"), checked.stream.index(b"FY0"))
         self.assertLess(checked.stream.index(b"FY0"), checked.stream.index(b"TB123"))
-        disabled = job.build(offset_mm=(0, 0), blade_options={"track_enhancing": False})
+        disabled = job.build(sheet="A4", offset_mm=(0, 0), blade_options={"track_enhancing": False})
         self.assertNotIn(graphtec.frame("FY0"), disabled.stream)
         broken = verify._corrupt_track_enhancing(checked.stream)
         ok, rows = verify.expectations_met(broken, checked.grid, checked.marks,

@@ -372,6 +372,11 @@ def build(sheet: str = config.DEFAULT_SHEET,
         mark_shape_mm=(mk.length_mm, mk.thickness_mm),
         sheet_size_mm=(grid.sheet_w_mm, grid.sheet_h_mm),
         mat=mat, end_position=end_position, end_feed_mm=end_feed_mm)
+    if cut.track_enhancing and not job.settings.track_enhancing:
+        warnings.insert(0, "Track Enhancing is off for this job to keep Cameo 4 Letter cuts aligned.")
+        groups = tuple(dataclasses.replace(
+            group, settings=dataclasses.replace(group.settings, track_enhancing=False)) for group in groups)
+    cut = job.settings
     steps = tuple(job.plan_matrix([(group.settings, group.paths) for group in groups], wait_between=True)
                   if groups else job.plan(paths))
     stream = b''.join(step.data for step in steps if step.kind == 'write')
