@@ -3,8 +3,8 @@
 Three transports, in the order they are tried:
 
 `PyUsbTransport`
-    Bulk endpoints over `pyusb`.  This is the only one that can read, so it is
-    the only one that can do a registration scan.  It needs either a udev rule
+    Bulk endpoints over `pyusb`. This is the preferred USB connection for
+    reading registration replies. It needs either a udev rule
     or root, and it needs the kernel's `usblp` driver *not* to be holding the
     interface.
 
@@ -26,6 +26,7 @@ See docs/FINDINGS.md for the hardware results.
 from __future__ import annotations
 
 import os
+import threading
 import time
 
 from . import graphtec
@@ -50,6 +51,63 @@ class RegistrationFailed(TransportError):
 
 class NotFound(TransportError):
     pass
+
+
+class CutCancelled(TransportError):
+    pass
+
+
+class CutControl:
+    """Cooperate with the sender at boundaries between command writes."""
+
+    def __init__(self, on_change):
+        self._condition = threading.Condition()
+        self._state = "running"
+        self._on_change = on_change
+
+    @property
+    def state(self):
+        with self._condition:
+            return self._state
+
+    def toggle_pause(self):
+        with self._condition:
+            if self._state == "running":
+                self._set_state("pausing")
+            elif self._state in ("pausing", "paused"):
+                self._set_state("running")
+
+    def cancel(self):
+        with self._condition:
+            if self._state != "finishing":
+                self._set_state("cancelling")
+
+    def finishing(self):
+        with self._condition:
+            self._set_state("finishing")
+
+    @property
+    def status_text(self):
+        return {"running": "Sending to the cutter…",
+                "pausing": "Pausing after the current cutter operation…",
+                "paused": "Cut paused. Leave the mat loaded to resume.",
+                "cancelling": "Stopping after the current cutter operation…",
+                "finishing": "Waiting for the cutter to finish…"}[self.state]
+
+    def _set_state(self, state):
+        self._state = state
+        self._condition.notify_all()
+        self._on_change()
+
+    def checkpoint(self):
+        with self._condition:
+            paused = self._state == "pausing"
+            if paused:
+                self._set_state("paused")
+            self._condition.wait_for(lambda: self._state != "paused")
+            if self._state == "cancelling":
+                raise CutCancelled("Cut cancelled. No more commands were sent.")
+            return paused
 
 
 def check_autoblade(codes):
@@ -83,9 +141,10 @@ class Transport:
         self.close()
 
     # ---- the shared run loop ----------------------------------------
-    def run(self, steps, log=lambda m: None, *, wait_done: bool = False) -> int:
+    def run(self, steps, log=lambda m: None, *, wait_done: bool = False,
+            control: CutControl | None = None) -> int:
         """Execute a checked plan, optionally waiting after its final command."""
-        if wait_done and not self.can_read:
+        if (wait_done or control is not None) and not self.can_read:
             raise TransportError("Waiting for completion requires a readable cutter connection.")
         steps = tuple(steps)
         # Query before motion, once for the whole job (including test matrices).
@@ -96,11 +155,14 @@ class Transport:
             check_autoblade(self.tool_codes())
         sent = 0
         for step in steps:
+            if control is not None and step.kind == "write":
+                self._cut_checkpoint(control)
             if step.kind == "write":
                 if step.note:
                     log(step.note)
-                sent += self._write_paths(step.data) if step.pace else self.write(step.data)
-                if step.wait_ready and not (step.pace and len(step.data) > PATH_BATCH_BYTES):
+                sent += self._write_paths(step.data, control) if step.pace else self.write(step.data)
+                paced_wait = step.pace and (control is not None or len(step.data) > PATH_BATCH_BYTES)
+                if step.wait_ready and not paced_wait:
                     self._wait_until_ready()
             elif step.kind == "expect":
                 got = self.read(timeout_ms=step.timeout_ms)
@@ -113,6 +175,8 @@ class Transport:
                 if step.note:
                     log(f"{step.note}: ok")
         if wait_done:
+            if control is not None:
+                control.finishing()
             log("Waiting for the cutter to finish")
             try:
                 self._wait_until_ready()
@@ -121,8 +185,14 @@ class Transport:
                                      f"be confirmed. {exc}") from exc
         return sent
 
-    def _write_paths(self, data: bytes) -> int:
-        if len(data) <= PATH_BATCH_BYTES:
+    def _cut_checkpoint(self, control):
+        if control.checkpoint():
+            state = self.status()
+            if state != "ready":
+                raise TransportError(f"The cutter is {state}. The paused cut could not resume.")
+
+    def _write_paths(self, data: bytes, control=None) -> int:
+        if len(data) <= PATH_BATCH_BYTES and control is None:
             return self.write(data)
         # Validate framing before the first batch, including truncated input.
         commands = data.split(graphtec.CMD_ETX)
@@ -131,6 +201,8 @@ class Transport:
 
         sent = 0
         while sent < len(data):
+            if control is not None:
+                self._cut_checkpoint(control)
             end = data.rfind(graphtec.CMD_ETX, sent, sent + PATH_BATCH_BYTES) + 1
             written = self.write(data[sent:end])
             if written != end - sent:
@@ -355,6 +427,7 @@ class UsbLpTransport(Transport):
                     raise NotFound("The selected USB cutter disconnected.")
                 self.path = cand
                 self.device = known
+                self._reply_buffer = bytearray()
                 return
         raise NotFound(
             "No writable /dev/usb/lp* device. Either the cutter is not "
@@ -381,8 +454,14 @@ class UsbLpTransport(Transport):
 
     def read(self, size: int = 64, timeout_ms: int = 10000) -> bytes:
         deadline = time.monotonic() + timeout_ms / 1000.0
-        buf = b""
-        while time.monotonic() < deadline:
+        while True:
+            end = self._reply_buffer.find(graphtec.CMD_ETX) + 1
+            if end:
+                reply = bytes(self._reply_buffer[:end])
+                del self._reply_buffer[:end]
+                return reply
+            if time.monotonic() >= deadline:
+                break
             try:
                 chunk = os.read(self._fd, size)
             except BlockingIOError:
@@ -391,11 +470,11 @@ class UsbLpTransport(Transport):
             except OSError as exc:
                 raise TransportError(f"Read from {self.path} failed: {exc}") from exc
             if chunk:
-                buf += chunk
-                if buf.endswith(graphtec.CMD_ETX):
-                    return buf
+                self._reply_buffer.extend(chunk)
+            else:
+                time.sleep(0.02)
         raise TransportError(
-            f"No answer on {self.path} within {timeout_ms} ms (got {buf!r}). "
+            f"No answer on {self.path} within {timeout_ms} ms (got {bytes(self._reply_buffer)!r}). "
             f"usblp buffers replies unhelpfully; for a registered cut use "
             f"pyusb.")
 
