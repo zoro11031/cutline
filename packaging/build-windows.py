@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble a portable x64 Windows ZIP from official Python and MSYS2 packages."""
+"""Build an x64 Windows installer from official Python and MSYS2 packages."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
@@ -134,8 +134,6 @@ def build(cache, output):
         shutil.copy2(ROOT / "packaging/windows-launcher.py", app / "launcher.py")
         shutil.copy2(ROOT / "LICENSE", app / "LICENSE")
         shutil.copy2(ROOT / "packaging/windows-readme.txt", app / "Start Here.txt")
-        (app / "Silhouette Control Center.cmd").write_bytes(
-            b'@echo off\r\nstart "" "%~dp0pythonw.exe" "%~dp0launcher.py"\r\n')
         (app / "build-manifest.json").write_text(json.dumps({
             "python": {python_zip.name: sha256(python_zip)},
             "pypi_wheels": {wheel.name: sha256(wheel) for wheel in wheels},
@@ -143,9 +141,15 @@ def build(cache, output):
         }, indent=2) + "\n")
         version = re.search(r'^__version__ = "(.*?)"', (ROOT / "cut_proxies/__init__.py").read_text(),
                             re.M).group(1)
-        target = output / f"SilhouetteControlCenter-{version}-Windows-x86_64"
-        shutil.make_archive(str(target), "zip", base_dir=app.name, root_dir=app.parent)
-        print(f"Windows portable ZIP: {target}.zip")
+        filename = f"SilhouetteControlCenter-{version}-Windows-x86_64-Setup.exe"
+        # Publish the completed installer only after makensis succeeds.
+        with TemporaryDirectory(prefix="windows-setup-", dir=output) as folder:
+            installer = Path(folder) / filename
+            subprocess.run(["makensis", "-V3", f"-DAPP_VERSION={version}",
+                            f"-DPAYLOAD={app}", f"-DINSTALLER={installer}",
+                            ROOT / "packaging/windows-installer.nsi"], check=True)
+            installer.replace(output / filename)
+        print(f"Windows installer: {output / filename}")
 
 
 if __name__ == "__main__":
@@ -153,6 +157,8 @@ if __name__ == "__main__":
     parser.add_argument("--cache", type=Path, default=ROOT / "out/windows-cache")
     parser.add_argument("--output", type=Path, default=ROOT / "out/packages")
     args = parser.parse_args()
+    if not shutil.which("makensis"):
+        parser.error("Install NSIS (makensis) to build the Windows installer.")
     for directory in (args.cache, args.output):
         directory.mkdir(parents=True, exist_ok=True)
     build(args.cache.resolve(), args.output.resolve())

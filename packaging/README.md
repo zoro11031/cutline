@@ -111,20 +111,20 @@ utilities from the pinned
 are above.
 
 
-## Windows portable ZIP (x86-64)
+## Windows installer (x86-64)
 
-Build on Linux with Python 3.12 or newer, pip, and `zstd`.
+Build on Linux with Python 3.12 or newer, pip, NSIS (`makensis`) and `zstd`.
 
 ```sh
 python3 packaging/build-windows.py
 ```
 
-Extract the resulting ZIP and open `Silhouette Control Center.cmd`. The
-package includes Python, Qt, Poppler, Cairo, Pango, GEOS, and the PyUSB and
-Bluetooth dependencies. It keeps presets and settings under
-`%LOCALAPPDATA%\Silhouette Control Center`.
+Run `SilhouetteControlCenter-<version>-Windows-x86_64-Setup.exe` and open
+**Silhouette Control Center** from the Start menu. Setup installs for the
+current user and includes Python, Qt, Poppler, Cairo, Pango, GEOS, PyUSB and
+Bluetooth dependencies. Remove the app from Windows **Installed apps**.
+Presets and settings stay in `%LOCALAPPDATA%\Silhouette Control Center`.
 
-The ZIP contains `Start Here.txt` and a manifest with dependency checksums.
-USB on Windows requires a libusb-compatible cutter driver. The package
-does not install drivers. Direct USB and Bluetooth need a separate
-physical-cutter test in the Windows environment where you plan to use them.
+The installed app folder contains `Start Here.txt` and a manifest with
+dependency checksums. USB requires a libusb-compatible Windows cutter
+driver. Setup does not install or replace drivers.
