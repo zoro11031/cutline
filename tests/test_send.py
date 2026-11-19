@@ -134,11 +134,20 @@ class TestStudioMediaControls(unittest.TestCase):
         requested = job.build(offset_mm=(0, 0), blade_options={"track_enhancing": True})
         off = job.build(offset_mm=(0, 0), blade_options={"track_enhancing": False})
         self.assertEqual(requested.blocked, [])
-        self.assertFalse(requested.settings.track_enhancing)
-        self.assertIn("Track Enhancing is off", requested.warnings[0])
-        self.assertEqual(requested.steps, off.steps)
-        found = next(i for i, step in enumerate(requested.steps) if step.kind == "expect")
-        self.assertEqual(requested.steps[found + 1].data, graphtec.frame((r"\0,0", "Z3918,5188")))
+        self.assertTrue(requested.settings.track_enhancing)
+        init, mat, pressure, rollers, *registered = requested.steps
+        self.assertEqual(init.data, graphtec.CMD_ESC + graphtec.ESC_EOT)
+        self.assertEqual(mat.note, "set up the cutting mat")
+        self.assertEqual(pressure.data, graphtec.frame(("J1", "FX25,1")))
+        self.assertEqual(rollers.data, graphtec.frame("FY0"))
+        self.assertTrue(rollers.wait_ready)
+        self.assertEqual(tuple(registered), off.steps)
+        self.assertEqual(requested.registration_steps()[-1].expect, graphtec.RESP_REGMARK_OK)
+        broken = requested.stream.replace(graphtec.frame("Z3918,5188"), b"")
+        ok, rows = verify.expectations_met(broken, requested.grid, requested.marks,
+                                           requested.settings, requested.device)
+        self.assertFalse(ok)
+        self.assertIn("registration mat setup", {row.label for row in rows if not row.ok})
 
     def test_track_enhancing_has_one_waited_roller_step_before_registration(self):
         checked = job.build(sheet="A4", offset_mm=(0, 0))

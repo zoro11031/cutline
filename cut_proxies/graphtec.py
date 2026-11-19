@@ -528,8 +528,6 @@ class CutJob:
             self.registration and self.auto_search and not self.quad and self.search_mm is None
             and self.mat in ("auto", "cameo-12x12")
             and captured_letter_scan(device, reg_length_mm, reg_width_mm, origin_mm, mark_shape_mm))
-        if self.uses_captured_letter_scan and self.settings.track_enhancing:
-            self.settings = dataclasses.replace(self.settings, track_enhancing=False)
 
     # ---- pieces ------------------------------------------------------
     def _setup_commands(self, settings: CutSettings | None = None) -> list[str]:
@@ -655,20 +653,27 @@ class CutJob:
 
     def _registered_setup(self, settings):
         track_enhancing = settings is not None and settings.track_enhancing
+        roller_step = Step("write", frame("FY0"), note="track enhancing", wait_ready=True)
         if self.uses_captured_letter_scan:
-            # The generic roller sequence displaced cuts on this Letter
-            # setup. Keep the working scan and registered window together.
-            # First two bulk writes and post-registration clip in the Studio
-            # trace. The cutter must answer before any blade setup or paths.
+            # Graphtec.py setup() runs FY0 before registration. Set mat and
+            # pressure for the rollers, wait, then use the Studio trace's
+            # two scan writes and its registered cut window.
             preamble = registration_preamble(self.device, self.mark_shape_mm)
             scan = auto_regmark_search_mm(self.reg_length_mm, self.reg_width_mm, 5.9, 5.9)
-            steps = [
+            steps = []
+            if track_enhancing:
+                tool = Tool(settings.holder)
+                steps.extend(self._initial_steps())
+                steps.append(Step("write", frame((tool.select(), tool.pressure(settings.force))),
+                                  note="set roller pressure"))
+                steps.append(roller_step)
+            steps.extend((
                 Step("write", frame(("TG1", "FN0", *preamble[:2])), note="set up the Cameo cutting mat"),
                 Step("write", frame((*preamble[2:], scan, "TB99")), note=f"scan for marks: {scan}"),
                 Step("expect", expect=RESP_REGMARK_OK, timeout_ms=40000, note="marks found"),
                 Step("write", frame((upper_left_mm(0, 0), lower_right_mm(
                     self.reg_width_mm, self.reg_length_mm))), note="registered cut window"),
-            ]
+            ))
             if settings is not None:
                 steps.append(Step("write", frame(self._setup_commands(settings)), note="blade settings"))
             return steps
@@ -677,7 +682,7 @@ class CutJob:
             steps.append(Step("write", frame(self._setup_commands(settings)), note="blade settings"))
         if track_enhancing:
             # Graphtec.py setup(): condition the media with the rollers before registration.
-            steps.append(Step("write", frame("FY0"), note="track enhancing", wait_ready=True))
+            steps.append(roller_step)
         steps.extend(self._regmark_steps())
         return steps
 

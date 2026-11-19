@@ -652,14 +652,18 @@ def expectations_met(stream: bytes, grid: Grid, mk, settings, device,
         before_scan = d.commands[:scan_at]
         mat_setup = graphtec.cutting_mat_commands(device, mat, mk.sheet_w_mm, mk.sheet_h_mm, True)
         mat_commands = before_scan
-        captured = (auto_search and not s.track_enhancing
+        captured = (auto_search
                     and mat in ("auto", "cameo-12x12") and graphtec.captured_letter_scan(
                 device, mk.reg_length_mm, mk.reg_width_mm, mk.origin_mm,
                 (mk.length_mm, mk.thickness_mm)))
         if captured:
-            mat_setup = ("TG1", "FN0", "TB50,0", "TB99", "TB52,2",
-                         f"TB51,{graphtec.su(mk.length_mm)}", "TB53,20",
-                         "TB55,1", "TB123,3918,5188,118,118", "TB99")
+            roller_setup = ()
+            if s.track_enhancing:
+                tool = graphtec.Tool(s.holder)
+                roller_setup = (*mat_setup, tool.select(), tool.pressure(s.force), "FY0")
+            mat_setup = (*roller_setup, "TG1", "FN0", "TB50,0", "TB99", "TB52,2",
+                         f"TB51,{graphtec.su(mk.length_mm)}", "TB53,20", "TB55,1",
+                         "TB123,3918,5188,118,118", "TB99", r"\0,0", "Z3918,5188")
             mat_commands = d.commands
         if mat_setup:
             found = tuple(mat_commands[:len(mat_setup)])

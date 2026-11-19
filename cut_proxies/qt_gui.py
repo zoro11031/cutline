@@ -907,11 +907,10 @@ class Window(QMainWindow):
                 elif not current.registration:
                     title = "Layout checked · Registration off"
                     summary += "\nThe cutter uses sheet coordinates. Use a blank sheet."
-                else:
-                    if current.warnings:
-                        summary += "\n" + current.warnings[0]
-                    if current.mask_hints:
-                        summary += "\nArtwork is close to a registration mark."
+                elif current.mask_hints:
+                    summary += "\nArtwork is close to a registration mark."
+                elif current.warnings:
+                    summary += "\n" + current.warnings[0]
         marks = self.job.marks if self.job else None
         if self.pdf and not self.bundle and previous and previous.marks != marks:
             self.invalidate_measurement()
