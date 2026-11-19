@@ -143,6 +143,7 @@ CASES += tuple(
      f"{label} always {'allows' if allowed else 'refuses'}",
      [f"tests.test_send.TestStudioMediaControls.{test}"])
     for label, test in (
+        ("active cutter settings", "test_active_cutter_settings_detect_corrupted_wire_values"),
         ("line segment overcut", "test_line_segment_overcut_uses_holder_and_disables_on_pen"),
         ("track enhancing", "test_track_enhancing_has_one_waited_roller_step_before_registration"),
         ("feed position", "test_feed_distance_is_added_to_the_farthest_cut_and_verified"),

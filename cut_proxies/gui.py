@@ -501,6 +501,7 @@ class Window(Adw.ApplicationWindow):
         self._close_confirmed = False
         self._building = False
         self._sending = False
+        self.cut_control = None
         self._checking_status = False
         self.tuning = False
         self.holder_state = HolderSettings()
@@ -704,6 +705,12 @@ class Window(Adw.ApplicationWindow):
         self.cut_button.add_css_class("destructive-action")
         self.cut_button.connect("clicked", self.on_cut)
         bar.pack_end(self.cut_button)
+        self.cancel_cut = Gtk.Button(label="Cancel Cut")
+        self.cancel_cut.connect("clicked", lambda *_: self.cut_control.cancel())
+        bar.pack_end(self.cancel_cut)
+        self.pause_cut = Gtk.Button(label="Pause Cut")
+        self.pause_cut.connect("clicked", lambda *_: self.cut_control.toggle_pause())
+        bar.pack_end(self.pause_cut)
         bar.pack_end(self.corner_button)
         bar.pack_end(self.scan_button)
         self.back_to_send = Gtk.Button(label="Back to Send", css_classes=["suggested-action"])
@@ -747,9 +754,15 @@ class Window(Adw.ApplicationWindow):
         self.reset_layout_action.set_enabled(can_reset_layout)
         self.use_generated.set_sensitive(can_reset_layout)
         self.review_send.set_visible(not self.tuning and page != destination)
-        at_send = not self.tuning and page == "cut"
+        at_send = not self.tuning and page == "cut" and self.cut_control is None
         for control in (self.cut_button, self.scan_button, self.corner_button):
             control.set_visible(at_send)
+        control = self.cut_control
+        for button in (self.pause_cut, self.cancel_cut):
+            button.set_visible(control is not None)
+            button.set_sensitive(control is not None and control.state not in ("cancelling", "finishing"))
+        if control is not None:
+            self.pause_cut.set_label("Resume Cut" if control.state in ("pausing", "paused") else "Pause Cut")
         self.send_normal.set_visible(not self.tuning)
         self.guide_view.set_visible(self.tuning)
         self.back_to_send.set_visible(self.tuning)
@@ -758,6 +771,7 @@ class Window(Adw.ApplicationWindow):
         can_check = bool(identifier) and not (self._sending or self._checking_status)
         self.check_cutter_status.set_sensitive(can_check)
         reason = (
+            control.status_text if control is not None else
             "Sending to the cutter…" if self._sending else
             "Checking cutter status…" if self._checking_status else
             "Review the latest edits in Design." if destination == "design" else
@@ -1940,6 +1954,9 @@ class Window(Adw.ApplicationWindow):
         self.design.confirm_discard(discard)
 
     def confirm_window_close(self, *_args):
+        if self._sending:
+            self.toast("Finish or cancel the cutter operation before closing.")
+            return True
         if self._close_confirmed or self.design is None or not self.design.dirty:
             return False
 
@@ -2976,6 +2993,8 @@ class Window(Adw.ApplicationWindow):
             self.toast("This job does not use registration.")
             return
         self.guide.moved()
+        control = self.cut_control = (transport.CutControl(lambda: GLib.idle_add(self.update_send_actions))
+                                      if not scan_only and corner is None else None)
         self._sending = True
         self.cut_button.set_sensitive(False)
         self.scan_button.set_sensitive(False)
@@ -3000,13 +3019,18 @@ class Window(Adw.ApplicationWindow):
                             raise transport.TransportError(
                                 "the cutter is busy")
                     started = time.monotonic()
-                    sent = t.run(steps, wait_done=True) if corner and t.can_read else t.run(steps)
+                    if control is not None:
+                        sent = t.run(steps, wait_done=True, control=control)
+                    else:
+                        sent = t.run(steps, wait_done=True) if corner and t.can_read else t.run(steps)
                 message = ("Corner test sent." if corner else "Registration scan passed. No cut paths were sent."
                            if scan_only else f"Cut sent: {sent:,} bytes")
                 GLib.idle_add(self.toast, message)
             except transport.RegistrationFailed as exc:
                 GLib.idle_add(self.show_registration_failure, str(exc), j, matched, row, report,
                               mode, time.monotonic() - started)
+            except transport.CutCancelled as exc:
+                GLib.idle_add(self.toast, str(exc))
             except Exception as exc:              # noqa: BLE001
                 GLib.idle_add(self.toast, f"Send failed: {exc}")
             GLib.idle_add(self._send_done)
@@ -3046,6 +3070,7 @@ class Window(Adw.ApplicationWindow):
         dialog.present(self)
 
     def _send_done(self):
+        self.cut_control = None
         self._sending = False
         self.rebuild()
 

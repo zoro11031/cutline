@@ -6,6 +6,7 @@ really carries its own settings, and that a calibration offset moves every
 cut by exactly the amount asked for and no more.
 """
 
+import dataclasses
 import unittest
 from unittest import mock
 
@@ -109,6 +110,32 @@ class TestStream(unittest.TestCase):
         # Three squares at one pass and three at two: nine paths, not twelve.
         d = verify.decode(self.ts.stream)
         self.assertEqual(len(d.paths), 3 * 1 + 3 * 2)
+
+    def test_sample_map_reports_effective_values_and_checks_the_wire(self):
+        ts = testcut.build(cameo4(), CutSettings(), forces="34", speeds="31", passes="2", depths="11")
+        self.assertIn("force 33, speed 30, 2 pass(es), depth 10", ts.map_rows()[0][1])
+        commands = verify.decode(ts.stream).commands
+        self.assertIn("FX33,1", commands)
+        self.assertIn("!30,1", commands)
+        self.assertIn("TF10,1", commands)
+        self.assertEqual(len(verify.decode(ts.stream).paths), 2)
+
+        original = graphtec.CutJob.plan_matrix
+
+        def corrupt(plan, *args, **kwargs):
+            steps = original(plan, *args, **kwargs)
+            return [dataclasses.replace(step, data=step.data.replace(b"TF10,1\x03", b"TF8,1\x03"))
+                    for step in steps]
+
+        with mock.patch.object(graphtec.CutJob, "plan_matrix", corrupt):
+            with self.assertRaisesRegex(ValueError, "settings for each sample"):
+                testcut.build(cameo4(), CutSettings(), depths="10")
+
+    def test_sample_refuses_zero_passes_and_mixed_manual_and_automatic_depth(self):
+        with self.assertRaisesRegex(ValueError, "at least one cutting pass"):
+            testcut.build(cameo4(), CutSettings(), passes="0")
+        with self.assertRaisesRegex(ValueError, "separate sheets"):
+            testcut.build(cameo4(), CutSettings(), depths="-1,7")
 
     def test_every_square_comes_out_the_right_size(self):
         d = verify.decode(self.ts.stream)
