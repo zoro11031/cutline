@@ -4,6 +4,7 @@ from contextlib import ExitStack
 from ctypes import CDLL, POINTER, Structure, Union, byref, c_char_p, c_double, c_int, c_uint, c_void_p
 from dataclasses import replace
 from functools import lru_cache
+import sys
 
 from . import editor_model, vector_regions
 
@@ -24,13 +25,32 @@ class _CairoPath(Structure):
     _fields_ = [("status", c_int), ("data", POINTER(_PathData)), ("count", c_int)]
 
 
+class _WindowsTextLibraries:
+    # Windows resolves symbols from the exporting DLL, not its dependencies.
+    def __init__(self):
+        self.libraries = {prefix: CDLL(name) for prefix, name in (
+            ("cairo_", "libcairo-2.dll"),
+            ("pango_cairo_", "libpangocairo-1.0-0.dll"),
+            ("pango_", "libpango-1.0-0.dll"),
+            ("g_object_", "libgobject-2.0-0.dll"),
+            ("g_", "libglib-2.0-0.dll"),
+        )}
+
+    def __getattr__(self, name):
+        for prefix, library in self.libraries.items():
+            if name.startswith(prefix):
+                return getattr(library, name)
+        raise AttributeError(name)
+
+
 @lru_cache(maxsize=1)
 def _library():
     p = c_void_p
     try:
         # PangoCairo links all three ABI libraries used below. Accessing their
         # exported APIs through this handle also works with bundled libraries.
-        lib = CDLL("libpangocairo-1.0.so.0")
+        lib = (_WindowsTextLibraries() if sys.platform == "win32"
+               else CDLL("libpangocairo-1.0.so.0"))
         declarations = {
             "cairo_recording_surface_create": (p, c_int, p), "cairo_surface_destroy": (None, p),
             "cairo_create": (p, p), "cairo_destroy": (None, p), "cairo_set_tolerance": (None, p, c_double),
