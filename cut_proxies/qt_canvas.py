@@ -24,15 +24,20 @@ def pen(color, width=0, dashed=False):
 
 
 def draw_path(scene, contour, line, fill=Qt.BrushStyle.NoBrush):
-    if not contour.points:
-        return None
+    return draw_contours(scene, (contour,), line, fill)
+
+
+def draw_contours(scene, contours, line, fill=Qt.BrushStyle.NoBrush):
     path = QPainterPath()
-    path.moveTo(*contour.points[0])
-    for point in contour.points[1:]:
-        path.lineTo(*point)
-    if contour.closed:
-        path.closeSubpath()
-    return scene.addPath(path, line, QBrush(fill))
+    path.setFillRule(Qt.FillRule.OddEvenFill)
+    for contour in contours:
+        if contour.points:
+            path.moveTo(*contour.points[0])
+            for point in contour.points[1:]:
+                path.lineTo(*point)
+            if contour.closed:
+                path.closeSubpath()
+    return None if path.isEmpty() else scene.addPath(path, line, QBrush(fill))
 
 
 def draw_marks(scene, marks, *, ink=True, outline=False):

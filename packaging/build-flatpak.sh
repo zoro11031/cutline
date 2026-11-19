@@ -13,19 +13,22 @@ trap 'rm -rf "$work"' EXIT
 mkdir "$work/src"
 cd "$work/src"
 
-for tarball in poppler-26.11.0.tar.xz poppler-data-0.4.12.tar.gz; do
+for tarball in poppler-26.11.0.tar.xz poppler-data-0.4.12.tar.gz geos-3.13.1.tar.bz2; do
     if [ -f "/tmp/cameo-flatpak-sources/$tarball" ]; then
         cp "/tmp/cameo-flatpak-sources/$tarball" .
     fi
 done
 [ -f poppler-26.11.0.tar.xz ] || curl --http1.1 -fsSLO https://poppler.freedesktop.org/poppler-26.11.0.tar.xz
 [ -f poppler-data-0.4.12.tar.gz ] || curl --http1.1 -fsSLO https://poppler.freedesktop.org/poppler-data-0.4.12.tar.gz
+[ -f geos-3.13.1.tar.bz2 ] || curl --http1.1 -fsSLO https://download.osgeo.org/geos/geos-3.13.1.tar.bz2
 sha256sum -c <<'HASHES'
 41c32680160addf5a8dd7a830e4869c01e9f6bee1abb91e44fabd1ba9d7828fb  poppler-26.11.0.tar.xz
 c835b640a40ce357e1b83666aabd95edffa24ddddd49b8daff63adb851cdab74  poppler-data-0.4.12.tar.gz
+df2c50503295f325e7c8d7b783aca8ba4773919cde984193850cf9e361dfd28c  geos-3.13.1.tar.bz2
 HASHES
 tar -xf poppler-26.11.0.tar.xz
 tar -xf poppler-data-0.4.12.tar.gz
+tar -xf geos-3.13.1.tar.bz2
 
 flatpak build-init --arch=x86_64 "$work/build" "$id" org.gnome.Sdk org.gnome.Platform "$branch"
 python3 "$root/packaging/install.py" --destdir "$work/stage" --prefix /app
@@ -35,6 +38,12 @@ flatpak build --share=network "$work/build" python3 -m pip install \
     Pillow==13.0.0 pyusb==1.3.1 bleak==3.1.0 dbus-fast==5.2.0
 flatpak build --bind-mount=/run/build/scc="$work/src" "$work/build" sh -ec '
     cd /run/build/scc
+    cmake -S geos-3.13.1 -B geos-build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/app -DCMAKE_INSTALL_LIBDIR=lib \
+        -DBUILD_TESTING=OFF -DBUILD_GEOSOP=OFF -DBUILD_DOCUMENTATION=OFF
+    cmake --build geos-build --parallel 8
+    cmake --install geos-build
+    install -Dm644 geos-3.13.1/COPYING /app/share/licenses/geos/COPYING
     cmake -S poppler-26.11.0 -B poppler-build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/app \
         -DBUILD_SHARED_LIBS=OFF -DBUILD_MANUAL_TESTS=OFF \

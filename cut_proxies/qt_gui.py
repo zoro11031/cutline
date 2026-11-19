@@ -21,8 +21,8 @@ from . import (actions, bluetooth, bundle, config, corner_test, editor_model, ge
 from .desktop_help import BLADE_VALUE_TEXT, CONTROL_HELP, SETUP_STEPS
 from .holder_settings import HolderSettings, for_holder
 from .qt_canvas import PREVIEW_MODES, Preview, ZoomControls
-from .qt_controls import (WORKSPACE_STYLE, Form, Page, Tasks, bar, button, set_choices,
-                          styled_label, workspace_header, workspace_layout, workspace_tools)
+from .qt_controls import (Form, Page, SettingsWheel, Tasks, bar, button, set_choices,
+                          styled_label, workspace_header, workspace_layout, workspace_style, workspace_tools)
 
 APP_ID = "org.printing.SilhouetteControlCenter"
 ARTWORK_FILTER = "Cut artwork (*.svg *.SVG *.dxf *.DXF *.studio3 *.STUDIO3)"
@@ -56,6 +56,7 @@ class Window(QMainWindow):
         super().__init__()
         self.setWindowTitle("Silhouette Control Center")
         self.resize(1210, 800)
+        self.settings_wheel = SettingsWheel(self)
         self.setWindowIcon(QIcon.fromTheme(APP_ID))
         self.tasks = Tasks(self)
         self.settings = config.load_settings()
@@ -75,7 +76,7 @@ class Window(QMainWindow):
 
         self.workspaces = QStackedWidget()
         self.setCentralWidget(self.workspaces)
-        self.workspaces.setStyleSheet(WORKSPACE_STYLE)
+        self.workspaces.setStyleSheet(workspace_style(self.palette()))
         setup = QWidget()
         setup.setObjectName("workspace")
         self.workspaces.addWidget(setup)
@@ -1675,7 +1676,7 @@ class Window(QMainWindow):
         if event.type() == QEvent.Type.PaletteChange and hasattr(self, "preview"):
             self.workspaces.setStyleSheet("")
             self.workspaces.setPalette(self.palette())
-            self.workspaces.setStyleSheet(WORKSPACE_STYLE)
+            self.workspaces.setStyleSheet(workspace_style(self.palette()))
             self.preview.render_sheet()
             if self.design is not None:
                 self.design.canvas.redraw()

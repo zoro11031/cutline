@@ -44,7 +44,7 @@ from . import (actions, bluetooth, bundle, config, corner_test, geometry, grapht
                starting_guide, template, testcut, toolpath, transport)  # noqa: E402
 from .desktop_help import BLADE_VALUE_TEXT, CONTROL_HELP, SETUP_STEPS  # noqa: E402
 from .editor_canvas import draw_feed_arrow  # noqa: E402
-from .gtk_controls import disclosure, workspace_header, workspace_tools, zoom_controls  # noqa: E402
+from .gtk_controls import disclosure, protect_settings_wheel, workspace_header, workspace_tools, zoom_controls  # noqa: E402
 from .holder_settings import HolderSettings, for_holder  # noqa: E402
 
 APP_ID = "org.printing.SilhouetteControlCenter"
@@ -56,6 +56,13 @@ _CUT_SETTINGS_CSS = """
 .scc-cut-settings spinbutton button { min-width: 16px; min-height: 25px; padding: 0 3px; }
 .scc-cut-settings .holder-tabs { padding: 5px 8px; }
 .scc-cut-settings .cut-toggles { padding: 5px 12px; }
+.scc-workspace button:disabled {
+    opacity: 1;
+    filter: none;
+    color: mix(@window_fg_color, @window_bg_color, 0.25);
+    background: alpha(@window_fg_color, 0.10);
+    box-shadow: none;
+}
 """
 
 
@@ -484,6 +491,7 @@ class Window(Adw.ApplicationWindow):
         self.set_content(self.toasts)
 
         outer = Adw.ToolbarView()
+        outer.add_css_class("scc-workspace")
         self.workspaces = Gtk.Stack(hhomogeneous=False, vhomogeneous=False)
         self.workspaces.add_named(outer, 'tools')
         self.toasts.set_child(self.workspaces)
@@ -599,6 +607,7 @@ class Window(Adw.ApplicationWindow):
         self.menu_bar = self.workspace_menu_bar()
         header.pack_start(self.menu_bar)
         outer.add_bottom_bar(self._send_bar())
+        protect_settings_wheel(outer)
 
         self._suppress = False
         self.on_changed()
@@ -1452,6 +1461,7 @@ class Window(Adw.ApplicationWindow):
                                   (holder, "selected"), (order, "value")):
                 row.add_row(control)
                 control.connect(f"notify::{prop}", self.on_changed)
+                protect_settings_wheel(control)
             self.send_groups.add(row)
             self._send_rows.append((key, row, enabled, preset, holder, order))
 
@@ -1897,8 +1907,8 @@ class Window(Adw.ApplicationWindow):
     def review_design(self, project, action):
         from .editor_model import ALL_ACTIONS, holder_defaults
         artwork = project.artwork(action)
-        if any(path.length_mm() <= 0 for path in artwork.paths):
-            self.design.status.set_text('Resize any paths with no length before reviewing.')
+        if not artwork.paths or any(path.length_mm() <= 0 for path in artwork.paths):
+            self.design.status.set_text('Draw or resize the paths before reviewing.')
             return
         self.tuning = False
         group_defaults = holder_defaults(artwork)
