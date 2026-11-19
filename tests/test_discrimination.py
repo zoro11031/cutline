@@ -225,7 +225,40 @@ if gui is not None:
          ['tests.test_gui.TestSheetRequestGuard']),
         (gui, 'sheet_request_current', lambda *a: False, 'PDF result guard always rejects',
          ['tests.test_gui.TestSheetRequestGuard']),
+        (gui.Window, 'lock_job_controls', lambda self, locked: None,
+         'a running job never locks its settings',
+         ['tests.test_gui.TestDesignWorkspace.test_a_send_locks_the_settings_and_every_ending_unlocks_them']),
+        (gui.Window, 'lock_job_controls', lambda self, locked: _lock_everything(self),
+         'the settings stay locked after a job ends',
+         ['tests.test_gui.TestDesignWorkspace.test_a_send_locks_the_settings_and_every_ending_unlocks_them']),
     )
+
+try:
+    from cut_proxies import qt_gui
+except ImportError:
+    qt_gui = None
+if qt_gui is not None:
+    CASES += (
+        (qt_gui.Window, 'lock_bundle_controls', lambda self, locked: None,
+         'a matched bundle never locks its layout',
+         ['tests.test_qt_frontend.TestQtFrontend.test_a_matched_bundle_keeps_its_layout_locked_across_a_rebuild']),
+        (qt_gui.Window, 'lock_bundle_controls', lambda self, locked: _lock_bundle_always(self),
+         'the bundle layout stays locked after the bundle is cleared',
+         ['tests.test_qt_frontend.TestQtFrontend.test_a_matched_bundle_keeps_its_layout_locked_across_a_rebuild']),
+    )
+
+
+def _lock_everything(window):
+    """Hardwire the GTK job lock on, whatever the job state is."""
+    window._job_locked = True
+    for widget in window.job_controls():
+        widget.set_sensitive(False)
+
+
+def _lock_bundle_always(window):
+    """Hardwire the Qt bundle lock on, whatever the bundle state is."""
+    window.bundle_locked = True
+    window.update_enabled_fields()
 
 
 class TestGuardsDiscriminate(unittest.TestCase):

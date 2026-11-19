@@ -65,6 +65,8 @@ class Window(QMainWindow):
         self.bundle_row_error = None
         self.bundle_checked = self.busy = self.loading = False
         self.pdf_check_state = sheet.RegistrationDecision.NONE
+        self.checked_marks = None
+        self.bundle_locked = False
         self.active_job = None
         self.cut_control = None
         self.tuning = False
@@ -751,6 +753,9 @@ class Window(QMainWindow):
             self.rebuild()
 
     def apply_material(self):
+        if self.active_job is not None or self.busy:
+            self.message("The cutter is running this job. Wait for it to finish before changing settings.")
+            return
         selected = self.materials.get(self.material.currentData())
         if selected is None:
             return
@@ -978,6 +983,10 @@ class Window(QMainWindow):
         fixed_layout = self.bundle or layout_presets.is_published(self.artwork)
         for key in ("sheet", "portrait", "engine", "card", "mode", "radius_mm"):
             self.controls[key].setEnabled(not fixed_layout)
+        if self.bundle_locked:
+            for key in self.BUNDLE_LOCKED:
+                self.controls[key].setEnabled(False)
+            self.skip.setEnabled(False)
         device = graphtec.device_by_name(self.choice("cutter"))
         for name, upper in (("force", device.max_pressure), ("speed", device.max_speed)):
             self.blade[name].setToolTip(f"{CONTROL_HELP[name]} Range on {DEVICES[device.name]} is 1–{upper}.")
@@ -1048,7 +1057,8 @@ class Window(QMainWindow):
                 elif current.warnings:
                     summary += "\n" + current.warnings[0]
         marks = self.job.marks if self.job else None
-        if self.pdf and not self.bundle and previous and previous.marks != marks:
+        if (self.pdf and not self.bundle and self.checked_marks is not None
+                and self.checked_marks != marks):
             self.invalidate_measurement()
             self.sheet_result.setText("Registration geometry changed. Measure the PDF again.")
         self.summary_title.setText(title)
@@ -1229,17 +1239,20 @@ class Window(QMainWindow):
         self.sheet_token = self.report = None
         self.bundle_checked = False
         self.pdf_check_state = sheet.RegistrationDecision.NONE
+        self.checked_marks = None
         self.preview.report = None
         self.clear_scan_result()
         if clear_image:
             self.preview.show_pdf()
             self.preview_mode.hide()
 
+    BUNDLE_LOCKED = ("layout_preset", "sheet", "portrait", "engine", "card", "mode", "radius_mm",
+                     "pattern", "mark_inset_mm", "mark_length_mm", "mark_thickness_mm", "bleed_mm",
+                     "registration")
+
     def lock_bundle_controls(self, locked):
-        for key in ("layout_preset", "sheet", "portrait", "engine", "card", "mode", "radius_mm",
-                    "pattern", "mark_inset_mm", "mark_length_mm", "mark_thickness_mm", "bleed_mm", "registration"):
-            self.controls[key].setEnabled(not locked)
-        self.skip.setEnabled(not locked)
+        self.bundle_locked = bool(locked)
+        self.update_enabled_fields()
 
     def clear_bundle(self):
         if self.bundle:
@@ -1380,6 +1393,7 @@ class Window(QMainWindow):
         self.refresh_send()
         row = self.current_bundle_row()
         marks = matched.marks() if matched else current.marks
+        self.checked_marks = marks
         dpi, page = self.sheet_dpi.currentData(), self.sheet_page_number.value()
         orient_scm = layout_presets.is_published(self.artwork)
 
@@ -1628,6 +1642,14 @@ class Window(QMainWindow):
                         on_success=(lambda: self.show_scan_result("Registration passed. No cut paths were sent."))
                         if scan_only else None)
 
+    def release_job(self):
+        """Return the window to an editable state after a send ends, however it ended."""
+        self.cut_control = None
+        self.active_job = None
+        self.busy = False
+        self.update_enabled_fields()
+        self.refresh_send()
+
     def clear_scan_result(self):
         self.scan_result.clear()
         self.scan_box.hide()
@@ -1648,6 +1670,7 @@ class Window(QMainWindow):
                    on_success=None, test=False, wait_done=False, controllable=False):
         refusal = cutters.usb_refusal(connection, device, self.cutter_model.currentData())
         if refusal:
+            self.release_job()
             self.message(refusal)
             return
         self.guide.moved()
@@ -1671,11 +1694,7 @@ class Window(QMainWindow):
                 return cutter.run(steps)
 
         def done(sent, error):
-            self.cut_control = None
-            self.active_job = None
-            self.busy = False
-            self.update_enabled_fields()
-            self.refresh_send()
+            self.release_job()
             if isinstance(error, transport.RegistrationFailed) and on_registration_failure:
                 on_registration_failure(error)
             elif error is None and on_success:

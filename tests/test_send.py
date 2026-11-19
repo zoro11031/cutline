@@ -249,6 +249,7 @@ class TestGuiCheckedPlan(unittest.TestCase):
             cut_button=mock.Mock(), scan_button=mock.Mock(), scan_result=mock.Mock(),
             r_auto=mock.Mock(), toast=mock.Mock(),
             rebuild=mock.Mock(), _send_done=mock.Mock(), update_send_actions=mock.Mock(),
+            lock_job_controls=mock.Mock(), active_job=None,
             _connection=lambda: ("auto", (1, 2)), selected_cutter=lambda: gui.cutters.AUTO, guide=mock.Mock())
         window.r_auto.get_active.return_value = True
         transport = mock.MagicMock()

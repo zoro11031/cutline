@@ -574,6 +574,7 @@ class TestQtFrontend(unittest.TestCase):
         bitmap.save(png, format="PNG")
         report = mock.Mock(marks=())
         window.report = report
+        window.checked_marks = window.job.marks
         window.preview.show_pdf(png.getvalue(), (279.4, 215.9), report)
         window.blade["force"].setValue(20)
         self.assertIs(window.report, report)
@@ -882,6 +883,117 @@ class TestQtFrontend(unittest.TestCase):
         self.assertTrue(window.send_button.isEnabled())
         self.assertTrue(window.corner_button.isEnabled())
         self.assertTrue(window.scan_button.isEnabled())
+
+    def test_a_blank_pdf_fails_the_registration_check_and_blocks_the_send(self):
+        import shutil
+        import subprocess
+
+        if not shutil.which("rsvg-convert") or not shutil.which("pdftoppm"):
+            self.skipTest("needs rsvg-convert and pdftoppm")
+        window = self.window
+        window.controls["registration"].setChecked(True)
+        window.rebuild()
+        marks = window.job.marks
+        blank = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{marks.sheet_w_mm}mm" '
+                 f'height="{marks.sheet_h_mm}mm" viewBox="0 0 {marks.sheet_w_mm} {marks.sheet_h_mm}">'
+                 f'<rect width="100%" height="100%" fill="#ffffff"/></svg>')
+        folder = TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        svg = Path(folder.name) / "blank.svg"
+        svg.write_text(blank)
+        pdf = Path(folder.name) / "blank.pdf"
+        rendered = subprocess.run(["rsvg-convert", "-f", "pdf", str(svg), "-o", str(pdf)],
+                                  capture_output=True, check=False)
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+
+        window.pdf = pdf
+        with mock.patch.object(window.tasks, "run", side_effect=lambda work, done: done(work(), None)):
+            window.measure_sheet()
+        self.assertEqual(window.pdf_check_state, qt_gui.sheet.RegistrationDecision.FAILED)
+        self.assertEqual(window.send_refusal(window.job, window.connection()),
+                         "Registration check failed. Open Sheet to see the missing marks.")
+        self.assertFalse(window.send_button.isEnabled())
+        self.assertFalse(window.scan_button.isEnabled())
+        self.assertFalse(window.corner_button.isEnabled())
+        self.assertEqual(window.review_tab(), "Sheet")
+
+    def test_a_passed_check_survives_blade_edits_and_a_late_result_cannot_authorize_it(self):
+        from cut_proxies import sheet
+
+        window = self.window
+        window.pdf = Path("print.pdf")
+        window.controls["registration"].setChecked(True)
+        window.rebuild()
+        window.checked_marks = window.job.marks
+        window.pdf_check_state = sheet.RegistrationDecision.PASSED
+        window.report = mock.Mock(marks=())
+
+        window.blade["force"].setValue(window.blade["force"].value() + 1)
+        window.blade["speed"].setValue(window.blade["speed"].value() + 1)
+        window.blade["passes"].setValue(2)
+        self.assertEqual(window.pdf_check_state, sheet.RegistrationDecision.PASSED)
+        self.assertEqual(window.send_refusal(window.job, window.connection()), "")
+
+        # Changing the mark geometry mid-check invalidates it, and the late result is dropped.
+        started = []
+        with mock.patch.object(window.tasks, "run", side_effect=lambda work, done: started.append(done)):
+            window.measure_sheet()
+        self.assertEqual(window.pdf_check_state, sheet.RegistrationDecision.CHECKING)
+        window.controls["mark_inset_mm"].setValue(window.controls["mark_inset_mm"].value() + 1)
+        self.assertEqual(window.pdf_check_state, sheet.RegistrationDecision.NONE)
+        self.assertIsNone(window.checked_marks)
+        started[0]((mock.Mock(marks=(), preview_rotation=0), [], b""), None)
+        self.assertEqual(window.pdf_check_state, sheet.RegistrationDecision.NONE)
+        self.assertIn("Sheet", window.send_refusal(window.job, window.connection()))
+        self.assertFalse(window.send_button.isEnabled())
+
+    def test_a_refused_connection_returns_the_window_to_an_editable_state(self):
+        window = self.window
+        plan, connection = window.job, window.connection()
+        answers = ["", "the cutter moved"]
+
+        # The cutter is fine when the job is checked and gone by the time the link opens.
+        with mock.patch.object(qt_gui.cutters, "usb_refusal",
+                               side_effect=lambda *_: answers.pop(0) if answers else ""), \
+             mock.patch.object(window.tasks, "run") as run, \
+             mock.patch.object(window, "message") as message:
+            window.start_send(plan, connection)
+        run.assert_not_called()
+        message.assert_called_with("the cutter moved")
+        self.assertIsNone(window.active_job)
+        self.assertFalse(window.busy)
+        self.assertTrue(window.blade["force"].isEnabled())
+        self.assertTrue(window.controls["sheet"].isEnabled())
+        self.assertTrue(window.cutter_model.isEnabled())
+        self.assertTrue(window.send_button.isEnabled())
+
+    def test_a_matched_bundle_keeps_its_layout_locked_across_a_rebuild(self):
+        window = self.window
+        window.lock_bundle_controls(True)
+        for key in window.BUNDLE_LOCKED:
+            self.assertFalse(window.controls[key].isEnabled(), key)
+        window.rebuild()
+        window.update_enabled_fields()
+        for key in window.BUNDLE_LOCKED:
+            self.assertFalse(window.controls[key].isEnabled(), key)
+        self.assertFalse(window.skip.isEnabled())
+        window.lock_bundle_controls(False)
+        self.assertTrue(window.controls["pattern"].isEnabled())
+        self.assertTrue(window.controls["mark_inset_mm"].isEnabled())
+        self.assertTrue(window.skip.isEnabled())
+
+    def test_a_running_job_refuses_a_material_preset_change(self):
+        window = self.window
+        window.blade["force"].setValue(25)
+        window.rebuild()
+        window.active_job = window.job
+        window.update_enabled_fields()
+        with mock.patch.object(window, "message") as message, \
+             mock.patch.object(window, "load_preset") as load:
+            window.apply_material()
+        load.assert_not_called()
+        self.assertIn("running", message.call_args.args[0])
+        self.assertEqual(window.blade["force"].value(), 25)
 
     def test_active_and_paused_job_details_and_control_states_in_qt(self):
         window = self.window

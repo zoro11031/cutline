@@ -518,6 +518,9 @@ class Window(Adw.ApplicationWindow):
         self.bundle_row_error = None
         self.bundle_checked = False
         self.pdf_check_state = sheet_mod.RegistrationDecision.NONE
+        self.checked_marks = None
+        self._bundle_locked = False
+        self._job_locked = False
         self.active_job = None
         self._sheet_token = None
         self.imported = None
@@ -1652,11 +1655,12 @@ class Window(Adw.ApplicationWindow):
         self.rebuild()
         if self.pdf_bundle and not self.bundle_row_error and self._sheet_token is None:
             self.measure_sheet()
-        elif self.pdf_path and not self.pdf_bundle and (
-                (previous.marks if previous else None) != (self.job.marks if self.job else None)):
+        elif self.pdf_path and not self.pdf_bundle and self.checked_marks is not None and (
+                self.checked_marks != (self.job.marks if self.job else None)):
             previously_measured = self.sheet_report is not None or self._sheet_token is not None
             self._sheet_token = None
             self.sheet_report = None
+            self.checked_marks = None
             self.pdf_check_state = sheet_mod.RegistrationDecision.NONE
             self.preview.set_sheet(None)
             if previously_measured:
@@ -2166,12 +2170,35 @@ class Window(Adw.ApplicationWindow):
         self.on_changed()
 
     # ---- the printed sheet -------------------------------------------
+    def bundle_locked_controls(self):
+        return (self.r_layout_preset, self.r_sheet, self.r_orient, self.r_engine,
+                self.r_card, self.r_pattern, self.r_inset, self.r_length,
+                self.r_thickness, self.r_bleed, self.r_register, self.r_mode,
+                self.r_radius, self.r_skip, self.r_colour)
+
     def lock_bundle_layout(self, locked):
-        for widget in (self.r_layout_preset, self.r_sheet, self.r_orient, self.r_engine,
-                       self.r_card, self.r_pattern, self.r_inset, self.r_length,
-                       self.r_thickness, self.r_bleed, self.r_register, self.r_mode,
-                       self.r_radius, self.r_skip, self.r_colour):
+        self._bundle_locked = bool(locked)
+        for widget in self.bundle_locked_controls():
             widget.set_sensitive(not locked)
+
+    def job_controls(self):
+        """Every settings widget a running job owns, so none of them can be edited."""
+        widgets = [value for name, value in vars(self).items()
+                   if name.startswith("r_") and isinstance(value, Gtk.Widget)]
+        widgets.extend(widget for widget in (getattr(self, "use_generated", None),
+                                             getattr(self, "material_guide", None))
+                       if widget is not None)
+        return tuple(widgets)
+
+    def lock_job_controls(self, locked):
+        """A sent job owns its settings: show them, and refuse edits until it ends."""
+        self._job_locked = bool(locked)
+        for widget in self.job_controls():
+            widget.set_sensitive(not locked)
+        if not locked:
+            self.on_changed()
+            if self._bundle_locked:
+                self.lock_bundle_layout(True)
 
     def clear_bundle(self):
         if not self.pdf_bundle:
@@ -2190,6 +2217,7 @@ class Window(Adw.ApplicationWindow):
     def clear_printed_sheet(self):
         self.bundle_checked = False
         self.pdf_check_state = sheet_mod.RegistrationDecision.NONE
+        self.checked_marks = None
         self.bundle_row_error = None
         self.pdf_path = None
         self._sheet_token = None
@@ -2343,6 +2371,7 @@ class Window(Adw.ApplicationWindow):
             return
         self._sheet_token = None
         self.pdf_check_state = sheet_mod.RegistrationDecision.NONE
+        self.checked_marks = None
         self.preview.set_pdf()
         self.measure_sheet()
 
@@ -2373,6 +2402,7 @@ class Window(Adw.ApplicationWindow):
         orient_scm = layout_presets.is_published(self.imported)
         token = self._sheet_token = object()
         self.pdf_check_state = sheet_mod.RegistrationDecision.CHECKING
+        self.checked_marks = marks
         self.sheet_report = None
         self.preview.set_sheet(None)
 
@@ -2398,6 +2428,7 @@ class Window(Adw.ApplicationWindow):
             return
         self.pdf_check_state = sheet_mod.RegistrationDecision.ERROR
         self.sheet_report = None
+        self.checked_marks = None
         self.preview.set_sheet(None)
         self.preview.set_pdf()
         self.sheet_result.set_title("Could not measure")
@@ -3235,11 +3266,12 @@ class Window(Adw.ApplicationWindow):
             self.toast(refusal)
             return
         checked = corner.job if corner else j
-        self.active_job = checked
         steps = checked.registration_steps() if scan_only else checked.steps
         if not steps:
             self.toast("This job does not use registration.")
             return
+        self.active_job = checked
+        self.lock_job_controls(True)
         self.guide.moved()
         control = self.cut_control = (transport.CutControl(lambda: GLib.idle_add(self.update_send_actions))
                                       if not scan_only and corner is None else None)
@@ -3318,10 +3350,16 @@ class Window(Adw.ApplicationWindow):
         dialog.present(self)
 
     def _send_done(self):
+        self.release_job()
+
+    def release_job(self):
+        """Return the window to an editable state after a send ends, however it ended."""
         self.cut_control = None
         self.active_job = None
         self._sending = False
+        self.lock_job_controls(False)
         self.rebuild()
+        self.update_send_actions()
 
 
 class Application(Adw.Application):
