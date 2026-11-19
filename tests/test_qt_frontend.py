@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest import mock
 
-from cut_proxies import cli, corner_test, editor_model, job, materials, presets, transport
+from cut_proxies import cli, corner_test, editor_model, job, materials, presets, sticker_trace, transport
 from tests.test_vector_editing import compound_project
 from tests.test_sticker_print import make_image
 
@@ -968,3 +968,55 @@ class TestQtFrontend(unittest.TestCase):
         self.assertTrue(window.cutter_model.isEnabled())
         self.assertFalse(window.pause_cut.isVisible())
         self.assertFalse(window.cancel_cut.isVisible())
+
+
+@unittest.skipIf(qt_gui is None, "Install PySide6 to run Qt frontend tests")
+class TestQtDesignEditor(unittest.TestCase):
+    """Drive the Qt design editor itself, offscreen."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        cls.app = QApplication.instance() or QApplication([])
+
+    def editor(self, project=None):
+        from cut_proxies import qt_design
+
+        folder = TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        patcher = mock.patch.object(qt_gui.config, "CONFIG_DIR", Path(folder.name))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        project = project or editor_model.Project(279.4, 215.9, ())
+        device = qt_gui.graphtec.device_by_name("Silhouette Cameo 4")
+        design = qt_design.Design(project, device, lambda *_: None, lambda *_: None)
+        self.addCleanup(design.deleteLater)
+        return design
+
+    def test_simplify_reduces_a_selected_path_without_an_error_message(self):
+        curve = tuple((index / 24, (index / 24) ** 2) for index in range(25))
+        project = editor_model.Project(279.4, 215.9, (
+            editor_model.Shape("Path", 30, 30, 60, 60, points=curve, closed=False),))
+        design = self.editor(project)
+        design.select((0,))
+        with mock.patch.object(design, "message") as message:
+            design.convert_selection(True)
+        message.assert_not_called()
+        shape, = design.project.shapes
+        self.assertLess(len(shape.points), len(curve))
+        self.assertEqual(shape.kind, "Path")
+        design.undo()
+        self.assertEqual(len(design.project.shapes[0].points), len(curve))
+
+    def test_simplifying_an_untraced_sticker_reports_instead_of_raising(self):
+        folder = TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        image = Path(folder.name) / "art.png"
+        make_image(image)
+        placed = sticker_trace.place(image, 279.4, 215.9)
+        design = self.editor(editor_model.Project(279.4, 215.9, (placed,)))
+        design.select((0,))
+        with mock.patch.object(design, "message") as message:
+            design.convert_selection(True)
+        message.assert_called_once()
+        self.assertIn("Trace", message.call_args.args[0])

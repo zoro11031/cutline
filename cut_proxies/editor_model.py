@@ -223,7 +223,7 @@ def convert_path(shape, simplify=False):
 
 def _simplify_path(path):
     points = path.points
-    if simplify and len(points) > (3 if path.closed else 2):
+    if len(points) > (3 if path.closed else 2):
         if path.closed:
             split = max(range(1, len(points)), key=lambda i: math.dist(points[0], points[i]))
             first = _simplify_line(points[:split + 1], 0.1)
@@ -504,7 +504,19 @@ class History:
             self.current = self.future.pop()
 
 
-def save_project(path, project):
+def project_version(project):
+    """The lowest format version that can hold every feature the project uses."""
+    version = 2
+    if any(shape.kind in MULTI_CONTOUR_KINDS for shape in project.shapes):
+        version = 3
+    if any(shape.sticker for shape in project.shapes):
+        version = 4
+    if any(shape.layer for shape in project.shapes) or project.guides:
+        version = 5
+    return version
+
+
+def project_document(project):
     objects = []
     for shape in project.shapes:
         fields = asdict(shape)
@@ -513,17 +525,16 @@ def save_project(path, project):
             if fields[name] == default:
                 del fields[name]
         objects.append(fields)
-    if any(shape.sticker for shape in project.shapes):
-        version = 4
-    elif any(shape.layer for shape in project.shapes) or project.guides:
-        version = 5
-    else:
-        version = 3 if any(shape.kind in MULTI_CONTOUR_KINDS for shape in project.shapes) else 2
-    document = {"version": version, "page_mm": [project.width, project.height],
+    document = {"version": project_version(project), "page_mm": [project.width, project.height],
                 "registration": asdict(project.registration) if project.registration else None,
                 "mat": project.mat, "objects": objects}
     if project.guides:
         document["guides"] = [list(g) for g in project.guides]
+    return document
+
+
+def save_project(path, project):
+    document = project_document(project)
     content = json.dumps(document, indent=2, allow_nan=False) + "\n"
     temporary = None
     try:
@@ -630,6 +641,8 @@ def load_project(path, legacy_registration=None):
     mat = document.get("mat", "auto")
     if not isinstance(mat, str) or mat not in graphtec.MAT_OPTIONS:
         raise ValueError("Invalid project cutting mat.")
+    if document["version"] < 4 and "guides" in document:
+        raise ValueError("Guides need template project version 5.")
     guides = tuple((str(g[0]), float(g[1])) for g in document.get("guides", ())
                    if isinstance(g, (list, tuple)) and len(g) == 2 and g[0] in ("h", "v") and _number(g[1]))
     shapes = document.get("shapes" if legacy else "objects")
@@ -657,6 +670,7 @@ def load_project(path, legacy_registration=None):
                      shape.line_style in LINE_STYLES and _number(shape.line_width_mm, 0, 5) and
                      (shape.group is None or (type(shape.group) is int and shape.group > 0)) and
                      isinstance(shape.layer, str) and len(shape.layer) <= 100 and "\0" not in shape.layer and
+                     (not shape.layer or document["version"] >= 4) and
                      all(type(v) is bool for v in (shape.closed, shape.visible, shape.flip_x, shape.flip_y)))
             shape = replace(shape, stroke=stroke_color(shape.stroke), fill=stroke_color(shape.fill))
             if shape.kind == "Path":

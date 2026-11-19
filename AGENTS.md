@@ -49,9 +49,16 @@ machine). A `derived` preset must say "never cut" in its note, and a
 Only move a preset to `measured` when a sheet has been cut and the edge looked
 at, and put the date in the note.
 
-**`condition.csv` is not vendored.** It is Silhouette's and ships with their
-software. `materials.py` reads it out of an installation the user already
-has; do not copy it into the repo to make a test unconditional.
+**`condition.csv` is a bundled snapshot, and it is Silhouette's file.**
+`cut_proxies/assets/condition.csv` was added deliberately in b013862 so the
+material library works without a Studio install. `materials.find_condition_csv`
+looks in this order: the user's imported copy under
+`~/.config/cut-proxies/studio-materials/`, then the bundled snapshot, then a
+Studio installation (the configured `material_csv`, the macOS app bundle,
+`%ProgramFiles%`, the Wine prefix). Importing through the UI writes to the
+first, which therefore wins. Do not hand-edit the snapshot: replace it from a
+Studio install, as a whole file, and say which Studio version it came from.
+`silhouette`-origin presets must still match it, and there is a test.
 
 **The verification proves itself every run.** `verify.liveness_failures`
 corrupts each built stream nine ways and confirms the checks reject it,
