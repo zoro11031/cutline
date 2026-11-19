@@ -129,6 +129,17 @@ class Window(QMainWindow):
         self.preview.colorblind = bool(self.settings.get("colorblind_mode"))
         right.addWidget(self.preview, 1)
 
+        self.bundle_notice_bar, bundle_notice_row = bar(preview_panel, (12, 8, 12, 8))
+        self.bundle_notice = styled_label(role="body")
+        self.bundle_notice.setWordWrap(True)
+        self.bundle_notice.setText("Matched ZIP: the cut paths are locked to the printed sheet. "
+                                   "Open Sheet to review the match or clear it.")
+        bundle_notice_row.addWidget(self.bundle_notice, 1)
+        bundle_notice_row.addWidget(button("Open Sheet", lambda: self.tabs.setCurrentIndex(self.tab("Sheet")),
+                                           role="secondary"))
+        self.bundle_notice_bar.hide()
+        right.addWidget(self.bundle_notice_bar)
+
         self.summary_bar, summary_row = bar(preview_panel, (12, 8, 12, 8))
         summary_text = QVBoxLayout()
         summary_text.setSpacing(2)
@@ -251,7 +262,9 @@ class Window(QMainWindow):
         command(self.menu_bar.addMenu("&Help"), "Setup Guide", self.show_setup_guide)
 
     def open_cut_settings(self):
-        self.open_send_workspace()
+        """Show the editable cut settings. An open material test stays open:
+        only Exit Material Test closes one."""
+        self.tabs.setCurrentIndex(self.tab("Send"))
         page = self.tabs.widget(self.tab("Send"))
         def reveal_settings():
             position = self.settings_box.mapTo(page.widget(), QPoint()).y()
@@ -260,7 +273,7 @@ class Window(QMainWindow):
         QTimer.singleShot(0, self, reveal_settings)
 
     def open_send_advanced(self):
-        self.open_send_workspace()
+        self.tabs.setCurrentIndex(self.tab("Send"))
         self.send_advanced.disclosure.setChecked(True)
         page = self.tabs.widget(self.tab("Send"))
         QTimer.singleShot(0, self, lambda: page.ensureWidgetVisible(self.send_advanced.disclosure))
@@ -512,14 +525,14 @@ class Window(QMainWindow):
         dialog.setWindowTitle("Set Up Your First Cut")
         dialog.setText("Set up your first cut")
         dialog.setInformativeText(SETUP_STEPS)
-        tune = dialog.addButton("Dial In a Material…", QMessageBox.ButtonRole.ActionRole)
+        tune = dialog.addButton("Resume Material Test" if self.guide.has_tests else "Dial In a Material…",
+                                QMessageBox.ButtonRole.ActionRole)
         dialog.addButton(QMessageBox.StandardButton.Close)
         dialog.exec()
         if dialog.clickedButton() is tune:
             self.open_material_guide()
 
     def open_material_guide(self):
-        self.material_guide.setText("Resume Material Test")
         index = self.tab("Send")
         self.tabs.setCurrentIndex(index)
         self.tuning = True
@@ -533,8 +546,8 @@ class Window(QMainWindow):
         QTimer.singleShot(0, self, lambda: scroll.verticalScrollBar().setValue(self.guide_box.y() - 12))
 
     def open_send_workspace(self):
-        if self.tuning:
-            self.close_material_guide()
+        """The Send workspace toggle. An open material test stays open:
+        only Exit Material Test closes one."""
         self.tabs.setCurrentIndex(self.tab("Send"))
 
     def close_material_guide(self):
@@ -552,7 +565,7 @@ class Window(QMainWindow):
 
     def adjust_guide_settings(self):
         self.open_cut_settings()
-        self.material_guide.setText("Resume Material Test")
+        self.update_guide()
 
     def change_preview(self):
         self.preview.mode = self.preview_mode.currentData()
@@ -1788,8 +1801,7 @@ class Window(QMainWindow):
             differ = state.completed > 0 and state.settings_differ(self.job_options())
             status_text = f"{state.spot_status} · Settings changed (move to fresh spot)" if differ else state.spot_status
             self.guide_spot_status.setText(status_text)
-        has_tests = state.completed > 0 or len(state.history) > 0
-        self.material_guide.setText("Resume Material Test" if has_tests else "Dial In a Material…")
+        self.material_guide.setText("Resume Material Test" if state.has_tests else "Dial In a Material…")
         if self.tuning:
             self.footer_status.setText(state.sheet_status)
         status = state.status()
@@ -1850,6 +1862,7 @@ class Window(QMainWindow):
         self.preview_title.setText("Material test sheet" if self.preview.test_placement else "Sheet preview")
         self.preview_mode.setVisible(self.preview.test_placement is None and not self.preview.pdf.isNull())
         self.summary_bar.setVisible(not self.tuning)
+        self.bundle_notice_bar.setVisible(self.bundle is not None and not self.tuning)
         self.details.setVisible(not self.tuning and self.details_toggle.isChecked())
 
     def set_guide_blade_values(self, values):
@@ -1940,19 +1953,38 @@ class Window(QMainWindow):
             self.update_guide()
             self.update_tuning_preview()
 
+    FRESH_SPOT_REASON = ("A second pass at different settings cuts over the first, so the "
+                         "square no longer shows what one setting does. Move to untouched "
+                         "stock, or pick the spot to test on.")
+
+    def fresh_spot_choice(self):
+        """Ask whether to move on. Returns "next", "choose" or "" for cancel."""
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Use a Fresh Test Spot?")
+        dialog.setText("These cut settings differ from the ones this spot was cut with.")
+        dialog.setInformativeText(self.FRESH_SPOT_REASON)
+        use_next = dialog.addButton("Use Next Spot", QMessageBox.ButtonRole.AcceptRole)
+        choose = dialog.addButton("Choose Spot…", QMessageBox.ButtonRole.ActionRole)
+        dialog.addButton(QMessageBox.StandardButton.Cancel)
+        dialog.exec()
+        clicked = dialog.clickedButton()
+        return "next" if clicked is use_next else "choose" if clicked is choose else ""
+
+    def offer_fresh_spot(self):
+        """Settings changed on a spot that has already been cut: offer a choice."""
+        choice = self.fresh_spot_choice()
+        if choice == "next":
+            self.guide_next.click()
+        elif choice == "choose":
+            self.guide_spot_selector.setFocus()
+            self.guide_spot_selector.selectAll()
+
     def confirm_guide_pass(self):
         if self.busy or not self.guide.can_cut:
             return
         if self.guide.completed > 0 and self.guide.settings_differ(self.job_options()):
-            self.message("Cut settings changed on this spot. Move to untouched stock before testing different settings.")
+            self.offer_fresh_spot()
             return
-        try:
-            trial = self.guide.prepare(self.connection(), self.job_options(), self.job, "square")
-        except (ValueError, KeyError) as error:
-            self.message(str(error))
-            return
-        if self.guide.completed or self.confirm("Send One Test Pass?", self.guide.prompt(trial)):
-            self.start_guide_pass(trial)
         try:
             trial = self.guide.prepare(self.connection(), self.job_options(), self.job, "square")
         except (ValueError, KeyError) as error:

@@ -220,6 +220,52 @@ class TestStartingGuide(unittest.TestCase):
             testcut.build(self.device, base, forces=(20, 25), spot=2)
         self.assertEqual(testcut.build(self.device, base, spot=2).cells[0].label, "r1c2")
 
+    def test_a_revisited_spot_on_a_marked_sheet_still_guards_changed_settings(self):
+        # A registered sheet keeps a revisited spot cuttable, so the settings it
+        # was cut with have to be remembered: there is no live trial to compare.
+        self.guide.registered = True
+        first = self.prepare()
+        self.guide.record(first)
+        self.assertEqual(self.guide.spot, 1)
+        self.guide.select_spot(2)
+        self.guide.record(self.prepare(force=30))
+        self.guide.select_spot(1)
+
+        self.assertIsNone(self.guide.trial)
+        self.assertEqual(self.guide.completed, 1)
+        self.assertFalse(self.guide.interrupted)
+        self.assertTrue(self.guide.can_cut)
+        self.assertFalse(self.guide.settings_differ(self.options))
+        self.assertTrue(self.guide.settings_differ(dict(self.options, force=30)))
+        self.assertTrue(self.guide.settings_differ(dict(self.options, speed=5)))
+        self.assertTrue(self.guide.settings_differ(dict(
+            self.options, blade_options=dict(self.options["blade_options"], blade_diameter_mm=0.45))))
+
+        self.guide.select_spot(2)
+        self.assertTrue(self.guide.settings_differ(self.options))
+        self.assertFalse(self.guide.settings_differ(dict(self.options, force=30)))
+
+    def test_a_spot_beyond_the_sheet_is_refused_and_has_tests_sees_any_progress(self):
+        fresh = starting_guide.Guide()
+        self.assertFalse(fresh.has_tests)
+        trial = self.prepare()
+        self.guide.record(trial)
+        self.assertTrue(self.guide.has_tests)
+
+        limit = self.guide.max_spots
+        self.assertGreater(limit, 1)
+        self.guide.select_spot(limit)
+        self.assertEqual(self.guide.spot, limit)
+        with self.assertRaisesRegex(ValueError, "spots"):
+            self.guide.select_spot(limit + 1)
+        self.assertEqual(self.guide.spot, limit)
+        with self.assertRaisesRegex(ValueError, "positive integer"):
+            self.guide.select_spot(0)
+
+        moved = starting_guide.Guide()
+        moved.select_spot(3)
+        self.assertTrue(moved.has_tests, "an untouched later spot is still a test in progress")
+
     def test_spot_selection_and_keyboard_navigation_with_guarded_history(self):
         # 1. Start on spot 1, record 2 passes
         trial = self.prepare()

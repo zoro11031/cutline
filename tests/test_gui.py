@@ -39,6 +39,12 @@ class TestDesignWorkspace(unittest.TestCase):
         patcher = mock.patch.object(gui.transport, "usb_endpoints", return_value=[(device, "", (1, 2))])
         patcher.start()
         self.addCleanup(patcher.stop)
+        # The tier stays offline even with a cutter on the bus: automatic tool
+        # detection opens a link, so nothing may reach real hardware.
+        offline = mock.patch.object(gui.transport, "open_transport",
+                                    side_effect=gui.transport.NotFound("offline test"))
+        offline.start()
+        self.addCleanup(offline.stop)
         win.refresh_usb()
         return win
 
@@ -717,18 +723,105 @@ class TestDesignWorkspace(unittest.TestCase):
         prompt.assert_called_once()
         self.assertEqual(win.r_passes.get_value(), 2)
 
-        # Settings differ check on an already-cut spot
+        # Settings differ on an already-cut spot: offer a fresh one, cut nothing.
         win.guide_spot_selector.set_value(1)
         self.assertEqual(win.guide.spot, 1)
         win.r_force.set_value(win.r_force.get_value() + 5)
-        with mock.patch.object(win, 'toast') as toast:
+        sent = len(fake.run.call_args_list)
+        with mock.patch.object(win, 'offer_fresh_spot') as offer:
             win.guide_send.emit('clicked')
-            toast.assert_called_with("Cut settings changed on this spot. Move to untouched stock before testing different settings.")
+        offer.assert_called_once()
+        self.assertEqual(len(fake.run.call_args_list), sent)
+        self.assertEqual(win.guide.spot, 1)
+        self.assertIn('Settings changed', win.guide_spot_status.get_title())
+
+        # The offer's own answers: move on, or stay put.
+        win._fresh_spot_response(None, 'cancel')
+        self.assertEqual(win.guide.spot, 1)
+        win._fresh_spot_response(None, 'next')
+        self.assertEqual(win.guide.spot, 2)
+        win.guide_spot_selector.set_value(1)
 
         win.guide_next.emit('clicked')
         self.assertEqual(win.guide.spot, 2)
         self.assertIn('Spot 1 · 2 passes', win.guide_history.get_subtitle())
         self.assertEqual(win.preview.test_spots[0].passes, 2)
+
+    def test_the_material_test_survives_settings_edits_and_page_switches_in_gtk(self):
+        win = self.make_window()
+        win.open_material_guide()
+        self.assertTrue(win.tuning)
+        win.guide_next.emit("clicked")
+        spot = win.guide.spot
+        self.assertEqual(spot, 2)
+
+        win.guide_edit.emit("clicked")
+        self.assertTrue(win.tuning, "editing cut settings closed the material test")
+        self.assertEqual(win.stack.get_visible_child_name(), "cut")
+        self.assertTrue(win.cut_settings.get_visible())
+        self.assertFalse(win.cut_button.get_visible())
+
+        win.r_force.set_value(win.r_force.get_value() + 3)
+        self.assertEqual(win.guide.spot, spot)
+        self.assertTrue(win.tuning)
+
+        win.stack.set_visible_child_name("sheet")
+        win.stack.set_visible_child_name("cut")
+        self.assertTrue(win.tuning)
+        self.assertEqual(win.guide.spot, spot)
+
+        win.edit_settings_btn.emit("clicked")
+        self.assertTrue(win.tuning)
+        win.open_send_workspace()
+        self.assertTrue(win.tuning)
+
+        win.back_to_send.emit("clicked")
+        self.assertFalse(win.tuning)
+        self.assertTrue(win.cut_button.get_visible())
+        self.assertEqual(win.material_guide.get_label(), "Resume Material Test")
+
+    def test_every_test_spot_can_be_reached_from_the_keyboard_in_gtk(self):
+        win = self.make_window()
+        win.open_material_guide()
+        selector = win.guide_spot_selector
+        self.assertTrue(selector.get_sensitive())
+
+        selector.set_value(4)
+        self.assertEqual(win.guide.spot, 4)
+        self.assertIn("Untouched stock", win.guide_spot_status.get_title())
+
+        selector.set_value(1)
+        self.assertEqual(win.guide.spot, 1)
+        win.guide_next.emit("clicked")
+        self.assertEqual(int(selector.get_value()), win.guide.spot)
+        self.assertEqual(selector.get_adjustment().get_upper(),
+                         max(win.guide.max_spots, win.guide.spot))
+
+        # A spot the sheet does not have: the selector clamps, the model refuses.
+        beyond = win.guide.max_spots + 1
+        selector.set_value(beyond)
+        self.assertEqual(int(selector.get_value()), win.guide.max_spots)
+        self.assertEqual(win.guide.spot, win.guide.max_spots)
+        with self.assertRaisesRegex(ValueError, "spots"):
+            win.guide.select_spot(beyond)
+
+        # The selector is not editable while the cutter is working.
+        win._sending = True
+        win.update_guide()
+        self.assertFalse(selector.get_sensitive())
+        win._sending = False
+
+    def test_a_matched_zip_explains_itself_before_an_edit_is_attempted_in_gtk(self):
+        win = self.make_window()
+        self.assertFalse(win.bundle_banner.get_revealed())
+        win.pdf_bundle = mock.MagicMock()
+        win.update_send_actions()
+        self.assertTrue(win.bundle_banner.get_revealed())
+        self.assertIn("locked to the printed sheet", win.bundle_banner.get_title())
+        self.assertEqual(win.bundle_banner.get_button_label(), "Open Sheet")
+        win.pdf_bundle = None
+        win.update_send_actions()
+        self.assertFalse(win.bundle_banner.get_revealed())
 
     def test_workspace_toggle_and_matched_zip_restrictions(self):
         win = self.make_window()

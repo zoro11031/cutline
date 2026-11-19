@@ -144,6 +144,7 @@ class Guide:
     def reset(self):
         self.placement = None
         self.history = ()
+        self.spot_settings = {}
         self.resume_error = ""
         self._set_spot(1)
 
@@ -154,6 +155,11 @@ class Guide:
         self.interrupted = False
         self.uncertain = False
         self.outcome = ""
+
+    @property
+    def has_tests(self):
+        """Is there a test to resume? One rule, used by both frontends."""
+        return bool(self.history or self.trial is not None or self.completed > 0 or self.spot > 1)
 
     @property
     def can_cut(self):
@@ -212,6 +218,8 @@ class Guide:
     def select_spot(self, spot):
         if type(spot) is not int or spot < 1:
             raise ValueError("Test spot must be a positive integer.")
+        if self.placement is not None and spot > self.max_spots:
+            raise ValueError(f"This test sheet holds {self.max_spots} spots.")
         if spot == self.spot:
             return
         if self.current_spot is not None:
@@ -246,17 +254,27 @@ class Guide:
         self.select_spot(candidate)
 
     def settings_differ(self, options):
-        if not self.trial or self.completed == 0:
+        """Do the current settings differ from the ones this spot was cut with?
+
+        A revisited spot has no live trial, so the settings it was cut with
+        are read back from `spot_settings`; without that, a registered sheet
+        silently allowed a second pass at different settings.
+        """
+        if self.completed == 0:
             return False
-        ts = self.trial.settings
+        ts = self.trial.settings if self.trial else self.spot_settings.get(self.spot)
+        if ts is None:
+            return False
         force = options.get("force")
         speed = options.get("speed")
         depth = options.get("depth")
         holder = options.get("blade_options", {}).get("holder", 1)
+        diameter = options.get("blade_options", {}).get("blade_diameter_mm")
         return (force is not None and force != ts.force) or \
                (speed is not None and speed != ts.speed) or \
                (depth is not None and depth != ts.depth) or \
-               (holder is not None and holder != ts.holder)
+               (holder is not None and holder != ts.holder) or \
+               (diameter is not None and diameter != ts.blade_diameter_mm)
 
     def inspect(self, outcome):
         self.outcome = outcome if outcome in OUTCOMES else ""
@@ -353,6 +371,7 @@ class Guide:
             self.trial = trial
             self.placement = trial.placement
             self.completed += 1
+            self.spot_settings[self.spot] = trial.settings
             self.outcome = ""
         elif isinstance(error, PassUnconfirmed):
             self.trial = trial
@@ -407,7 +426,9 @@ class Guide:
             return
         data = dict(version=1, spot=self.spot, completed=self.completed,
                     interrupted=self.interrupted or pending is not None,
-                    placement=asdict(placement), history=[asdict(spot) for spot in self.history])
+                    placement=asdict(placement), history=[asdict(spot) for spot in self.history],
+                    spot_settings={str(number): asdict(settings)
+                                   for number, settings in self.spot_settings.items()})
         if trial:
             data["trial"] = dict(device=trial.sheet.device.name, settings=asdict(trial.settings),
                                  connection=trial.connection, shape=trial.sheet.shape, track=trial.track_enhancing)
@@ -444,6 +465,8 @@ class Guide:
                 raise ValueError("invalid pass count")
             self.history = tuple(Spot(row["number"], geometry.Rect(**row["rect"]), row["passes"], row["uncertain"])
                                  for row in data["history"])
+            self.spot_settings = {int(number): graphtec.CutSettings(**settings)
+                                  for number, settings in data.get("spot_settings", {}).items()}
             if "trial" in data:
                 trial = data["trial"]
                 connection = tuple(tuple(value) if isinstance(value, list) else value for value in trial["connection"])
