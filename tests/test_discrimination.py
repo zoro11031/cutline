@@ -214,6 +214,10 @@ CASES += (
     (tooling, "depth_correction", lambda *a, **k: (tooling.MANUAL_DEPTH, "manual"),
      "every detected tool forces manual depth",
      ["tests.test_tooling.TestDepthCorrection"]),
+    (starting_guide.Guide, "settings_differ", lambda *_: False, "a repeat ignores changed material settings",
+     ["tests.test_starting_guide.TestStartingGuide.test_a_revisited_spot_on_a_marked_sheet_still_guards_changed_settings"]),
+    (starting_guide.Guide, "settings_differ", lambda *_: True, "a repeat always refuses",
+     ["tests.test_starting_guide.TestStartingGuide.test_a_revisited_spot_on_a_marked_sheet_still_guards_changed_settings"]),
 )
 
 try:

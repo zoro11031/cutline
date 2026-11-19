@@ -519,11 +519,13 @@ class Window(Adw.ApplicationWindow):
         self.bundle_checked = False
         self.pdf_check_state = sheet_mod.RegistrationDecision.NONE
         self.checked_marks = None
+        self.checked_scm_orientation = False
         self.detected_tools = ()
         self.tools_connection = None
         self.corrected_tools = None
         self._bundle_locked = False
         self._job_locked = False
+        self._job_control_states = {}
         self.active_job = None
         self._sheet_token = None
         self.imported = None
@@ -704,8 +706,8 @@ class Window(Adw.ApplicationWindow):
             return action
 
         files = Gio.Menu()
-        command(files, "Open Cut Artwork…", "open-artwork", self.on_open_artwork)
-        command(files, "Open PDF or ZIP…", "open-print", self.on_pick_pdf)
+        self.open_artwork_action = command(files, "Open Cut Artwork…", "open-artwork", self.on_open_artwork)
+        self.open_print_action = command(files, "Open PDF or ZIP…", "open-print", self.on_pick_pdf)
         self.close_print_action = command(files, "Close Print File", "close-print", self.close_printed_sheet)
         self.paired_cut_action = command(files, "Save Paired Cut File…", "paired-cut", self.on_save_bundle_file)
         command(files, "Export Cut Templates…", "export-templates", self.on_export)
@@ -806,11 +808,21 @@ class Window(Adw.ApplicationWindow):
         page = self.stack.get_visible_child_name()
         destination, label = self.send_review_destination()
         self.review_send.set_label(label)
-        self.close_print_action.set_enabled(self.pdf_path is not None)
+        editable = not (self._job_locked or self._sending)
+        device = graphtec.device_by_name(self._text(self.r_cutter))
+        for button in self.send_holder_buttons.values():
+            button.set_sensitive(editable and device.two_tools)
+        for control in (self.open_artwork_button, self.open_print_button):
+            control.set_sensitive(editable)
+        self.open_artwork_action.set_enabled(editable)
+        self.open_print_action.set_enabled(editable)
+        self.close_print_action.set_enabled(editable and self.pdf_path is not None)
+        self.close_print.set_sensitive(editable and self.pdf_path is not None)
+        self.measure_button.set_sensitive(editable and self.pdf_path is not None and self.bundle_row_error is None)
         self.paired_cut_action.set_enabled(self.pdf_bundle is not None)
         can_reset_layout = self.imported is not None or self.pdf_bundle is not None
-        self.reset_layout_action.set_enabled(can_reset_layout)
-        self.use_generated.set_sensitive(can_reset_layout)
+        self.reset_layout_action.set_enabled(editable and can_reset_layout)
+        self.use_generated.set_sensitive(editable and can_reset_layout)
         self.review_send.set_visible(not self.tuning and page != destination)
         at_send = not self.tuning and page == "cut" and self.cut_control is None
         for control in (self.cut_button, self.scan_button, self.corner_button):
@@ -970,7 +982,7 @@ class Window(Adw.ApplicationWindow):
             title="Generated layout",
             subtitle="Using the sheet and card settings below")
         self.import_row.set_subtitle_lines(0)
-        open_btn = Gtk.Button(label="Open Cut Artwork…")
+        self.open_artwork_button = open_btn = Gtk.Button(label="Open Cut Artwork…")
         open_btn.set_tooltip_text("Open an SVG, DXF, or Studio3 file.")
         open_btn.connect("clicked", self.on_open_artwork)
         self.use_generated = Gtk.Button(label="Use Generated Layout", sensitive=False)
@@ -1059,7 +1071,7 @@ class Window(Adw.ApplicationWindow):
         self.sheet_row = Adw.ActionRow(title="No print file open",
                                        subtitle="Open the PDF or ZIP you printed from.")
         self.sheet_row.set_subtitle_lines(0)
-        pick = Gtk.Button(label="Open PDF or ZIP…")
+        self.open_print_button = pick = Gtk.Button(label="Open PDF or ZIP…")
         pick.set_valign(Gtk.Align.CENTER)
         pick.connect("clicked", self.on_pick_pdf)
         self.close_print = Gtk.Button(label="Close File", valign=Gtk.Align.CENTER)
@@ -1654,6 +1666,7 @@ class Window(Adw.ApplicationWindow):
             control.set_sensitive(not fixed_layout)
         device = graphtec.device_by_name(self._text(self.r_cutter))
         self.restore_holder(device)
+        self.correct_detected_depth()
         self.r_holder.set_sensitive(device.two_tools)
         self.r_depth.set_sensitive(device.autoblade and (not device.two_tools or self.r_holder.get_value() == 1))
         self.r_acceleration.set_sensitive(device.detects_tools)
@@ -1671,19 +1684,22 @@ class Window(Adw.ApplicationWindow):
         self.job = None
         self.cut_button.set_sensitive(False)
         self.rebuild()
+        orientation_changed = self.checked_scm_orientation != layout_presets.is_published(self.imported)
         if self.pdf_bundle and not self.bundle_row_error and self._sheet_token is None:
             self.measure_sheet()
         elif self.pdf_path and not self.pdf_bundle and self.checked_marks is not None and (
-                self.checked_marks != (self.job.marks if self.job else None)):
-            previously_measured = self.sheet_report is not None or self._sheet_token is not None
+                self.checked_marks != (self.job.marks if self.job else None) or orientation_changed):
             self._sheet_token = None
             self.sheet_report = None
             self.checked_marks = None
             self.pdf_check_state = sheet_mod.RegistrationDecision.NONE
             self.preview.set_sheet(None)
-            if previously_measured:
-                self.sheet_result.set_title('Registration settings changed')
-                self.sheet_result.set_subtitle('Measure the PDF again to compare the marks.')
+            if orientation_changed:
+                self.preview.set_pdf()
+            self.scan_result.set_visible(False)
+            self.sheet_result.set_title('Registration settings changed')
+            self.sheet_result.set_subtitle('Measure the PDF again to compare the marks.')
+            self.update_send_actions()
 
     def _update_weed_controls(self):
         mode = self._text(self.r_show_weed)
@@ -1978,6 +1994,8 @@ class Window(Adw.ApplicationWindow):
 
     # ---- imported artwork --------------------------------------------
     def on_open_artwork(self, *_a):
+        if self._job_locked or self._sending:
+            return
         dialog = Gtk.FileDialog(title="Open artwork to cut")
         filt = Gtk.FileFilter()
         filt.set_name("Cut templates (SVG, DXF, Studio3)")
@@ -2003,6 +2021,8 @@ class Window(Adw.ApplicationWindow):
         dialog.open(self, None, done)
 
     def load_artwork_file(self, path, page=None):
+        if self._job_locked or self._sending:
+            return
         from . import importer
         try:
             artwork = importer.load(path, page=page)
@@ -2171,7 +2191,7 @@ class Window(Adw.ApplicationWindow):
             self.r_sheet.set_selected(sheets.index(current))
 
     def on_clear_artwork(self, *_a):
-        if self.imported is None and self.pdf_bundle is None:
+        if self._job_locked or self._sending or (self.imported is None and self.pdf_bundle is None):
             return
         self.clear_bundle()
         self.imported = None
@@ -2206,14 +2226,20 @@ class Window(Adw.ApplicationWindow):
         widgets.extend(widget for widget in (getattr(self, "use_generated", None),
                                              getattr(self, "material_guide", None))
                        if widget is not None)
+        widgets.extend(widget for _, _, *fields in self._send_rows for widget in fields)
         return tuple(widgets)
 
     def lock_job_controls(self, locked):
         """A sent job owns its settings: show them, and refuse edits until it ends."""
-        self._job_locked = bool(locked)
-        for widget in self.job_controls():
-            widget.set_sensitive(not locked)
+        if locked and not self._job_locked:
+            self._job_control_states = {widget: widget.get_sensitive() for widget in self.job_controls()}
+            for widget in self._job_control_states:
+                widget.set_sensitive(False)
+        self._job_locked = locked
         if not locked:
+            for widget, sensitive in self._job_control_states.items():
+                widget.set_sensitive(sensitive)
+            self._job_control_states.clear()
             self.on_changed()
             if self._bundle_locked:
                 self.lock_bundle_layout(True)
@@ -2254,6 +2280,8 @@ class Window(Adw.ApplicationWindow):
         self.update_sheet_controls()
 
     def close_printed_sheet(self, *_args):
+        if self._job_locked or self._sending:
+            return
         if self.pdf_bundle:
             self.on_clear_artwork()
         else:
@@ -2318,6 +2346,8 @@ class Window(Adw.ApplicationWindow):
         dialog.save(self, None, done)
 
     def on_pick_pdf(self, *_a):
+        if self._job_locked or self._sending:
+            return
         dialog = Gtk.FileDialog(title="Open the printed sheet")
         filt = Gtk.FileFilter()
         filt.set_name('PDF and ZIP files (*.pdf, *.zip)')
@@ -2333,6 +2363,8 @@ class Window(Adw.ApplicationWindow):
         dialog.set_default_filter(filt)
 
         def done(d, result):
+            if self._job_locked or self._sending:
+                return
             try:
                 gfile = d.open_finish(result)
             except GLib.Error:
@@ -2400,7 +2432,7 @@ class Window(Adw.ApplicationWindow):
             self.on_pdf_page_changed()
 
     def measure_sheet(self):
-        if self.bundle_row_error:
+        if self._job_locked or self._sending or self.bundle_row_error:
             return
         path = getattr(self, "pdf_path", None)
         matched = self.pdf_bundle
@@ -2421,6 +2453,7 @@ class Window(Adw.ApplicationWindow):
         token = self._sheet_token = object()
         self.pdf_check_state = sheet_mod.RegistrationDecision.CHECKING
         self.checked_marks = marks
+        self.checked_scm_orientation = orient_scm
         self.sheet_report = None
         self.preview.set_sheet(None)
 
@@ -2431,12 +2464,12 @@ class Window(Adw.ApplicationWindow):
                     report, image = matched.measure(row, marks, dpi)
                 else:
                     report, image = sheet_mod.measure_preview(path, marks, page, dpi, orient_scm=orient_scm)
+                problems = report.problems(marks.sheet_w_mm, marks.sheet_h_mm)
                 png = io.BytesIO()
                 image.save(png, format='PNG')
             except Exception as exc:              # noqa: BLE001
                 GLib.idle_add(self._sheet_failed, str(exc), token)
                 return
-            problems = report.problems(marks.sheet_w_mm, marks.sheet_h_mm)
             GLib.idle_add(self._sheet_done, report, problems, png.getvalue(), token)
 
         threading.Thread(target=work, daemon=True).start()
@@ -3097,6 +3130,8 @@ class Window(Adw.ApplicationWindow):
         self.on_connection_target_changed()
 
     def on_connection_target_changed(self, *_args):
+        if self.tools_connection is not None and self.tools_connection != self._connection():
+            self.forget_tool_detection()
         self.connection_status.set_subtitle("Not checked")
         self.scan_result.set_visible(False)
         self.update_send_actions()
@@ -3147,8 +3182,6 @@ class Window(Adw.ApplicationWindow):
             if model and self.selected_cutter() == cutters.AUTO:
                 self.r_cutter.set_selected(graphtec.DEVICES.index(model))
             self.on_connection_target_changed()
-            if self.tools_connection is not None and self.tools_connection != self._connection():
-                self.forget_tool_detection()
             self.detect_tools()
             return
         if 0 <= index < len(self._bluetooth_devices):
@@ -3157,8 +3190,6 @@ class Window(Adw.ApplicationWindow):
             model = bluetooth.advertised_model(name)
             if model and self.selected_cutter() == cutters.AUTO:
                 self.r_cutter.set_selected(graphtec.DEVICES.index(model))
-            if self.tools_connection is not None and self.tools_connection != self._connection():
-                self.forget_tool_detection()
             self.detect_tools()
 
     def _connection(self):
@@ -3180,21 +3211,28 @@ class Window(Adw.ApplicationWindow):
         device = graphtec.device_by_name(self._text(self.r_cutter))
         labels = tooling.holder_labels(self.detected_tools, device)
         for slot, button in buttons.items():
-            button.set_label(labels[slot - 1] if slot <= len(labels) else f"Tool Holder {slot}")
+            label = labels[slot - 1] if slot <= len(labels) else f"Tool Holder {slot}"
+            button.set_label(label.replace(" · ", "\n", 1))
+            button.get_child().set_justify(Gtk.Justification.CENTER)
+            button.get_child().set_wrap(True)
+            button.update_property([Gtk.AccessibleProperty.LABEL], [label])
+            button.set_tooltip_text(label)
 
     def apply_tool_detection(self, codes):
         """Take a holder reply, label the tabs, and send depth back to manual once."""
         self.detected_tools = tuple(codes)
         self.tools_connection = self._connection()
         self.update_holder_labels()
-        if self.active_job is not None or self._sending:
+        self.correct_detected_depth()
+
+    def correct_detected_depth(self):
+        if self.active_job is not None or self._sending or not self.detected_tools:
             return
-        if self.corrected_tools == self.detected_tools:
+        device = graphtec.device_by_name(self._text(self.r_cutter))
+        if (device.two_tools and self.r_holder.get_value() != 1) or self.corrected_tools == self.detected_tools:
             return
         self.corrected_tools = self.detected_tools
-        device = graphtec.device_by_name(self._text(self.r_cutter))
-        holder = int(self.r_holder.get_value()) if device.two_tools else 1
-        depth, reason = tooling.depth_correction(self.detected_tools, int(self.r_depth.get_value()), holder)
+        depth, reason = tooling.depth_correction(self.detected_tools, int(self.r_depth.get_value()))
         if depth is None:
             return
         self.r_depth.set_value(depth)
@@ -3204,19 +3242,25 @@ class Window(Adw.ApplicationWindow):
         """Read the installed tools once for this connection, in the background."""
         connection = self._connection()
         device = graphtec.device_by_name(self._text(self.r_cutter))
-        if (self._sending or self.active_job is not None or not connection[1]
+        if (self._sending or self._checking_status or self.active_job is not None or not connection[1]
                 or not device.detects_tools or self.tools_connection == connection):
             return
 
+        self._checking_status = True
+        self.update_send_actions()
+
         def done(codes):
-            if connection != self._connection():
-                return
-            if codes is None:
-                self.detected_tools = ()
-                self.tools_connection = connection
-                self.update_holder_labels()
-                return
-            self.apply_tool_detection(codes)
+            self._checking_status = False
+            if connection == self._connection():
+                if codes is None:
+                    self.detected_tools = ()
+                    self.tools_connection = connection
+                    self.update_holder_labels()
+                else:
+                    self.apply_tool_detection(codes)
+            else:
+                self.detect_tools()
+            self.update_send_actions()
 
         def work():
             try:
@@ -3235,7 +3279,7 @@ class Window(Adw.ApplicationWindow):
         self.update_holder_labels()
 
     def on_refresh_status(self, *_a):
-        if self._sending or self._checking_status:
+        if self._sending or self._checking_status or self.active_job is not None:
             return
         connection = self._connection()
         mode = connection[0]
@@ -3263,8 +3307,8 @@ class Window(Adw.ApplicationWindow):
             try:
                 with cutters.open_link(connection) as cutter:
                     device = cutter.device
-                    text = f"{device.name} · {cutter.status_with_tools()}"
-                    codes = cutter.tool_codes()
+                    status, codes = cutter.status_and_tools()
+                    text = f"{device.name} · {status}"
                     if mode in bluetooth.BLUETOOTH_MODES:
                         text += f" · {cutter.firmware_version()}"
             except Exception as exc:

@@ -144,7 +144,7 @@ class Guide:
     def reset(self):
         self.placement = None
         self.history = ()
-        self.spot_settings = {}
+        self.spot_trials = {}
         self.resume_error = ""
         self._set_spot(1)
 
@@ -163,7 +163,8 @@ class Guide:
 
     @property
     def can_cut(self):
-        return not self.interrupted and self.completed < MAX_JOB_PASSES
+        return (not self.interrupted and self.completed < MAX_JOB_PASSES
+                and (not self.completed or self.trial is not None))
 
     @property
     def sheet_status(self):
@@ -233,7 +234,14 @@ class Guide:
             self.uncertain = existing.uncertain
             self.interrupted = existing.uncertain or (not self.registered and existing.passes > 0)
             self.outcome = ""
+            self.history = tuple(s for s in self.history if s.number != spot)
+            saved = self.spot_trials.get(spot)
             self.trial = None
+            if saved and self.registered:
+                try:
+                    self.trial = self._restore_trial(saved)
+                except (ValueError, TypeError, KeyError, IndexError, AttributeError, OverflowError):
+                    self.spot_trials.pop(spot)
         else:
             self._set_spot(spot)
 
@@ -254,27 +262,24 @@ class Guide:
         self.select_spot(candidate)
 
     def settings_differ(self, options):
-        """Do the current settings differ from the ones this spot was cut with?
+        """Compare the effective settings for one test pass on the selected spot."""
+        if not self.completed or self.trial is None:
+            return False
+        device = graphtec.device_by_name(options["cutter"])
+        try:
+            settings = self._pass_settings(device, options, self.trial.sheet.shape)
+        except ValueError:
+            return True
+        return settings != self.trial.settings
 
-        A revisited spot has no live trial, so the settings it was cut with
-        are read back from `spot_settings`; without that, a registered sheet
-        silently allowed a second pass at different settings.
-        """
-        if self.completed == 0:
-            return False
-        ts = self.trial.settings if self.trial else self.spot_settings.get(self.spot)
-        if ts is None:
-            return False
-        force = options.get("force")
-        speed = options.get("speed")
-        depth = options.get("depth")
-        holder = options.get("blade_options", {}).get("holder", 1)
-        diameter = options.get("blade_options", {}).get("blade_diameter_mm")
-        return (force is not None and force != ts.force) or \
-               (speed is not None and speed != ts.speed) or \
-               (depth is not None and depth != ts.depth) or \
-               (holder is not None and holder != ts.holder) or \
-               (diameter is not None and diameter != ts.blade_diameter_mm)
+    @staticmethod
+    def _pass_settings(device, options, shape):
+        blade = dict(options["blade_options"], track_enhancing=False)
+        if not blade.get("blade_diameter_mm"):
+            raise ValueError("Choose a blade setting for the material test.")
+        settings = graphtec.CutSettings(force=options["force"], speed=options["speed"],
+                                        depth=options["depth"], passes=1, **blade)
+        return testcut.settings_for_shape(settings, shape).clamped(device)
 
     def inspect(self, outcome):
         self.outcome = outcome if outcome in OUTCOMES else ""
@@ -300,6 +305,8 @@ class Guide:
             return "Use a fresh spot to get a reliable pass count."
         if self.completed >= MAX_JOB_PASSES:
             return f"This spot already has {MAX_JOB_PASSES} passes. Use a fresh spot."
+        if self.completed and self.trial is None:
+            return "This spot’s original cutter and settings are unavailable. Use a fresh spot."
         if connection[0] != "auto" and not connection[1]:
             return "Select a Bluetooth cutter first."
         if self.trial and (self.trial.connection != _connection_key(connection) or self.trial.sheet.device.name != cutter):
@@ -313,13 +320,12 @@ class Guide:
         if self.trial:
             if options["blade_options"].get("holder", 1) != self.trial.settings.holder:
                 raise ValueError("Switch back to the tested tool holder or use a fresh spot.")
-            return self.trial
+            if self.settings_differ(options):
+                raise ValueError("The cut settings changed. Use a fresh spot.")
+            track = options["blade_options"].get("track_enhancing", False)
+            return replace(self.trial, track_enhancing=track) if track != self.trial.track_enhancing else self.trial
         device = graphtec.device_by_name(options["cutter"])
-        blade = dict(options["blade_options"], track_enhancing=False)
-        if not blade["blade_diameter_mm"]:
-            raise ValueError("Choose a blade setting for the material test.")
-        settings = graphtec.CutSettings(force=options["force"], speed=options["speed"],
-                                        depth=options["depth"], passes=1, **blade).clamped(device)
+        settings = self._pass_settings(device, options, shape)
         placement = self.placement or self.make_placement(job, options)
         return self.build_trial(device, settings, placement, _connection_key(connection), shape,
                                 options["blade_options"].get("track_enhancing", False))
@@ -371,7 +377,7 @@ class Guide:
             self.trial = trial
             self.placement = trial.placement
             self.completed += 1
-            self.spot_settings[self.spot] = trial.settings
+            self.spot_trials[self.spot] = self._trial_document(trial)
             self.outcome = ""
         elif isinstance(error, PassUnconfirmed):
             self.trial = trial
@@ -398,6 +404,8 @@ class Guide:
         elif self.trial:
             text += ("\nRepeat on the same marked sheet. You can keep it loaded or reload it." if self.registered else
                      "\nKeep the mat loaded to repeat this spot.")
+        elif self.completed:
+            text += "\nThis spot’s original cutter and settings are unavailable. Use a fresh spot."
         elif self.registered:
             text += "\nPrint the marked test sheet at actual size and load it face-up."
         return text
@@ -427,11 +435,9 @@ class Guide:
         data = dict(version=1, spot=self.spot, completed=self.completed,
                     interrupted=self.interrupted or pending is not None,
                     placement=asdict(placement), history=[asdict(spot) for spot in self.history],
-                    spot_settings={str(number): asdict(settings)
-                                   for number, settings in self.spot_settings.items()})
+                    spot_trials=self.spot_trials)
         if trial:
-            data["trial"] = dict(device=trial.sheet.device.name, settings=asdict(trial.settings),
-                                 connection=trial.connection, shape=trial.sheet.shape, track=trial.track_enhancing)
+            data["trial"] = self._trial_document(trial)
         self.storage.parent.mkdir(parents=True, exist_ok=True)
         temporary = None
         try:
@@ -464,23 +470,29 @@ class Guide:
             if type(self.completed) is not int or not 0 <= self.completed <= MAX_JOB_PASSES:
                 raise ValueError("invalid pass count")
             self.history = tuple(Spot(row["number"], geometry.Rect(**row["rect"]), row["passes"], row["uncertain"])
-                                 for row in data["history"])
-            self.spot_settings = {int(number): graphtec.CutSettings(**settings)
-                                  for number, settings in data.get("spot_settings", {}).items()}
+                                 for row in data["history"] if row["number"] != self.spot)
+            self.spot_trials = {int(number): trial for number, trial in data.get("spot_trials", {}).items()}
             if "trial" in data:
-                trial = data["trial"]
-                connection = tuple(tuple(value) if isinstance(value, list) else value for value in trial["connection"])
-                device = graphtec.device_by_name(trial["device"])
-                self.trial = self.build_trial(device, graphtec.CutSettings(**trial["settings"]), self.placement,
-                                              connection, trial["shape"], trial["track"])
-            elif self.completed or self.interrupted:
-                raise ValueError("missing cut settings")
+                self.trial = self._restore_trial(data["trial"])
+                if self.completed and not self.interrupted:
+                    self.spot_trials[self.spot] = data["trial"]
         except FileNotFoundError:
             return
         except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError, OverflowError):
             self.registered = False
             self.reset()
             self.resume_error = "Could not reopen the marked test sheet history."
+
+    @staticmethod
+    def _trial_document(trial):
+        return dict(device=trial.sheet.device.name, settings=asdict(trial.settings),
+                    connection=trial.connection, shape=trial.sheet.shape, track=trial.track_enhancing)
+
+    def _restore_trial(self, trial):
+        connection = tuple(tuple(value) if isinstance(value, list) else value for value in trial["connection"])
+        device = graphtec.device_by_name(trial["device"])
+        return self.build_trial(device, graphtec.CutSettings(**trial["settings"]), self.placement,
+                                connection, trial["shape"], trial["track"])
 
 
 def run_pass(cutter, trial):

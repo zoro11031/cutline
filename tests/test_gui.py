@@ -45,13 +45,14 @@ class TestDesignWorkspace(unittest.TestCase):
                                     side_effect=gui.transport.NotFound("offline test"))
         offline.start()
         self.addCleanup(offline.stop)
-        win.refresh_usb()
+        with mock.patch.object(win, "detect_tools"):
+            win.refresh_usb()
         return win
 
     def test_multiple_usb_cutters_require_an_endpoint_choice(self):
         win = self.make_window()
         device = graphtec.device_by_name("Silhouette Cameo 4")
-        with mock.patch.object(gui.transport, "usb_endpoints",
+        with mock.patch.object(win, "detect_tools"), mock.patch.object(gui.transport, "usb_endpoints",
                                return_value=[(device, "", (1, 2)), (device, "", (1, 3))]):
             win.refresh_usb()
             self.assertIsNone(win._connection()[1])
@@ -456,7 +457,8 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertFalse(win.guide_send.get_sensitive())
         self.assertIn("select a cutter", win.guide_status.get_subtitle())
 
-        win.r_bluetooth.set_selected(1)
+        with mock.patch.object(win, "detect_tools"):
+            win.r_bluetooth.set_selected(1)
         self.assertTrue(win.guide_send.get_sensitive())
         self.assertNotIn("select a cutter", win.guide_status.get_subtitle())
 
@@ -1076,11 +1078,22 @@ class TestDesignWorkspace(unittest.TestCase):
         win.rebuild()
         checked = win.job
         self.assertTrue(win.r_force.get_sensitive())
+        win.imported = mock.Mock()
+        win.update_send_actions()
+        self.assertTrue(win.use_generated.get_sensitive())
+        self.assertFalse(win.r_sheet_page.get_sensitive())
 
         win.active_job = checked
         win.cut_control = transport.CutControl(lambda: None)
         win._sending = True
         win.lock_job_controls(True)
+        win.update_send_actions()
+        self.assertFalse(win.use_generated.get_sensitive())
+        self.assertFalse(win.reset_layout_action.get_enabled())
+        self.assertFalse(win.open_print_button.get_sensitive())
+        self.assertFalse(win.send_holder_buttons[2].get_sensitive())
+        win.on_clear_artwork()
+        self.assertIsNotNone(win.imported)
         for widget in (win.r_force, win.r_speed, win.r_passes, win.r_cutter, win.r_preset, win.r_sheet):
             self.assertFalse(widget.get_sensitive())
 
@@ -1090,11 +1103,15 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertIs(win.active_job, checked)
         self.assertEqual(win.active_job.settings.force, 25)
 
+        win.imported = None
         win.release_job()
         self.assertIsNone(win.active_job)
         self.assertFalse(win._sending)
         for widget in (win.r_force, win.r_speed, win.r_passes, win.r_cutter, win.r_preset, win.r_sheet):
             self.assertTrue(widget.get_sensitive())
+        self.assertTrue(win.open_print_button.get_sensitive())
+        self.assertTrue(win.send_holder_buttons[2].get_sensitive())
+        self.assertFalse(win.r_sheet_page.get_sensitive())
 
     def test_a_matched_bundle_stays_locked_after_a_send_unlocks_the_rest(self):
         win = self.make_window()
@@ -1153,13 +1170,13 @@ class TestDesignWorkspace(unittest.TestCase):
         win.r_depth.set_value(7)
 
         win.apply_tool_detection((2, 0))
-        self.assertEqual(buttons[1].get_label(), "Tool Holder 1 · AutoBlade")
-        self.assertEqual(buttons[2].get_label(), "Tool Holder 2 · Empty")
+        self.assertEqual(buttons[1].get_label(), "Tool Holder 1\nAutoBlade")
+        self.assertEqual(buttons[2].get_label(), "Tool Holder 2\nEmpty")
         self.assertEqual(int(win.r_depth.get_value()), 7)
 
         with mock.patch.object(win, "toast") as toast:
             win.apply_tool_detection((4, 0))
-        self.assertEqual(buttons[1].get_label(), "Tool Holder 1 · Kraft blade")
+        self.assertEqual(buttons[1].get_label(), "Tool Holder 1\nKraft blade")
         self.assertEqual(int(win.r_depth.get_value()), -1)
         self.assertIn("Kraft blade", toast.call_args.args[0])
 
@@ -1173,6 +1190,46 @@ class TestDesignWorkspace(unittest.TestCase):
         win.forget_tool_detection()
         self.assertEqual(buttons[1].get_label(), "Tool Holder 1")
         self.assertEqual(buttons[2].get_label(), "Tool Holder 2")
+
+    def test_a_pdf_check_stops_authorizing_cuts_when_orientation_mode_changes(self):
+        win = self.make_window()
+        win.pdf_path = Path("print.pdf")
+        win.r_register.set_active(True)
+        win.rebuild()
+        win.checked_marks = win.job.marks
+        win._sheet_token = object()
+        win.pdf_check_state = gui.sheet_mod.RegistrationDecision.PASSED
+        win.update_send_actions()
+        self.assertTrue(win.cut_button.get_sensitive())
+        with mock.patch.object(gui.layout_presets, "is_published", return_value=True):
+            win.on_changed()
+        self.assertIsNone(win._sheet_token)
+        self.assertFalse(win.cut_button.get_sensitive())
+
+    def test_manual_depth_is_applied_when_returning_to_holder_one(self):
+        win = self.make_window()
+        win.r_depth.set_value(7)
+        win.r_holder.set_value(2)
+        win.apply_tool_detection((1, 7))
+        self.assertEqual(int(win.r_holder.get_value()), 2)
+        self.assertIsNone(win.corrected_tools)
+        win.r_holder.set_value(1)
+        self.assertEqual(int(win.r_depth.get_value()), -1)
+
+    def test_a_pending_tool_probe_blocks_other_commands_and_recovers_after_failure(self):
+        win = self.make_window()
+        with mock.patch.object(gui.threading, "Thread") as thread, \
+             mock.patch.object(gui.GLib, "idle_add", side_effect=lambda fn, *a: fn(*a)), \
+             mock.patch.object(gui.cutters, "open_link", side_effect=OSError("gone")):
+            win.detect_tools()
+            win.detect_tools()
+            win.on_refresh_status()
+            thread.assert_called_once()
+            self.assertFalse(win.check_cutter_status.get_sensitive())
+            self.assertFalse(win.cut_button.get_sensitive())
+            thread.call_args.kwargs["target"]()
+        self.assertTrue(win.check_cutter_status.get_sensitive())
+        self.assertFalse(win._checking_status)
 
     def test_tools_are_read_once_per_connection_and_not_during_a_job_in_gtk(self):
         win = self.make_window()
@@ -1285,7 +1342,7 @@ class TestDesignWorkspace(unittest.TestCase):
 @unittest.skipUnless(gui is not None, 'PyGObject is not installed')
 class TestOpenDialogs(unittest.TestCase):
     def test_svg_button_opens_a_filtered_file_dialog(self):
-        window = mock.Mock()
+        window = mock.Mock(_job_locked=False, _sending=False)
         with mock.patch.object(gui.Gtk, 'FileDialog') as dialog:
             gui.Window.on_open_artwork(window)
         dialog.return_value.open.assert_called_once()
@@ -1294,7 +1351,7 @@ class TestOpenDialogs(unittest.TestCase):
         self.assertEqual(filters.get_item(0).get_name(), 'Cut templates (SVG, DXF, Studio3)')
 
     def test_pdf_button_opens_a_filtered_file_dialog(self):
-        window = mock.Mock()
+        window = mock.Mock(_job_locked=False, _sending=False)
         with mock.patch.object(gui.Gtk, 'FileDialog') as dialog:
             gui.Window.on_pick_pdf(window)
         dialog.return_value.open.assert_called_once()
@@ -1317,7 +1374,8 @@ class TestOpenDialogs(unittest.TestCase):
 
     def test_a_failed_import_keeps_the_previous_artwork_and_job(self):
         previous = object()
-        window = types.SimpleNamespace(imported=previous, toast=mock.Mock(), clear_bundle=mock.Mock())
+        window = types.SimpleNamespace(imported=previous, toast=mock.Mock(), clear_bundle=mock.Mock(),
+                                       _job_locked=False, _sending=False)
         window.load_artwork_file = types.MethodType(gui.Window.load_artwork_file, window)
         with mock.patch.object(gui.Gtk, 'FileDialog') as dialog, \
              mock.patch('cut_proxies.importer.load', side_effect=ValueError('bad file')):
@@ -1331,7 +1389,8 @@ class TestOpenDialogs(unittest.TestCase):
     def test_multipage_svg_prompts_then_loads_the_selected_page(self):
         path = Path("/tmp/multipage.svg")
         artwork = mock.Mock()
-        window = types.SimpleNamespace(clear_bundle=mock.Mock(), set_artwork=mock.Mock())
+        window = types.SimpleNamespace(clear_bundle=mock.Mock(), set_artwork=mock.Mock(),
+                                       _job_locked=False, _sending=False)
         window.load_artwork_file = types.MethodType(gui.Window.load_artwork_file, window)
         with mock.patch.object(gui.Adw, "AlertDialog") as dialog, \
              mock.patch.object(gui.Gtk, "SpinButton") as spin, \
