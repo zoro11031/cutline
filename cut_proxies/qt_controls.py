@@ -426,6 +426,30 @@ class AdaptiveActions(QWidget):
         return super().event(event)
 
 
+class CheckCaption(QLabel):
+    def __init__(self, label, checkbox):
+        super().__init__(label)
+        self.checkbox = checkbox
+        self.setWordWrap(True)
+        self.setBuddy(checkbox)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setEnabled(checkbox.isEnabled())
+        checkbox.installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        if watched is self.checkbox and event.type() == QEvent.Type.EnabledChange:
+            self.setEnabled(self.checkbox.isEnabled())
+        return super().eventFilter(watched, event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.checkbox.setFocus(Qt.FocusReason.MouseFocusReason)
+            self.checkbox.click()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class Form(QFormLayout):
     def __init__(self, widget):
         super().__init__(widget)
@@ -505,10 +529,7 @@ class Form(QFormLayout):
             layout.setSpacing(6)
             field.setText("")
             field.setAccessibleName(label)
-            caption = QLabel(label)
-            caption.setWordWrap(True)
-            caption.setBuddy(field)
-            caption.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            caption = CheckCaption(label, field)
             layout.addWidget(field)
             layout.addWidget(caption, 1)
             field.caption = caption

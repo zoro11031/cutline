@@ -263,15 +263,18 @@ class Transport:
         return tuple(int(f) for f in fields)
 
     def status_with_tools(self) -> str:
+        return self.status_and_tools()[0]
+
+    def status_and_tools(self) -> tuple[str, tuple[int, ...] | None]:
         state = self.status()
         if state not in ("ready", "unloaded"):
-            return state
+            return state, None
         codes = self.tool_codes()
         if not codes:
-            return f"{state} · tool detection unavailable on this model"
+            return f"{state} · tool detection unavailable on this model", codes
         holders = [f"Holder {i}: {graphtec.tool_name(code)}"
                    for i, code in enumerate(codes, 1)]
-        return " · ".join([state, *holders])
+        return " · ".join([state, *holders]), codes
 
     def status(self) -> str:
         """'ready', 'moving', 'unloaded', or whatever came back."""

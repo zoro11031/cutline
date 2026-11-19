@@ -46,13 +46,14 @@ class TestQtFrontend(unittest.TestCase):
         offline.start()
         self.addCleanup(offline.stop)
         self.window = qt_gui.Window()
-        self.window.refresh_usb()
+        with mock.patch.object(self.window, "detect_tools"):
+            self.window.refresh_usb()
         self.addCleanup(self.window.deleteLater)
 
     def test_multiple_usb_cutters_require_an_endpoint_choice(self):
         window = self.window
         device = qt_gui.graphtec.device_by_name("Silhouette Cameo 4")
-        with mock.patch.object(transport, "usb_endpoints",
+        with mock.patch.object(window, "detect_tools"), mock.patch.object(transport, "usb_endpoints",
                                return_value=[(device, "", (1, 2)), (device, "", (1, 3))]):
             window.refresh_usb()
             self.assertIsNone(window.connection()[1])
@@ -65,7 +66,7 @@ class TestQtFrontend(unittest.TestCase):
         window = self.window
         device = qt_gui.graphtec.device_by_name("Silhouette Cameo 4")
         first, other = (1, 2), (1, 3)
-        with mock.patch.object(transport, "usb_endpoints") as detect:
+        with mock.patch.object(window, "detect_tools"), mock.patch.object(transport, "usb_endpoints") as detect:
             detect.return_value = [(device, "", first), (device, "", other)]
             window.refresh_usb()
             window.detected.setCurrentIndex(window.detected.findData(first))
@@ -728,7 +729,8 @@ class TestQtFrontend(unittest.TestCase):
         self.assertFalse(window.guide_send.isEnabled())
         self.assertIn("select a cutter", window.guide_status.text())
 
-        window.detected.setCurrentIndex(window.detected.findData((1, 2)))
+        with mock.patch.object(window, "detect_tools"):
+            window.detected.setCurrentIndex(window.detected.findData((1, 2)))
         self.assertTrue(window.guide_send.isEnabled())
         self.assertNotIn("select a cutter", window.guide_status.text())
 
@@ -909,12 +911,14 @@ class TestQtFrontend(unittest.TestCase):
         cutter.can_read = True
         cutter.device = window.job.device
         cutter.status.return_value = "ready"
-        cutter.status_with_tools.return_value = "ready · Holder 1 AutoBlade"
+        cutter.status_and_tools.return_value = ("ready · Holder 1 AutoBlade", (2, 0))
         cutter.run.side_effect = transport.RegistrationFailed()
         with mock.patch.object(window.tasks, "run", side_effect=lambda work, done: done(work(), None)), \
              mock.patch.object(transport, "open_transport", return_value=cutter):
             window.refresh_cutter.click()
         self.assertIn("Holder 1 AutoBlade", window.connection_status.text())
+        cutter.status_and_tools.assert_called_once_with()
+        cutter.tool_codes.assert_not_called()
 
         def rejected(_work, done):
             done(None, cutter.run.side_effect)
@@ -1068,6 +1072,21 @@ class TestQtFrontend(unittest.TestCase):
         self.assertIn("Sheet", window.send_refusal(window.job, window.connection()))
         self.assertFalse(window.send_button.isEnabled())
 
+    def test_changing_pdf_orientation_mode_invalidates_the_check_with_unchanged_marks(self):
+        window = self.window
+        window.pdf = Path("print.pdf")
+        window.controls["registration"].setChecked(True)
+        window.rebuild()
+        with mock.patch.object(window.tasks, "run"):
+            window.measure_sheet()
+        marks = window.checked_marks
+        with mock.patch.object(qt_gui.layout_presets, "is_published", return_value=True):
+            window.rebuild()
+        self.assertEqual(window.job.marks, marks)
+        self.assertIsNone(window.sheet_token)
+        self.assertIn("Sheet", window.send_refusal(window.job, window.connection()))
+        self.assertFalse(window.send_button.isEnabled())
+
     def test_a_refused_connection_returns_the_window_to_an_editable_state(self):
         window = self.window
         plan, connection = window.job, window.connection()
@@ -1122,14 +1141,14 @@ class TestQtFrontend(unittest.TestCase):
         window.blade["depth"].setValue(7)
 
         window.apply_tool_detection((2, 0))
-        self.assertEqual(picker.button(1).text(), "Tool Holder 1 · AutoBlade")
-        self.assertEqual(picker.button(2).text(), "Tool Holder 2 · Empty")
+        self.assertEqual(picker.button(1).text(), "Tool Holder 1\nAutoBlade")
+        self.assertEqual(picker.button(2).text(), "Tool Holder 2\nEmpty")
         self.assertEqual(window.blade["depth"].value(), 7)
 
         with mock.patch.object(window, "message") as message:
             window.apply_tool_detection((1, 7))
-        self.assertEqual(picker.button(1).text(), "Tool Holder 1 · Ratchet blade")
-        self.assertEqual(picker.button(2).text(), "Tool Holder 2 · Pen")
+        self.assertEqual(picker.button(1).text(), "Tool Holder 1\nRatchet blade")
+        self.assertEqual(picker.button(2).text(), "Tool Holder 2\nPen")
         self.assertEqual(window.blade["depth"].value(), -1)
         self.assertIn("Ratchet blade", message.call_args.args[0])
 
@@ -1148,6 +1167,16 @@ class TestQtFrontend(unittest.TestCase):
         window.update_holder_labels()
         self.assertEqual(picker.button(1).text(), "Tool Holder 1")
         self.assertEqual(picker.button(2).text(), "Tool Holder 2")
+
+    def test_manual_depth_is_applied_when_returning_to_holder_one(self):
+        window = self.window
+        window.blade["depth"].setValue(7)
+        window.blade["holder"].setValue(2)
+        window.apply_tool_detection((1, 7))
+        self.assertEqual(window.blade["holder"].value(), 2)
+        self.assertIsNone(window.corrected_tools)
+        window.blade["holder"].setValue(1)
+        self.assertEqual(window.blade["depth"].value(), -1)
 
     def test_tools_are_read_once_per_connection_and_not_during_a_job(self):
         window = self.window
@@ -1181,6 +1210,20 @@ class TestQtFrontend(unittest.TestCase):
         link.assert_not_called()
         self.assertEqual(window.detected_tools, ())
 
+    def test_tool_probe_prevents_overlapping_commands_and_releases_after_failure(self):
+        window = self.window
+        with mock.patch.object(window.tasks, "run") as run:
+            window.detect_tools()
+            window.detect_tools()
+            window.check_device()
+            run.assert_called_once()
+            self.assertFalse(window.refresh_cutter.isEnabled())
+            self.assertFalse(window.send_button.isEnabled())
+            run.call_args.args[1](None, OSError("gone"))
+        self.assertTrue(window.refresh_cutter.isEnabled())
+        self.assertTrue(window.blade["force"].isEnabled())
+        self.assertFalse(window.busy)
+
     def test_active_and_paused_job_details_and_control_states_in_qt(self):
         window = self.window
         window.blade["force"].setValue(25)
@@ -1196,6 +1239,9 @@ class TestQtFrontend(unittest.TestCase):
         window.refresh_send()
 
         # Job controls are disabled while active
+        self.assertFalse(window.open_artwork_action.isEnabled())
+        self.assertFalse(window.open_print_button.isEnabled())
+        self.assertFalse(window.blade["holder"].holders.button(2).isEnabled())
         self.assertFalse(window.blade["force"].isEnabled())
         self.assertFalse(window.blade["speed"].isEnabled())
         self.assertFalse(window.controls["sheet"].isEnabled())
@@ -1353,6 +1399,13 @@ class TestQtDesignEditor(unittest.TestCase):
         self.assertEqual(caption.text(), "Enable registration")
         self.assertTrue(caption.wordWrap())
         self.assertEqual(design.register.accessibleName(), "Enable registration")
+        initial = design.register.isChecked()
+        QTest.mouseClick(caption, Qt.MouseButton.LeftButton)
+        self.assertEqual(design.register.isChecked(), not initial)
+        design.register.setDisabled(True)
+        self.assertFalse(caption.isEnabled())
+        QTest.mouseClick(caption, Qt.MouseButton.LeftButton)
+        self.assertEqual(design.register.isChecked(), not initial)
 
     def test_simplify_reduces_a_selected_path_without_an_error_message(self):
         curve = tuple((index / 24, (index / 24) ** 2) for index in range(25))
