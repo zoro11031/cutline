@@ -15,7 +15,7 @@ try:
     from PySide6.QtCore import QPoint, QPointF, Qt
     from PySide6.QtGui import QColor, QImage, QPalette, QWheelEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QFileDialog, QPlainTextEdit
+    from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QFileDialog, QPlainTextEdit, QPushButton
     from cut_proxies import qt_gui
 except ImportError:
     qt_gui = None
@@ -259,18 +259,43 @@ class TestQtFrontend(unittest.TestCase):
     def test_apply_material_opens_the_cut_settings_with_the_selected_values(self):
         window = self.window
         window.tabs.setCurrentIndex(window.tab("Materials"))
-        with mock.patch.object(materials, "load", return_value={}):
+        with mock.patch.object(presets, "factory_presets", return_value={}):
+            presets.save_blade_settings(presets.STARTING_NAME, new_name="Sample", force=16,
+                                        speed=5, depth=None, passes=2)
+            window.refresh_preset_choices()
             window.load_materials()
-        self.assertFalse(window.apply_material_button.isEnabled())
-        sample = mock.Mock()
-        sample.cut_settings.return_value = qt_gui.graphtec.CutSettings(force=16)
-        with mock.patch.object(materials, "load", return_value={}), \
-             mock.patch.object(materials, "cutter_divisions", return_value={"Sample": sample}):
-            window.load_materials()
-        self.assertTrue(window.apply_material_button.isEnabled())
-        window.apply_material_button.click()
-        self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
-        self.assertEqual(window.job.settings.force, 16)
+            self.assertEqual(window.material.currentData(), presets.STARTING_NAME)
+            window.material.setCurrentIndex(window.material.findData("Sample"))
+            self.assertFalse(window.save_preset_btn.isEnabled())
+            self.assertEqual(window.job.settings.force, 25)
+            self.assertIn("Manual / off", window.provenance.text())
+            self.assertTrue(window.apply_material_button.isEnabled())
+            window.apply_material_button.click()
+            self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
+            self.assertEqual(window.choice("preset"), "Sample")
+            self.assertEqual(window.job.settings.force, 16)
+            self.assertTrue(window.save_preset_btn.isEnabled())
+            window.save_preset("Copy of Sample")
+            self.assertEqual(window.material.currentData(), "Copy of Sample")
+            self.assertEqual(window.job.preset.name, "Copy of Sample")
+
+    def test_material_preset_actions_fit_the_compact_panel(self):
+        window = self.window
+        window.resize(850, 600)
+        window.show()
+        window.tabs.setCurrentIndex(window.tab("Materials"))
+        self.app.processEvents()
+        page = window.tabs.currentWidget()
+        self.assertEqual(page.horizontalScrollBar().maximum(), 0)
+
+        font = window.font()
+        font.setPointSize(15)
+        window.setFont(font)
+        window.resize(720, 520)
+        QTest.qWait(30)
+        self.assertEqual(page.horizontalScrollBar().maximum(), 0)
+        for button in page.findChildren(QPushButton):
+            self.assertGreaterEqual(button.width(), button.minimumSizeHint().width(), button.text())
 
     def test_material_presets_page_selection_and_delete_state(self):
         window = self.window
@@ -285,6 +310,7 @@ class TestQtFrontend(unittest.TestCase):
             custom = presets.save_blade_settings(
                 presets.STARTING_NAME, force=18, speed=10, depth=2, passes=1,
                 new_name="Custom Qt Test")
+            window.blade["force"].setValue(28)
             window.load_materials()
             index = window.material.findData("Custom Qt Test")
             self.assertGreaterEqual(index, 0)
@@ -295,6 +321,7 @@ class TestQtFrontend(unittest.TestCase):
                 window.delete_selected_preset()
             self.assertFalse(custom.exists())
             self.assertFalse(window.delete_preset_btn.isEnabled())
+            self.assertEqual(window.job.settings.force, 28)
 
     def test_manual_depth_fits_with_a_large_font(self):
         window = self.window
