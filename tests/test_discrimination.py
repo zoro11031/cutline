@@ -205,6 +205,10 @@ CASES += (
      ["tests.test_starting_guide.TestStartingGuide.test_sending_requires_a_selected_cutter_endpoint"]),
     (starting_guide, "has_cutter_endpoint", lambda *_: False, "every material test cutter refused",
      ["tests.test_starting_guide.TestStartingGuide.test_sending_requires_a_selected_cutter_endpoint"]),
+    (sheet.RegistrationDecision, "evaluate", classmethod(lambda *_: (True, "")), "registration decision always allows",
+     ["tests.test_qt_frontend.TestQtFrontend.test_standalone_pdf_registration_check_gates_hardware_actions_in_qt"]),
+    (sheet.RegistrationDecision, "evaluate", classmethod(lambda *_: (False, "blocked")), "registration decision always refuses",
+     ["tests.test_qt_frontend.TestQtFrontend.test_standalone_pdf_registration_check_gates_hardware_actions_in_qt"]),
 )
 
 try:

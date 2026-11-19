@@ -41,7 +41,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 
 from . import (actions, bluetooth, bundle, config, corner_test, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
-               starting_guide, template, testcut, toolpath, transport)  # noqa: E402
+               sheet as sheet_mod, starting_guide, template, testcut, toolpath, transport)  # noqa: E402
 from .desktop_help import BLADE_VALUE_TEXT, CONTROL_HELP, SETUP_STEPS  # noqa: E402
 from .editor_canvas import DesignCanvas, draw_feed_arrow  # noqa: E402
 from .gtk_controls import disclosure, protect_settings_wheel, workspace_header, workspace_tools, zoom_controls  # noqa: E402
@@ -175,6 +175,8 @@ class Preview(Gtk.DrawingArea):
         self.trial = None
         self.test_placement = None
         self.test_spots = ()
+        self.active_spot_rect = None
+        self.on_spot_clicked = None
         self.zoom = 1.0
         self.pan = self.pan_start = (0, 0)
         self.sheet = None          # a sheet.SheetReport, when a PDF is loaded
@@ -190,9 +192,27 @@ class Preview(Gtk.DrawingArea):
         pan.connect("drag-begin", lambda *_: setattr(self, "pan_start", self.pan))
         pan.connect("drag-update", self.pan_preview)
         self.add_controller(pan)
+        click = Gtk.GestureClick(button=1)
+        click.connect("pressed", self.on_preview_clicked)
+        self.add_controller(click)
         scroll = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.VERTICAL)
         scroll.connect("scroll", self.scroll_zoom)
         self.add_controller(scroll)
+
+    def to_sheet_mm(self, px, py):
+        w = self.get_width()
+        h = self.get_height()
+        sheet_w, sheet_h = self.page_size()
+        _, _, scale = self.viewport(w, h, sheet_w, sheet_h)
+        scale = max(0.01, scale * self.zoom)
+        dx = (w - sheet_w * scale) / 2 + self.pan[0]
+        dy = (h - sheet_h * scale) / 2 + self.pan[1]
+        return (px - dx) / scale, (py - dy) / scale
+
+    def on_preview_clicked(self, gesture, n_press, x, y):
+        if self.test_placement and hasattr(self, "on_spot_clicked") and self.on_spot_clicked:
+            sx, sy = self.to_sheet_mm(x, y)
+            self.on_spot_clicked(sx, sy)
 
     def set_job(self, job):
         before = self.page_size()
@@ -201,11 +221,11 @@ class Preview(Gtk.DrawingArea):
             self.fit()
         self.queue_draw()
 
-    def set_trial(self, trial, spots=(), placement=None):
+    def set_trial(self, trial, spots=(), placement=None, active_rect=None):
         placement = trial.placement if trial else placement
-        if (trial, spots, placement) != (self.trial, self.test_spots, self.test_placement):
+        if (trial, spots, placement, active_rect) != (self.trial, self.test_spots, self.test_placement, self.active_spot_rect):
             previous = self.page_size()
-            self.trial, self.test_spots, self.test_placement = trial, spots, placement
+            self.trial, self.test_spots, self.test_placement, self.active_spot_rect = trial, spots, placement, active_rect
             if self.page_size() != previous:
                 self.fit()
             self.queue_draw()
@@ -289,19 +309,29 @@ class Preview(Gtk.DrawingArea):
         if marks:
             DesignCanvas.draw_marks(cr, marks, scale)
         active = self.trial.sheet.cells[0] if self.trial else None
+        active_rect = active.rect if active else self.active_spot_rect
         cr.set_line_width(0.45)
         cr.select_font_face("Sans")
         cr.set_font_size(min(6, max(4, 11 / scale)))
-        if active:
-            sample = active.rect
+        if active_rect:
+            sample = active_rect
             cr.rectangle(sample.x, sample.y, sample.w, sample.h)
-            cr.set_source_rgba(0.18, 0.56, 0.69, 0.17)
+            cr.set_source_rgba(0.18, 0.56, 0.69, 0.20)
             cr.fill_preserve()
-            cr.set_source_rgb(0.10, 0.43, 0.53)
+            cr.set_source_rgb(0, 0, 0)
+            cr.set_line_width(0.75)
             cr.stroke()
-            if all(spot.number != active.index + 1 for spot in self.test_spots):
+            cr.set_source_rgb(1, 1, 1)
+            cr.set_line_width(0.45)
+            cr.set_dash([1.0, 1.0])
+            cr.rectangle(sample.x + 0.35, sample.y + 0.35, sample.w - 0.7, sample.h - 0.7)
+            cr.stroke()
+            cr.set_dash([])
+            active_num = (active.index + 1) if active else None
+            if active_num is None or all(spot.number != active_num for spot in self.test_spots):
                 cr.move_to(sample.x + 1, sample.y + 6)
-                cr.show_text(str(active.index + 1))
+                cr.set_source_rgb(0.07, 0.22, 0.30)
+                cr.show_text(str(active_num) if active_num else "")
         for spot in self.test_spots:
             box = spot.rect
             color = (0.60, 0.30, 0.07) if spot.uncertain else (0.09, 0.39, 0.34)
@@ -487,6 +517,8 @@ class Window(Adw.ApplicationWindow):
         self.pdf_bundle = None
         self.bundle_row_error = None
         self.bundle_checked = False
+        self.pdf_check_state = sheet_mod.RegistrationDecision.NONE
+        self.active_job = None
         self._sheet_token = None
         self.imported = None
         self._send_source = None
@@ -504,6 +536,7 @@ class Window(Adw.ApplicationWindow):
         self.cut_control = None
         self._checking_status = False
         self.tuning = False
+        self.last_send_tab = "cut"
         self.holder_state = HolderSettings()
         self.guide = starting_guide.Guide(config.CONFIG_DIR / "material-test.json")
         self._suppress = True        # don't rebuild while constructing rows
@@ -545,6 +578,7 @@ class Window(Adw.ApplicationWindow):
         right.set_margin_start(6)
         right.set_margin_end(12)
         self.preview = Preview()
+        self.preview.on_spot_clicked = self.on_preview_spot_clicked
         preview_bar = workspace_tools(margin_start=12, margin_end=12, margin_bottom=8)
         self.preview_title = Gtk.Label(label="Sheet preview", xalign=0, hexpand=True, css_classes=["heading"])
         preview_bar.append(self.preview_title)
@@ -642,6 +676,8 @@ class Window(Adw.ApplicationWindow):
 
     def on_page_changed(self, stack, _param):
         page = stack.get_visible_child_name()
+        if page:
+            self.last_send_tab = page
         if page != "cut":
             self.tuning = False
         self.update_send_actions()
@@ -669,7 +705,7 @@ class Window(Adw.ApplicationWindow):
         self.reset_layout_action = command(edit, "Use Generated Layout", "reset-layout", self.on_clear_artwork)
 
         view = Gio.Menu()
-        for label, name in (("Layout", "layout"), ("Sheet", "sheet"), ("Materials", "materials"), ("Cut Job", "cut")):
+        for label, name in (("Layout", "layout"), ("Sheet", "sheet"), ("Material Presets", "materials"), ("Cut Job", "cut")):
             command(view, label, name, lambda page=name: self.stack.set_visible_child_name(page))
         command(view, "Fit Preview", "fit-preview", self.preview.fit)
 
@@ -706,6 +742,7 @@ class Window(Adw.ApplicationWindow):
         self.cut_button.connect("clicked", self.on_cut)
         bar.pack_end(self.cut_button)
         self.cancel_cut = Gtk.Button(label="Cancel Cut")
+        self.cancel_cut.add_css_class("destructive-action")
         self.cancel_cut.connect("clicked", lambda *_: self.cut_control.cancel())
         bar.pack_end(self.cancel_cut)
         self.pause_cut = Gtk.Button(label="Pause Cut")
@@ -713,7 +750,7 @@ class Window(Adw.ApplicationWindow):
         bar.pack_end(self.pause_cut)
         bar.pack_end(self.corner_button)
         bar.pack_end(self.scan_button)
-        self.back_to_send = Gtk.Button(label="Back to Send", css_classes=["suggested-action"])
+        self.back_to_send = Gtk.Button(label="Exit Material Test", css_classes=["suggested-action"])
         self.back_to_send.connect("clicked", self.close_material_guide)
         bar.pack_end(self.back_to_send)
         return bar
@@ -725,6 +762,9 @@ class Window(Adw.ApplicationWindow):
             if self.imported is None:
                 return "sheet", "Review Sheet"
             if not self.bundle_checked:
+                return "sheet", "Review Sheet"
+        elif self.pdf_path is not None and self.job and self.job.registration:
+            if self.pdf_check_state != sheet_mod.RegistrationDecision.PASSED:
                 return "sheet", "Review Sheet"
         return "cut", "Review Cut Job"
 
@@ -760,16 +800,52 @@ class Window(Adw.ApplicationWindow):
         control = self.cut_control
         for button in (self.pause_cut, self.cancel_cut):
             button.set_visible(control is not None)
-            button.set_sensitive(control is not None and control.state not in ("cancelling", "finishing"))
         if control is not None:
-            self.pause_cut.set_label("Resume Cut" if control.state in ("pausing", "paused") else "Pause Cut")
-        self.send_normal.set_visible(not self.tuning)
-        self.guide_view.set_visible(self.tuning)
+            state = control.state
+            if state == "pausing":
+                pause_label = "Pausing…"
+                pause_sensitive = True
+            elif state == "paused":
+                pause_label = "Resume Cut"
+                pause_sensitive = True
+            else:
+                pause_label = "Pause Cut"
+                pause_sensitive = state == "running"
+
+            cancel_label = "Stopping…" if state == "cancelling" else "Cancel Cut"
+            cancel_sensitive = state in ("running", "pausing", "paused")
+
+            self.pause_cut.set_label(pause_label)
+            self.pause_cut.set_sensitive(pause_sensitive)
+            self.cancel_cut.set_label(cancel_label)
+            self.cancel_cut.set_sensitive(cancel_sensitive)
+        if self.tuning:
+            self.send_cutter_group.set_visible(False)
+            self.send_groups.set_visible(False)
+            self.registration_group.set_visible(False)
+            self.cut_settings.set_visible(True)
+            self.send_advanced.set_visible(False)
+            self.guide_view.set_visible(True)
+        else:
+            self.send_cutter_group.set_visible(True)
+            self.send_groups.set_visible(self._active_send_mode() != "simple")
+            self.registration_group.set_visible(True)
+            self.cut_settings.set_visible(True)
+            self.send_advanced.set_visible(True)
+            self.guide_view.set_visible(False)
         self.back_to_send.set_visible(self.tuning)
+        has_tests = self.guide.history or self.guide.trial is not None or self.guide.spot > 1 or self.guide.completed > 0
+        self.material_guide.set_label("Resume Material Test" if has_tests else "Dial In a Material…")
         job = self.job
         mode, identifier, *_ = self._connection()
         can_check = bool(identifier) and not (self._sending or self._checking_status)
         self.check_cutter_status.set_sensitive(can_check)
+        pdf_refusal = ""
+        if job and job.registration_steps() and self.pdf_path is not None:
+            allowed, pdf_reason = sheet_mod.RegistrationDecision.evaluate(
+                self.pdf_check_state, has_pdf=True, registration_on=True)
+            if not allowed:
+                pdf_refusal = pdf_reason
         reason = (
             control.status_text if control is not None else
             "Sending to the cutter…" if self._sending else
@@ -777,6 +853,7 @@ class Window(Adw.ApplicationWindow):
             "Review the latest edits in Design." if destination == "design" else
             "Choose another sheet or reopen the ZIP in Sheet." if self.bundle_row_error else
             "Save the legacy cut file from Sheet." if self.pdf_bundle and self.imported is None else
+            pdf_refusal if pdf_refusal else
             "Check the matching PDF in Sheet." if destination == "sheet" else
             "Check this layout before sending." if job is None or job.blocked else
             "Select a Bluetooth cutter." if mode in bluetooth.BLUETOOTH_MODES and not identifier else
@@ -790,8 +867,9 @@ class Window(Adw.ApplicationWindow):
         self.cut_button.set_sensitive(not reason)
         self.corner_button.set_sensitive(not reason)
         if not self.tuning:
+            display_job = self.active_job or job
             status = reason or (
-                f"{len(job.paths)} paths · {job.device.name} · {'Registration on' if job.registration else 'Registration off'}")
+                f"{len(display_job.paths)} paths · {display_job.device.name} · {'Registration on' if display_job.registration else 'Registration off'}")
             self.send_status.set_label(status)
             self.send_status.set_tooltip_text(status)
         self.update_guide()
@@ -807,11 +885,16 @@ class Window(Adw.ApplicationWindow):
         dialog.present(self)
 
     def open_material_guide(self, *_args):
-        self.material_guide.set_label("Dial In a Material…")
+        if self.guide.placement is None:
+            try:
+                self.guide.placement = self.guide.make_placement(self.job, self.options())
+            except (ValueError, KeyError):
+                pass
+        self.material_guide.set_label("Resume Material Test")
         self.stack.set_visible_child_name("cut")
         self.tuning = True
+        self.send_page.get_vadjustment().set_value(0)
         self.update_send_actions()
-        GLib.idle_add(self.scroll_send_to, self.guide_group)
 
     def scroll_send_to(self, target):
         if target.get_mapped():
@@ -826,8 +909,6 @@ class Window(Adw.ApplicationWindow):
         self.update_send_actions()
 
     def adjust_guide_settings(self, *_args):
-        if self.guide.trial:
-            self.on_guide_next()
         self.open_cut_settings()
         self.material_guide.set_label("Resume Material Test")
 
@@ -841,7 +922,8 @@ class Window(Adw.ApplicationWindow):
                 except (ValueError, KeyError):
                     pass
         placement = self.guide.placement if self.tuning else None
-        self.preview.set_trial(trial, self.guide.spots if self.tuning else (), placement)
+        active_rect = self.guide.spot_rect(self.guide.spot) if self.tuning else None
+        self.preview.set_trial(trial, self.guide.spots if self.tuning else (), placement, active_rect)
         self.preview_title.set_label("Material test sheet" if self.preview.test_placement else "Sheet preview")
         self.preview_mode.set_visible(not self.tuning and self.preview.pdf_surface is not None)
         self.summary_card.set_visible(not self.tuning)
@@ -1012,18 +1094,34 @@ class Window(Adw.ApplicationWindow):
 
     def _page_materials(self):
         page = ControlPage()
-        g = Adw.PreferencesGroup(title="Material preset",
+        g = Adw.PreferencesGroup(title="Material Presets",
                                  description="Choose and edit your cut settings in Send, then save them here.")
+        self.edit_settings_btn = Gtk.Button(label="Edit Cut Settings", valign=Gtk.Align.CENTER)
+        self.edit_settings_btn.connect("clicked", lambda *_: self.open_cut_settings())
+        g.set_header_suffix(self.edit_settings_btn)
+
+        self.r_material = _combo("Select Preset", ["No materials imported"])
+        self.r_material.connect("notify::selected", self._on_select_material_preset)
+        g.add(self.r_material)
+
         self.preset_note = Adw.ActionRow(title="About this preset", subtitle="")
         self.preset_note.set_subtitle_lines(0)
         g.add(self.preset_note)
-        save_preset = Adw.ActionRow(
-            title="Update selected preset")
+
+        actions_box = Gtk.Box(spacing=8, margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
+        self.apply_material_button = Gtk.Button(label="Apply to Cut Settings", css_classes=["suggested-action"])
+        self.apply_material_button.connect("clicked", self.on_apply_material)
+        actions_box.append(self.apply_material_button)
+
         self.save_preset_btn = Gtk.Button(label="Update Preset")
-        self.save_preset_btn.set_valign(Gtk.Align.CENTER)
         self.save_preset_btn.connect("clicked", self.on_save_blade_preset)
-        save_preset.add_suffix(self.save_preset_btn)
-        g.add(save_preset)
+        actions_box.append(self.save_preset_btn)
+
+        self.delete_preset_btn = Gtk.Button(label="Delete Preset", css_classes=["destructive-action"])
+        self.delete_preset_btn.connect("clicked", self.on_delete_selected_preset)
+        actions_box.append(self.delete_preset_btn)
+        g.add(Adw.PreferencesRow(child=actions_box, activatable=False, selectable=False))
+
         self.new_preset_name = Adw.EntryRow(title="New preset name")
         create = Gtk.Button(label="Save as New", valign=Gtk.Align.CENTER)
         create.connect("clicked", lambda *_: self.on_save_blade_preset(
@@ -1032,16 +1130,9 @@ class Window(Adw.ApplicationWindow):
         g.add(self.new_preset_name)
         page.add(g)
 
-        g3 = Adw.PreferencesGroup(
-            title="Studio materials",
-            description="Import Studio’s condition.csv to add its factory presets.")
-        self.r_cutter_divisions = _combo("Show Cutter Divisions", ["Known Cutters", "All Cutters"])
-        self.r_cutter_divisions.connect("notify::selected", self._load_materials)
-        g3.add(self.r_cutter_divisions)
-        self.r_material = _combo("Factory preset", ["No materials imported"])
-        self.apply_material_button = Gtk.Button(label="Apply to Cut Settings", halign=Gtk.Align.START)
-        self.apply_material_button.connect("clicked", self.on_apply_material)
-        g3.add(self.r_material)
+        library = Adw.PreferencesGroup(
+            title="Library and Defaults",
+            description="Import external material lists or restore default presets.")
         imports = Gtk.Box(spacing=6, margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
         choose = Gtk.Button(label="Import CSV…")
         choose.connect("clicked", self.on_choose_material_csv)
@@ -1049,20 +1140,28 @@ class Window(Adw.ApplicationWindow):
         choose_folder = Gtk.Button(label="Import Folder…")
         choose_folder.connect("clicked", lambda *_: self.on_choose_material_csv(folder=True))
         imports.append(choose_folder)
-        g3.add(Adw.PreferencesRow(child=imports, activatable=False, selectable=False))
-        apply_row = Gtk.Box(margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
-        apply_row.append(self.apply_material_button)
-        g3.add(Adw.PreferencesRow(child=apply_row, activatable=False, selectable=False))
-        page.add(g3)
-        defaults = Adw.PreferencesGroup(title="Defaults")
+        library.add(Adw.PreferencesRow(child=imports, activatable=False, selectable=False))
+
         restore = Adw.ActionRow(title="Restore Default Materials",
                                 subtitle="Back up edits to built-in materials and restore their original settings")
         restore_button = Gtk.Button(label="Restore", valign=Gtk.Align.CENTER)
         restore_button.connect("clicked", self.on_restore_default_materials)
         restore.add_suffix(restore_button)
-        defaults.add(restore)
-        page.add(defaults)
-        self.stack.add_titled(page, "materials", "Materials")
+        library.add(restore)
+        page.add(library)
+
+        class _CompatibilityDivisions:
+            def __init__(self):
+                self._selected = 0
+            def set_selected(self, val):
+                self._selected = val
+            def get_selected(self):
+                return self._selected
+            def connect(self, *args):
+                pass
+        self.r_cutter_divisions = _CompatibilityDivisions()
+
+        self.stack.add_titled(page, "materials", "Material Presets")
 
     def add_advanced_cut_settings(self, advanced):
         blade = Adw.PreferencesGroup(title="Blade details")
@@ -1119,7 +1218,7 @@ class Window(Adw.ApplicationWindow):
         self.send_groups = Adw.PreferencesGroup(
             title="Cut groups", description="Choose which groups to cut and in what order.")
 
-        g = Adw.PreferencesGroup(title="Registration")
+        self.registration_group = g = Adw.PreferencesGroup(title="Registration")
         self.r_register = _switch("Scan for printed marks", True)
         self.r_auto = _switch("Search automatically", True)
         g.add(self.r_register)
@@ -1133,7 +1232,7 @@ class Window(Adw.ApplicationWindow):
         self.r_register.connect("notify::active", self.on_changed)
         self.r_auto.connect("notify::active", self.on_changed)
 
-        g2 = Adw.PreferencesGroup(title="Cutter")
+        self.send_cutter_group = g2 = Adw.PreferencesGroup(title="Cutter")
         cutter_actions = Gtk.Box(spacing=6)
         scan = Gtk.Button(label="Refresh Cutters")
         scan.connect("clicked", self._scan_bluetooth)
@@ -1204,6 +1303,12 @@ class Window(Adw.ApplicationWindow):
         self.guide_group = guide = Adw.PreferencesGroup(title="Dial In a Material", description=starting_guide.GUIDE_TEXT)
         self.guide_apply, self.guide_edit = self.guide_buttons(
             guide, ("Use Starting Settings", self.on_guide_start), ("Adjust Cut Settings", self.adjust_guide_settings))
+        self.guide_spot_selector = _spin("Test Spot", 1, 999, 1, 1, 0)
+        self.guide_spot_selector.connect("notify::value", self.on_guide_spot_selected)
+        guide.add(self.guide_spot_selector)
+        self.guide_spot_status = Adw.ActionRow(title="Untouched stock")
+        self.guide_spot_status.set_subtitle_lines(0)
+        guide.add(self.guide_spot_status)
         self.guide_status = Adw.ActionRow(title="Test spot 1")
         self.guide_status.set_subtitle_lines(0)
         guide.add(self.guide_status)
@@ -1211,6 +1316,7 @@ class Window(Adw.ApplicationWindow):
             guide, ("Cut One Pass…", self.on_guide_pass), ("Use Tested Settings…", self.on_guide_use))
         self.guide_send.add_css_class("suggested-action")
         self.guide_next = self.guide_button(guide, "Next Test Spot", self.on_guide_next)
+        self.exit_guide_btn = self.guide_button(guide, "Exit Material Test", self.close_material_guide)
         self.guide_view.append(guide)
         extras, self.guide_advanced = disclosure(self.guide_view, "Test Options")
         tips = Adw.PreferencesGroup(title="Test sheet")
@@ -1542,7 +1648,7 @@ class Window(Adw.ApplicationWindow):
 
     # ---- rebuilding ---------------------------------------------------
     def on_changed(self, *_a):
-        if self._suppress:
+        if self._suppress or self.active_job is not None:
             return
         fixed_layout = self.pdf_bundle or layout_presets.is_published(self.imported)
         for control in (self.r_sheet, self.r_orient, self.r_engine, self.r_card, self.r_mode, self.r_radius):
@@ -1572,6 +1678,7 @@ class Window(Adw.ApplicationWindow):
             previously_measured = self.sheet_report is not None or self._sheet_token is not None
             self._sheet_token = None
             self.sheet_report = None
+            self.pdf_check_state = sheet_mod.RegistrationDecision.NONE
             self.preview.set_sheet(None)
             if previously_measured:
                 self.sheet_result.set_title('Registration settings changed')
@@ -1664,7 +1771,8 @@ class Window(Adw.ApplicationWindow):
         name = self._text(self.r_preset)
         try:
             saved = presets.save_blade_settings(
-                name, force=int(self.r_force.get_value()), speed=int(self.r_speed.get_value()),
+                name,
+                force=int(self.r_force.get_value()), speed=int(self.r_speed.get_value()),
                 depth=int(self.r_depth.get_value()) if self.r_depth.get_value() >= 0 else None,
                 passes=int(self.r_passes.get_value()), blade_options=self._blade_options(),
                 new_name=new_name, cutter=self._text(self.r_cutter))
@@ -1674,12 +1782,13 @@ class Window(Adw.ApplicationWindow):
         if saved is None:
             self.toast("Preset settings are already saved.")
             return
+        active_name = new_name.strip() if new_name is not None else name
+        self.refresh_preset_choices(active_name)
         if new_name is not None:
-            name = new_name.strip()
-            self.refresh_preset_choices(name)
             self.new_preset_name.set_text("")
+        self._load_materials()
         self.on_preset()
-        self.toast(f"Saved {name}.")
+        self.toast(f"Saved {active_name}.")
 
     def on_preset(self, *_a):
         name, cutter = self._text(self.r_preset), self._text(self.r_cutter)
@@ -1694,8 +1803,12 @@ class Window(Adw.ApplicationWindow):
             index = next(i for i in range(model.get_n_items()) if model.get_string(i) == p.name)
             with self.r_preset.handler_block(self.preset_changed_id):
                 self.r_preset.set_selected(index)
-        self.preset_note.set_title(p.name)
-        self.preset_note.set_subtitle(p.note or p.description)
+        if hasattr(self, "r_material") and self.r_material is not None:
+            model = self.r_material.get_model()
+            names = [model.get_string(i) for i in range(model.get_n_items())] if model else []
+            if p.name in names:
+                self.r_material.set_selected(names.index(p.name))
+        self._on_select_material_preset()
         was = self._suppress
         self._suppress = True
         self._load_blade_settings(for_holder(p.cut_settings(), slot))
@@ -1712,7 +1825,7 @@ class Window(Adw.ApplicationWindow):
             self.r_preset.set_selected(names.index(name))
 
     def rebuild(self):
-        if self._suppress or self._building:
+        if self._suppress or self._building or self.active_job is not None:
             return
         if self.pdf_bundle and self.imported is None:
             self.job = None
@@ -1911,7 +2024,21 @@ class Window(Adw.ApplicationWindow):
 
     def on_edit_template(self, *_args):
         if self.pdf_bundle:
-            self.toast('Clear the matched job before editing its paths.')
+            dialog = Adw.AlertDialog(
+                heading="Matched ZIP Paths Locked",
+                body="Matched ZIP paths are locked to the printed sheet. To edit cut paths or clear the match, open Sheet.")
+            dialog.add_response("cancel", "Cancel")
+            dialog.add_response("sheet", "Open Sheet")
+            dialog.set_response_appearance("sheet", Adw.ResponseAppearance.SUGGESTED)
+            dialog.set_default_response("sheet")
+            dialog.set_close_response("cancel")
+
+            def response(_dialog, resp):
+                if resp == "sheet":
+                    self.stack.set_visible_child_name("sheet")
+
+            dialog.connect("response", response)
+            dialog.present(self)
             return
         if self._sending:
             self.toast('Wait for the current job to finish before opening Design.')
@@ -1941,7 +2068,11 @@ class Window(Adw.ApplicationWindow):
 
     def leave_design(self, *_args):
         self.workspaces.set_visible_child_name('tools')
-        self.open_send_workspace()
+        target = getattr(self, "last_send_tab", "cut")
+        if target in ("layout", "sheet", "materials", "cut"):
+            self.stack.set_visible_child_name(target)
+        else:
+            self.stack.set_visible_child_name("cut")
         self.update_send_actions()
 
     def close_design(self, *_args):
@@ -1995,6 +2126,7 @@ class Window(Adw.ApplicationWindow):
         self.set_artwork(artwork, f'Design · {action}', group_defaults)
         self.reviewed_design = project
         self.leave_design()
+        self.stack.set_visible_child_name("cut")
 
     def set_artwork(self, artwork, name, group_defaults=None):
         self.reviewed_design = None
@@ -2068,6 +2200,7 @@ class Window(Adw.ApplicationWindow):
 
     def clear_printed_sheet(self):
         self.bundle_checked = False
+        self.pdf_check_state = sheet_mod.RegistrationDecision.NONE
         self.bundle_row_error = None
         self.pdf_path = None
         self._sheet_token = None
@@ -2220,6 +2353,7 @@ class Window(Adw.ApplicationWindow):
         if self._suppress or self.pdf_path is None:
             return
         self._sheet_token = None
+        self.pdf_check_state = sheet_mod.RegistrationDecision.NONE
         self.preview.set_pdf()
         self.measure_sheet()
 
@@ -2249,6 +2383,7 @@ class Window(Adw.ApplicationWindow):
         dpi = int(self._text(self.r_sheet_dpi))
         orient_scm = layout_presets.is_published(self.imported)
         token = self._sheet_token = object()
+        self.pdf_check_state = sheet_mod.RegistrationDecision.CHECKING
         self.sheet_report = None
         self.preview.set_sheet(None)
 
@@ -2272,6 +2407,7 @@ class Window(Adw.ApplicationWindow):
     def _sheet_failed(self, message, token):
         if not sheet_request_current(self._sheet_token, token):
             return
+        self.pdf_check_state = sheet_mod.RegistrationDecision.ERROR
         self.sheet_report = None
         self.preview.set_sheet(None)
         self.preview.set_pdf()
@@ -2284,6 +2420,8 @@ class Window(Adw.ApplicationWindow):
             return
         self.sheet_report = report
         self.bundle_checked = bool(self.pdf_bundle) and not problems
+        self.pdf_check_state = (sheet_mod.RegistrationDecision.FAILED if problems
+                                else sheet_mod.RegistrationDecision.PASSED)
         self.preview.set_sheet(report)
         self.preview.set_pdf(png, report.page_w_mm, report.page_h_mm)
         lines = [m.describe() for m in report.marks]
@@ -2334,17 +2472,81 @@ class Window(Adw.ApplicationWindow):
                 or self._text(self.r_preset) != selected):
             self.on_preset()
 
+    def _on_select_material_preset(self, *_args):
+        name = self._text(self.r_material) if hasattr(self, "r_material") and self.r_material else ""
+        cutter = self._text(self.r_cutter)
+        p = getattr(self, "_materials", {}).get(name)
+        if p is None and name and name != "No materials imported":
+            try:
+                p = presets.get(name, cutter)
+            except Exception:
+                p = None
+        deletable = presets.is_deletable(name, cutter)
+        if hasattr(self, "delete_preset_btn"):
+            self.delete_preset_btn.set_sensitive(deletable)
+        if p is not None:
+            settings = p.cut_settings() if hasattr(p, "cut_settings") else None
+            note = getattr(p, "note", "")
+            desc = getattr(p, "description", "")
+            details = []
+            if isinstance(desc, str) and desc:
+                details.append(desc)
+            elif isinstance(note, str) and note:
+                details.append(note)
+            if settings is not None and hasattr(settings, "force"):
+                depth_val = getattr(settings, "depth", None)
+                depth_str = f"{depth_val}" if depth_val is not None else "–"
+                details.append(f"Depth: {depth_str} · Force: {settings.force} · Speed: {settings.speed} · Passes: {settings.passes}")
+            title_str = p.name if hasattr(p, "name") and isinstance(p.name, str) else str(name)
+            self.preset_note.set_title(title_str)
+            self.preset_note.set_subtitle(" · ".join(details))
+        else:
+            self.preset_note.set_title(str(name) if name != "No materials imported" else "")
+            self.preset_note.set_subtitle("")
+
+    def on_delete_selected_preset(self, *_args):
+        name = self._text(self.r_material)
+        cutter = self._text(self.r_cutter)
+        if not presets.is_deletable(name, cutter):
+            self.toast("Built-in presets cannot be deleted.")
+            return
+        dialog = Adw.AlertDialog(
+            heading=f"Delete Preset '{name}'?",
+            body="Are you sure you want to delete this preset or revert it to default settings?"
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("delete", "Delete")
+        dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_close_response("cancel")
+        dialog.set_default_response("cancel")
+
+        def delete_confirmed(_dialog, response):
+            if response != "delete":
+                return
+            if presets.delete_preset(name, cutter):
+                self.toast(f"Deleted {name}.")
+                self.refresh_preset_choices()
+                self._load_materials()
+                self.on_preset()
+            else:
+                self.toast(f"Could not delete {name}.")
+
+        dialog.connect("response", delete_confirmed)
+        dialog.present(self)
+
     def _load_materials(self, *_args):
-        selected = self._text(self.r_material)
+        selected = self._text(self.r_material) if hasattr(self, "r_material") and self.r_material else ""
         previous = getattr(self, "_materials", {}).get(selected)
-        self._materials = {}
         try:
             from . import materials
-            self._materials = materials.cutter_divisions(
-                materials.load(), self._text(self.r_cutter),
-                self.r_cutter_divisions.get_selected() == 1)
+            divs = dict(materials.cutter_divisions(
+                materials.load(), self._text(self.r_cutter), False))
         except (OSError, ValueError):
-            pass
+            divs = {}
+        self._materials = dict(divs)
+        for _, user_preset in presets._read_presets(presets.user_dir()):
+            if user_preset.name not in self._materials:
+                self._materials[user_preset.name] = user_preset
         names = sorted(self._materials) or ["No materials imported"]
         self.r_material.set_model(Gtk.StringList.new(names))
         if selected in self._materials:
@@ -2355,7 +2557,10 @@ class Window(Adw.ApplicationWindow):
             self.r_material.set_selected(match)
         elif "Coverstock" in self._materials:
             self.r_material.set_selected(names.index("Coverstock"))
-        self.apply_material_button.set_sensitive(bool(self._materials))
+        elif names and names[0] != "No materials imported":
+            self.r_material.set_selected(0)
+        self.apply_material_button.set_sensitive(bool(divs))
+        self._on_select_material_preset()
 
     def on_restore_default_materials(self, *_args):
         dialog = Adw.AlertDialog(heading="Restore Default Materials?",
@@ -2374,6 +2579,8 @@ class Window(Adw.ApplicationWindow):
                 self.toast(f"Could not restore defaults. {exc}")
                 return
             if count:
+                self.refresh_preset_choices()
+                self._load_materials()
                 self.on_preset()
                 self.toast(f"Restored {count} material presets. Backup at {directory}.")
             else:
@@ -2385,18 +2592,29 @@ class Window(Adw.ApplicationWindow):
     def on_apply_material(self, *_a):
         name = self._text(self.r_material)
         m = self._materials.get(name)
+        if m is None and name != "No materials imported":
+            try:
+                m = presets.get(name, self._text(self.r_cutter))
+            except Exception:
+                m = None
         if m is None:
-            self.toast("Import Studio materials, then choose a factory preset.")
+            self.toast("Select a material preset.")
             return
-        if self.r_cutter_divisions.get_selected() == 0:
-            self.refresh_preset_choices(name)
-            self.on_preset()
-        else:
-            was, self._suppress = self._suppress, True
-            self._load_blade_settings(for_holder(m.cut_settings(), self.holder_state.active))
-            self._suppress = was
+        if hasattr(self, "r_preset") and self.r_preset is not None:
+            model = self.r_preset.get_model()
+            names = [model.get_string(i) for i in range(model.get_n_items())] if model else []
+            if name in names:
+                self.refresh_preset_choices(name)
+                self.on_preset()
+                self.open_cut_settings()
+                return
+        was, self._suppress = self._suppress, True
+        settings = m.cut_settings() if hasattr(m, "cut_settings") else m
+        self._load_blade_settings(for_holder(settings, self.holder_state.active))
+        self._suppress = was
+        if hasattr(m, "describe"):
             self.toast(f"{name}: {m.describe()}")
-            self.on_changed()
+        self.on_changed()
         self.open_cut_settings()
 
     # ---- calibration and test cuts -----------------------------------
@@ -2426,6 +2644,27 @@ class Window(Adw.ApplicationWindow):
         group.add(row)
         return buttons
 
+    def on_guide_spot_selected(self, row, _param=None):
+        spot = int(row.get_value())
+        if self.guide.spot == spot:
+            return
+        self.guide.select_spot(spot)
+        self.persist_guide()
+        self.update_guide()
+        self.update_tuning_preview()
+
+    def on_preview_spot_clicked(self, x, y):
+        if not self.tuning or self._sending or self._checking_status:
+            return False
+        spot = self.guide.spot_for_point(x, y)
+        if spot is not None:
+            self.guide.select_spot(spot)
+            self.persist_guide()
+            self.update_guide()
+            self.update_tuning_preview()
+            return True
+        return False
+
     def update_guide(self):
         busy = self._sending or self._checking_status
         for field in (self.guide_apply, self.guide_edit, self.guide_next, self.guide_reset):
@@ -2448,6 +2687,12 @@ class Window(Adw.ApplicationWindow):
         if state.resume_error:
             body = "\n".join(filter(None, (body, state.resume_error)))
         self.guide_status.set_subtitle("Waiting for the cutter to finish…" if self._sending else body)
+        if hasattr(self, "guide_spot_selector"):
+            max_spots = self.guide.max_spots
+            self.guide_spot_selector.get_adjustment().set_upper(max(1, max_spots))
+            if int(self.guide_spot_selector.get_value()) != self.guide.spot:
+                self.guide_spot_selector.set_value(self.guide.spot)
+            self.guide_spot_status.set_title(self.guide.spot_status)
         self.guide_history.set_subtitle(state.history_text() or "Completed passes appear here.")
         self.guide_outcome.set_sensitive(not busy)
         self.guide_outcome.set_selected(tuple(starting_guide.OUTCOMES).index(state.outcome))
@@ -2470,8 +2715,6 @@ class Window(Adw.ApplicationWindow):
         self.on_changed()
 
     def on_guide_start(self, *_args):
-        if self.guide.trial:
-            self.on_guide_next()
         device = graphtec.device_by_name(self._text(self.r_cutter))
         opts = self._blade_options()
         self.set_guide_blade_values(starting_guide.starting_values(device, opts["holder"], opts["blade_diameter_mm"]))
@@ -2558,6 +2801,9 @@ class Window(Adw.ApplicationWindow):
 
     def change_guide_registration(self, row, *_args):
         self.guide.registered = row.get_active()
+        if self.guide.placement is not None and self.guide.trial is None:
+            from dataclasses import replace
+            self.guide.placement = replace(self.guide.placement, registered=self.guide.registered)
         self.update_guide()
         self.update_tuning_preview()
 
@@ -2587,6 +2833,9 @@ class Window(Adw.ApplicationWindow):
     def on_guide_pass(self, *_args):
         if self._sending or self._checking_status or not self.guide.can_cut:
             return
+        if self.guide.completed > 0 and self.guide.settings_differ(self.options()):
+            self.toast("Cut settings changed on this spot. Move to untouched stock before testing different settings.")
+            return
         try:
             trial = self.guide_proposal()
         except (ValueError, KeyError) as error:
@@ -2606,6 +2855,9 @@ class Window(Adw.ApplicationWindow):
 
     def _guide_pass_response(self, _dialog, response, trial):
         if response != "cut" or self._sending or self._checking_status or not self.guide.can_cut:
+            return
+        if self.guide.completed > 0 and self.guide.settings_differ(self.options()):
+            self.toast("Cut settings changed on this spot. Move to untouched stock before testing different settings.")
             return
         try:
             current = self.guide_proposal()
@@ -2898,9 +3150,21 @@ class Window(Adw.ApplicationWindow):
         if design_review_pending(self):
             self.toast('Review the latest edits in Design.')
             return
-        if self.pdf_bundle and not self.bundle_checked:
-            self.toast('Check the matched PDF before cutting this sheet.')
+        pdf_path = getattr(self, "pdf_path", None)
+        pdf_bundle = getattr(self, "pdf_bundle", None)
+        pdf_state = getattr(self, "pdf_check_state", sheet_mod.RegistrationDecision.NONE)
+        if pdf_bundle and not getattr(self, "bundle_checked", False):
+            if pdf_state == sheet_mod.RegistrationDecision.FAILED:
+                self.toast('Registration check failed. Open Sheet to see the missing marks.')
+            else:
+                self.toast('Check the matched PDF before cutting this sheet.')
             return
+        if self.job and self.job.registration_steps() and pdf_path is not None:
+            allowed, pdf_reason = sheet_mod.RegistrationDecision.evaluate(
+                pdf_state, has_pdf=True, registration_on=True)
+            if not allowed:
+                self.toast(pdf_reason)
+                return
         j = self.job
         refusal = cut_refusal(j, j, self._sending or self._checking_status)
         if refusal:
@@ -2970,9 +3234,21 @@ class Window(Adw.ApplicationWindow):
         if design_review_pending(self):
             self.toast('Review the latest edits in Design.')
             return
-        if self.pdf_bundle and not self.bundle_checked:
-            self.toast('Check the matched PDF before cutting this sheet.')
+        pdf_path = getattr(self, "pdf_path", None)
+        pdf_bundle = getattr(self, "pdf_bundle", None)
+        pdf_state = getattr(self, "pdf_check_state", sheet_mod.RegistrationDecision.NONE)
+        if pdf_bundle and not getattr(self, "bundle_checked", False):
+            if pdf_state == sheet_mod.RegistrationDecision.FAILED:
+                self.toast('Registration check failed. Open Sheet to see the missing marks.')
+            else:
+                self.toast('Check the matched PDF before cutting this sheet.')
             return
+        if self.job and self.job.registration_steps() and pdf_path is not None:
+            allowed, pdf_reason = sheet_mod.RegistrationDecision.evaluate(
+                pdf_state, has_pdf=True, registration_on=True)
+            if not allowed:
+                self.toast(pdf_reason)
+                return
         refusal = cut_refusal(self.job, j, self._sending or self._checking_status)
         if refusal:
             self.toast(refusal)
@@ -2988,6 +3264,7 @@ class Window(Adw.ApplicationWindow):
             self.toast(refusal)
             return
         checked = corner.job if corner else j
+        self.active_job = checked
         steps = checked.registration_steps() if scan_only else checked.steps
         if not steps:
             self.toast("This job does not use registration.")
@@ -3071,6 +3348,7 @@ class Window(Adw.ApplicationWindow):
 
     def _send_done(self):
         self.cut_control = None
+        self.active_job = None
         self._sending = False
         self.rebuild()
 

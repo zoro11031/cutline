@@ -5,12 +5,27 @@ from ctypes import CDLL, POINTER, byref, c_char_p, c_double, c_int, c_uint, c_vo
 from functools import lru_cache
 import json
 import math
+import os
 
 
 @lru_cache(maxsize=1)
 def _library():
     try:
-        lib = CDLL("libgeos_c.so.1")
+        candidates = ["libgeos_c.so.1", "libgeos_c.so"]
+        user_brew = os.path.expanduser("~/.linuxbrew/lib/libgeos_c.so.1")
+        if os.path.exists(user_brew):
+            candidates.append(user_brew)
+        if os.path.exists("/home/linuxbrew/.linuxbrew/lib/libgeos_c.so.1"):
+            candidates.append("/home/linuxbrew/.linuxbrew/lib/libgeos_c.so.1")
+        lib = None
+        for candidate in candidates:
+            try:
+                lib = CDLL(candidate)
+                break
+            except OSError:
+                continue
+        if lib is None:
+            raise OSError("libgeos_c not found")
         pointer = c_void_p
         signatures = {
             "GEOS_init": (pointer,), "GEOS_finish": (None, pointer),
@@ -155,3 +170,51 @@ def modify(operation, shapes, *, distance=0):
             for region in regions[1:]:
                 result = context.geom(function, result, region)
         return _contours(context.write(result))
+
+
+def slice_contours(paths, p1, p2):
+    """Slice a closed shape (given as path contour rings) with a cut line (p1 to p2).
+    Returns a tuple of contour tuples for each resulting piece, or empty tuple if not sliced."""
+    dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+    length = math.hypot(dx, dy)
+    if length < 0.1:
+        raise ValueError("The knife cut line must have a length of at least 0.1 mm.")
+    all_points = [pt for ring in paths for pt in ring]
+    if not all_points:
+        return ()
+    xs = [pt[0] for pt in all_points]
+    ys = [pt[1] for pt in all_points]
+    diag = 2.0 * max(max(xs) - min(xs), max(ys) - min(ys), 10.0)
+    ux, uy = dx / length, dy / length
+    start = (p1[0] - diag * ux, p1[1] - diag * uy)
+    end = (p2[0] + diag * ux, p2[1] + diag * uy)
+
+    with ExitStack() as stack:
+        context = _RegionContext(stack)
+        rings = [_closed(points) for points in paths]
+        bounds = [(min(x for x, _ in ring), min(y for _, y in ring),
+                   max(x for x, _ in ring), max(y for _, y in ring)) for ring in rings]
+        all_lines = list(rings) + [[start, end]]
+        lines = context.read("MultiLineString", all_lines)
+        noded = context.geom("GEOSUnaryUnion", lines)
+        faces = context.geom("GEOSPolygonize", (c_void_p * 1)(noded), 1)
+        count = context.call("GEOSGetNumGeometries", faces)
+        pieces = []
+        for i in range(count):
+            face = context.call("GEOSGetGeometryN", faces, i)
+            with ExitStack() as s:
+                pt = context.geom("GEOSPointOnSurface", face, stack=s)
+                x, y = c_double(), c_double()
+                context.call("GEOSGeomGetX", pt, byref(x))
+                context.call("GEOSGeomGetY", pt, byref(y))
+            winding = sum(_winding(ring, x.value, y.value) for ring, (l, t, r, b) in zip(rings, bounds)
+                          if l <= x.value <= r and t <= y.value <= b)
+            if winding % 2 != 0:
+                geo = context.write(face)
+                if geo["type"] == "Polygon":
+                    piece_rings = tuple(tuple(map(tuple, r[:-1])) for r in geo["coordinates"] if r)
+                    if piece_rings:
+                        pieces.append(piece_rings)
+        if len(pieces) >= 2:
+            return tuple(pieces)
+        return ()

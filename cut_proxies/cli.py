@@ -974,6 +974,43 @@ def _plan(j):
     return j.steps
 
 
+def cmd_library(args):
+    from . import library, editor_model
+    action = getattr(args, "lib_action", None) or "list"
+    if action == "list":
+        entries = library.list_entries(query=getattr(args, "query", "") or "",
+                                       category=getattr(args, "category", "") or "")
+        if not entries:
+            print("No designs found in the library.")
+            return 0
+        for entry in entries:
+            tags = f" [{', '.join(entry.tags)}]" if entry.tags else ""
+            print(f"• {entry.name} ({entry.category}){tags} - {entry.shapes_count} shape(s), {entry.width:.1f}x{entry.height:.1f} mm")
+        return 0
+    elif action == "save":
+        path = pathlib.Path(args.file)
+        if not path.is_file():
+            fail(f"File not found: {path}")
+        project = editor_model.load_project(path)
+        saved = library.save_to_library(args.name, project, category=getattr(args, "category", "") or "User Designs")
+        print(f"Saved {args.name!r} to library: {saved.name}")
+        return 0
+    elif action == "delete":
+        if library.delete_entry(args.name):
+            print(f"Deleted {args.name!r} from library.")
+            return 0
+        fail(f"Design {args.name!r} not found in library.")
+    elif action == "export":
+        target = library.export_library(pathlib.Path(args.target))
+        print(f"Exported library to {target}")
+        return 0
+    elif action == "import":
+        count = library.import_library(pathlib.Path(args.source))
+        print(f"Imported {count} design(s) into library.")
+        return 0
+    return 0
+
+
 # --------------------------------------------------------------------------
 # gui
 # --------------------------------------------------------------------------
@@ -1145,6 +1182,27 @@ def main(argv=None):
                    help="auto prefers Qt when PySide6 is installed")
     g.add_argument("argv", nargs="*")
     g.set_defaults(func=cmd_gui)
+
+    lib = sub.add_parser("library", help="offline design library")
+    lib_subs = lib.add_subparsers(dest="lib_action")
+    lib_list = lib_subs.add_parser("list", help="list saved designs")
+    lib_list.add_argument("--query", "-q", default="", help="search term")
+    lib_list.add_argument("--category", "-c", default="", help="category filter")
+
+    lib_save = lib_subs.add_parser("save", help="save a template project to the library")
+    lib_save.add_argument("name", help="display title")
+    lib_save.add_argument("file", help="path to .scc-template project file")
+    lib_save.add_argument("--category", "-c", default="User Designs", help="category")
+
+    lib_del = lib_subs.add_parser("delete", help="remove a design from the library")
+    lib_del.add_argument("name", help="design name or id")
+
+    lib_exp = lib_subs.add_parser("export", help="export designs to a zip archive")
+    lib_exp.add_argument("target", help="target zip file")
+
+    lib_imp = lib_subs.add_parser("import", help="import designs from a zip archive")
+    lib_imp.add_argument("source", help="source zip file")
+    lib.set_defaults(func=cmd_library)
 
     args = p.parse_args(argv)
     if not getattr(args, "func", None):

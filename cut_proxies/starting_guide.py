@@ -62,6 +62,31 @@ class PassUnconfirmed(transport.TransportError):
     """A pass may have moved the cutter before returning an error."""
 
 
+def max_spots_for_placement(placement, size_mm=testcut.DEFAULT_SIZE_MM, gap_mm=testcut.DEFAULT_GAP_MM):
+    marks = placement.marks
+    margin = marks.inset_mm + marks.length_mm + testcut.DEFAULT_GAP_MM if marks else testcut.DEFAULT_MARGIN_MM
+    pitch = size_mm + gap_mm
+    usable_w = placement.width - 2 * margin
+    usable_h = placement.height - 2 * margin
+    if size_mm > usable_w or size_mm > usable_h:
+        return 0
+    max_cols = max(1, int((usable_w + gap_mm) // pitch))
+    max_rows = int((usable_h + gap_mm) // pitch)
+    return max_cols * max_rows
+
+
+def spot_rect_for_placement(spot, placement, size_mm=testcut.DEFAULT_SIZE_MM, gap_mm=testcut.DEFAULT_GAP_MM, from_bottom=True):
+    marks = placement.marks
+    margin = marks.inset_mm + marks.length_mm + testcut.DEFAULT_GAP_MM if marks else testcut.DEFAULT_MARGIN_MM
+    pitch = size_mm + gap_mm
+    usable_w = placement.width - 2 * margin
+    cols = max(1, int((usable_w + gap_mm) // pitch))
+    row, col = divmod(spot - 1, cols)
+    x = margin + col * pitch
+    y = placement.height - margin - size_mm - row * pitch if from_bottom else margin + row * pitch
+    return geometry.Rect(x, y, size_mm, size_mm)
+
+
 @dataclass(frozen=True)
 class Placement:
     width: float
@@ -143,11 +168,95 @@ class Guide:
     def current_spot(self):
         if self.trial is not None:
             return Spot(self.spot, self.trial.sheet.cells[0].rect, self.completed, self.uncertain)
+        if self.placement is not None and (self.completed > 0 or self.interrupted):
+            rect = self.spot_rect(self.spot)
+            if rect is not None:
+                return Spot(self.spot, rect, self.completed, self.uncertain)
+        return None
 
     @property
     def spots(self):
         current = self.current_spot
         return (*self.history, current) if current is not None else self.history
+
+    @property
+    def max_spots(self):
+        if self.placement:
+            return max_spots_for_placement(self.placement)
+        return 100
+
+    def spot_rect(self, spot):
+        if self.placement:
+            return spot_rect_for_placement(spot, self.placement)
+        return None
+
+    def spot_for_point(self, x, y):
+        if not self.placement:
+            return None
+        total = self.max_spots
+        for spot_num in range(1, total + 1):
+            r = spot_rect_for_placement(spot_num, self.placement)
+            if r.x <= x <= r.x2 and r.y <= y <= r.y2:
+                return spot_num
+        return None
+
+    @property
+    def spot_status(self):
+        if self.interrupted:
+            return f"{self.completed} {'pass' if self.completed == 1 else 'passes'} · Interrupted"
+        if self.completed > 0:
+            count = "pass" if self.completed == 1 else "passes"
+            return f"{self.completed} completed {count}"
+        return "Untouched stock"
+
+    def select_spot(self, spot):
+        if type(spot) is not int or spot < 1:
+            raise ValueError("Test spot must be a positive integer.")
+        if spot == self.spot:
+            return
+        if self.current_spot is not None:
+            history_map = {s.number: s for s in self.history}
+            history_map[self.current_spot.number] = self.current_spot
+            self.history = tuple(history_map[k] for k in sorted(history_map))
+        existing = next((s for s in self.history if s.number == spot), None)
+        if existing:
+            self.spot = spot
+            self.completed = existing.passes
+            self.uncertain = existing.uncertain
+            self.interrupted = existing.uncertain or (not self.registered and existing.passes > 0)
+            self.outcome = ""
+            self.trial = None
+        else:
+            self._set_spot(spot)
+
+    def next_spot(self):
+        tested = {s.number for s in self.history}
+        if self.current_spot is not None:
+            tested.add(self.spot)
+        limit = self.max_spots
+        candidate = self.spot + 1
+        while candidate in tested and candidate <= limit:
+            candidate += 1
+        if candidate > limit:
+            candidate = 1
+            while candidate in tested and candidate <= limit:
+                candidate += 1
+        if candidate > limit:
+            candidate = self.spot + 1
+        self.select_spot(candidate)
+
+    def settings_differ(self, options):
+        if not self.trial or self.completed == 0:
+            return False
+        ts = self.trial.settings
+        force = options.get("force")
+        speed = options.get("speed")
+        depth = options.get("depth")
+        holder = options.get("blade_options", {}).get("holder", 1)
+        return (force is not None and force != ts.force) or \
+               (speed is not None and speed != ts.speed) or \
+               (depth is not None and depth != ts.depth) or \
+               (holder is not None and holder != ts.holder)
 
     def inspect(self, outcome):
         self.outcome = outcome if outcome in OUTCOMES else ""
@@ -156,11 +265,6 @@ class Guide:
         if self.outcome == "holding" and self.completed >= MAX_JOB_PASSES:
             return "This job supports up to 10 passes. Try a different setting on a fresh spot."
         return ADVICE.get(self.outcome, "")
-
-    def next_spot(self):
-        if self.current_spot is not None:
-            self.history += (self.current_spot,)
-        self._set_spot(self.spot + 1)
 
     def invalidate(self):
         if self.trial is not None:

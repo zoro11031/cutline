@@ -62,6 +62,7 @@ class Shape:
     contours: tuple[tuple[tuple[float, float], ...], ...] = ()
     text: TextSpec | None = None
     sticker: Sticker | None = None
+    layer: str = ""
 
     def paths(self):
         if self.kind not in MULTI_CONTOUR_KINDS:
@@ -144,17 +145,22 @@ def move(shapes, indices, dx, dy):
                  for i, shape in enumerate(shapes))
 
 
-def snap_move(shapes, indices, dx, dy, width, height, tolerance):
+def snap_move(shapes, indices, dx, dy, width, height, tolerance, guides=()):
     selection = bounds(shapes[i] for i in indices)
     others = [bounds((shape,)) for i, shape in enumerate(shapes) if shape.visible and i not in indices]
     targets = ([0, width / 2, width], [0, height / 2, height])
+    for orient, pos in guides:
+        if orient == "v":
+            targets[0].append(pos)
+        elif orient == "h":
+            targets[1].append(pos)
     for box in others:
         targets[0].extend((box.x, box.x + box.w / 2, box.x2))
         targets[1].extend((box.y, box.y + box.h / 2, box.y2))
     moves = []
-    for axis, size, delta, guides in zip(("x", "y"), ("w", "h"), (dx, dy), targets):
+    for axis, size, delta, candidates in zip(("x", "y"), ("w", "h"), (dx, dy), targets):
         start, length = getattr(selection, axis) + delta, getattr(selection, size)
-        shift = min((guide - (start + length * anchor) for guide in guides for anchor in (0, 0.5, 1)), key=abs)
+        shift = min((guide - (start + length * anchor) for guide in candidates for anchor in (0, 0.5, 1)), key=abs)
         moves.append(delta + shift if abs(shift) <= tolerance else delta)
     return tuple(moves)
 
@@ -237,6 +243,19 @@ def offset_shape(shape, distance):
     if not result:
         raise ValueError("This inset is too large and leaves no cut area.")
     return replace(styled_contours(tuple(template.CutPath(ring, True) for ring in result), shape), group=None)
+
+
+def slice_shape(shape, p1, p2):
+    """Slice a closed shape with a line from p1 to p2 into multiple shapes."""
+    contours = _closed_contours(shape)
+    pieces = vector_regions.slice_contours(contours, p1, p2)
+    if not pieces:
+        return (shape,)
+    result = []
+    for piece in pieces:
+        paths = tuple(template.CutPath(ring, True) for ring in piece)
+        result.append(replace(styled_contours(paths, shape, compound=len(piece) > 1), group=None))
+    return tuple(result)
 
 
 def _closed_contours(shape):
@@ -408,11 +427,18 @@ def stroke_color(value):
 
 
 def artwork(shapes, width, height, action="Cut"):
-    paths = tuple(replace(path, layer=((shape.action, actions.HOLDER_SETTINGS[shape.holder])
-                                              if shape.holder else (shape.action,))) for shape in shapes
-                  if shape.visible and shape.action != "None"
-                  and action in (shape.action, ALL_ACTIONS) for path in shape.paths())
-    return importer.Imported(paths, width, height,
+    paths = []
+    for shape in shapes:
+        if not shape.visible or shape.action == "None":
+            continue
+        if action not in (shape.action, ALL_ACTIONS):
+            continue
+        base_layer = shape.layer.strip() if shape.layer.strip() else shape.action
+        layer_tuple = ((base_layer, actions.HOLDER_SETTINGS[shape.holder])
+                       if shape.holder else (base_layer,))
+        for path in shape.paths():
+            paths.append(replace(path, layer=layer_tuple))
+    return importer.Imported(tuple(paths), width, height,
                              "Template editor", "editor coordinates in millimetres",
                              page_size_mm=(width, height), use_document_page=True)
 
@@ -449,6 +475,7 @@ class Project:
     shapes: tuple[Shape, ...] = ()
     registration: Registration | None = None
     mat: str = "auto"
+    guides: tuple[tuple[str, float], ...] = ()
 
     def artwork(self, action="Cut"):
         return artwork(self.shapes, self.width, self.height, action)
@@ -482,17 +509,21 @@ def save_project(path, project):
     for shape in project.shapes:
         fields = asdict(shape)
         for name, default in (("holder", None), ("line_style", "solid"), ("line_width_mm", 0.0),
-                              ("text", None), ("contours", ()), ("sticker", None)):
+                              ("text", None), ("contours", ()), ("sticker", None), ("layer", "")):
             if fields[name] == default:
                 del fields[name]
         objects.append(fields)
     if any(shape.sticker for shape in project.shapes):
         version = 4
+    elif any(shape.layer for shape in project.shapes) or project.guides:
+        version = 5
     else:
         version = 3 if any(shape.kind in MULTI_CONTOUR_KINDS for shape in project.shapes) else 2
     document = {"version": version, "page_mm": [project.width, project.height],
                 "registration": asdict(project.registration) if project.registration else None,
                 "mat": project.mat, "objects": objects}
+    if project.guides:
+        document["guides"] = [list(g) for g in project.guides]
     content = json.dumps(document, indent=2, allow_nan=False) + "\n"
     temporary = None
     try:
@@ -548,7 +579,8 @@ def styled_contours(paths, original, *, compound=False):
         converted = compound_shape(tuple(path.points for path in paths))
     return replace(converted, stroke=original.stroke, fill=original.fill, visible=original.visible,
                    action=original.action, group=original.group, holder=original.holder,
-                   line_style=original.line_style, line_width_mm=original.line_width_mm)
+                   line_style=original.line_style, line_width_mm=original.line_width_mm,
+                   layer=original.layer)
 
 
 def compound_shape(rings, *, text=None):
@@ -578,7 +610,7 @@ def move_vertex(shape, index, position):
 
 def load_project(path, legacy_registration=None):
     document = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(document, dict) or document.get("version") not in (1, 2, 3, 4):
+    if not isinstance(document, dict) or document.get("version") not in (1, 2, 3, 4, 5):
         raise ValueError("Unsupported template project version.")
     page = document.get("page_mm")
     if not isinstance(page, list) or len(page) != 2 or not all(_number(v, 1) for v in page):
@@ -598,6 +630,8 @@ def load_project(path, legacy_registration=None):
     mat = document.get("mat", "auto")
     if not isinstance(mat, str) or mat not in graphtec.MAT_OPTIONS:
         raise ValueError("Invalid project cutting mat.")
+    guides = tuple((str(g[0]), float(g[1])) for g in document.get("guides", ())
+                   if isinstance(g, (list, tuple)) and len(g) == 2 and g[0] in ("h", "v") and _number(g[1]))
     shapes = document.get("shapes" if legacy else "objects")
     if not isinstance(shapes, list):
         raise ValueError("Missing template shapes.")
@@ -606,7 +640,7 @@ def load_project(path, legacy_registration=None):
         try:
             fields = {"kind", "x", "y", "width", "height", "radius"} if legacy else Shape.__dataclass_fields__.keys()
             required = fields if legacy else fields - {"stroke", "fill", "group", "holder", "line_style",
-                                                        "line_width_mm", "contours", "text", "sticker"}
+                                                        "line_width_mm", "contours", "text", "sticker", "layer"}
             if not isinstance(item, dict) or not required <= item.keys() <= fields:
                 raise TypeError("incomplete shape")
             shape = Shape(**item)
@@ -614,7 +648,7 @@ def load_project(path, legacy_registration=None):
             kinds = KINDS if legacy else (*KINDS, "Path")
             if document["version"] >= 3:
                 kinds += ("Compound", "Text")
-            if document["version"] == 4:
+            if document["version"] >= 4:
                 kinds += ("Sticker",)
             valid = (shape.kind in kinds and
                      all(_number(v) for v in numbers) and shape.radius >= 0 and
@@ -622,6 +656,7 @@ def load_project(path, legacy_registration=None):
                      (shape.holder is None or (type(shape.holder) is int and shape.holder in (1, 2))) and
                      shape.line_style in LINE_STYLES and _number(shape.line_width_mm, 0, 5) and
                      (shape.group is None or (type(shape.group) is int and shape.group > 0)) and
+                     isinstance(shape.layer, str) and len(shape.layer) <= 100 and "\0" not in shape.layer and
                      all(type(v) is bool for v in (shape.closed, shape.visible, shape.flip_x, shape.flip_y)))
             shape = replace(shape, stroke=stroke_color(shape.stroke), fill=stroke_color(shape.fill))
             if shape.kind == "Path":
@@ -654,7 +689,7 @@ def load_project(path, legacy_registration=None):
         if not valid:
             raise ValueError("Invalid template shape.")
         result.append(shape)
-    return Project(*page, tuple(result), registration, mat)
+    return Project(*page, tuple(result), registration, mat, guides=guides)
 
 
 def read_project(path, width, height):
