@@ -566,6 +566,12 @@ class Window(Adw.ApplicationWindow):
 
         self.banner = Adw.Banner(revealed=False)
         outer.add_top_bar(self.banner)
+        self.bundle_banner = Adw.Banner(
+            title="Matched ZIP: the cut paths are locked to the printed sheet.",
+            button_label="Open Sheet", revealed=False)
+        self.bundle_banner.connect("button-clicked",
+                                   lambda *_: self.stack.set_visible_child_name("sheet"))
+        outer.add_top_bar(self.bundle_banner)
 
         split = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL,
                           wide_handle=True, position=675,
@@ -684,8 +690,6 @@ class Window(Adw.ApplicationWindow):
         page = stack.get_visible_child_name()
         if page:
             self.last_send_tab = page
-        if page != "cut":
-            self.tuning = False
         self.update_send_actions()
 
     def workspace_menu_bar(self):
@@ -727,11 +731,13 @@ class Window(Adw.ApplicationWindow):
         return Gtk.PopoverMenuBar.new_from_model(menus)
 
     def open_cut_settings(self):
-        self.open_send_workspace()
+        """Show the editable cut settings. An open material test stays open:
+        only Exit Material Test closes one."""
+        self.stack.set_visible_child_name("cut")
         GLib.idle_add(self.scroll_send_to, self.cut_settings)
 
     def open_send_advanced(self):
-        self.open_send_workspace()
+        self.stack.set_visible_child_name("cut")
         self.send_advanced.set_expanded(True)
         GLib.idle_add(self.scroll_send_to, self.send_advanced)
 
@@ -784,13 +790,15 @@ class Window(Adw.ApplicationWindow):
             self.stack.set_visible_child_name(destination)
 
     def open_send_workspace(self, *_args):
-        if self.tuning:
-            self.close_material_guide()
+        """The Send workspace toggle. An open material test stays open:
+        only Exit Material Test closes one."""
         self.stack.set_visible_child_name("cut")
 
     def update_send_actions(self):
         if not hasattr(self, "send_status"):
             return
+        if hasattr(self, "bundle_banner"):
+            self.bundle_banner.set_revealed(self.pdf_bundle is not None and not self.tuning)
         page = self.stack.get_visible_child_name()
         destination, label = self.send_review_destination()
         self.review_send.set_label(label)
@@ -840,8 +848,7 @@ class Window(Adw.ApplicationWindow):
             self.send_advanced.set_visible(True)
             self.guide_view.set_visible(False)
         self.back_to_send.set_visible(self.tuning)
-        has_tests = self.guide.history or self.guide.trial is not None or self.guide.spot > 1 or self.guide.completed > 0
-        self.material_guide.set_label("Resume Material Test" if has_tests else "Dial In a Material…")
+        self.material_guide.set_label("Resume Material Test" if self.guide.has_tests else "Dial In a Material…")
         job = self.job
         mode, identifier, *_ = self._connection()
         can_check = bool(identifier) and not (self._sending or self._checking_status)
@@ -916,7 +923,7 @@ class Window(Adw.ApplicationWindow):
 
     def adjust_guide_settings(self, *_args):
         self.open_cut_settings()
-        self.material_guide.set_label("Resume Material Test")
+        self.update_send_actions()
 
     def update_tuning_preview(self):
         trial = None
@@ -2652,9 +2659,14 @@ class Window(Adw.ApplicationWindow):
 
     def on_guide_spot_selected(self, row, _param=None):
         spot = int(row.get_value())
-        if self.guide.spot == spot:
+        if self.guide.spot == spot or self._sending or self._checking_status:
             return
-        self.guide.select_spot(spot)
+        try:
+            self.guide.select_spot(spot)
+        except ValueError as error:
+            self.toast(str(error))
+            row.set_value(self.guide.spot)
+            return
         self.persist_guide()
         self.update_guide()
         self.update_tuning_preview()
@@ -2664,7 +2676,11 @@ class Window(Adw.ApplicationWindow):
             return False
         spot = self.guide.spot_for_point(x, y)
         if spot is not None:
-            self.guide.select_spot(spot)
+            try:
+                self.guide.select_spot(spot)
+            except ValueError as error:
+                self.toast(str(error))
+                return False
             self.persist_guide()
             self.update_guide()
             self.update_tuning_preview()
@@ -2684,7 +2700,7 @@ class Window(Adw.ApplicationWindow):
         if self.tuning:
             self.send_status.set_label(state.sheet_status)
             self.send_status.set_tooltip_text(state.sheet_status)
-        label = "Repeat One Pass" if state.completed else "Cut One Pass…"
+        label = "Repeat One Pass" if state.completed and not state.interrupted else "Cut One Pass…"
         self.guide_send.set_label(label)
         title, _, body = self.guide.status().partition("\n")
         self.guide_status.set_title(title)
@@ -2694,11 +2710,13 @@ class Window(Adw.ApplicationWindow):
             body = "\n".join(filter(None, (body, state.resume_error)))
         self.guide_status.set_subtitle("Waiting for the cutter to finish…" if self._sending else body)
         if hasattr(self, "guide_spot_selector"):
-            max_spots = self.guide.max_spots
-            self.guide_spot_selector.get_adjustment().set_upper(max(1, max_spots))
+            self.guide_spot_selector.set_sensitive(not busy)
+            self.guide_spot_selector.get_adjustment().set_upper(max(self.guide.max_spots, self.guide.spot))
             if int(self.guide_spot_selector.get_value()) != self.guide.spot:
                 self.guide_spot_selector.set_value(self.guide.spot)
-            self.guide_spot_status.set_title(self.guide.spot_status)
+            differ = state.completed > 0 and state.settings_differ(self.options())
+            self.guide_spot_status.set_title(
+                f"{state.spot_status} · Settings changed (move to fresh spot)" if differ else state.spot_status)
         self.guide_history.set_subtitle(state.history_text() or "Completed passes appear here.")
         self.guide_outcome.set_sensitive(not busy)
         self.guide_outcome.set_selected(tuple(starting_guide.OUTCOMES).index(state.outcome))
@@ -2833,6 +2851,31 @@ class Window(Adw.ApplicationWindow):
 
         dialog.save(self, None, chosen)
 
+    FRESH_SPOT_REASON = ("A second pass at different settings cuts over the first, so the "
+                         "square no longer shows what one setting does. Move to untouched "
+                         "stock, or pick the spot to test on.")
+
+    def offer_fresh_spot(self):
+        """Settings changed on a spot that has already been cut: offer a choice."""
+        dialog = Adw.AlertDialog(
+            heading="Use a Fresh Test Spot?",
+            body="These cut settings differ from the ones this spot was cut with.\n\n"
+                 + self.FRESH_SPOT_REASON)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("choose", "Choose Spot…")
+        dialog.add_response("next", "Use Next Spot")
+        dialog.set_response_appearance("next", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("next")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._fresh_spot_response)
+        dialog.present(self)
+
+    def _fresh_spot_response(self, _dialog, response):
+        if response == "next":
+            self.on_guide_next()
+        elif response == "choose":
+            self.guide_spot_selector.grab_focus()
+
     def guide_proposal(self):
         return self.guide.prepare(self._connection(), self.options(), self.job, "square")
 
@@ -2840,7 +2883,7 @@ class Window(Adw.ApplicationWindow):
         if self._sending or self._checking_status or not self.guide.can_cut:
             return
         if self.guide.completed > 0 and self.guide.settings_differ(self.options()):
-            self.toast("Cut settings changed on this spot. Move to untouched stock before testing different settings.")
+            self.offer_fresh_spot()
             return
         try:
             trial = self.guide_proposal()
@@ -2863,7 +2906,7 @@ class Window(Adw.ApplicationWindow):
         if response != "cut" or self._sending or self._checking_status or not self.guide.can_cut:
             return
         if self.guide.completed > 0 and self.guide.settings_differ(self.options()):
-            self.toast("Cut settings changed on this spot. Move to untouched stock before testing different settings.")
+            self.offer_fresh_spot()
             return
         try:
             current = self.guide_proposal()

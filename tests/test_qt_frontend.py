@@ -39,6 +39,12 @@ class TestQtFrontend(unittest.TestCase):
         endpoint = mock.patch.object(transport, "usb_endpoints", return_value=[(device, "", (1, 2))])
         endpoint.start()
         self.addCleanup(endpoint.stop)
+        # The tier stays offline even with a cutter on the bus: automatic tool
+        # detection opens a link, so nothing may reach real hardware.
+        offline = mock.patch.object(transport, "open_transport",
+                                    side_effect=transport.NotFound("offline test"))
+        offline.start()
+        self.addCleanup(offline.stop)
         self.window = qt_gui.Window()
         self.window.refresh_usb()
         self.addCleanup(self.window.deleteLater)
@@ -648,7 +654,17 @@ class TestQtFrontend(unittest.TestCase):
             window.guide_send.click()
             self.assertTrue(window.guide_send.isEnabled())
             self.assertEqual(window.guide_outcome.currentData(), "")
+
+            # Changed settings on a cut spot offer a fresh one instead of cutting over it.
             window.blade["force"].setValue(27)
+            with mock.patch.object(window, "fresh_spot_choice", return_value="") as asked:
+                window.guide_send.click()
+            asked.assert_called_once()
+            self.assertEqual(len(fake.run.call_args_list), 1)
+            self.assertEqual(window.guide.spot, 1)
+
+            # The same settings as the first pass repeat on the same spot.
+            window.blade["force"].setValue(25)
             window.guide_send.click()
         confirm.assert_called_once()
         self.assertEqual(fake.run.call_args_list, [mock.call(trial.sheet.steps, wait_done=True)] * 2)
@@ -780,6 +796,70 @@ class TestQtFrontend(unittest.TestCase):
             window.open_design()
             box.setWindowTitle.assert_called_with("Matched ZIP Paths Locked")
             self.assertEqual(window.tabs.currentIndex(), window.tab("Sheet"))
+
+    def test_the_material_test_survives_settings_edits_and_tab_switches(self):
+        window = self.window
+        window.open_material_guide()
+        self.assertTrue(window.tuning)
+        window.guide_next.click()
+        spot = window.guide.spot
+        self.assertEqual(spot, 2)
+
+        window.guide_edit.click()
+        self.assertTrue(window.tuning, "editing cut settings closed the material test")
+        self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
+        self.assertTrue(window.settings_box.isVisibleTo(window))
+        self.assertFalse(window.send_button.isVisibleTo(window))
+
+        window.blade["force"].setValue(window.blade["force"].value() + 3)
+        self.assertEqual(window.guide.spot, spot)
+        self.assertTrue(window.tuning)
+
+        window.tabs.setCurrentIndex(window.tab("Sheet"))
+        window.tabs.setCurrentIndex(window.tab("Send"))
+        self.assertTrue(window.tuning)
+        self.assertEqual(window.guide.spot, spot)
+
+        window.edit_settings_btn.click()
+        self.assertTrue(window.tuning)
+        window.open_send_workspace()
+        self.assertTrue(window.tuning)
+
+        window.back_to_send.click()
+        self.assertFalse(window.tuning)
+        self.assertTrue(window.send_button.isVisibleTo(window))
+        self.assertEqual(window.material_guide.text(), "Resume Material Test")
+
+    def test_every_test_spot_can_be_reached_from_the_keyboard(self):
+        window = self.window
+        window.open_material_guide()
+        selector = window.guide_spot_selector
+        self.assertTrue(selector.isEnabled())
+
+        selector.setValue(4)
+        self.assertEqual(window.guide.spot, 4)
+        self.assertIn("Untouched stock", window.guide_spot_status.text())
+
+        selector.setValue(1)
+        self.assertEqual(window.guide.spot, 1)
+        window.guide_next.click()
+        self.assertEqual(selector.value(), window.guide.spot)
+
+        # The selector never offers a spot the sheet does not have.
+        self.assertEqual(selector.maximum(), max(window.guide.max_spots, window.guide.spot))
+        with self.assertRaisesRegex(ValueError, "spots"):
+            window.guide.select_spot(window.guide.max_spots + 1)
+
+    def test_a_matched_zip_explains_itself_before_an_edit_is_attempted(self):
+        window = self.window
+        self.assertFalse(window.bundle_notice_bar.isVisible())
+        window.bundle = mock.MagicMock()
+        window.refresh_send()
+        self.assertTrue(window.bundle_notice_bar.isVisibleTo(window))
+        self.assertIn("locked to the printed sheet", window.bundle_notice.text())
+        window.bundle = None
+        window.refresh_send()
+        self.assertFalse(window.bundle_notice_bar.isVisibleTo(window))
 
     def test_installed_tool_status_and_registration_failure_are_available_in_qt(self):
         window = self.window
