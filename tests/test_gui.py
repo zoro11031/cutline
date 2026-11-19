@@ -623,6 +623,7 @@ class TestDesignWorkspace(unittest.TestCase):
 
     def test_starting_guide_applies_settings_and_keeps_its_own_pass_count(self):
         win = self.make_window()
+        win.open_material_guide()
         win.guide_apply.emit('clicked')
         self.assertEqual((win.r_force.get_value(), win.r_speed.get_value(), win.r_depth.get_value(),
                           win.r_passes.get_value()), (25, 25, 7, 1))
@@ -637,20 +638,43 @@ class TestDesignWorkspace(unittest.TestCase):
 
         with mock.patch.object(gui.threading, 'Thread', side_effect=synchronous_thread), \
              mock.patch.object(gui.GLib, 'idle_add', side_effect=lambda callback, *args: callback(*args)), \
-             mock.patch.object(gui.transport, 'open_transport', return_value=fake):
-            win._guide_pass_response(None, 'cut', trial)
-            self.assertFalse(win.guide_send.get_sensitive())
-            win.guide_outcome.set_selected(tuple(starting_guide.OUTCOMES).index('holding'))
-            win._guide_pass_response(None, 'cut', trial)
+             mock.patch.object(gui.transport, 'open_transport', return_value=fake), \
+             mock.patch.object(gui.Adw, 'AlertDialog') as dialog:
+            win.guide_send.emit('clicked')
+            _, response, proposal = dialog.return_value.connect.call_args.args
+            response(None, 'cut', proposal)
+            self.assertTrue(win.guide_send.get_sensitive())
+            win.guide_send.emit('clicked')
+        dialog.assert_called_once()
         self.assertEqual(fake.run.call_args_list, [mock.call(trial.sheet.steps, wait_done=True)] * 2)
         self.assertIn('2 completed passes', win.guide_status.get_title())
-        win.guide_outcome.set_selected(tuple(starting_guide.OUTCOMES).index('clean'))
+        self.assertTrue(win.guide_use.get_sensitive())
         with mock.patch.object(win, 'offer_tested_preset') as prompt:
             win.guide_use.emit('clicked')
         prompt.assert_called_once()
         self.assertEqual(win.r_passes.get_value(), 2)
         win.guide_next.emit('clicked')
         self.assertEqual(win.guide.spot, 2)
+        self.assertIn('Spot 1 · 2 passes', win.guide_history.get_subtitle())
+        self.assertEqual(win.preview.test_spots[0].passes, 2)
+
+    def test_guide_marked_sheet_export_uses_the_preview_placement(self):
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(config, 'CONFIG_DIR', Path(folder)):
+            win = self.make_window()
+            win.open_material_guide()
+            self.assertIn("Registration off", win.send_status.get_label())
+            win.guide_registration.set_active(True)
+            self.assertIn("Registration scan before each pass", win.send_status.get_label())
+            path = Path(folder) / 'marked-test.svg'
+            with mock.patch.object(gui.Gtk, 'FileDialog') as chooser:
+                win.guide_marked_sheet.emit('clicked')
+                dialog = chooser.return_value
+                dialog.save_finish.return_value = gui.Gio.File.new_for_path(str(path))
+                dialog.save.call_args.args[2](dialog, mock.Mock())
+            self.assertTrue(win.preview.test_placement.registered)
+            self.assertFalse(win.guide_registration.get_sensitive())
+            self.assertIn('registration-marks-DO-NOT-CUT', path.read_text())
+            self.assertTrue(win.preview.trial.sheet.registration)
 
     def test_corner_cut_confirms_and_sends_only_the_sample(self):
         win = self.make_window()

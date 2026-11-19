@@ -66,7 +66,7 @@ class Window(QMainWindow):
         self.bundle_checked = self.busy = self.loading = False
         self.tuning = False
         self.holder_state = HolderSettings()
-        self.guide = starting_guide.Guide()
+        self.guide = starting_guide.Guide(config.CONFIG_DIR / "material-test.json")
         self.group_rows = {}
         self.group_choices = {}
         self.pages = {}
@@ -430,11 +430,6 @@ class Window(QMainWindow):
         self.guide_edit.setToolTip("Choose a material preset or adjust pressure, speed and depth for the next spot.")
         guide.actions(self.guide_apply, self.guide_edit)
         self.guide_status = guide.note()
-        self.guide_outcome_label = "How did the cut look?"
-        self.guide_outcome = guide.choice(self.guide_outcome_label, starting_guide.OUTCOMES,
-                                          changed=self.inspect_test_cut)
-        self.guide_form = guide
-        self.guide_advice = guide.note()
         self.guide_send = button("Cut One Pass…", self.confirm_guide_pass, primary=True)
         self.guide_use = button("Use Tested Settings…", self.use_guide_settings)
         self.guide_use.setToolTip("Use the completed pass count and optionally save the tested settings for this material.")
@@ -444,8 +439,15 @@ class Window(QMainWindow):
         guide.addRow(self.guide_next)
         extras = self.guide_page.advanced("Test Options")
         extra = extras.group("Test sheet")
+        self.guide_registration = extra.check("Use Registration Marks", self.guide.registered,
+                                              self.change_guide_registration)
+        self.guide_marked_sheet = extra.push("Save Marked Test Sheet…", self.save_guide_marked_sheet)
         self.guide_reset = extra.push("New Test Sheet", self.reset_guide)
-        extra.note(starting_guide.TUNING_TIPS)
+        self.guide_history = extras.group("Pass counts by spot").note()
+        help_form = extras.group("Troubleshooting")
+        self.guide_outcome = help_form.choice("Optional symptom", starting_guide.OUTCOMES, changed=self.inspect_test_cut)
+        self.guide_advice = help_form.note()
+        help_form.note(starting_guide.TUNING_TIPS)
         calibration = advanced.group("Calibration")
         dx, dy = config.cut_offset()
         self.cal_x = calibration.number("Offset X (mm)", dx, -5, 5, 0.05, 2, self.rebuild)
@@ -993,9 +995,10 @@ class Window(QMainWindow):
             self.summary_title.setText("PDF registration needs attention")
         self.update_guide()
         self.update_tuning_preview()
-        self.footer_status.setText("Blank test stock · Registration off for samples" if self.tuning else reason or (
-            f"{self.job.device.name} · {len(self.job.paths)} paths · "
-            + ("Registration on" if self.job.registration else "Registration off")))
+        if not self.tuning:
+            self.footer_status.setText(reason or (
+                f"{self.job.device.name} · {len(self.job.paths)} paths · "
+                + ("Registration on" if self.job.registration else "Registration off")))
 
     def confirm(self, title, prompt):
         return QMessageBox.question(self, title, prompt, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -1458,7 +1461,7 @@ class Window(QMainWindow):
         if refusal:
             self.message(refusal)
             return
-        self.guide.invalidate()
+        self.guide.moved()
         self.busy = True
         self.clear_scan_result()
         self.refresh_send()
@@ -1490,21 +1493,26 @@ class Window(QMainWindow):
             field.setEnabled(not self.busy)
         connected = starting_guide.has_cutter_endpoint(self.connection())
         self.guide_send.setEnabled(not self.busy and connected and state.can_cut)
-        self.guide_use.setEnabled(not self.busy and state.outcome == "clean" and state.tested_settings is not None)
-        self.guide_send.setText("Repeat One Pass…" if state.completed else "Cut One Pass…")
-        status = "Waiting for the cutter to finish…" if self.busy else state.status()
-        if state.awaiting_result and not self.busy:
-            status += "\nLeave the mat loaded and lift a corner to check the sample."
+        self.guide_use.setEnabled(not self.busy and state.tested_settings is not None)
+        self.guide_registration.setEnabled(not self.busy and state.placement is None)
+        self.guide_marked_sheet.setEnabled(not self.busy and state.registered)
+        self.guide_send.setText("Repeat One Pass" if state.completed else "Cut One Pass…")
+        if self.tuning:
+            self.footer_status.setText(state.sheet_status)
+        status = state.status()
+        if self.busy:
+            status += "\nWaiting for the cutter to finish…"
         elif not connected:
             status += "\nGo back to Send and select a cutter to run a test pass."
+        if state.resume_error:
+            status += "\n" + state.resume_error
         self.guide_status.setText(status)
+        self.guide_history.setText(state.history_text() or "Completed passes appear here.")
         blocked = self.guide_outcome.blockSignals(True)
         self.guide_outcome.setCurrentIndex(self.guide_outcome.findData(state.outcome))
         self.guide_outcome.blockSignals(blocked)
-        inspecting = state.completed > 0 and not state.interrupted
-        self.guide_form.setRowVisible(self.guide_outcome, inspecting)
         self.guide_outcome.setEnabled(not self.busy)
-        advice = state.advice() if inspecting else ""
+        advice = state.advice()
         self.guide_advice.setText(advice)
         self.guide_advice.setVisible(bool(advice))
 
@@ -1521,9 +1529,10 @@ class Window(QMainWindow):
                     trial = self.guide.prepare(self.connection(), self.job_options(), self.job, "square")
                 except (ValueError, KeyError):
                     pass
-        self.preview.show_trial(trial)
-        self.preview_title.setText("Material test sheet" if trial else "Sheet preview")
-        self.preview_mode.setVisible(trial is None and not self.preview.pdf.isNull())
+        placement = self.guide.placement if self.tuning else None
+        self.preview.show_trial(trial, self.guide.spots if self.tuning else (), placement)
+        self.preview_title.setText("Material test sheet" if self.preview.test_placement else "Sheet preview")
+        self.preview_mode.setVisible(self.preview.test_placement is None and not self.preview.pdf.isNull())
         self.summary_bar.setVisible(not self.tuning)
         self.details.setVisible(not self.tuning and self.details_toggle.isChecked())
 
@@ -1535,7 +1544,7 @@ class Window(QMainWindow):
 
     def apply_guide_start(self):
         if self.guide.trial:
-            self.guide.next_spot()
+            self.next_guide_spot()
         values = self.blade_values()
         device = graphtec.device_by_name(self.choice("cutter"))
         self.set_guide_blade_values(starting_guide.starting_values(
@@ -1545,7 +1554,7 @@ class Window(QMainWindow):
 
     def use_guide_settings(self):
         settings = self.guide.tested_settings
-        if settings is None or self.guide.outcome != "clean":
+        if self.busy or settings is None:
             return
         device = graphtec.device_by_name(self.choice("cutter"))
         holder = self.blade["holder"].value() if device.two_tools else 1
@@ -1575,13 +1584,42 @@ class Window(QMainWindow):
                 break
 
     def next_guide_spot(self):
+        if self.busy:
+            return
         self.guide.next_spot()
+        self.persist_guide()
         self.update_guide()
         self.update_tuning_preview()
 
     def reset_guide(self):
-        if self.confirm("Start a New Test Sheet?", "Load a fresh blank sheet to start at the first spot."):
+        if not self.busy and self.confirm("Start a New Test Sheet?", "Load a fresh test sheet to start at the first spot."):
             self.guide.reset()
+            self.persist_guide()
+            self.update_guide()
+            self.update_tuning_preview()
+
+    def persist_guide(self):
+        try:
+            self.guide.persist()
+        except OSError as error:
+            self.message(f"Could not save the marked test sheet history. {error}")
+            return False
+        return True
+
+    def change_guide_registration(self):
+        self.guide.registered = self.guide_registration.isChecked()
+        self.update_guide()
+        self.update_tuning_preview()
+
+    def save_guide_marked_sheet(self):
+        path = self.choose_output("Save Marked Test Sheet", "material-test.svg", "Printable SVG (*.svg)")
+        if path:
+            try:
+                self.guide.write_marked_sheet(path, self.job, self.job_options())
+            except (OSError, ValueError, KeyError) as error:
+                self.message(str(error))
+            else:
+                self.message("Saved the marked test sheet. Print at actual size.")
             self.update_guide()
             self.update_tuning_preview()
 
@@ -1593,8 +1631,7 @@ class Window(QMainWindow):
         except (ValueError, KeyError) as error:
             self.message(str(error))
             return
-        prompt = self.guide.prompt(trial)
-        if self.confirm("Send One Test Pass?", prompt):
+        if self.guide.completed or self.confirm("Send One Test Pass?", self.guide.prompt(trial)):
             self.start_guide_pass(trial)
 
     def start_guide_pass(self, trial):
@@ -1608,6 +1645,16 @@ class Window(QMainWindow):
         if trial != current:
             self.message("Test settings or cutter connection changed. Review the pass again.")
             return
+        refusal = cutters.usb_refusal(trial.connection, trial.sheet.device, self.cutter_model.currentData())
+        if refusal:
+            self.message(refusal)
+            return
+        if trial.placement.registered:
+            try:
+                self.guide.persist(pending=trial)
+            except OSError as error:
+                self.message(f"Could not save the marked test sheet history. {error}")
+                return
         self.busy = True
         self.refresh_send()
 
@@ -1619,10 +1666,8 @@ class Window(QMainWindow):
             self.guide.record(trial, error)
             self.busy = False
             self.refresh_send()
-            if not error and self.guide_outcome.isVisible():
-                self.guide_outcome.setFocus()
-                self.tabs.widget(self.tab("Send")).ensureWidgetVisible(self.guide_outcome, 0, 20)
-            self.message(str(error) if error else "Pass complete. Keep the mat loaded and lift a corner.")
+            if self.persist_guide():
+                self.message(str(error) if error else "Pass complete.")
 
         self.tasks.run(work, done)
 

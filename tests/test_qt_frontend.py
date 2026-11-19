@@ -575,6 +575,7 @@ class TestQtFrontend(unittest.TestCase):
 
     def test_starting_guide_repeats_one_confirmed_pass_and_applies_the_count(self):
         window = self.window
+        window.open_material_guide()
         window.guide_apply.click()
         self.assertEqual([window.blade[field].value() for field in ("force", "speed", "depth", "passes")],
                          [25, 25, 7, 1])
@@ -586,21 +587,17 @@ class TestQtFrontend(unittest.TestCase):
         fake.run.return_value = 200
 
         with mock.patch.object(window.tasks, "run", side_effect=lambda work, done: done(work(), None)), \
-             mock.patch.object(transport, "open_transport", return_value=fake):
-            window.start_guide_pass(trial)
-            self.assertFalse(window.guide_send.isEnabled())
-            self.assertEqual(window.guide_outcome.currentData(), "")
-            window.guide_outcome.setCurrentIndex(window.guide_outcome.findData("rough"))
-            self.assertIn("Reduce force", window.guide_advice.text())
-            self.assertFalse(window.guide_send.isEnabled())
-            window.guide_outcome.setCurrentIndex(window.guide_outcome.findData("holding"))
+             mock.patch.object(transport, "open_transport", return_value=fake), \
+             mock.patch.object(window, "confirm", return_value=True) as confirm:
+            window.guide_send.click()
             self.assertTrue(window.guide_send.isEnabled())
+            self.assertEqual(window.guide_outcome.currentData(), "")
             window.blade["force"].setValue(27)
-            window.start_guide_pass(trial)
+            window.guide_send.click()
+        confirm.assert_called_once()
         self.assertEqual(fake.run.call_args_list, [mock.call(trial.sheet.steps, wait_done=True)] * 2)
         self.assertIn("2 completed passes", window.guide_status.text())
-        self.assertFalse(window.guide_use.isEnabled())
-        window.guide_outcome.setCurrentIndex(window.guide_outcome.findData("clean"))
+        self.assertTrue(window.guide_use.isEnabled())
         with mock.patch.object(qt_gui, "QInputDialog") as dialog:
             dialog.return_value.exec.return_value = 1
             dialog.return_value.textValue.return_value = "310 gsm Matte"
@@ -615,6 +612,22 @@ class TestQtFrontend(unittest.TestCase):
         window.guide_next.click()
         self.assertEqual(window.guide.spot, 2)
         self.assertFalse(window.guide_use.isEnabled())
+        self.assertIn("Spot 1 · 2 passes", window.guide_history.text())
+        self.assertEqual(window.preview.test_spots[0].passes, 2)
+
+    def test_guide_marked_sheet_export_uses_the_preview_placement(self):
+        window = self.window
+        window.open_material_guide()
+        self.assertIn("Registration off", window.footer_status.text())
+        window.guide_registration.setChecked(True)
+        self.assertIn("Registration scan before each pass", window.footer_status.text())
+        path = self.config_path / "marked-test.svg"
+        with mock.patch.object(window, "choose_output", return_value=path):
+            window.guide_marked_sheet.click()
+        self.assertTrue(window.preview.test_placement.registered)
+        self.assertFalse(window.guide_registration.isEnabled())
+        self.assertIn("registration-marks-DO-NOT-CUT", path.read_text())
+        self.assertTrue(window.preview.trial.sheet.registration)
 
     def test_qt_launcher_can_be_selected_explicitly_or_automatically(self):
         with mock.patch.object(qt_gui, "main", return_value=0) as launch:

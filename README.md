@@ -134,13 +134,17 @@ Open **Send → Dial In a Material**. Choose a factory preset for your stock
 or try **Silhouette starting point**. With an AutoBlade in holder 1 on a
 Cameo 4, it starts at force 25, speed 25, depth 7, and one pass.
 
-1. Load a blank test sheet of the same material. The preview shows the test spot.
-2. Choose **Cut One Pass**. Leave the mat loaded, lift a corner, and answer
-   **How did the cut look?**
-3. Repeat on the same spot if the sample is almost through. If you change a
-   setting, use a fresh spot.
-4. After a clean cut, choose **Use Tested Settings**. You can save them under
-   the material’s name or use them for this job.
+1. Load the same material you plan to cut. The preview starts at the bottom-left.
+2. Choose **Cut One Pass**. Keep the mat loaded and use **Repeat One Pass**
+   as needed. The preview records the confirmed pass count for each spot.
+3. Choose **Next Test Spot** to try different settings. When the cut looks
+   right, choose **Use Tested Settings** to apply the current spot’s count.
+
+To unload and reload a test sheet, open **Test Options → Use Registration
+Marks** and **Save Marked Test Sheet**. Print the SVG at actual size. Each
+pass locates the sheet using its marks. Reload the same sheet when resuming.
+Control Center keeps the marked sheet’s passes and spot positions when you
+close the app. **New Test Sheet** clears that sheet’s history.
 
 Use **Corner Test Cut** for a single 3 mm square on the current sheet.
 Control Center looks for a spare corner and shows the spot before cutting.
