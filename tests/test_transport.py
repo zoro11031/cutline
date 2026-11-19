@@ -2,7 +2,7 @@ import types
 import unittest
 from unittest import mock
 
-from cut_proxies import graphtec, transport
+from cut_proxies import graphtec, job, transport
 
 
 class TestUsbTransfers(unittest.TestCase):
@@ -111,6 +111,42 @@ class TestPathBatches(unittest.TestCase):
         self.cutter.status.return_value = "ready"
         self.assertEqual(self.cutter.run([roller, scan]), len(roller.data) + len(scan.data))
         self.assertEqual(self.cutter.write.call_args_list, [mock.call(roller.data), mock.call(scan.data)])
+
+    def test_letter_track_enhancing_blocks_cut_writes_until_registration_succeeds(self):
+        checked = job.build(sheet="Letter", portrait=False, offset_mm=(0, 0),
+                            blade_options={"track_enhancing": True})
+        self.assertFalse(checked.blocked)
+        prefix = checked.registration_steps()
+        roller = graphtec.frame("FY0")
+        clip = graphtec.frame((r"\0,0", "Z3918,5188"))
+        for result in (graphtec.RESP_REGMARK_FAIL, graphtec.RESP_REGMARK_OK):
+            with self.subTest(result=result):
+                events = []
+                states = iter(("moving", "ready"))
+                self.cutter.write.side_effect = lambda data: events.append(data) or len(data)
+
+                def status():
+                    state = next(states, "ready")
+                    events.append(state)
+                    return state
+
+                self.cutter.status.side_effect = status
+                self.cutter.read = mock.Mock(side_effect=lambda **_: events.append("scan reply") or result)
+                with mock.patch.object(transport.time, "sleep"):
+                    if result == graphtec.RESP_REGMARK_FAIL:
+                        with self.assertRaises(transport.RegistrationFailed):
+                            self.cutter.run(checked.steps)
+                    else:
+                        self.assertEqual(self.cutter.run(checked.steps), len(checked.stream))
+
+                roll_at = events.index(roller)
+                self.assertEqual(events[roll_at + 1:roll_at + 3], ["moving", "ready"])
+                self.assertEqual([e for e in events[:events.index("scan reply")] if isinstance(e, bytes)],
+                                 [step.data for step in prefix if step.kind == "write"])
+                if result == graphtec.RESP_REGMARK_FAIL:
+                    self.assertEqual(events[-1], "scan reply")
+                else:
+                    self.assertEqual(events[events.index("scan reply") + 1], clip)
 
     def test_unloaded_status_stops_the_later_batches_and_park(self):
         self.cutter.status.return_value = "unloaded"
