@@ -115,9 +115,18 @@ Older ZIPs may contain a Studio3 file or DXF. Use **Sheet → Save Paired Cut
 File** to save that file. For direct cutting from the ZIP, export one that
 includes a cut SVG.
 
-For a manual eight-card layout, choose **Letter · MTG Cameo** or
-**A4 · MTG Cameo**. These match the corresponding Proxy Press layout
-settings. If you changed the layout in Proxy Press, use the matching export.
+For the stock eight-card layout, choose **Silhouette Card Maker** under
+**Print Settings → Cutting** in Proxy Press and select Letter or A4. The
+standard template uses a 10 mm registration inset, 0.625 mm bleed, and no
+printed cut guides. Export the **print & cut ZIP** so the cut file matches
+the PDF.
+
+For an existing Proxxied print, use the cut file that matches its PDF.
+If you want to try a stock Card Maker template with Proxxied, turn off
+guides, set bleed to 0.625 mm, and set the registration inset to 10 mm.
+Check that the card positions and registration marks match the template.
+The official templates are designed for the corresponding Card Maker PDF.
+[Silhouette Card Maker cutting guide](https://alan-cha.github.io/silhouette-card-maker/tutorial/guide/)
 
 ```sh
 silhouette-control-center check-sheet cards-print-and-cut.zip --bundle-sheet 2
@@ -161,9 +170,10 @@ Edit the active cut settings in **Send**. In **Materials**, **Save as New**
 keeps a copy of those settings under a new name. Presets stay
 available after you quit. [About preset files](profiles/README.md)
 
-**Track Enhancing** starts on for the starting preset and factory blade
-presets at force 19 or higher. The guided test skips that roller cycle so
-repeated passes use the same loaded spot.
+**Track Enhancing** runs the rollers before cutting. For standard Letter
+Print & Cut on a Cameo 4, Control Center waits for the rollers to finish,
+then uses the same registration scan and cut area as it does with Track
+Enhancing off. The guided test skips the roller cycle.
 
 **Tool Holder 1** and **Tool Holder 2** keep separate settings while the app
 is open. Save named presets to keep those settings for later. **Standard**
