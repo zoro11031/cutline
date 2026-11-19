@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import importlib
 import json
+import os
 import pathlib
 import platform
 import re
@@ -24,6 +25,38 @@ from install import ROOT, install
 
 def run(*args, **kwargs):
     return subprocess.run(args, check=True, **kwargs)
+
+
+def library_directories():
+    multiarch = sysconfig.get_config_var("MULTIARCH")
+    paths = (pathlib.Path(p) for p in os.environ.get("LD_LIBRARY_PATH", "").split(":") if p)
+    return [*paths, pathlib.Path("/usr/lib") / (multiarch or ""), pathlib.Path("/usr/lib")]
+
+
+def package_notices(sources):
+    """Return reported packages and the license directories for the build host."""
+    if shutil.which("pacman"):
+        ownership = subprocess.run(
+            ["pacman", "-Qoq", *sorted(map(str, sources))],
+            capture_output=True, text=True)
+        names = sorted(set(ownership.stdout.splitlines()))
+        return (run("pacman", "-Q", *names, capture_output=True, text=True).stdout.splitlines()
+                if names else []), [pathlib.Path("/usr/share/licenses") / name for name in (*names, "common")]
+    if shutil.which("dpkg-query"):
+        # Minimal containers can retain license notices after removing the package database.
+        ownership = subprocess.run(
+            ["dpkg-query", "-S", *sorted(map(str, sources))],
+            capture_output=True, text=True)
+        names = sorted({pkg.split(":")[0] for line in ownership.stdout.splitlines()
+                        for pkg in line.partition(": ")[0].split(", ") if pkg})
+        if names:
+            versions = subprocess.run(
+                ["dpkg-query", "-W", "-f=${binary:Package} ${Version}\n", *names],
+                capture_output=True, text=True).stdout.splitlines()
+            return versions, [pathlib.Path("/usr/share/doc") / name / "copyright" for name in names]
+        docs = pathlib.Path("/usr/share/doc")
+        return [], sorted(docs.glob("*/copyright"))
+    return [], []
 
 
 def main():
@@ -43,6 +76,11 @@ def main():
     repo = gi.Repository.get_default()
     repo.require('Gtk', '4.0', 0)
     repo.require('Adw', '1', 0)
+    directories = library_directories()
+
+    def find_library(name):
+        return next((directory / name for directory in directories
+                     if (directory / name).is_file()), None)
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='appimage-build-', dir=out) as work:
@@ -102,16 +140,32 @@ def main():
         for namespace in repo.get_loaded_namespaces():
             path = pathlib.Path(repo.get_typelib_path(namespace))
             copy(path, lib / 'girepository-1.0' / path.name)
-        for folder in ('glib-2.0/schemas', 'icons/Adwaita'):
-            tree('/usr/share/' + folder, app / 'usr/share' / folder)
+        schemas = app / 'usr/share/glib-2.0/schemas'
+        data_dirs = os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(":")
+        for directory in reversed(data_dirs):
+            if directory and (pathlib.Path(directory) / 'glib-2.0/schemas').is_dir():
+                tree(pathlib.Path(directory) / 'glib-2.0/schemas', schemas,
+                     shutil.ignore_patterns('gschemas.compiled'))
+        run('glib-compile-schemas', str(schemas))
+        tree('/usr/share/icons/Adwaita', app / 'usr/share/icons/Adwaita')
         copy('/usr/share/icons/hicolor/index.theme', app / 'usr/share/icons/hicolor/index.theme')
-        tree('/usr/lib/gio/modules', lib / 'gio/modules')
+        for directory in reversed(directories):
+            modules = directory / 'gio/modules'
+            if modules.is_dir():
+                tree(modules, lib / 'gio/modules')
         # Explicit dlopen roots; ldd alone cannot discover GI namespaces.
-        roots = [pathlib.Path('/usr/lib') / name for name in (
-            'libgtk-4.so.1', 'libadwaita-1.so.0', 'libgirepository-1.0.so.1',
-            'libgirepository-2.0.so.0', 'libcairo-gobject.so.2',
-            'libpangocairo-1.0.so.0', 'libgeos_c.so.1', 'libnss_dns.so.2', 'libnss_files.so.2',
-            'libresolv.so.2', 'libusb-1.0.so.0')]
+        roots = []
+        for name in ('libgtk-4.so.1', 'libadwaita-1.so.0', 'libcairo-gobject.so.2',
+                     'libpangocairo-1.0.so.0', 'libgeos_c.so.1', 'libnss_dns.so.2',
+                     'libnss_files.so.2', 'libresolv.so.2', 'libusb-1.0.so.0'):
+            path = find_library(name)
+            if path is None:
+                parser.error('missing shared library: ' + name)
+            roots.append(path)
+        for name in ('libgirepository-1.0.so.1', 'libgirepository-2.0.so.0'):
+            path = find_library(name)
+            if path is not None:
+                roots.append(path)
         # Bundle the PDF helpers, with wrappers using the matching loader.
         for command in ('pdfinfo', 'pdftoppm', 'rsvg-convert'):
             binary = shutil.which(command)
@@ -144,24 +198,20 @@ def main():
             if binary in explicit_roots:
                 copy(binary, lib / binary.name)
         # Include provenance and licenses for the host-built runtime.
-        ownership = subprocess.run(
-            ['pacman', '-Qoq', *sorted(str(p) for p in sources if str(p).startswith('/usr/'))],
-            capture_output=True, text=True, check=False)
-        packages = sorted(set(ownership.stdout.splitlines()))
-        if not packages:
-            raise RuntimeError('pacman could not identify any bundled dependencies')
-        for package in packages:
-            license_dir = pathlib.Path('/usr/share/licenses') / package
-            if license_dir.is_dir():
-                tree(license_dir, app / 'usr/share/licenses' / package)
-        common = pathlib.Path('/usr/share/licenses/common')
-        if common.is_dir():
-            tree(common, app / 'usr/share/licenses/common')
+        packages, notices = package_notices(sources)
+        for notice in notices:
+            if notice.is_dir():
+                tree(notice, app / 'usr/share/licenses' / notice.name)
+            elif notice.is_file():
+                copy(notice, app / 'usr/share/licenses' / notice.parent.name / notice.name)
+        for dependency in ('bleak', 'dbus_fast', 'pyusb'):
+            for directory in map(pathlib.Path, sys.path):
+                for metadata in directory.glob(f'{dependency}-*.dist-info'):
+                    tree(metadata, site / metadata.name)
         manifest = {
             'python': sys.version, 'platform': platform.platform(),
             'runtime_sha256': hashlib.sha256(runtime.read_bytes()).hexdigest(),
-            'unowned_files': ownership.stderr.splitlines(),
-            'host_packages': run('pacman', '-Q', *packages, capture_output=True, text=True).stdout.splitlines(),
+            'host_packages': packages,
             'bleak_bundled': bool(ble_modules),
             'pyusb_bundled': (site / 'usb').exists(),
             'pyusb_wheel_sha256': digest if args.pyusb_wheel else None,
@@ -177,7 +227,7 @@ def main():
         run(str(app / 'AppRun'), 'cut', '--dry-run', stdout=subprocess.DEVNULL)
         payload = work / 'payload.squashfs'
         run('mksquashfs', str(app), str(payload), '-noappend', '-comp', 'zstd',
-            '-no-progress', '-all-root')
+            '-no-progress', '-all-root', '-processors', '4')
         version = {}
         exec((ROOT / 'cut_proxies/__init__.py').read_text(), version)
         image = out / ('SilhouetteControlCenter-' + version['__version__'] + '-x86_64.AppImage')

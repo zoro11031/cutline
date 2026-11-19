@@ -26,6 +26,7 @@ See docs/FINDINGS.md for the hardware results.
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 
@@ -287,6 +288,14 @@ class Transport:
 # pyusb
 # --------------------------------------------------------------------------
 
+def _bundled_usb_backend():
+    library = os.environ.get("CUT_PROXIES_LIBUSB")
+    if not library:
+        return None
+    from usb.backend.libusb1 import get_backend
+    return get_backend(find_library=lambda _name: library)
+
+
 class PyUsbTransport(Transport):
     name = "pyusb"
     can_read = True
@@ -303,7 +312,7 @@ class PyUsbTransport(Transport):
         self._util = usb.util
 
         found = None
-        for dev in usb.core.find(find_all=True):
+        for dev in usb.core.find(find_all=True, backend=_bundled_usb_backend()):
             known = graphtec.device_for(dev.idVendor, dev.idProduct)
             if usb_endpoint is not None and (dev.bus, dev.address) != usb_endpoint:
                 continue
@@ -331,10 +340,10 @@ class PyUsbTransport(Transport):
         except usb.core.USBError as exc:
             self.close()
             raise TransportError(
-                f"Could not claim the {self.device.name}: {exc}. This is "
-                f"usually permissions - install the udev rule from "
-                f"docs/SETUP.md - or the usblp kernel driver holding the "
-                f"interface.") from exc
+                f"Could not claim the {self.device.name}: {exc}. "
+                + ("Windows USB requires a libusb-compatible driver for the cutter."
+                   if sys.platform == "win32" else
+                   "Check the udev rule in docs/SETUP.md or whether usblp owns the interface.")) from exc
 
         try:
             intf = self._dev.get_active_configuration()[(0, 0)]
@@ -524,8 +533,30 @@ class FileTransport(Transport):
 # discovery
 # --------------------------------------------------------------------------
 
+def _windows_usb_endpoints(include_unknown):
+    try:
+        import usb.core
+    except ImportError:
+        return []
+    try:
+        out = []
+        for dev in usb.core.find(find_all=True, backend=_bundled_usb_backend()):
+            vid, pid = dev.idVendor, dev.idProduct
+            model = graphtec.device_for(vid, pid)
+            if model is None and include_unknown and vid in (graphtec.VENDOR_GRAPHTEC,
+                                                             graphtec.VENDOR_CAMEO5ALPHA):
+                model = (vid, pid)
+            if model is not None:
+                out.append((model, "bulk endpoints only", (dev.bus, dev.address)))
+        return out
+    except (OSError, usb.core.NoBackendError, usb.core.USBError):
+        return []
+
+
 def usb_endpoints(*, include_unknown=False):
     """Return model, printer node, and this enumeration's bus/address."""
+    if sys.platform == "win32":
+        return _windows_usb_endpoints(include_unknown)
     out: list[tuple[graphtec.Device, str]] = []
     root = "/sys/bus/usb/devices"
     if not os.path.isdir(root):

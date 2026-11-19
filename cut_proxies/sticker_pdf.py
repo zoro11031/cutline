@@ -4,6 +4,7 @@ from contextlib import ExitStack
 from ctypes import CDLL, c_char_p, c_double, c_int, c_void_p
 from functools import lru_cache
 import os
+import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -11,7 +12,7 @@ from tempfile import TemporaryDirectory
 @lru_cache(maxsize=1)
 def _cairo():
     try:
-        lib = CDLL("libcairo.so.2")
+        lib = CDLL("libcairo-2.dll" if sys.platform == "win32" else "libcairo.so.2")
         p, d = c_void_p, c_double
         functions = {
             "pdf_surface_create": (p, c_char_p, d, d), "surface_destroy": (None, p),
