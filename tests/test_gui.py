@@ -792,6 +792,158 @@ class TestDesignWorkspace(unittest.TestCase):
     def test_legacy_zip_exports_the_paired_cut_file(self):
         self.verify_bundle_export(Path(os.environ['PROXYPRESS_LEGACY_BUNDLE']), False)
 
+    def test_standalone_pdf_registration_check_gates_hardware_actions_in_gtk(self):
+        from cut_proxies import sheet
+        win = self.make_window()
+        win.pdf_path = Path("test_sheet.pdf")
+        win.r_register.set_active(True)
+        win.rebuild()
+        self.assertTrue(win.job.registration)
+
+        # Pending check
+        win.pdf_check_state = sheet.RegistrationDecision.CHECKING
+        win.update_send_actions()
+        self.assertEqual(win.send_review_destination(), ("sheet", "Review Sheet"))
+        self.assertFalse(win.cut_button.get_sensitive())
+        self.assertFalse(win.corner_button.get_sensitive())
+        self.assertFalse(win.scan_button.get_sensitive())
+        self.assertIn("pending", win.send_status.get_label())
+
+        # Failed check
+        win.pdf_check_state = sheet.RegistrationDecision.FAILED
+        win.update_send_actions()
+        self.assertEqual(win.send_review_destination(), ("sheet", "Review Sheet"))
+        self.assertFalse(win.cut_button.get_sensitive())
+        self.assertFalse(win.corner_button.get_sensitive())
+        self.assertFalse(win.scan_button.get_sensitive())
+        self.assertEqual(win.send_status.get_label(),
+                         "Registration check failed. Open Sheet to see the missing marks.")
+
+        toasts = []
+        with mock.patch.object(win, "toast", side_effect=toasts.append):
+            win.on_cut()
+            win._cut_response(None, "cut", win.job)
+        self.assertEqual(toasts, [
+            "Registration check failed. Open Sheet to see the missing marks.",
+            "Registration check failed. Open Sheet to see the missing marks.",
+        ])
+
+        # Error check
+        win.pdf_check_state = sheet.RegistrationDecision.ERROR
+        win.update_send_actions()
+        self.assertEqual(win.send_review_destination(), ("sheet", "Review Sheet"))
+        self.assertFalse(win.cut_button.get_sensitive())
+        self.assertFalse(win.corner_button.get_sensitive())
+        self.assertFalse(win.scan_button.get_sensitive())
+        self.assertEqual(win.send_status.get_label(),
+                         "Could not measure registration marks on the print file. Open Sheet to review.")
+
+        # Passed check
+        win.pdf_check_state = sheet.RegistrationDecision.PASSED
+        win.update_send_actions()
+        self.assertEqual(win.send_review_destination(), ("cut", "Review Cut Job"))
+        self.assertTrue(win.cut_button.get_sensitive())
+        self.assertTrue(win.corner_button.get_sensitive())
+        self.assertTrue(win.scan_button.get_sensitive())
+
+        # Registration off: blank stock cut is allowed even if PDF check was failed
+        win.pdf_check_state = sheet.RegistrationDecision.FAILED
+        win.r_register.set_active(False)
+        win.rebuild()
+        self.assertFalse(win.job.registration)
+        win.update_send_actions()
+        self.assertEqual(win.send_review_destination(), ("cut", "Review Cut Job"))
+        self.assertTrue(win.cut_button.get_sensitive())
+        self.assertTrue(win.corner_button.get_sensitive())
+        self.assertFalse(win.scan_button.get_sensitive())
+
+        # No PDF open: device scan allowed when registration is on
+        win.r_register.set_active(True)
+        win.clear_printed_sheet()
+        win.rebuild()
+        self.assertIsNone(win.pdf_path)
+        self.assertTrue(win.job.registration)
+        win.update_send_actions()
+        self.assertEqual(win.send_review_destination(), ("cut", "Review Cut Job"))
+        self.assertTrue(win.cut_button.get_sensitive())
+        self.assertTrue(win.corner_button.get_sensitive())
+        self.assertTrue(win.scan_button.get_sensitive())
+
+    def test_active_and_paused_job_details_and_control_states_in_gtk(self):
+        from cut_proxies import transport
+        win = self.make_window()
+        win.r_force.set_value(25)
+        win.rebuild()
+        original_job = win.job
+        self.assertEqual(original_job.settings.force, 25)
+
+        control = transport.CutControl(lambda: None)
+        win.cut_control = control
+        win.active_job = original_job
+        win._sending = True
+        win.update_send_actions()
+
+        # Running state
+        self.assertEqual(control.state, "running")
+        self.assertEqual(win.pause_cut.get_label(), "Pause Cut")
+        self.assertTrue(win.pause_cut.get_sensitive())
+        self.assertEqual(win.cancel_cut.get_label(), "Cancel Cut")
+        self.assertTrue(win.cancel_cut.get_sensitive())
+        self.assertIn("Sending to the cutter", win.send_status.get_label())
+
+        # Pausing state
+        control.toggle_pause()
+        self.assertEqual(control.state, "pausing")
+        win.update_send_actions()
+        self.assertEqual(win.pause_cut.get_label(), "Pausing…")
+        self.assertTrue(win.pause_cut.get_sensitive())
+        self.assertEqual(win.cancel_cut.get_label(), "Cancel Cut")
+        self.assertTrue(win.cancel_cut.get_sensitive())
+        self.assertIn("Pausing", win.send_status.get_label())
+
+        # Paused state
+        with control._condition:
+            control._set_state("paused")
+        win.update_send_actions()
+        self.assertEqual(control.state, "paused")
+        self.assertEqual(win.pause_cut.get_label(), "Resume Cut")
+        self.assertTrue(win.pause_cut.get_sensitive())
+        self.assertEqual(win.cancel_cut.get_label(), "Cancel Cut")
+        self.assertTrue(win.cancel_cut.get_sensitive())
+        self.assertIn("Cut paused", win.send_status.get_label())
+
+        # Calling rebuild or on_changed while active does NOT change the active job
+        win.r_force.set_value(10)
+        win.rebuild()
+        win.on_changed()
+        self.assertIs(win.active_job, original_job)
+        self.assertEqual(win.active_job.settings.force, 25)
+
+        # Cancelling state
+        control.cancel()
+        self.assertEqual(control.state, "cancelling")
+        win.update_send_actions()
+        self.assertEqual(win.cancel_cut.get_label(), "Stopping…")
+        self.assertFalse(win.cancel_cut.get_sensitive())
+        self.assertFalse(win.pause_cut.get_sensitive())
+        self.assertIn("Stopping", win.send_status.get_label())
+
+        # Finishing state
+        control.finishing()
+        self.assertEqual(control.state, "finishing")
+        win.update_send_actions()
+        self.assertFalse(win.cancel_cut.get_sensitive())
+        self.assertFalse(win.pause_cut.get_sensitive())
+        self.assertIn("Waiting for the cutter", win.send_status.get_label())
+
+        # Terminal state reset restores editable controls
+        win._send_done()
+        self.assertIsNone(win.cut_control)
+        self.assertIsNone(win.active_job)
+        self.assertFalse(win._sending)
+        self.assertFalse(win.pause_cut.get_visible())
+        self.assertFalse(win.cancel_cut.get_visible())
+
 
 @unittest.skipUnless(gui is not None, 'PyGObject is not installed')
 class TestOpenDialogs(unittest.TestCase):

@@ -41,7 +41,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 
 from . import (actions, bluetooth, bundle, config, corner_test, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
-               starting_guide, template, testcut, toolpath, transport)  # noqa: E402
+               sheet as sheet_mod, starting_guide, template, testcut, toolpath, transport)  # noqa: E402
 from .desktop_help import BLADE_VALUE_TEXT, CONTROL_HELP, SETUP_STEPS  # noqa: E402
 from .editor_canvas import DesignCanvas, draw_feed_arrow  # noqa: E402
 from .gtk_controls import disclosure, protect_settings_wheel, workspace_header, workspace_tools, zoom_controls  # noqa: E402
@@ -487,6 +487,8 @@ class Window(Adw.ApplicationWindow):
         self.pdf_bundle = None
         self.bundle_row_error = None
         self.bundle_checked = False
+        self.pdf_check_state = sheet_mod.RegistrationDecision.NONE
+        self.active_job = None
         self._sheet_token = None
         self.imported = None
         self._send_source = None
@@ -726,6 +728,9 @@ class Window(Adw.ApplicationWindow):
                 return "sheet", "Review Sheet"
             if not self.bundle_checked:
                 return "sheet", "Review Sheet"
+        elif self.pdf_path is not None and self.job and self.job.registration:
+            if self.pdf_check_state != sheet_mod.RegistrationDecision.PASSED:
+                return "sheet", "Review Sheet"
         return "cut", "Review Cut Job"
 
     def on_review_send(self, *_args):
@@ -760,9 +765,25 @@ class Window(Adw.ApplicationWindow):
         control = self.cut_control
         for button in (self.pause_cut, self.cancel_cut):
             button.set_visible(control is not None)
-            button.set_sensitive(control is not None and control.state not in ("cancelling", "finishing"))
         if control is not None:
-            self.pause_cut.set_label("Resume Cut" if control.state in ("pausing", "paused") else "Pause Cut")
+            state = control.state
+            if state == "pausing":
+                pause_label = "Pausing…"
+                pause_sensitive = True
+            elif state == "paused":
+                pause_label = "Resume Cut"
+                pause_sensitive = True
+            else:
+                pause_label = "Pause Cut"
+                pause_sensitive = state == "running"
+
+            cancel_label = "Stopping…" if state == "cancelling" else "Cancel Cut"
+            cancel_sensitive = state in ("running", "pausing", "paused")
+
+            self.pause_cut.set_label(pause_label)
+            self.pause_cut.set_sensitive(pause_sensitive)
+            self.cancel_cut.set_label(cancel_label)
+            self.cancel_cut.set_sensitive(cancel_sensitive)
         self.send_normal.set_visible(not self.tuning)
         self.guide_view.set_visible(self.tuning)
         self.back_to_send.set_visible(self.tuning)
@@ -770,6 +791,12 @@ class Window(Adw.ApplicationWindow):
         mode, identifier, *_ = self._connection()
         can_check = bool(identifier) and not (self._sending or self._checking_status)
         self.check_cutter_status.set_sensitive(can_check)
+        pdf_refusal = ""
+        if job and job.registration_steps() and self.pdf_path is not None:
+            allowed, pdf_reason = sheet_mod.RegistrationDecision.evaluate(
+                self.pdf_check_state, has_pdf=True, registration_on=True)
+            if not allowed:
+                pdf_refusal = pdf_reason
         reason = (
             control.status_text if control is not None else
             "Sending to the cutter…" if self._sending else
@@ -777,6 +804,7 @@ class Window(Adw.ApplicationWindow):
             "Review the latest edits in Design." if destination == "design" else
             "Choose another sheet or reopen the ZIP in Sheet." if self.bundle_row_error else
             "Save the legacy cut file from Sheet." if self.pdf_bundle and self.imported is None else
+            pdf_refusal if pdf_refusal else
             "Check the matching PDF in Sheet." if destination == "sheet" else
             "Check this layout before sending." if job is None or job.blocked else
             "Select a Bluetooth cutter." if mode in bluetooth.BLUETOOTH_MODES and not identifier else
@@ -790,8 +818,9 @@ class Window(Adw.ApplicationWindow):
         self.cut_button.set_sensitive(not reason)
         self.corner_button.set_sensitive(not reason)
         if not self.tuning:
+            display_job = self.active_job or job
             status = reason or (
-                f"{len(job.paths)} paths · {job.device.name} · {'Registration on' if job.registration else 'Registration off'}")
+                f"{len(display_job.paths)} paths · {display_job.device.name} · {'Registration on' if display_job.registration else 'Registration off'}")
             self.send_status.set_label(status)
             self.send_status.set_tooltip_text(status)
         self.update_guide()
@@ -1542,7 +1571,7 @@ class Window(Adw.ApplicationWindow):
 
     # ---- rebuilding ---------------------------------------------------
     def on_changed(self, *_a):
-        if self._suppress:
+        if self._suppress or self.active_job is not None:
             return
         fixed_layout = self.pdf_bundle or layout_presets.is_published(self.imported)
         for control in (self.r_sheet, self.r_orient, self.r_engine, self.r_card, self.r_mode, self.r_radius):
@@ -1572,6 +1601,7 @@ class Window(Adw.ApplicationWindow):
             previously_measured = self.sheet_report is not None or self._sheet_token is not None
             self._sheet_token = None
             self.sheet_report = None
+            self.pdf_check_state = sheet_mod.RegistrationDecision.NONE
             self.preview.set_sheet(None)
             if previously_measured:
                 self.sheet_result.set_title('Registration settings changed')
@@ -1712,7 +1742,7 @@ class Window(Adw.ApplicationWindow):
             self.r_preset.set_selected(names.index(name))
 
     def rebuild(self):
-        if self._suppress or self._building:
+        if self._suppress or self._building or self.active_job is not None:
             return
         if self.pdf_bundle and self.imported is None:
             self.job = None
@@ -2068,6 +2098,7 @@ class Window(Adw.ApplicationWindow):
 
     def clear_printed_sheet(self):
         self.bundle_checked = False
+        self.pdf_check_state = sheet_mod.RegistrationDecision.NONE
         self.bundle_row_error = None
         self.pdf_path = None
         self._sheet_token = None
@@ -2220,6 +2251,7 @@ class Window(Adw.ApplicationWindow):
         if self._suppress or self.pdf_path is None:
             return
         self._sheet_token = None
+        self.pdf_check_state = sheet_mod.RegistrationDecision.NONE
         self.preview.set_pdf()
         self.measure_sheet()
 
@@ -2249,6 +2281,7 @@ class Window(Adw.ApplicationWindow):
         dpi = int(self._text(self.r_sheet_dpi))
         orient_scm = layout_presets.is_published(self.imported)
         token = self._sheet_token = object()
+        self.pdf_check_state = sheet_mod.RegistrationDecision.CHECKING
         self.sheet_report = None
         self.preview.set_sheet(None)
 
@@ -2272,6 +2305,7 @@ class Window(Adw.ApplicationWindow):
     def _sheet_failed(self, message, token):
         if not sheet_request_current(self._sheet_token, token):
             return
+        self.pdf_check_state = sheet_mod.RegistrationDecision.ERROR
         self.sheet_report = None
         self.preview.set_sheet(None)
         self.preview.set_pdf()
@@ -2284,6 +2318,8 @@ class Window(Adw.ApplicationWindow):
             return
         self.sheet_report = report
         self.bundle_checked = bool(self.pdf_bundle) and not problems
+        self.pdf_check_state = (sheet_mod.RegistrationDecision.FAILED if problems
+                                else sheet_mod.RegistrationDecision.PASSED)
         self.preview.set_sheet(report)
         self.preview.set_pdf(png, report.page_w_mm, report.page_h_mm)
         lines = [m.describe() for m in report.marks]
@@ -2898,9 +2934,21 @@ class Window(Adw.ApplicationWindow):
         if design_review_pending(self):
             self.toast('Review the latest edits in Design.')
             return
-        if self.pdf_bundle and not self.bundle_checked:
-            self.toast('Check the matched PDF before cutting this sheet.')
+        pdf_path = getattr(self, "pdf_path", None)
+        pdf_bundle = getattr(self, "pdf_bundle", None)
+        pdf_state = getattr(self, "pdf_check_state", sheet_mod.RegistrationDecision.NONE)
+        if pdf_bundle and not getattr(self, "bundle_checked", False):
+            if pdf_state == sheet_mod.RegistrationDecision.FAILED:
+                self.toast('Registration check failed. Open Sheet to see the missing marks.')
+            else:
+                self.toast('Check the matched PDF before cutting this sheet.')
             return
+        if self.job and self.job.registration_steps() and pdf_path is not None:
+            allowed, pdf_reason = sheet_mod.RegistrationDecision.evaluate(
+                pdf_state, has_pdf=True, registration_on=True)
+            if not allowed:
+                self.toast(pdf_reason)
+                return
         j = self.job
         refusal = cut_refusal(j, j, self._sending or self._checking_status)
         if refusal:
@@ -2970,9 +3018,21 @@ class Window(Adw.ApplicationWindow):
         if design_review_pending(self):
             self.toast('Review the latest edits in Design.')
             return
-        if self.pdf_bundle and not self.bundle_checked:
-            self.toast('Check the matched PDF before cutting this sheet.')
+        pdf_path = getattr(self, "pdf_path", None)
+        pdf_bundle = getattr(self, "pdf_bundle", None)
+        pdf_state = getattr(self, "pdf_check_state", sheet_mod.RegistrationDecision.NONE)
+        if pdf_bundle and not getattr(self, "bundle_checked", False):
+            if pdf_state == sheet_mod.RegistrationDecision.FAILED:
+                self.toast('Registration check failed. Open Sheet to see the missing marks.')
+            else:
+                self.toast('Check the matched PDF before cutting this sheet.')
             return
+        if self.job and self.job.registration_steps() and pdf_path is not None:
+            allowed, pdf_reason = sheet_mod.RegistrationDecision.evaluate(
+                pdf_state, has_pdf=True, registration_on=True)
+            if not allowed:
+                self.toast(pdf_reason)
+                return
         refusal = cut_refusal(self.job, j, self._sending or self._checking_status)
         if refusal:
             self.toast(refusal)
@@ -2988,6 +3048,7 @@ class Window(Adw.ApplicationWindow):
             self.toast(refusal)
             return
         checked = corner.job if corner else j
+        self.active_job = checked
         steps = checked.registration_steps() if scan_only else checked.steps
         if not steps:
             self.toast("This job does not use registration.")
@@ -3071,6 +3132,7 @@ class Window(Adw.ApplicationWindow):
 
     def _send_done(self):
         self.cut_control = None
+        self.active_job = None
         self._sending = False
         self.rebuild()
 

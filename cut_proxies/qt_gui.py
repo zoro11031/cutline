@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QGroupBox, 
                                QSplitter, QStackedWidget, QStyle, QTabWidget, QVBoxLayout, QWidget)
 
 from . import (actions, bluetooth, bundle, config, corner_test, editor_model, geometry, graphtec, importer, job,
-               layout_presets, materials, presets, regmarks, starting_guide, template, testcut, toolpath, transport)
+               layout_presets, materials, presets, regmarks, sheet, starting_guide, template, testcut, toolpath, transport)
 from .desktop_help import BLADE_VALUE_TEXT, CONTROL_HELP, SETUP_STEPS
 from .holder_settings import HolderSettings, for_holder
 from .qt_canvas import PREVIEW_MODES, Preview, ZoomControls
@@ -64,6 +64,8 @@ class Window(QMainWindow):
         self.pdf = self.bundle = self.sheet_token = self.report = None
         self.bundle_row_error = None
         self.bundle_checked = self.busy = self.loading = False
+        self.pdf_check_state = sheet.RegistrationDecision.NONE
+        self.active_job = None
         self.cut_control = None
         self.tuning = False
         self.holder_state = HolderSettings()
@@ -847,6 +849,30 @@ class Window(QMainWindow):
         return options
 
     def update_enabled_fields(self):
+        active = self.active_job is not None or self.busy
+        if active:
+            for c in self.controls.values():
+                c.setEnabled(False)
+            for c in self.blade.values():
+                c.setEnabled(False)
+                if hasattr(c, "slider"):
+                    c.slider.setEnabled(False)
+            self.cutter_model.setEnabled(False)
+            self.link.setEnabled(False)
+            self.identifier.setEnabled(False)
+            self.channel.setEnabled(False)
+            self.skip.setEnabled(False)
+            self.use_generated.setEnabled(False)
+            return
+        for c in self.blade.values():
+            c.setEnabled(True)
+        for c in self.controls.values():
+            c.setEnabled(True)
+        self.cutter_model.setEnabled(True)
+        self.link.setEnabled(True)
+        self.identifier.setEnabled(True)
+        self.channel.setEnabled(True)
+        self.skip.setEnabled(True)
         fixed_layout = self.bundle or layout_presets.is_published(self.artwork)
         for key in ("sheet", "portrait", "engine", "card", "mode", "radius_mm"):
             self.controls[key].setEnabled(not fixed_layout)
@@ -879,6 +905,9 @@ class Window(QMainWindow):
 
     def rebuild(self):
         if self.loading:
+            return
+        if self.active_job is not None:
+            self.refresh_send()
             return
         self.restore_holder()
         self.update_enabled_fields()
@@ -939,6 +968,9 @@ class Window(QMainWindow):
         if self.bundle:
             if self.artwork is None or not self.bundle_checked:
                 return "Sheet"
+        elif self.pdf is not None and self.job and self.job.registration:
+            if self.pdf_check_state != sheet.RegistrationDecision.PASSED:
+                return "Sheet"
         return "Send"
 
     def follow_review(self):
@@ -957,7 +989,18 @@ class Window(QMainWindow):
             return ("Choose another sheet or reopen the ZIP in Sheet." if self.bundle_row_error
                     else "Save the legacy cut file from Sheet.")
         if self.bundle and not self.bundle_checked:
+            if self.pdf_check_state == sheet.RegistrationDecision.FAILED:
+                return "Registration check failed. Open Sheet to see the missing marks."
+            if self.pdf_check_state == sheet.RegistrationDecision.ERROR:
+                return "Could not measure registration marks on the print file. Open Sheet to review."
+            if self.pdf_check_state == sheet.RegistrationDecision.CHECKING:
+                return "Registration check pending. Open Sheet to review."
             return "Check the matching PDF in Sheet."
+        if plan and plan.registration_steps() and self.pdf is not None:
+            allowed, refusal = sheet.RegistrationDecision.evaluate(
+                self.pdf_check_state, has_pdf=True, registration_on=True)
+            if not allowed:
+                return refusal
         if plan is None or self.job is not plan or plan.blocked:
             return "Review the current job and resolve its checks."
         if connection != self.connection():
@@ -992,9 +1035,25 @@ class Window(QMainWindow):
             button.setVisible(at_send)
         for button in (self.pause_cut, self.cancel_cut):
             button.setVisible(control is not None)
-            button.setEnabled(control is not None and control.state not in ("cancelling", "finishing"))
         if control is not None:
-            self.pause_cut.setText("Resume Cut" if control.state in ("pausing", "paused") else "Pause Cut")
+            state = control.state
+            if state == "pausing":
+                pause_text = "Pausing…"
+                pause_enabled = True
+            elif state == "paused":
+                pause_text = "Resume Cut"
+                pause_enabled = True
+            else:
+                pause_text = "Pause Cut"
+                pause_enabled = state == "running"
+
+            cancel_text = "Stopping…" if state == "cancelling" else "Cancel Cut"
+            cancel_enabled = state in ("running", "pausing", "paused")
+
+            self.pause_cut.setText(pause_text)
+            self.pause_cut.setEnabled(pause_enabled)
+            self.cancel_cut.setText(cancel_text)
+            self.cancel_cut.setEnabled(cancel_enabled)
         reason = self.send_refusal(self.job, self.connection())
         self.send_button.setEnabled(not reason)
         self.corner_button.setEnabled(not reason)
@@ -1009,9 +1068,10 @@ class Window(QMainWindow):
         if control is not None:
             self.footer_status.setText(control.status_text)
         elif not self.tuning:
+            display_job = self.active_job or self.job
             self.footer_status.setText(reason or (
-                f"{self.job.device.name} · {len(self.job.paths)} paths · "
-                + ("Registration on" if self.job.registration else "Registration off")))
+                f"{display_job.device.name} · {len(display_job.paths)} paths · "
+                + ("Registration on" if display_job.registration else "Registration off")))
 
     def confirm(self, title, prompt):
         return QMessageBox.question(self, title, prompt, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -1060,6 +1120,7 @@ class Window(QMainWindow):
     def invalidate_measurement(self, *, clear_image=False):
         self.sheet_token = self.report = None
         self.bundle_checked = False
+        self.pdf_check_state = sheet.RegistrationDecision.NONE
         self.preview.report = None
         self.clear_scan_result()
         if clear_image:
@@ -1205,6 +1266,7 @@ class Window(QMainWindow):
         from . import sheet
 
         self.invalidate_measurement(clear_image=True)
+        self.pdf_check_state = sheet.RegistrationDecision.CHECKING
         token = self.sheet_token = object()
         self.sheet_result.setText("Measuring…")
         self.refresh_send()
@@ -1226,11 +1288,14 @@ class Window(QMainWindow):
             if self.sheet_token is not token:
                 return
             if error:
+                self.pdf_check_state = sheet.RegistrationDecision.ERROR
                 self.sheet_result.setText(f"Could not measure the sheet. {error}")
             else:
                 report, issues, png = value
                 self.report = report
                 self.bundle_checked = bool(matched) and not issues
+                self.pdf_check_state = (sheet.RegistrationDecision.FAILED if issues
+                                        else sheet.RegistrationDecision.PASSED)
                 details = [report.diagnosis()]
                 if report.preview_rotation in (90, 270):
                     details.append("Load the printed sheet face-up in the orientation shown in the preview.")
@@ -1428,6 +1493,8 @@ class Window(QMainWindow):
             self.message(reason)
             return
         checked = corner.job if corner else plan
+        self.active_job = checked
+        self.update_enabled_fields()
         steps = checked.registration_steps() if scan_only else checked.steps
         report, row, matched = self.report, self.current_bundle_row(), self.bundle
         started = monotonic()
@@ -1497,7 +1564,9 @@ class Window(QMainWindow):
 
         def done(sent, error):
             self.cut_control = None
+            self.active_job = None
             self.busy = False
+            self.update_enabled_fields()
             self.refresh_send()
             if isinstance(error, transport.RegistrationFailed) and on_registration_failure:
                 on_registration_failure(error)

@@ -466,3 +466,28 @@ def measure(pdf, mk: Marks, page: int = 1, dpi: int = DEFAULT_DPI,
 
     return SheetReport(pdf=str(pdf), page=page, page_w_mm=page_w,
                        page_h_mm=page_h, dpi=dpi, marks=found)
+
+
+class RegistrationDecision:
+    NONE = "none"
+    CHECKING = "checking"
+    PASSED = "passed"
+    FAILED = "failed"
+    ERROR = "error"
+
+    @classmethod
+    def evaluate(cls, state: str, has_pdf: bool, registration_on: bool) -> tuple[bool, str]:
+        """Determine whether hardware actions (Send to Cutter, Corner Test, Test Registration) are allowed.
+        Returns (allowed: bool, refusal_reason: str).
+        """
+        if not registration_on or not has_pdf:
+            return True, ""
+        if state == cls.CHECKING:
+            return False, "Registration check pending. Open Sheet to review."
+        if state == cls.FAILED:
+            return False, "Registration check failed. Open Sheet to see the missing marks."
+        if state == cls.ERROR:
+            return False, "Could not measure registration marks on the print file. Open Sheet to review."
+        if state == cls.PASSED:
+            return True, ""
+        return False, "Check the matching PDF in Sheet."

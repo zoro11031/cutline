@@ -717,3 +717,159 @@ class TestQtFrontend(unittest.TestCase):
         image = window.grab().toImage().convertToFormat(QImage.Format.Format_RGB32)
         self.assertGreaterEqual(image.width(), 900)
         self.assertGreater(len(set(bytes(image.constBits()))), 15)
+
+    def test_standalone_pdf_registration_check_gates_hardware_actions_in_qt(self):
+        from cut_proxies import sheet
+        window = self.window
+        window.pdf = Path("test_sheet.pdf")
+        window.controls["registration"].setChecked(True)
+        window.rebuild()
+        self.assertTrue(window.job.registration)
+
+        # Pending check
+        window.pdf_check_state = sheet.RegistrationDecision.CHECKING
+        window.refresh_send()
+        self.assertEqual(window.review_tab(), "Sheet")
+        self.assertFalse(window.send_button.isEnabled())
+        self.assertFalse(window.corner_button.isEnabled())
+        self.assertFalse(window.scan_button.isEnabled())
+        self.assertIn("pending", window.send_refusal(window.job, window.connection()))
+
+        # Failed check
+        window.pdf_check_state = sheet.RegistrationDecision.FAILED
+        window.refresh_send()
+        self.assertEqual(window.review_tab(), "Sheet")
+        self.assertFalse(window.send_button.isEnabled())
+        self.assertFalse(window.corner_button.isEnabled())
+        self.assertFalse(window.scan_button.isEnabled())
+        self.assertEqual(window.send_refusal(window.job, window.connection()),
+                         "Registration check failed. Open Sheet to see the missing marks.")
+
+        # Error check
+        window.pdf_check_state = sheet.RegistrationDecision.ERROR
+        window.refresh_send()
+        self.assertEqual(window.review_tab(), "Sheet")
+        self.assertFalse(window.send_button.isEnabled())
+        self.assertFalse(window.corner_button.isEnabled())
+        self.assertFalse(window.scan_button.isEnabled())
+        self.assertEqual(window.send_refusal(window.job, window.connection()),
+                         "Could not measure registration marks on the print file. Open Sheet to review.")
+
+        # Passed check
+        window.pdf_check_state = sheet.RegistrationDecision.PASSED
+        window.refresh_send()
+        self.assertEqual(window.review_tab(), "Send")
+        self.assertTrue(window.send_button.isEnabled())
+        self.assertTrue(window.corner_button.isEnabled())
+        self.assertTrue(window.scan_button.isEnabled())
+        self.assertEqual(window.send_refusal(window.job, window.connection()), "")
+
+        # Registration off: blank stock cut is allowed even if PDF check was failed
+        window.pdf_check_state = sheet.RegistrationDecision.FAILED
+        window.controls["registration"].setChecked(False)
+        window.rebuild()
+        self.assertFalse(window.job.registration)
+        window.refresh_send()
+        self.assertEqual(window.review_tab(), "Send")
+        self.assertTrue(window.send_button.isEnabled())
+        self.assertTrue(window.corner_button.isEnabled())
+        # Scan only is refused when registration is off
+        self.assertIn("Enable registration", window.send_refusal(window.job, window.connection(), scan_only=True))
+
+        # No PDF open: device scan allowed when registration is on
+        window.controls["registration"].setChecked(True)
+        window.clear_printed_sheet()
+        window.rebuild()
+        self.assertIsNone(window.pdf)
+        self.assertTrue(window.job.registration)
+        window.refresh_send()
+        self.assertEqual(window.review_tab(), "Send")
+        self.assertTrue(window.send_button.isEnabled())
+        self.assertTrue(window.corner_button.isEnabled())
+        self.assertTrue(window.scan_button.isEnabled())
+
+    def test_active_and_paused_job_details_and_control_states_in_qt(self):
+        window = self.window
+        window.blade["force"].setValue(25)
+        window.rebuild()
+        original_job = window.job
+        self.assertEqual(original_job.settings.force, 25)
+
+        control = transport.CutControl(lambda: None)
+        window.cut_control = control
+        window.active_job = original_job
+        window.busy = True
+        window.update_enabled_fields()
+        window.refresh_send()
+
+        # Job controls are disabled while active
+        self.assertFalse(window.blade["force"].isEnabled())
+        self.assertFalse(window.blade["speed"].isEnabled())
+        self.assertFalse(window.controls["sheet"].isEnabled())
+        self.assertFalse(window.cutter_model.isEnabled())
+
+        # Running state
+        self.assertEqual(control.state, "running")
+        self.assertEqual(window.pause_cut.text(), "Pause Cut")
+        self.assertTrue(window.pause_cut.isEnabled())
+        self.assertEqual(window.cancel_cut.text(), "Cancel Cut")
+        self.assertTrue(window.cancel_cut.isEnabled())
+        self.assertIn("Sending to the cutter", window.footer_status.text())
+
+        # Pausing state
+        control.toggle_pause()
+        self.assertEqual(control.state, "pausing")
+        window.refresh_send()
+        self.assertEqual(window.pause_cut.text(), "Pausing…")
+        self.assertTrue(window.pause_cut.isEnabled())
+        self.assertEqual(window.cancel_cut.text(), "Cancel Cut")
+        self.assertTrue(window.cancel_cut.isEnabled())
+        self.assertIn("Pausing", window.footer_status.text())
+
+        # Paused state
+        with control._condition:
+            control._set_state("paused")
+        window.refresh_send()
+        self.assertEqual(control.state, "paused")
+        self.assertEqual(window.pause_cut.text(), "Resume Cut")
+        self.assertTrue(window.pause_cut.isEnabled())
+        self.assertEqual(window.cancel_cut.text(), "Cancel Cut")
+        self.assertTrue(window.cancel_cut.isEnabled())
+        self.assertIn("Cut paused", window.footer_status.text())
+
+        # Calling rebuild while paused does NOT change the active job or rebuild preview
+        window.blade["force"].setValue(10)
+        window.rebuild()
+        self.assertIs(window.active_job, original_job)
+        self.assertEqual(window.active_job.settings.force, 25)
+
+        # Cancelling state
+        control.cancel()
+        self.assertEqual(control.state, "cancelling")
+        window.refresh_send()
+        self.assertEqual(window.cancel_cut.text(), "Stopping…")
+        self.assertFalse(window.cancel_cut.isEnabled())
+        self.assertFalse(window.pause_cut.isEnabled())
+        self.assertIn("Stopping", window.footer_status.text())
+
+        # Finishing state
+        control.finishing()
+        self.assertEqual(control.state, "finishing")
+        window.refresh_send()
+        self.assertFalse(window.cancel_cut.isEnabled())
+        self.assertFalse(window.pause_cut.isEnabled())
+        self.assertIn("Waiting for the cutter", window.footer_status.text())
+
+        # Terminal state reset restores editable controls
+        window.cut_control = None
+        window.active_job = None
+        window.busy = False
+        window.update_enabled_fields()
+        window.rebuild()
+        window.refresh_send()
+        self.assertTrue(window.blade["force"].isEnabled())
+        self.assertTrue(window.blade["speed"].isEnabled())
+        self.assertTrue(window.controls["sheet"].isEnabled())
+        self.assertTrue(window.cutter_model.isEnabled())
+        self.assertFalse(window.pause_cut.isVisible())
+        self.assertFalse(window.cancel_cut.isVisible())

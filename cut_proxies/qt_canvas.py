@@ -65,6 +65,15 @@ def draw_paper(scene, page, shadow=True):
     scene.addRect(page, pen("#9aa7b4"), QBrush(Qt.GlobalColor.white))
 
 
+def draw_guides(scene, page, guides):
+    guide_pen = pen("#00a3cc", 0, dashed=True)
+    for orient, pos in guides:
+        if orient == "h" and 0 <= pos <= page.height():
+            scene.addLine(page.left(), pos, page.right(), pos, guide_pen)
+        elif orient == "v" and 0 <= pos <= page.width():
+            scene.addLine(pos, page.top(), pos, page.bottom(), guide_pen)
+
+
 def draw_feed_arrow(scene, width, color):
     center = width / 2
     arrow = QPolygonF([QPointF(center + dx, y) for dx, y in (
