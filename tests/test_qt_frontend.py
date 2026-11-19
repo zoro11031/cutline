@@ -797,6 +797,47 @@ class TestQtFrontend(unittest.TestCase):
             box.setWindowTitle.assert_called_with("Matched ZIP Paths Locked")
             self.assertEqual(window.tabs.currentIndex(), window.tab("Sheet"))
 
+    def test_footer_actions_carry_their_roles_and_warnings_stay_readable(self):
+        from cut_proxies import qt_controls
+
+        window = self.window
+        roles = {"send_button": "primary", "review_button": "primary", "back_to_send": "primary",
+                 "scan_button": "secondary", "corner_button": "secondary",
+                 "pause_cut": "secondary", "cancel_cut": "destructive"}
+        for name, role in roles.items():
+            widget = getattr(window, name)
+            self.assertEqual(widget.property("role"), role, name)
+            self.assertGreaterEqual(widget.minimumHeight(), 32, name)
+
+        # Every role resolves against the theme, in light and in dark.
+        for name, window_color, text_color in (("light", "#f6f5f4", "#1b1b1b"), ("dark", "#1e1e1e", "#f2f2f2")):
+            with self.subTest(theme=name):
+                palette = QPalette()
+                palette.setColor(QPalette.ColorRole.Window, QColor(window_color))
+                palette.setColor(QPalette.ColorRole.WindowText, QColor(text_color))
+                palette.setColor(QPalette.ColorRole.Button, QColor(window_color))
+                palette.setColor(QPalette.ColorRole.ButtonText, QColor(text_color))
+                css = qt_controls.workspace_style(palette)
+                self.assertNotIn("@", css, "a theme token was left unresolved")
+                self.assertIn('QLabel[role="warning"]', css)
+                self.assertIn('QPushButton[role="destructive"]:pressed', css)
+                self.assertIn('QPushButton[role="secondary"]:pressed', css)
+
+        # A refusal is marked as a warning, not left to read as ordinary status.
+        window.pdf = Path("print.pdf")
+        window.controls["registration"].setChecked(True)
+        window.rebuild()
+        window.pdf_check_state = qt_gui.sheet.RegistrationDecision.FAILED
+        window.refresh_send()
+        self.assertEqual(window.footer_status.property("role"), "warning")
+        self.assertTrue(window.footer_status.text().startswith("⚠"))
+        self.assertIn("Registration check failed", window.footer_status.text())
+
+        window.pdf_check_state = qt_gui.sheet.RegistrationDecision.PASSED
+        window.refresh_send()
+        self.assertEqual(window.footer_status.property("role"), "body")
+        self.assertFalse(window.footer_status.text().startswith("⚠"))
+
     def test_the_material_test_survives_settings_edits_and_tab_switches(self):
         window = self.window
         window.open_material_guide()
@@ -1249,6 +1290,69 @@ class TestQtDesignEditor(unittest.TestCase):
         design = qt_design.Design(project, device, lambda *_: None, lambda *_: None)
         self.addCleanup(design.deleteLater)
         return design
+
+    def test_the_inspector_is_usable_at_every_supported_window_size(self):
+        design = self.editor()
+        design.resize(1200, 760)
+        design.show()
+        self.app.processEvents()
+        inspector = design.inspector
+        self.assertFalse(inspector.combo.isVisibleTo(inspector), "wide windows keep the tabs")
+        self.assertTrue(inspector.tabs.isVisibleTo(inspector))
+
+        for width, height in ((850, 600), (720, 520)):
+            with self.subTest(size=(width, height)):
+                design.resize(width, height)
+                self.app.processEvents()
+                sections = [inspector.combo.itemText(i) for i in range(inspector.combo.count())]
+                self.assertEqual(sections, [inspector.tabs.tabText(i) for i in range(inspector.tabs.count())])
+                for index in range(inspector.count()):
+                    inspector.setCurrentIndex(index)
+                    self.app.processEvents()
+                    self.assertIs(inspector.currentWidget(), inspector.widget(index))
+                page = inspector.currentWidget()
+                if hasattr(page, "horizontalScrollBar"):
+                    self.assertFalse(page.horizontalScrollBar().isVisible(),
+                                     "a horizontal scrollbar hides inspector controls")
+                self.assertLessEqual(design.canvas.width(), design.width())
+                self.assertGreater(design.canvas.width(), 0)
+
+        # One presentation at a time, and the narrow one is the combo.
+        design.resize(560, 520)
+        self.app.processEvents()
+        self.assertTrue(inspector.wants_combo(inspector.width()))
+        self.assertNotEqual(inspector.tabs.isVisibleTo(inspector), inspector.combo.isVisibleTo(inspector))
+
+    def test_the_inspector_measures_the_tabs_it_wants_not_the_ones_it_has(self):
+        design = self.editor()
+        design.resize(1200, 760)
+        design.show()
+        self.app.processEvents()
+        inspector = design.inspector
+        natural = inspector.natural_tab_width()
+        self.assertGreater(natural, 0)
+        self.assertFalse(inspector.wants_combo(natural + 64))
+        self.assertTrue(inspector.wants_combo(natural - 40))
+
+        # Hysteresis: a width on the threshold does not flip back and forth.
+        edge = natural + 16
+        inspector.apply_width(edge + 40)
+        self.assertFalse(inspector.combo.isVisibleTo(inspector))
+        self.assertFalse(inspector.wants_combo(edge + 1))
+        inspector.apply_width(natural - 60)
+        self.assertTrue(inspector.combo.isVisibleTo(inspector))
+        self.assertTrue(inspector.wants_combo(edge + 1), "the combo holds until there is room to spare")
+        self.assertFalse(inspector.wants_combo(edge + inspector.SWITCH_MARGIN + 1))
+
+    def test_a_long_checkbox_label_wraps_instead_of_being_clipped(self):
+        design = self.editor()
+        design.show()
+        self.app.processEvents()
+        caption = getattr(design.register, "caption", None)
+        self.assertIsNotNone(caption, "the registration checkbox should carry a wrapping label")
+        self.assertEqual(caption.text(), "Enable registration")
+        self.assertTrue(caption.wordWrap())
+        self.assertEqual(design.register.accessibleName(), "Enable registration")
 
     def test_simplify_reduces_a_selected_path_without_an_error_message(self):
         curve = tuple((index / 24, (index / 24) ** 2) for index in range(25))

@@ -747,6 +747,19 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertIn('Spot 1 · 2 passes', win.guide_history.get_subtitle())
         self.assertEqual(win.preview.test_spots[0].passes, 2)
 
+    def test_footer_actions_carry_their_roles_and_the_status_wraps_in_gtk(self):
+        win = self.make_window()
+        self.assertTrue(win.cut_button.has_css_class("suggested-action"))
+        self.assertFalse(win.cut_button.has_css_class("destructive-action"))
+        self.assertTrue(win.cancel_cut.has_css_class("destructive-action"))
+        self.assertTrue(win.review_send.has_css_class("suggested-action"))
+        self.assertFalse(win.scan_button.has_css_class("destructive-action"))
+        self.assertFalse(win.corner_button.has_css_class("destructive-action"))
+
+        # A refusal has to be readable at compact widths, so it wraps.
+        self.assertTrue(win.send_status.get_wrap())
+        self.assertFalse(win.send_status.get_ellipsize() == gui.Pango.EllipsizeMode.END)
+
     def test_the_material_test_survives_settings_edits_and_page_switches_in_gtk(self):
         win = self.make_window()
         win.open_material_guide()
@@ -1002,7 +1015,8 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertFalse(win.corner_button.get_sensitive())
         self.assertFalse(win.scan_button.get_sensitive())
         self.assertEqual(win.send_status.get_label(),
-                         "Registration check failed. Open Sheet to see the missing marks.")
+                         "⚠ Registration check failed. Open Sheet to see the missing marks.")
+        self.assertTrue(win.send_status.has_css_class("warning"))
 
         toasts = []
         with mock.patch.object(win, "toast", side_effect=toasts.append):
@@ -1021,7 +1035,7 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertFalse(win.corner_button.get_sensitive())
         self.assertFalse(win.scan_button.get_sensitive())
         self.assertEqual(win.send_status.get_label(),
-                         "Could not measure registration marks on the print file. Open Sheet to review.")
+                         "⚠ Could not measure registration marks on the print file. Open Sheet to review.")
 
         # Passed check
         win.pdf_check_state = sheet.RegistrationDecision.PASSED

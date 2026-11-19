@@ -743,14 +743,17 @@ class Window(Adw.ApplicationWindow):
 
     def _send_bar(self):
         bar = Gtk.ActionBar()
-        self.send_status = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, max_width_chars=68)
+        # A refusal has to be readable: wrap it instead of cutting it off at 68
+        # characters, and let it shrink so the actions keep their places.
+        self.send_status = Gtk.Label(xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR,
+                                     max_width_chars=48, hexpand=True)
         bar.pack_start(self.send_status)
         self.review_send = Gtk.Button(label="Review Cut Job")
         self.review_send.add_css_class("suggested-action")
         self.review_send.connect("clicked", self.on_review_send)
         bar.pack_end(self.review_send)
         self.cut_button = Gtk.Button(label="Send to Cutter")
-        self.cut_button.add_css_class("destructive-action")
+        self.cut_button.add_css_class("suggested-action")
         self.cut_button.connect("clicked", self.on_cut)
         bar.pack_end(self.cut_button)
         self.cancel_cut = Gtk.Button(label="Cancel Cut")
@@ -758,6 +761,7 @@ class Window(Adw.ApplicationWindow):
         self.cancel_cut.connect("clicked", lambda *_: self.cut_control.cancel())
         bar.pack_end(self.cancel_cut)
         self.pause_cut = Gtk.Button(label="Pause Cut")
+        self.pause_cut.add_css_class("flat")
         self.pause_cut.connect("clicked", lambda *_: self.cut_control.toggle_pause())
         bar.pack_end(self.pause_cut)
         bar.pack_end(self.corner_button)
@@ -881,10 +885,13 @@ class Window(Adw.ApplicationWindow):
         self.corner_button.set_sensitive(not reason)
         if not self.tuning:
             display_job = self.active_job or job
-            status = reason or (
+            status = (f"⚠ {reason}" if reason else "") or (
                 f"{len(display_job.paths)} paths · {display_job.device.name} · {'Registration on' if display_job.registration else 'Registration off'}")
             self.send_status.set_label(status)
             self.send_status.set_tooltip_text(status)
+            warned = bool(reason)
+            if warned != self.send_status.has_css_class("warning"):
+                getattr(self.send_status, "add_css_class" if warned else "remove_css_class")("warning")
         self.update_guide()
         self.update_tuning_preview()
 

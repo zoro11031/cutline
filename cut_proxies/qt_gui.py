@@ -14,7 +14,7 @@ from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QInputDialog, QMenu,
                                QMainWindow, QMessageBox, QPlainTextEdit,
-                               QSplitter, QStackedWidget, QStyle, QTabWidget, QVBoxLayout, QWidget)
+                               QSizePolicy, QSplitter, QStackedWidget, QStyle, QTabWidget, QVBoxLayout, QWidget)
 
 from . import (actions, bluetooth, bundle, config, corner_test, editor_model, geometry, graphtec, importer, job,
                layout_presets, materials, presets, regmarks, sheet, starting_guide, template, testcut, toolpath, transport)
@@ -174,13 +174,17 @@ class Window(QMainWindow):
         self.footer = footer
         self.footer_status = styled_label(role="body")
         self.footer_status.setWordWrap(True)
+        # The status gives way first: at compact widths it wraps and shrinks so
+        # the actions stay visible, in order, rather than being pushed off.
+        self.footer_status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.footer_status.setMinimumWidth(0)
         footer.addWidget(self.footer_status, 1)
         self.review_button = button("Review Cut Job", self.follow_review, primary=True)
         self.send_button = button("Send to Cutter", self.confirm_send, primary=True,
                                   icon=("media-playback-start", QStyle.StandardPixmap.SP_MediaPlay))
         self.send_button.setMinimumHeight(32)
         self.back_to_send = button("Exit Material Test", self.close_material_guide, primary=True)
-        self.pause_cut = button("Pause Cut", lambda: self.cut_control.toggle_pause())
+        self.pause_cut = button("Pause Cut", lambda: self.cut_control.toggle_pause(), role="secondary")
         self.cancel_cut = button("Cancel Cut", lambda: self.cut_control.cancel(), role="destructive")
         footer.addWidget(self.review_button)
         footer.addWidget(self.send_button)
@@ -1205,7 +1209,10 @@ class Window(QMainWindow):
             self.footer_status.setText(control.status_text)
         elif not self.tuning:
             display_job = self.active_job or self.job
-            self.footer_status.setText(reason or (
+            self.footer_status.setProperty("role", "warning" if reason else "body")
+            self.footer_status.style().unpolish(self.footer_status)
+            self.footer_status.style().polish(self.footer_status)
+            self.footer_status.setText((f"⚠ {reason}" if reason else "") or (
                 f"{display_job.device.name} · {len(display_job.paths)} paths · "
                 + ("Registration on" if display_job.registration else "Registration off")))
 

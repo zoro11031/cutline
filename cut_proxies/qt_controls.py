@@ -87,19 +87,22 @@ QPushButton[role="secondary"] {
 QPushButton[role="secondary"]:hover, QPushButton[role="secondary"]:focus {
     border-color: palette(highlight);
 }
+QPushButton[role="secondary"]:pressed { padding-top: 7px; padding-bottom: 5px; }
 QPushButton[role="secondary"]:disabled {
     background: @disabled_button; color: @disabled_text; border-color: palette(midlight);
 }
 QPushButton[role="destructive"] {
-    background: #d9383a; color: #ffffff; font-weight: 650;
-    border: 1px solid #c92a2a; border-radius: 6px; padding: 6px 14px;
+    background: @destructive; color: @destructive_text; font-weight: 650;
+    border: 1px solid @destructive_edge; border-radius: 6px; padding: 6px 14px;
 }
 QPushButton[role="destructive"]:hover, QPushButton[role="destructive"]:focus {
-    background: #b8282a; border-color: #ffffff;
+    background: @destructive_edge; border-color: @destructive_text;
 }
+QPushButton[role="destructive"]:pressed { padding-top: 7px; padding-bottom: 5px; }
 QPushButton[role="destructive"]:disabled {
     background: @disabled_button; color: @disabled_text; border-color: palette(midlight);
 }
+QLabel[role="warning"] { color: @destructive; font-weight: 600; }
 QPlainTextEdit[role="diagnostics"] { font-family: monospace; }
 QToolButton[role="disclosure"] {
     border: 1px solid palette(midlight); border-radius: 6px; padding: 5px 8px;
@@ -165,7 +168,16 @@ def workspace_style(palette):
                                 for surface, text in zip(button.getRgbF()[:3], label.getRgbF()[:3])))
     disabled = subdued if _contrast(subdued, button) >= 4.5 else label
     accent = _legible(palette.color(active, role.HighlightedText), palette.color(active, role.Highlight))
+    # A warning red the theme's own text can sit on, rather than a fixed pair
+    # that can vanish into a dark or a high-contrast palette.
+    window = palette.color(active, role.Window)
+    destructive = QColor("#c0392b") if window.lightnessF() > 0.5 else QColor("#e05c54")
+    destructive_text = _legible(palette.color(active, role.HighlightedText), destructive)
+    destructive_edge = destructive.darker(125) if window.lightnessF() > 0.5 else destructive.lighter(115)
     return (_WORKSPACE_STYLE.replace("@accent_text", accent.name())
+            .replace("@destructive_text", destructive_text.name())
+            .replace("@destructive_edge", destructive_edge.name())
+            .replace("@destructive", destructive.name())
             .replace("@disabled_button", button.name()).replace("@disabled_text", disabled.name()))
 
 
@@ -313,6 +325,9 @@ def scroll(content):
     area.setFrameShape(QFrame.Shape.NoFrame)
     area.setProperty("role", "settings")
     area.setWidgetResizable(True)
+    # Panels wrap and stack instead: a horizontal scrollbar hides controls
+    # at the compact widths this has to work at.
+    area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     area.setWidget(content)
     return area
 
@@ -477,10 +492,28 @@ class Form(QFormLayout):
         return field
 
     def check(self, label, value=False, changed=None):
+        """A checkbox whose label wraps: QCheckBox text never does, so a long
+        one is clipped at the widths the inspector has to work at."""
         field = QCheckBox(label)
         field.setChecked(value)
         if changed:
             field.toggled.connect(lambda: changed())
+        if len(label) > 14:
+            row = QWidget()
+            layout = QHBoxLayout(row)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(6)
+            field.setText("")
+            field.setAccessibleName(label)
+            caption = QLabel(label)
+            caption.setWordWrap(True)
+            caption.setBuddy(field)
+            caption.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            layout.addWidget(field)
+            layout.addWidget(caption, 1)
+            field.caption = caption
+            self.addRow(row)
+            return field
         self.addRow(field)
         return field
 
@@ -603,13 +636,36 @@ class ResponsiveInspector(QWidget):
     def _on_combo_changed(self, index):
         self.setCurrentIndex(index)
 
+    #: Hysteresis, so a width that sits exactly on the threshold cannot flip
+    #: between the two presentations on every resize.
+    SWITCH_MARGIN = 24
+
+    def natural_tab_width(self):
+        """What the tabs want, not what they were stretched to.
+
+        `setExpanding(True)` makes `tabRect` fill the bar, so measuring it
+        compares the bar against itself and always reads as too narrow.
+        """
+        return sum(self.tabs.tabSizeHint(i).width() for i in range(self.tabs.count()))
+
+    def wants_combo(self, width):
+        needed = self.natural_tab_width() + 16
+        if self.combo.isVisibleTo(self):
+            return width < needed + self.SWITCH_MARGIN
+        return width < needed
+
+    def apply_width(self, width):
+        narrow = self.wants_combo(width)
+        if narrow == self.combo.isVisibleTo(self):
+            return narrow
+        self.tabs.setVisible(not narrow)
+        self.combo.setVisible(narrow)
+        return narrow
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.apply_width(self.width())
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        total_tab_width = sum(self.tabs.tabRect(i).width() for i in range(self.tabs.count()))
-        narrow = self.width() < max(total_tab_width + 16, 275)
-        if narrow and not self.combo.isVisible():
-            self.tabs.hide()
-            self.combo.show()
-        elif not narrow and not self.tabs.isVisible():
-            self.combo.hide()
-            self.tabs.show()
+        self.apply_width(self.width())
