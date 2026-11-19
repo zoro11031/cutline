@@ -1216,6 +1216,35 @@ class TestDesignWorkspace(unittest.TestCase):
         win.r_holder.set_value(1)
         self.assertEqual(int(win.r_depth.get_value()), -1)
 
+    def test_blade_picker_routes_rotary_to_holder_two_and_ignores_later_detection_errors(self):
+        win = self.make_window()
+        picker = win.r_tool_selection
+        win.apply_tool_detection((2, 255))
+        self.assertEqual(win._text(picker), "Detect automatically")
+        picker.set_selected(win.tool_picker_choices.index("rotary"))
+        win.apply_tool_detection((2, 255))
+        self.assertEqual(win.r_holder.get_value(), 2)
+        self.assertEqual(win.send_holder_buttons[2].get_label(), "Tool Holder 2\nRotary blade")
+        self.assertEqual(win.job.blocked, [])
+        self.assertIn(b"J2\x03", win.job.stream)
+        self.assertNotIn(b"TF", win.job.stream)
+
+        picker.set_selected(win.tool_picker_choices.index("manual-2mm"))
+        win.r_depth.set_value(7)
+        self.assertEqual(win.r_holder.get_value(), 1)
+        self.assertFalse(win.r_depth.get_sensitive())
+        self.assertIsNone(win.job.settings.depth)
+        self.assertNotIn(b"TF", win.job.stream)
+        win.r_holder.set_value(2)
+        self.assertEqual(win._text(picker), "Rotary blade")
+        picker.set_selected(0)
+        self.assertIn("Detection error", win.send_holder_buttons[2].get_label())
+
+        win.r_bluetooth.set_selected(0)
+        win.r_holder.set_value(1)
+        self.assertEqual(win._text(picker), "Detect automatically")
+        self.assertTrue(win.r_depth.get_sensitive())
+
     def test_a_pending_tool_probe_blocks_other_commands_and_recovers_after_failure(self):
         win = self.make_window()
         with mock.patch.object(gui.threading, "Thread") as thread, \

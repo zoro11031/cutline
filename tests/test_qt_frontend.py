@@ -1178,6 +1178,41 @@ class TestQtFrontend(unittest.TestCase):
         window.blade["holder"].setValue(1)
         self.assertEqual(window.blade["depth"].value(), -1)
 
+    def test_blade_picker_can_override_failed_detection_and_routes_rotary_to_holder_two(self):
+        window = self.window
+        picker = window.tool_picker
+        holders = window.blade["holder"]
+        self.assertEqual(picker.currentText(), "Detect automatically")
+        for name in ("AutoBlade", "Ratchet blade", "Manual blade (1 mm)", "Manual blade (2 mm)",
+                     "Deep-cut blade", "Fabric blade", "Premium blade", "Kraft blade (2 mm)",
+                     "Kraft blade (3 mm)", "Rotary blade", "Other manual blade"):
+            self.assertGreaterEqual(picker.findText(name), 0)
+        window.apply_tool_detection((2, 255))
+        picker.setCurrentIndex(picker.findData("rotary"))
+        window.apply_tool_detection((2, 255))
+        self.assertEqual(holders.value(), 2)
+        self.assertEqual(holders.holders.button(2).text(), "Tool Holder 2\nRotary blade")
+        self.assertEqual(window.job.blocked, [])
+        self.assertEqual(window.job.settings.holder, 2)
+        self.assertIn(b"J2\x03", window.job.stream)
+        self.assertNotIn(b"TF", window.job.stream)
+
+        picker.setCurrentIndex(picker.findData("manual-2mm"))
+        window.blade["depth"].setValue(7)
+        self.assertEqual(holders.value(), 1)
+        self.assertFalse(window.blade["depth"].isEnabled())
+        self.assertIsNone(window.job.settings.depth)
+        self.assertNotIn(b"TF", window.job.stream)
+        holders.setValue(2)
+        self.assertEqual(picker.currentData(), "rotary")
+        picker.setCurrentIndex(picker.findData(""))
+        self.assertIn("Detection error", holders.holders.button(2).text())
+
+        window.detected.setCurrentIndex(0)
+        holders.setValue(1)
+        self.assertEqual(picker.currentText(), "Detect automatically")
+        self.assertTrue(window.blade["depth"].isEnabled())
+
     def test_tools_are_read_once_per_connection_and_not_during_a_job(self):
         window = self.window
         cutter = mock.MagicMock()
