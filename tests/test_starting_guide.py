@@ -66,6 +66,70 @@ class TestStartingGuide(unittest.TestCase):
         self.assertEqual(new.settings.force, 28)
         self.assertEqual(self.guide.completed, 0)
 
+    def test_all_sample_shapes_and_sizes_build_checked_blank_and_registered_streams(self):
+        connection = ("auto", (1, 2))
+        for registered in (False, True):
+            self.guide.registered = registered
+            for shape in testcut.TEST_SHAPES:
+                for size in starting_guide.SAMPLE_SIZES:
+                    with self.subTest(shape=shape, size=size, registered=registered):
+                        self.guide.configure_sample(shape, size)
+                        trial = self.guide.prepare(connection, self.options, None)
+                        location = trial.sheet.cells[0].rect
+                        self.assertEqual((location.w, location.h), (size, size))
+                        self.assertEqual(trial.sheet.shape, shape)
+                        self.assertEqual(len(trial.sheet.paths), 2 if shape in ("studio", "ring") else 1)
+                        self.assertTrue(all(location.x - 1e-9 <= x <= location.x2 + 1e-9
+                                            and location.y - 1e-9 <= y <= location.y2 + 1e-9
+                                            for path in trial.sheet.paths for x, y in path.points))
+                        scan = [step.expect for step in trial.sheet.steps if step.kind == "expect"]
+                        self.assertEqual(scan, [graphtec.RESP_REGMARK_OK] if registered else [])
+
+    def test_resizing_a_sample_preserves_spots_and_reopens_mixed_sizes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "marked.json"
+            self.guide = starting_guide.Guide(path)
+            self.guide.registered = True
+            connection = ("auto", (1, 2))
+            first = self.prepare(connection=connection)
+            self.guide.record(first)
+            first_rect = self.guide.spot_rect(1)
+            self.guide.configure_sample("card", 88.0)
+            self.assertNotEqual(self.guide.spot, 1)
+            self.assertEqual(self.guide.completed, 0)
+            self.assertEqual(self.guide.spot_rect(1), first_rect)
+            self.assertTrue(all(not area.overlaps(first_rect.grown(testcut.DEFAULT_GAP_MM))
+                                for area in self.guide.fresh_spots().values()))
+            card_spot = self.guide.spot
+            card = self.guide.prepare(connection, self.options, None)
+            self.assertEqual(card.sheet.cells[0].rect, self.guide.spot_rect(card_spot))
+            x_values = [x for x, _ in card.sheet.paths[0].points]
+            self.assertAlmostEqual(max(x_values) - min(x_values), 63.0)
+            self.guide.record(card)
+            self.guide.persist()
+
+            reopened = starting_guide.Guide(path)
+            self.assertEqual(reopened.trial, card)
+            self.assertEqual(reopened.spot_for_point(first_rect.x + 2, first_rect.y + 2), 1)
+            reopened.select_spot(1)
+            self.assertEqual((reopened.shape, reopened.size_mm), ("square", 15.0))
+            self.assertEqual(reopened.prepare(connection, self.options, None), first)
+            reopened.select_spot(card_spot)
+            self.assertEqual((reopened.shape, reopened.size_mm), ("card", 88.0))
+            self.assertEqual(reopened.prepare(connection, self.options, None), card)
+
+    def test_turning_to_a_larger_sample_when_no_space_fits_keeps_the_tested_spot(self):
+        self.guide.placement = starting_guide.Placement(65, 65, (0, 0), "auto")
+        trial = self.prepare()
+        self.guide.record(trial)
+        with self.assertRaisesRegex(ValueError, "No fresh spot fits"):
+            self.guide.configure_sample("card", 88.0)
+        self.assertEqual(self.guide.trial, trial)
+        self.assertEqual(self.guide.size_mm, 15.0)
+        self.guide.configure_sample("triangle", 15.0)
+        self.assertEqual(self.guide.spot, 2)
+        self.assertEqual(self.guide.prepare(self.connection, self.options, None).sheet.shape, "triangle")
+
     def test_repeats_and_tested_settings_do_not_require_an_outcome(self):
         trial = self.prepare()
         self.assertTrue(self.guide.can_cut)

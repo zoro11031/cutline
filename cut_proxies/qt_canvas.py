@@ -189,6 +189,7 @@ class Preview(SheetView):
         self.trial = None
         self.test_placement = None
         self.test_spots = ()
+        self.test_grid = {}
         self.active_spot_rect = None
         self.on_spot_clicked = None
         self.pdf = QImage()
@@ -212,10 +213,13 @@ class Preview(SheetView):
         self.pdf_size, self.report = size, report
         self.render_sheet()
 
-    def show_trial(self, trial, spots=(), placement=None, active_rect=None):
+    def show_trial(self, trial, spots=(), placement=None, active_rect=None, *, grid=None):
         placement = trial.placement if trial else placement
-        if (trial, spots, placement, active_rect) != (self.trial, self.test_spots, self.test_placement, self.active_spot_rect):
+        grid = grid or {}
+        if ((trial, spots, placement, active_rect, grid)
+                != (self.trial, self.test_spots, self.test_placement, self.active_spot_rect, self.test_grid)):
             self.trial, self.test_spots, self.test_placement, self.active_spot_rect = trial, spots, placement, active_rect
+            self.test_grid = grid
             self.render_sheet()
 
     def render_sheet(self):
@@ -261,6 +265,15 @@ class Preview(SheetView):
             draw_marks(scene, placement.marks)
         active = self.trial.sheet.cells[0] if self.trial else None
         active_rect = active.rect if active else self.active_spot_rect
+        for number, area in self.test_grid.items():
+            if area == active_rect:
+                continue
+            box = rect(area)
+            scene.addRect(box, pen("#b5c2cc", 0.45))
+            label = scene.addSimpleText(str(number))
+            label.setBrush(QColor("#4f616e"))
+            label.setScale(0.45)
+            label.setPos(box.left() + 1, box.top() + 2)
         if active_rect:
             box = rect(active_rect)
             scene.addRect(box, pen("#000000", 0.75), QBrush(QColor(46, 142, 177, 45)))
@@ -280,6 +293,9 @@ class Preview(SheetView):
             label.setBrush(QColor("#12394d"))
             label.setScale(0.45)
             label.setPos(active_rect.x + 1, active_rect.y + 2)
+        if self.trial:
+            for path in self.trial.sheet.paths:
+                draw_path(scene, path, pen("#103e64", 0.6))
         if refit or self.fitted:
             self.fit()
         elif active_rect:

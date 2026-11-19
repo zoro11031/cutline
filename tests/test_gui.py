@@ -462,6 +462,30 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertTrue(win.guide_send.get_sensitive())
         self.assertNotIn("select a cutter", win.guide_status.get_subtitle())
 
+    def test_material_guide_shape_and_size_controls_move_to_fresh_stock(self):
+        from cut_proxies import testcut
+
+        win = self.make_window()
+        win.open_material_guide()
+        self.assertTrue(win.guide_registration.get_sensitive())
+        small = len(win.preview.test_grid)
+        win.guide_shape.set_selected(tuple(testcut.TEST_SHAPES).index("rounded-square"))
+        win.guide_size.set_selected(tuple(starting_guide.SAMPLE_SIZES).index(50.0))
+        self.assertLess(len(win.preview.test_grid), small)
+        self.assertEqual(win.preview.trial.sheet.shape, "rounded-square")
+        self.assertEqual(win.preview.trial.sheet.size_mm, 50.0)
+        chosen, box = max(win.preview.test_grid.items())
+        self.assertTrue(win.on_preview_spot_clicked(box.x + 2, box.y + 2))
+        self.assertEqual(win.guide.spot, chosen)
+        self.assertEqual(win.preview.trial.sheet.cells[0].rect, box)
+        win.guide.record(win.preview.trial)
+        win.update_guide()
+        self.assertFalse(win.guide_registration.get_sensitive())
+        win.guide_shape.set_selected(tuple(testcut.TEST_SHAPES).index("triangle"))
+        self.assertNotEqual(win.guide.spot, chosen)
+        self.assertEqual(win.guide.spot_rect(chosen), box)
+        self.assertEqual(win.preview.trial.sheet.shape, "triangle")
+
     def test_material_guide_shows_fresh_spots_and_restores_the_cut_preview(self):
         win = self.make_window()
         win.preview.zoom_by(1.25)

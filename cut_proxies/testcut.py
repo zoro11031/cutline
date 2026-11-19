@@ -47,7 +47,20 @@ DEFAULT_MARGIN_MM = 15.0
 MAX_CELLS = 60
 
 
-TEST_SHAPES = {"square": "Square", "studio": "Studio square and triangle"}
+TEST_SHAPES = {
+    "square": "Square",
+    "rounded-square": "Rounded square",
+    "card": "Rounded card",
+    "circle": "Circle",
+    "oval": "Oval",
+    "ring": "Ring",
+    "triangle": "Triangle",
+    "diamond": "Diamond",
+    "hexagon": "Hexagon",
+    "star": "Star",
+    "notch": "Notched square",
+    "studio": "Studio square and triangle",
+}
 # Captured Studio test cut documented in inkscape-silhouette/sendto_silhouette.py.
 # Coordinates include the 1 mm seam overlaps and 1.5 mm inset.
 STUDIO_TRIANGLE = ((6.0, 4.577), (6.5, 3.711), (9.721, 9.289),
@@ -111,11 +124,41 @@ def _square(rect: Rect) -> template.CutPath:
 def _cell_paths(rect: Rect, shape: str) -> tuple[template.CutPath, ...]:
     if shape == "square":
         return (_square(rect),)
-    scale = rect.w / 10
-    return tuple(template.CutPath(
-        tuple((rect.x + (x - 1.5) * scale, rect.y + (y - 1.5) * scale) for x, y in outline),
-        closed=False, label=label)
-        for outline, label in ((STUDIO_TRIANGLE, "test triangle"), (STUDIO_SQUARE, "test square")))
+    if shape == "studio":
+        scale = rect.w / 10
+        return tuple(template.CutPath(
+            tuple((rect.x + (x - 1.5) * scale, rect.y + (y - 1.5) * scale) for x, y in outline),
+            closed=False, label=label)
+            for outline, label in ((STUDIO_TRIANGLE, "test triangle"), (STUDIO_SQUARE, "test square")))
+    label = TEST_SHAPES[shape]
+    if shape in ("card", "rounded-square"):
+        width = rect.w * 63 / 88 if shape == "card" else rect.w
+        box = Rect(rect.x + (rect.w - width) / 2, rect.y, width, rect.h)
+        radius = rect.h * (3.2 / 88 if shape == "card" else 0.2)
+        return (template.CutPath(template.rounded_rect_points(box, radius), True, label=label),)
+    if shape in ("circle", "oval", "ring"):
+        radii = (0.5, 0.32 if shape == "oval" else 0.5)
+        outer = _ellipse(rect, *radii, label)
+        return (_ellipse(rect, 0.26, 0.26, "Ring center"), outer) if shape == "ring" else (outer,)
+    if shape == "notch":
+        vertices = ((0, 0), (1, 0), (1, 0.42), (0.55, 0.42), (0.55, 1), (0, 1))
+    else:
+        count = {"triangle": 3, "diamond": 4, "hexagon": 6, "star": 10}[shape]
+        vertices = []
+        for index in range(count):
+            angle = index * math.tau / count
+            radius = 0.24 if shape == "star" and index % 2 else 0.5
+            vertices.append((0.5 + radius * math.sin(angle), 0.5 - radius * math.cos(angle)))
+    points = tuple((rect.x + x * rect.w, rect.y + y * rect.h) for x, y in vertices)
+    return (template.CutPath(points, True, label=label),)
+
+
+def _ellipse(rect, rx, ry, label):
+    count = template._arc_segments(max(rx * rect.w, ry * rect.h), math.tau)
+    points = tuple((rect.x + rect.w * (0.5 + rx * math.cos(angle)),
+                    rect.y + rect.h * (0.5 + ry * math.sin(angle)))
+                   for angle in (i * math.tau / count for i in range(count)))
+    return template.CutPath(points, True, label=label)
 
 
 def _check_geometry(stream, groups, device, origin, limit):
@@ -180,8 +223,8 @@ def combinations(base: CutSettings, forces=None, speeds=None, passes=None,
 
 
 def settings_for_shape(base, shape):
-    if shape == "studio":
-        # Finish the triangle while the outer square still holds the material.
+    if shape in ("studio", "ring"):
+        # Finish the inner contour while the outer contour still holds the material.
         return dataclasses.replace(base, path_order="design", pass_order="path",
                                    interior_first=False, delicate_media=False)
     return base
@@ -195,7 +238,8 @@ def build(device: graphtec.Device, base: CutSettings, forces=None,
           registration: bool = False,
           offset_mm: tuple[float, float] = (0.0, 0.0),
           shape: str = "square", mat: str = "auto", end_position: str = "below",
-          end_feed_mm: float = 0.0, spot: int | None = None, from_bottom: bool = False) -> TestSheet:
+          end_feed_mm: float = 0.0, spot: int | None = None, from_bottom: bool = False,
+          spot_rect: Rect | None = None) -> TestSheet:
     """Lay out the test squares and build the job.
 
     An explicit spot places one settings combination at a numbered cell.
@@ -240,7 +284,11 @@ def build(device: graphtec.Device, base: CutSettings, forces=None,
     else:
         first = 0
     rows = -(-(first + len(settings)) // cols)
-    if rows * pitch - gap_mm > usable_h:
+    if spot_rect is not None and (spot is None or spot_rect.w != size_mm or spot_rect.h != size_mm
+            or not (margin_mm - 1e-9 <= spot_rect.x <= margin_mm + usable_w - size_mm + 1e-9
+                    and margin_mm - 1e-9 <= spot_rect.y <= margin_mm + usable_h - size_mm + 1e-9)):
+        raise ValueError("This sample lies outside the usable part of the test sheet.")
+    if spot_rect is None and rows * pitch - gap_mm > usable_h:
         if spot is not None:
             raise ValueError("This spot is outside the test sheet. Start a new sheet or select larger stock.")
         raise ValueError(
@@ -254,7 +302,7 @@ def build(device: graphtec.Device, base: CutSettings, forces=None,
         y = sheet_h_mm - margin_mm - size_mm - row * pitch if from_bottom else margin_mm + row * pitch
         cells.append(Cell(
             index=i, row=row, col=col,
-            rect=Rect(margin_mm + col * pitch, y, size_mm, size_mm),
+            rect=spot_rect if spot_rect is not None else Rect(margin_mm + col * pitch, y, size_mm, size_mm),
             settings=s))
 
     origin = (margin_mm, margin_mm) if registration else (0.0, 0.0)
@@ -303,7 +351,8 @@ def write_proof(path, sheet: TestSheet, sheet_w_mm: float,
         else:
             for sample in _cell_paths(r, sheet.shape):
                 points = " ".join(f"{n(x)},{n(y)}" for x, y in sample.points)
-                out.append(f'  <polyline points="{points}" fill="none" stroke="#ff0000" '
+                element = "polygon" if sample.closed else "polyline"
+                out.append(f'  <{element} points="{points}" fill="none" stroke="#ff0000" '
                            f'stroke-width="0.2"/>')
         s = c.settings
         out.append(f'  <text x="{n(r.x + 0.8)}" y="{n(r.y + 3.4)}" '
