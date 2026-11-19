@@ -430,7 +430,20 @@ class TestDesignWorkspace(unittest.TestCase):
         first = win.preview.trial.sheet.extent()
         self.assertEqual(win.preview_title.get_text(), 'Material test sheet')
         self.assertFalse(win.cut_button.get_visible())
+        placement = win.preview.test_placement
+        box = placement.grid()[5]
+        left, top, scale = win.preview.camera(win.preview.get_width(), win.preview.get_height(),
+                                               placement.width, placement.height)
+        x, y = left + (box.x + box.w / 2) * scale, top + (box.y + box.h / 2) * scale
+        win.preview.test_press = (x, y)
+        win.preview.select_test_spot(None, 1, x, y)
+        self.assertEqual(win.guide.spot, 5)
+        self.assertEqual(win.preview.trial.sheet.extent(), box)
+        win.guide_size.set_selected(2)
+        self.assertEqual(win.preview.trial.sheet.size_mm, 25)
+        self.assertLess(len(win.preview.test_placement.grid()), len(placement.grid()))
         win.guide_next.emit('clicked')
+        self.assertEqual(win.guide.spot, 6)
         self.assertFalse(win.preview.trial.sheet.extent().overlaps(first))
         win.guide_edit.emit('clicked')
         self.assertEqual(win.stack.get_visible_child_name(), 'cut')

@@ -179,6 +179,18 @@ def combinations(base: CutSettings, forces=None, speeds=None, passes=None,
     return out
 
 
+def grid_dimensions(width, height, margin, size, gap):
+    pitch = size + gap
+    return tuple(max(0, int((edge - 2 * margin + gap) // pitch)) for edge in (width, height))
+
+
+def cell_rect(index, cols, height, margin, size, gap, from_bottom=False):
+    row, col = divmod(index, cols)
+    pitch = size + gap
+    y = height - margin - size - row * pitch if from_bottom else margin + row * pitch
+    return Rect(margin + col * pitch, y, size, size)
+
+
 def build(device: graphtec.Device, base: CutSettings, forces=None,
           speeds=None, passes=None, depths=None,
           size_mm: float | None = None, gap_mm: float = DEFAULT_GAP_MM,
@@ -227,7 +239,7 @@ def build(device: graphtec.Device, base: CutSettings, forces=None,
     usable_h = sheet_h_mm - 2 * margin_mm
     if size_mm > usable_w:
         raise ValueError("The test cut size and margins exceed the sheet width.")
-    max_cols = max(1, int((usable_w + gap_mm) // pitch))
+    max_cols, _ = grid_dimensions(sheet_w_mm, sheet_h_mm, margin_mm, size_mm, gap_mm)
     cols = min(cols, max_cols) if cols > 0 else max_cols
     if spot is not None:
         if len(settings) != 1 or type(spot) is not int or spot < 1:
@@ -247,10 +259,9 @@ def build(device: graphtec.Device, base: CutSettings, forces=None,
     cells = []
     for i, s in enumerate(settings, first):
         row, col = divmod(i, cols)
-        y = sheet_h_mm - margin_mm - size_mm - row * pitch if from_bottom else margin_mm + row * pitch
         cells.append(Cell(
             index=i, row=row, col=col,
-            rect=Rect(margin_mm + col * pitch, y, size_mm, size_mm),
+            rect=cell_rect(i, cols, sheet_h_mm, margin_mm, size_mm, gap_mm, from_bottom),
             settings=s))
 
     origin = (margin_mm, margin_mm) if registration else (0.0, 0.0)

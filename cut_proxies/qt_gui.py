@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QGroupBox, 
 
 from . import (actions, bluetooth, bundle, config, corner_test, editor_model, geometry, graphtec, importer, job,
                layout_presets, materials, presets, regmarks, starting_guide, template, testcut, toolpath, transport)
-from .desktop_help import BLADE_VALUE_TEXT, CONTROL_HELP, SETUP_STEPS
+from .desktop_help import BLADE_VALUE_TEXT, CONTROL_HELP, CUT_PROBLEMS, SETUP_STEPS
 from .holder_settings import HolderSettings, for_holder
 from .qt_canvas import PREVIEW_MODES, Preview, ZoomControls
 from .qt_controls import (Form, Page, SettingsWheel, Tasks, bar, button, set_choices,
@@ -106,6 +106,7 @@ class Window(QMainWindow):
         preview_controls.addWidget(self.preview_title)
         preview_controls.addStretch(1)
         self.preview = Preview()
+        self.preview.spot_selected.connect(self.select_guide_spot)
         self.preview_mode = QComboBox()
         set_choices(self.preview_mode, PREVIEW_MODES, "Overlay")
         self.preview_mode.currentIndexChanged.connect(lambda: self.change_preview())
@@ -238,7 +239,9 @@ class Window(QMainWindow):
         settings = self.menu_bar.addMenu("&Settings")
         command(settings, "Cut Settings", self.open_cut_settings)
         command(settings, "Advanced Send Settings", self.open_send_advanced)
-        command(self.menu_bar.addMenu("&Help"), "Setup Guide", self.show_setup_guide)
+        help_menu = self.menu_bar.addMenu("&Help")
+        command(help_menu, "Setup Guide", self.show_setup_guide)
+        command(help_menu, "Troubleshoot a Cut…", self.troubleshoot_cut)
 
     def open_cut_settings(self):
         self.open_send_workspace()
@@ -318,6 +321,7 @@ class Window(QMainWindow):
         self.scan_result = scan.note()
         self.scan_result.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.copy_scan = scan.push("Copy Scan Details", self.copy_scan_details)
+        scan.push("Troubleshoot Registration…", lambda: self.troubleshoot_cut(next(iter(CUT_PROBLEMS))))
         self.clear_scan_result()
         self.sheet_advanced = advanced = page.advanced()
         self.sheet_dpi = advanced.group("PDF check").choice("Measurement resolution", (150, 200, 300), 200, self.measure_sheet)
@@ -441,9 +445,13 @@ class Window(QMainWindow):
         guide.actions(self.guide_send, self.guide_use)
         self.guide_next = button("Next Test Spot", self.next_guide_spot)
         self.guide_next.setToolTip("Move to untouched stock before testing different settings.")
-        guide.addRow(self.guide_next)
+        guide.actions(self.guide_next, button("Troubleshoot…", self.troubleshoot_cut))
         extras = self.guide_page.advanced("Test Options")
         extra = extras.group("Test sheet")
+        self.guide_shape = extra.choice("Test Shape", testcut.TEST_SHAPES, changed=self.update_tuning_preview)
+        self.guide_size = extra.choice("Sample Size", starting_guide.SAMPLE_SIZES, self.guide.size_mm,
+                                      self.change_guide_size)
+        self.guide_size.setToolTip("Start a new test sheet to change a saved grid’s size.")
         self.guide_registration = extra.check("Use Registration Marks", self.guide.registered,
                                               self.change_guide_registration)
         self.guide_marked_sheet = extra.push("Save Marked Test Sheet…", self.save_guide_marked_sheet)
@@ -513,8 +521,8 @@ class Window(QMainWindow):
         self.refresh_send()
 
     def adjust_guide_settings(self):
-        if self.guide.trial:
-            self.next_guide_spot()
+        if (self.guide.trial or self.guide.archived_spot) and not self.next_guide_spot():
+            return
         self.open_cut_settings()
         self.material_guide.setText("Resume Material Test")
 
@@ -1004,8 +1012,8 @@ class Window(QMainWindow):
         self.refresh_cutter.setEnabled(can_check)
         if self.bundle and self.report is not None and not self.bundle_checked:
             self.summary_title.setText("PDF registration needs attention")
-        self.update_guide()
         self.update_tuning_preview()
+        self.update_guide()
         if control is not None:
             self.footer_status.setText(control.status_text)
         elif not self.tuning:
@@ -1532,6 +1540,8 @@ class Window(QMainWindow):
         self.guide_outcome.setCurrentIndex(self.guide_outcome.findData(state.outcome))
         self.guide_outcome.blockSignals(blocked)
         self.guide_outcome.setEnabled(not self.busy)
+        self.guide_shape.setEnabled(not self.busy and self.guide.trial is None)
+        self.guide_size.setEnabled(not self.busy and self.guide.placement is None)
         advice = state.advice()
         self.guide_advice.setText(advice)
         self.guide_advice.setVisible(bool(advice))
@@ -1542,15 +1552,17 @@ class Window(QMainWindow):
 
     def update_tuning_preview(self):
         trial = None
+        placement = None
         if self.tuning:
-            trial = self.guide.trial
-            if trial is None:
-                try:
-                    trial = self.guide.prepare(self.connection(), self.job_options(), self.job, "square")
-                except (ValueError, KeyError):
-                    pass
-        placement = self.guide.placement if self.tuning else None
-        self.preview.show_trial(trial, self.guide.spots if self.tuning else (), placement)
+            try:
+                options = self.job_options()
+                placement = self.guide.preview_placement(self.job, options)
+                trial = self.guide.trial
+                if trial is None:
+                    trial = self.guide.prepare(self.connection(), options, self.job, self.guide_shape.currentData())
+            except (ValueError, KeyError):
+                pass
+        self.preview.show_trial(trial, self.guide.spots if self.tuning else (), placement, self.guide.spot)
         self.preview_title.setText("Material test sheet" if self.preview.test_placement else "Sheet preview")
         self.preview_mode.setVisible(self.preview.test_placement is None and not self.preview.pdf.isNull())
         self.summary_bar.setVisible(not self.tuning)
@@ -1563,8 +1575,8 @@ class Window(QMainWindow):
         self.rebuild()
 
     def apply_guide_start(self):
-        if self.guide.trial:
-            self.next_guide_spot()
+        if (self.guide.trial or self.guide.archived_spot) and not self.next_guide_spot():
+            return
         values = self.blade_values()
         device = graphtec.device_by_name(self.choice("cutter"))
         self.set_guide_blade_values(starting_guide.starting_values(
@@ -1605,11 +1617,40 @@ class Window(QMainWindow):
 
     def next_guide_spot(self):
         if self.busy:
-            return
-        self.guide.next_spot()
+            return False
+        if not self.guide.next_spot(self.preview.test_placement):
+            self.message("No unused spots remain. Choose a tested spot or start a new test sheet.")
+            return False
+        self.guide_selection_changed()
+        return True
+
+    def select_guide_spot(self, number):
+        if self.tuning and not self.busy and self.guide.select_spot(number, self.preview.test_placement):
+            self.guide_selection_changed()
+
+    def guide_selection_changed(self):
         self.persist_guide()
         self.update_guide()
         self.update_tuning_preview()
+
+    def troubleshoot_cut(self, symptom=None):
+        if symptom is None:
+            symptom, accepted = QInputDialog.getItem(self, "Troubleshoot a Cut", "What happened?",
+                                                      list(CUT_PROBLEMS), editable=False)
+            if not accepted:
+                return
+        text, action = CUT_PROBLEMS[symptom]
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle(symptom)
+        dialog.setText(text)
+        dialog.setStandardButtons(QMessageBox.StandardButton.Close)
+        follow = dialog.addButton(action, QMessageBox.ButtonRole.ActionRole) if action else None
+        dialog.exec()
+        if follow and dialog.clickedButton() == follow:
+            if action == "Open Sheet":
+                self.tabs.setCurrentIndex(self.tab("Sheet"))
+            else:
+                self.open_material_guide()
 
     def reset_guide(self):
         if not self.busy and self.confirm("Start a New Test Sheet?", "Load a fresh test sheet to start at the first spot."):
@@ -1628,8 +1669,13 @@ class Window(QMainWindow):
 
     def change_guide_registration(self):
         self.guide.registered = self.guide_registration.isChecked()
-        self.update_guide()
         self.update_tuning_preview()
+        self.update_guide()
+
+    def change_guide_size(self):
+        self.guide.size_mm = self.guide_size.currentData()
+        self.update_tuning_preview()
+        self.update_guide()
 
     def save_guide_marked_sheet(self):
         path = self.choose_output("Save Marked Test Sheet", "material-test.svg", "Printable SVG (*.svg)")
@@ -1647,7 +1693,7 @@ class Window(QMainWindow):
         if self.busy or not self.guide.can_cut:
             return
         try:
-            trial = self.guide.prepare(self.connection(), self.job_options(), self.job, "square")
+            trial = self.guide.prepare(self.connection(), self.job_options(), self.job, self.guide_shape.currentData())
         except (ValueError, KeyError) as error:
             self.message(str(error))
             return
@@ -1658,7 +1704,7 @@ class Window(QMainWindow):
         if self.busy or not self.guide.can_cut:
             return
         try:
-            current = self.guide.prepare(self.connection(), self.job_options(), self.job, "square")
+            current = self.guide.prepare(self.connection(), self.job_options(), self.job, self.guide_shape.currentData())
         except (ValueError, KeyError) as error:
             self.message(str(error))
             return

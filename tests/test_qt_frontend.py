@@ -673,7 +673,17 @@ class TestQtFrontend(unittest.TestCase):
         first = window.preview.trial.sheet.extent()
         self.assertEqual(window.preview_title.text(), "Material test sheet")
         self.assertFalse(window.send_button.isVisible())
+        spots = window.preview.test_placement.grid()
+        box = spots[5]
+        QTest.mouseClick(window.preview.viewport(), Qt.MouseButton.LeftButton,
+                         pos=window.preview.mapFromScene(QPointF(box.x + box.w / 2, box.y + box.h / 2)))
+        self.assertEqual(window.guide.spot, 5)
+        self.assertEqual(window.preview.trial.sheet.extent(), box)
+        window.guide_size.setCurrentIndex(window.guide_size.findData(25))
+        self.assertEqual(window.preview.trial.sheet.size_mm, 25)
+        self.assertLess(len(window.preview.test_placement.grid()), len(spots))
         window.guide_next.click()
+        self.assertEqual(window.guide.spot, 6)
         self.assertFalse(window.preview.trial.sheet.extent().overlaps(first))
         window.guide_edit.click()
         self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))

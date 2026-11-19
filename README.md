@@ -143,11 +143,14 @@ Open **Send → Dial In a Material**. Choose a factory preset for your stock
 or try **Silhouette starting point**. With an AutoBlade in holder 1 on a
 Cameo 4, it starts at force 25, speed 25, depth 7, and one pass.
 
-1. Load the same material you plan to cut. The preview starts at the bottom-left.
-2. Choose **Cut One Pass**. Keep the mat loaded and use **Repeat One Pass**
-   as needed. The preview records the confirmed pass count for each spot.
-3. Choose **Next Test Spot** to try different settings. When the cut looks
-   right, choose **Use Tested Settings** to apply the current spot’s count.
+1. Load the same stock and laminate as your job. The grid starts at the
+   bottom-left. Click any numbered spot to select it. In **Test Options**,
+   choose a square or square and triangle and a sample size from 15 to 40 mm.
+2. Choose **Cut One Pass**. Wait for the cutter to stop, keep the mat loaded,
+   and lift a sample corner. Use **Repeat One Pass** if it still holds.
+3. Try one adjustment at a time on a fresh spot. Start with pass count, then
+   compare force, speed, and depth. Click a tested spot to bring back its
+   settings and count. Choose **Use Tested Settings** when the cut looks right.
 
 To unload and reload a test sheet, open **Test Options → Use Registration
 Marks** and **Save Marked Test Sheet**. Print the SVG at actual size. Each
@@ -158,6 +161,11 @@ close the app. **New Test Sheet** clears that sheet’s history.
 Use **Corner Test Cut** for a single 3 mm square on the current sheet.
 Control Center looks for a spare corner and shows the spot before cutting.
 Use the **Test-Cut Matrix** to try several settings on one blank sheet.
+
+**Help → Troubleshoot a Cut** opens checks for registration, foil glare,
+misaligned or angled cuts, laminate, and material settings. The same help
+is available in the material guide. [SCM cutting guide](https://alan-cha.github.io/silhouette-card-maker/tutorial/guide/)
+and [troubleshooting](https://alan-cha.github.io/silhouette-card-maker/tutorial/troubleshooting/).
 
 ## Material presets
 

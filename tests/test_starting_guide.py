@@ -101,6 +101,28 @@ class TestStartingGuide(unittest.TestCase):
         self.assertEqual(next_row.x, first.x)
         self.assertLess(next_row.y, first.y)
 
+    def test_grid_selection_matches_cut_coordinates_and_restores_already_tested_spots(self):
+        layout = self.guide.preview_placement(None, dict(self.options, portrait=True))
+        grid = layout.grid()
+        self.assertGreater(len(grid), 20)
+        self.assertFalse(self.guide.select_spot(max(grid) + 1, layout))
+        self.assertTrue(self.guide.select_spot(10, layout))
+        ten = self.prepare(portrait=True)
+        self.assertEqual(ten.sheet.extent(), grid[10])
+        self.guide.record(ten)
+        self.guide.record(ten)
+        self.assertTrue(self.guide.select_spot(3))
+        three = self.prepare(force=28, shape="studio")
+        self.guide.record(three)
+        self.assertEqual(three.sheet.extent(), grid[3])
+        self.assertTrue(self.guide.select_spot(10))
+        self.assertIs(self.prepare(force=33), ten)
+        self.assertEqual(self.guide.completed, 2)
+        self.guide.moved()
+        self.assertTrue(self.guide.select_spot(3))
+        self.assertFalse(self.guide.can_cut)
+        self.assertEqual(self.guide.completed, 1)
+
     def test_marked_sheet_uses_scan_before_writing_paths_and_reopens_with_counts(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "marked.json"
@@ -134,6 +156,9 @@ class TestStartingGuide(unittest.TestCase):
             self.assertIn("Spot 1 · 1 pass", restored.history_text())
             self.assertIn("Spot 2 · 1 pass", restored.history_text())
             self.assertTrue(restored.can_cut)
+            self.assertTrue(restored.select_spot(1))
+            self.assertEqual(restored.trial, trial)
+            self.assertEqual(restored.completed, 1)
 
     def test_marked_sheet_interrupted_during_a_pass_needs_fresh_spot(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -150,6 +175,25 @@ class TestStartingGuide(unittest.TestCase):
             restored.next_spot()
             self.assertTrue(restored.history[0].uncertain)
             self.assertTrue(restored.can_cut)
+
+    def test_larger_sample_changes_grid_and_is_saved_with_marked_spots(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.guide = starting_guide.Guide(Path(folder) / "marked.json")
+            self.guide.registered = True
+            standard = self.guide.preview_placement(None, self.options).grid()
+            self.guide.size_mm = 40
+            large = self.guide.preview_placement(None, self.options)
+            self.assertLess(len(large.grid()), len(standard))
+            self.assertTrue(self.guide.select_spot(4, large))
+            trial = self.prepare(shape="studio")
+            self.assertEqual(trial.sheet.extent(), large.grid()[4])
+            self.assertEqual(trial.sheet.size_mm, 40)
+            self.assertEqual(len(trial.sheet.paths), 2)
+            self.guide.record(trial)
+            self.guide.persist()
+            restored = starting_guide.Guide(self.guide.storage)
+            self.assertEqual(restored.size_mm, 40)
+            self.assertEqual(restored.trial, trial)
 
     @unittest.skipUnless(shutil.which("rsvg-convert") and shutil.which("pdftoppm") and shutil.which("pdfinfo"),
                          "requires SVG and PDF rendering tools")

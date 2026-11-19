@@ -174,12 +174,16 @@ class ZoomControls(QWidget):
 
 
 class Preview(SheetView):
+    spot_selected = Signal(int)
+
     def __init__(self):
         super().__init__()
         self.job = self.report = self.pdf_size = None
         self.trial = None
         self.test_placement = None
         self.test_spots = ()
+        self.test_number = 1
+        self.test_press = None
         self.pdf = QImage()
         self.mode = "Overlay"
         self.colorblind = False
@@ -193,11 +197,26 @@ class Preview(SheetView):
         self.pdf_size, self.report = size, report
         self.render_sheet()
 
-    def show_trial(self, trial, spots=(), placement=None):
+    def show_trial(self, trial, spots=(), placement=None, number=1):
         placement = trial.placement if trial else placement
-        if (trial, spots, placement) != (self.trial, self.test_spots, self.test_placement):
-            self.trial, self.test_spots, self.test_placement = trial, spots, placement
+        if (trial, spots, placement, number) != (self.trial, self.test_spots, self.test_placement, self.test_number):
+            self.trial, self.test_spots, self.test_placement, self.test_number = trial, spots, placement, number
             self.render_sheet()
+
+    def mousePressEvent(self, event):
+        self.test_press = (event.position() if self.test_placement and
+                           event.button() == Qt.MouseButton.LeftButton else None)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        press, self.test_press = self.test_press, None
+        point = self.mapToScene(event.position().toPoint())
+        super().mouseReleaseEvent(event)
+        if self.test_placement and press is not None and (press - event.position()).manhattanLength() < 5:
+            for number, box in self.test_placement.grid().items():
+                if rect(box).contains(point):
+                    self.spot_selected.emit(number)
+                    break
 
     def render_sheet(self):
         scene = self.scene()
@@ -240,23 +259,24 @@ class Preview(SheetView):
         draw_feed_arrow(scene, page.width(), self.palette().windowText().color())
         if placement.marks:
             draw_marks(scene, placement.marks)
-        active = self.trial.sheet.cells[0] if self.trial else None
-        if active:
-            scene.addRect(rect(active.rect), pen("#187289", 0.55), QBrush(QColor(46, 142, 177, 32)))
-        for spot in self.test_spots:
-            box = rect(spot.rect)
-            color = "#984d12" if spot.uncertain else "#166356"
-            item = scene.addRect(box, pen(color, 0.35), QBrush(QColor(49, 141, 125, 28)))
-            item.setToolTip(f"Spot {spot.number} · {spot.count}")
-            label = scene.addSimpleText(f"{spot.number}: {spot.passes}{'?' if spot.uncertain else ''}")
+        used = {spot.number: spot for spot in self.test_spots}
+        for number, sample in placement.grid().items():
+            box = rect(sample)
+            spot = used.get(number)
+            active = number == self.test_number
+            color = ("#984d12" if spot and spot.uncertain else "#1764ad" if active else
+                     "#166356" if spot else "#596a74")
+            fill = QColor(color)
+            fill.setAlpha(43 if active else 22 if spot else 7)
+            item = scene.addRect(box, pen(color, 0.8 if active else 0.3), QBrush(fill))
+            item.setToolTip(f"Spot {number} · {spot.count if spot else 'Unused'}")
+            label = scene.addSimpleText(
+                f"{number}: {spot.passes}{'?' if spot.uncertain else ''}" if spot else str(number))
             label.setBrush(QColor(color))
             label.setScale(0.45)
             label.setPos(box.left() + 1, box.top() + 2)
-        if active and all(spot.number != active.index + 1 for spot in self.test_spots):
-            label = scene.addSimpleText(str(active.index + 1))
-            label.setBrush(QColor("#12394d"))
-            label.setScale(0.45)
-            label.setPos(active.rect.x + 1, active.rect.y + 2)
+        if self.trial and self.trial.sheet.shape == "studio":
+            draw_contours(scene, self.trial.sheet.paths, pen("#1764ad", 0.32))
         if refit or self.fitted:
             self.fit()
 
