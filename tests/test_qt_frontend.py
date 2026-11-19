@@ -103,6 +103,56 @@ class TestQtFrontend(unittest.TestCase):
         self.assertFalse(materials.isAncestorOf(window.controls["preset"]))
         self.assertFalse(materials.isAncestorOf(window.blade["force"]))
 
+    def test_workspace_switch_leaves_an_empty_design_open_without_reviewing_it(self):
+        window = self.window
+        original_job = window.job
+        window.open_design()
+        design = window.design
+        design.commit_shapes((), ())
+        self.assertFalse(design.review_button.isEnabled())
+        self.assertTrue(design.send_workspace.isEnabled())
+        self.assertIs(design.menu_bar.parentWidget(), design.send_workspace.parentWidget().parentWidget())
+        design.send_workspace.click()
+        self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
+        self.assertIsNone(window.reviewed_design)
+        self.assertEqual(window.job.paths, original_job.paths)
+        window.design_button.click()
+        self.assertIs(window.workspaces.currentWidget(), design)
+        self.assertFalse(design.project.shapes)
+
+    def test_file_menu_changes_pages_only_after_opening_the_print_file(self):
+        window = self.window
+        window.send_workspace.click()
+        file_menu, *_ = window.menu_bar.actions()
+        open_print = file_menu.menu().actions()[1]
+        with mock.patch.object(window, "select_open", return_value=None):
+            open_print.trigger()
+        self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
+        self.assertIsNone(window.pdf)
+        path = Path("print.pdf")
+        with mock.patch.object(window, "select_open", return_value=path), \
+             mock.patch.object(window, "measure_sheet") as measure:
+            open_print.trigger()
+        self.assertEqual(window.tabs.currentIndex(), window.tab("Sheet"))
+        self.assertEqual(window.pdf, path)
+        measure.assert_called_once()
+
+    def test_apply_material_opens_the_cut_settings_with_the_selected_values(self):
+        window = self.window
+        window.tabs.setCurrentIndex(window.tab("Materials"))
+        with mock.patch.object(materials, "load", return_value={}):
+            window.load_materials()
+        self.assertFalse(window.apply_material_button.isEnabled())
+        sample = mock.Mock()
+        sample.cut_settings.return_value = qt_gui.graphtec.CutSettings(force=16)
+        with mock.patch.object(materials, "load", return_value={}), \
+             mock.patch.object(materials, "cutter_divisions", return_value={"Sample": sample}):
+            window.load_materials()
+        self.assertTrue(window.apply_material_button.isEnabled())
+        window.apply_material_button.click()
+        self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
+        self.assertEqual(window.job.settings.force, 16)
+
     def test_manual_depth_fits_with_a_large_font(self):
         window = self.window
         font = self.app.font()
@@ -255,7 +305,7 @@ class TestQtFrontend(unittest.TestCase):
         self.assertTrue(design.page_advanced.disclosure.isChecked())
         design.print_border.setChecked(True)
         self.assertTrue(design.print_border.isChecked())
-        design.send_workspace.click()
+        design.review_button.click()
         self.assertFalse(window.job.blocked)
         self.assertEqual([(group.settings.holder, group.settings.force) for group in window.job.action_groups],
                          [(1, 28), (2, 12)])
@@ -291,7 +341,7 @@ class TestQtFrontend(unittest.TestCase):
         with mock.patch.object(QFileDialog, "getSaveFileName", return_value=(str(target), "")):
             self.assertTrue(design.save())
         self.assertEqual(editor_model.load_project(target), design.project)
-        design.send_workspace.click()
+        design.review_button.click()
         self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
         self.assertEqual(len(window.job.paths), 1)
         self.assertFalse(window.job.blocked)
@@ -311,7 +361,8 @@ class TestQtFrontend(unittest.TestCase):
         self.assertFalse(window.job.blocked)
         checked = window.job
         design.commit_shapes((cut,), (0,))
-        window.leave_design()
+        design.send_workspace.click()
+        self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
         self.assertEqual(window.review_tab(), "Design")
         self.assertIn("latest edits", window.send_refusal(checked, window.connection()))
 
@@ -361,7 +412,8 @@ class TestQtFrontend(unittest.TestCase):
 
     def test_corner_test_sends_only_one_square_and_leaves_the_layout_in_place(self):
         window = self.window
-        self.assertEqual(tuple(window.pages), ("Layout", "Sheet", "Materials", "Send"))
+        self.assertEqual(tuple(window.tabs.tabText(i) for i in range(window.tabs.count())),
+                         ("Layout", "Sheet", "Materials", "Cut Job"))
         window.blade["passes"].setValue(4)
         plan = window.job
         sample = corner_test.build(plan, bleed_mm=window.controls["bleed_mm"].value())

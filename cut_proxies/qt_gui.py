@@ -12,7 +12,7 @@ import zipfile
 
 from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QInputDialog, QMenu, QMenuBar,
+from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QInputDialog, QMenu,
                                QMainWindow, QMessageBox, QPlainTextEdit,
                                QSplitter, QStackedWidget, QStyle, QTabWidget, QVBoxLayout, QWidget)
 
@@ -22,7 +22,7 @@ from .desktop_help import BLADE_VALUE_TEXT, CONTROL_HELP, SETUP_STEPS
 from .holder_settings import HolderSettings, for_holder
 from .qt_canvas import PREVIEW_MODES, Preview, ZoomControls
 from .qt_controls import (WORKSPACE_STYLE, Form, Page, Tasks, bar, button, set_choices,
-                          styled_label, workspace_switch)
+                          styled_label, workspace_header, workspace_layout, workspace_tools)
 
 APP_ID = "org.printing.SilhouetteControlCenter"
 ARTWORK_FILTER = "Cut artwork (*.svg *.SVG *.dxf *.DXF *.studio3 *.STUDIO3)"
@@ -79,25 +79,13 @@ class Window(QMainWindow):
         setup = QWidget()
         setup.setObjectName("workspace")
         self.workspaces.addWidget(setup)
-        content = QVBoxLayout(setup)
-        content.setContentsMargins(14, 10, 14, 12)
-        content.setSpacing(9)
-        header, top = bar(setup, (6, 4, 8, 4))
-        self.menu_bar = QMenuBar(header)
-        self.menu_bar.setObjectName("workspaceMenu")
-        self.menu_bar.setNativeMenuBar(False)
-        top.addWidget(self.menu_bar)
-        top.addStretch(1)
-        switch, self.design_button, self.send_workspace = workspace_switch(
-            header, self.open_design, self.open_send_workspace, active="Send")
-        self.design_button.setToolTip("Open the editor to draw, move or arrange cut paths.")
-        self.send_workspace.setToolTip("Review the cut, loaded material, and cutter connection.")
-        top.addWidget(switch)
+        content = workspace_layout(setup)
+        header, self.menu_bar, self.design_button, self.send_workspace = workspace_header(
+            setup, self.open_design, self.open_send_workspace, active="Send")
         content.addWidget(header)
         self.workspace_split = split = QSplitter(Qt.Orientation.Horizontal)
         split.setChildrenCollapsible(False)
         split.setHandleWidth(12)
-        content.addWidget(split, 1)
         self.tabs = QTabWidget()
         self.tabs.setProperty("role", "settings")
         self.tabs.setMinimumWidth(345)
@@ -111,8 +99,7 @@ class Window(QMainWindow):
         right = QVBoxLayout(preview_panel)
         right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(7)
-        self.preview_bar, preview_controls = bar(preview_panel, (2, 0, 2, 0))
-        self.preview_bar.setObjectName("previewBar")
+        self.preview_bar, preview_controls = workspace_tools(setup)
         self.preview_title = styled_label("Sheet preview")
         preview_controls.addWidget(self.preview_title)
         preview_controls.addStretch(1)
@@ -125,7 +112,8 @@ class Window(QMainWindow):
         preview_controls.addWidget(self.preview_mode)
         self.preview_zoom = ZoomControls(self.preview)
         preview_controls.addWidget(self.preview_zoom)
-        right.addWidget(self.preview_bar)
+        content.addWidget(self.preview_bar)
+        content.addWidget(split, 1)
         self.preview.colorblind = bool(self.settings.get("colorblind_mode"))
         right.addWidget(self.preview, 1)
 
@@ -164,7 +152,7 @@ class Window(QMainWindow):
         self.footer_status = styled_label(role="body")
         self.footer_status.setWordWrap(True)
         footer.addWidget(self.footer_status, 1)
-        self.review_button = button("Review Send", self.follow_review, primary=True)
+        self.review_button = button("Review Cut Job", self.follow_review, primary=True)
         self.send_button = button("Send to Cutter", self.confirm_send, primary=True,
                                   icon=("media-playback-start", QStyle.StandardPixmap.SP_MediaPlay))
         self.send_button.setMinimumHeight(32)
@@ -214,8 +202,8 @@ class Window(QMainWindow):
     def tab(self, name):
         return self.pages[name]
 
-    def install_page(self, name, page):
-        self.pages[name] = self.tabs.addTab(page.finish(), name)
+    def install_page(self, name, page, *, title=None):
+        self.pages[name] = self.tabs.addTab(page.finish(), title or name)
 
     def build_workspace_menus(self):
         def command(menu, title, callback):
@@ -225,7 +213,7 @@ class Window(QMainWindow):
 
         files = self.menu_bar.addMenu("&File")
         command(files, "Open Cut Artwork…", self.open_artwork)
-        command(files, "Open PDF or ZIP…", self.open_print_from_menu)
+        command(files, "Open PDF or ZIP…", self.open_sheet)
         self.close_print_action = command(files, "Close Print File", self.close_printed_sheet)
         self.paired_cut_action = command(files, "Save Paired Cut File…", self.save_bundle_file)
         files.addSeparator()
@@ -236,8 +224,8 @@ class Window(QMainWindow):
         self.reset_layout_action = command(edit, "Use Generated Layout", self.reset_artwork)
 
         view = self.menu_bar.addMenu("&View")
-        for name in self.pages:
-            command(view, name, lambda page=name: self.tabs.setCurrentIndex(self.tab(page)))
+        for index in self.pages.values():
+            command(view, self.tabs.tabText(index), lambda page=index: self.tabs.setCurrentIndex(page))
         view.addSeparator()
         command(view, "Fit Preview", self.preview.fit)
 
@@ -245,10 +233,6 @@ class Window(QMainWindow):
         command(settings, "Cut Settings", self.open_cut_settings)
         command(settings, "Advanced Send Settings", self.open_send_advanced)
         command(self.menu_bar.addMenu("&Help"), "Setup Guide", self.show_setup_guide)
-
-    def open_print_from_menu(self):
-        self.tabs.setCurrentIndex(self.tab("Sheet"))
-        self.open_sheet()
 
     def open_cut_settings(self):
         self.open_send_workspace()
@@ -344,7 +328,7 @@ class Window(QMainWindow):
         self.material = table.choice("Factory preset", ())
         table.actions(button("Import CSV…", self.choose_material_csv),
                       button("Import Folder…", lambda: self.choose_material_csv(folder=True)))
-        table.push("Apply Material", self.apply_material)
+        self.apply_material_button = table.push("Apply to Cut Settings", self.apply_material)
         page.group("Defaults").push("Restore Default Materials…", self.restore_materials)
         self.install_page("Materials", page)
 
@@ -472,7 +456,7 @@ class Window(QMainWindow):
         self.test_passes = tests.text("Pass counts", "1,2,3,4")
         self.test_button = tests.push("Test Cut…", self.confirm_test_cut)
         advanced.group("Diagnostics").push("Save Raw Stream…", self.dump_stream)
-        self.install_page("Send", page)
+        self.install_page("Send", page, title="Cut Job")
         self.change_connection()
         self.usb_timer = QTimer(self)
         self.usb_timer.timeout.connect(self.refresh_usb)
@@ -627,7 +611,8 @@ class Window(QMainWindow):
                 materials.load(), self.choice("cutter"), self.divisions.currentData())
         except (OSError, ValueError):
             self.materials = {}
-        set_choices(self.material, sorted(self.materials) or {"": "No Studio material database"})
+        set_choices(self.material, sorted(self.materials) or {"": "No materials imported"})
+        self.apply_material_button.setEnabled(bool(self.materials))
 
     def refresh_preset_choices(self, selected=None):
         catalog = presets.all_presets(self.choice("cutter"))
@@ -667,10 +652,9 @@ class Window(QMainWindow):
         if not self.divisions.currentData() and self.controls["preset"].findData(name) >= 0:
             self.select("preset", name)
             self.load_preset()
-            return
-        with self.editing():
+        else:
             self.set_blade_settings(for_holder(selected.cut_settings(), self.holder_state.active))
-        self.rebuild()
+        self.open_cut_settings()
 
     def restore_materials(self):
         if not self.confirm("Restore Default Materials?",
@@ -972,7 +956,7 @@ class Window(QMainWindow):
         index = self.tabs.currentIndex()
         self.send_normal.setVisible(not self.tuning)
         self.guide_page.setVisible(self.tuning)
-        self.review_button.setText(f"Review {target}")
+        self.review_button.setText(f"Review {'Cut Job' if target == 'Send' else target}")
         self.close_print_action.setEnabled(self.pdf is not None)
         self.paired_cut_action.setEnabled(self.bundle is not None)
         self.reset_layout_action.setEnabled(self.artwork is not None or self.bundle is not None)
@@ -1107,6 +1091,8 @@ class Window(QMainWindow):
                 self.load_bundle(path)
             except (OSError, ValueError) as error:
                 self.message(str(error))
+            else:
+                self.tabs.setCurrentIndex(self.tab("Sheet"))
             return
         if self.bundle:
             self.reset_artwork()
@@ -1116,6 +1102,7 @@ class Window(QMainWindow):
             self.sheet_page_number.setValue(1)
         self.update_sheet_controls()
         self.measure_sheet()
+        self.tabs.setCurrentIndex(self.tab("Sheet"))
 
     def load_bundle(self, path):
         matched = bundle.load(path)
@@ -1656,6 +1643,7 @@ class Window(QMainWindow):
 
     def leave_design(self):
         self.workspaces.setCurrentIndex(0)
+        self.open_send_workspace()
         self.refresh_send()
 
     def review_design(self, project, action):
@@ -1680,7 +1668,6 @@ class Window(QMainWindow):
         groups = editor_model.holder_defaults(artwork)
         grouped = groups or action == editor_model.ALL_ACTIONS
         self.use_artwork(artwork, f"Design · {action}", "layer" if grouped else "simple", groups)
-        self.tabs.setCurrentIndex(self.tab("Send"))
         self.leave_design()
 
     def changeEvent(self, event):

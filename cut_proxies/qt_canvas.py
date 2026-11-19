@@ -160,6 +160,7 @@ class ZoomControls(QWidget):
         self.fit_button.setFixedWidth(49)
         for widget, label in ((self.out_button, "Zoom out"), (self.in_button, "Zoom in"),
                               (self.fit_button, "Fit to view")):
+            widget.setProperty("role", "workspaceTool")
             widget.setAccessibleName(label)
             widget.setToolTip(label)
         for widget in (self.out_button, self.level, self.in_button, self.fit_button):

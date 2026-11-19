@@ -44,7 +44,7 @@ from . import (actions, bluetooth, bundle, config, corner_test, geometry, grapht
                starting_guide, template, testcut, toolpath, transport)  # noqa: E402
 from .desktop_help import BLADE_VALUE_TEXT, CONTROL_HELP, SETUP_STEPS  # noqa: E402
 from .editor_canvas import draw_feed_arrow  # noqa: E402
-from .gtk_controls import disclosure  # noqa: E402
+from .gtk_controls import disclosure, workspace_header, workspace_tools, zoom_controls  # noqa: E402
 from .holder_settings import HolderSettings, for_holder  # noqa: E402
 
 APP_ID = "org.printing.SilhouetteControlCenter"
@@ -489,23 +489,12 @@ class Window(Adw.ApplicationWindow):
         self.toasts.set_child(self.workspaces)
         self.connect('close-request', self.confirm_window_close)
 
-        header = Adw.HeaderBar()
+        header, self.design_button, self.send_workspace = workspace_header(
+            self.on_edit_template, self.open_send_workspace, active="Send")
         self.stack = Gtk.Stack()
         switcher = Gtk.StackSwitcher(stack=self.stack, margin_start=12, margin_end=12,
                                      css_classes=["linked", "scc-tabs"])
-        header.set_title_widget(Adw.WindowTitle(title="Silhouette Control Center"))
         outer.add_top_bar(header)
-
-        workspace = Gtk.Box(spacing=4)
-        self.design_button = Gtk.Button(label='Design')
-        self.design_button.connect('clicked', self.on_edit_template)
-        self.design_button.set_tooltip_text("Draw or edit cut paths.")
-        workspace.append(self.design_button)
-        self.send_workspace = Gtk.Button(label="Send", css_classes=["suggested-action"])
-        self.send_workspace.connect("clicked", self.open_send_workspace)
-        self.send_workspace.set_tooltip_text("Review the job and cutter settings.")
-        workspace.append(self.send_workspace)
-        header.pack_end(workspace)
 
         self.banner = Adw.Banner(revealed=False)
         outer.add_top_bar(self.banner)
@@ -527,7 +516,7 @@ class Window(Adw.ApplicationWindow):
         right.set_margin_start(6)
         right.set_margin_end(12)
         self.preview = Preview()
-        preview_bar = Gtk.Box(spacing=8)
+        preview_bar = workspace_tools(margin_start=12, margin_end=12, margin_bottom=8)
         self.preview_title = Gtk.Label(label="Sheet preview", xalign=0, hexpand=True, css_classes=["heading"])
         preview_bar.append(self.preview_title)
         self.preview_mode = Gtk.DropDown.new_from_strings(PREVIEW_MODES)
@@ -539,18 +528,10 @@ class Window(Adw.ApplicationWindow):
         self.preview.connect("pdf-changed", lambda preview: self.preview_mode.set_visible(
             not self.tuning and preview.pdf_surface is not None))
         preview_bar.append(self.preview_mode)
-        zoom = Gtk.Box(spacing=4)
-        for label, tip, action in (("−", "Zoom out", lambda: self.preview.zoom_by(0.8)),
-                                   ("+", "Zoom in", lambda: self.preview.zoom_by(1.25)),
-                                   ("Fit", "Show the whole sheet", self.preview.fit)):
-            widget = Gtk.Button(label=label, tooltip_text=tip)
-            widget.connect("clicked", lambda _button, call=action: call())
-            zoom.append(widget)
-        self.preview_zoom = Gtk.Label(label="100%", width_chars=5)
-        zoom.insert_child_after(self.preview_zoom, zoom.get_first_child())
+        zoom, self.preview_zoom = zoom_controls(self.preview.zoom_by, self.preview.fit)
         self.preview.connect("zoom-changed", lambda _preview, value: self.preview_zoom.set_label(f"{value:.0%}"))
         preview_bar.append(zoom)
-        right.append(preview_bar)
+        outer.add_top_bar(preview_bar)
         frame = Gtk.Frame()
         frame.set_child(self.preview)
         right.append(frame)
@@ -648,7 +629,7 @@ class Window(Adw.ApplicationWindow):
 
         files = Gio.Menu()
         command(files, "Open Cut Artwork…", "open-artwork", self.on_open_artwork)
-        command(files, "Open PDF or ZIP…", "open-print", self.open_print_from_menu)
+        command(files, "Open PDF or ZIP…", "open-print", self.on_pick_pdf)
         self.close_print_action = command(files, "Close Print File", "close-print", self.close_printed_sheet)
         self.paired_cut_action = command(files, "Save Paired Cut File…", "paired-cut", self.on_save_bundle_file)
         command(files, "Export Cut Templates…", "export-templates", self.on_export)
@@ -658,7 +639,7 @@ class Window(Adw.ApplicationWindow):
         self.reset_layout_action = command(edit, "Use Generated Layout", "reset-layout", self.on_clear_artwork)
 
         view = Gio.Menu()
-        for label, name in (("Layout", "layout"), ("Sheet", "sheet"), ("Materials", "materials"), ("Send", "cut")):
+        for label, name in (("Layout", "layout"), ("Sheet", "sheet"), ("Materials", "materials"), ("Cut Job", "cut")):
             command(view, label, name, lambda page=name: self.stack.set_visible_child_name(page))
         command(view, "Fit Preview", "fit-preview", self.preview.fit)
 
@@ -673,10 +654,6 @@ class Window(Adw.ApplicationWindow):
             menus.append_submenu(label, menu)
         return Gtk.PopoverMenuBar.new_from_model(menus)
 
-    def open_print_from_menu(self):
-        self.stack.set_visible_child_name("sheet")
-        self.on_pick_pdf()
-
     def open_cut_settings(self):
         self.open_send_workspace()
         GLib.idle_add(self.scroll_send_to, self.cut_settings)
@@ -690,7 +667,7 @@ class Window(Adw.ApplicationWindow):
         bar = Gtk.ActionBar()
         self.send_status = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, max_width_chars=68)
         bar.pack_start(self.send_status)
-        self.review_send = Gtk.Button(label="Review Send")
+        self.review_send = Gtk.Button(label="Review Cut Job")
         self.review_send.add_css_class("suggested-action")
         self.review_send.connect("clicked", self.on_review_send)
         bar.pack_end(self.review_send)
@@ -713,7 +690,7 @@ class Window(Adw.ApplicationWindow):
                 return "sheet", "Review Sheet"
             if not self.bundle_checked:
                 return "sheet", "Review Sheet"
-        return "cut", "Review Send"
+        return "cut", "Review Cut Job"
 
     def on_review_send(self, *_args):
         if self.tuning:
@@ -737,7 +714,9 @@ class Window(Adw.ApplicationWindow):
         self.review_send.set_label(label)
         self.close_print_action.set_enabled(self.pdf_path is not None)
         self.paired_cut_action.set_enabled(self.pdf_bundle is not None)
-        self.reset_layout_action.set_enabled(self.imported is not None or self.pdf_bundle is not None)
+        can_reset_layout = self.imported is not None or self.pdf_bundle is not None
+        self.reset_layout_action.set_enabled(can_reset_layout)
+        self.use_generated.set_sensitive(can_reset_layout)
         self.review_send.set_visible(not self.tuning and page != destination)
         at_send = not self.tuning and page == "cut"
         for control in (self.cut_button, self.scan_button, self.corner_button):
@@ -846,14 +825,15 @@ class Window(Adw.ApplicationWindow):
         self.import_row.set_subtitle_lines(0)
         open_btn = Gtk.Button(label="Open Cut Artwork…")
         open_btn.set_tooltip_text("Open an SVG, DXF, or Studio3 file.")
-        open_btn.set_valign(Gtk.Align.CENTER)
         open_btn.connect("clicked", self.on_open_artwork)
-        clear_btn = Gtk.Button(label="Clear")
-        clear_btn.set_valign(Gtk.Align.CENTER)
-        clear_btn.connect("clicked", self.on_clear_artwork)
-        self.import_row.add_suffix(open_btn)
-        self.import_row.add_suffix(clear_btn)
+        self.use_generated = Gtk.Button(label="Use Generated Layout", sensitive=False)
+        self.use_generated.connect("clicked", self.on_clear_artwork)
+        actions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
+                          margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
+        actions.append(open_btn)
+        actions.append(self.use_generated)
         gsrc.add(self.import_row)
+        gsrc.add(Adw.PreferencesRow(child=actions, activatable=False, selectable=False))
         self.r_colour = _combo("Line color", ["all colours"], subtitle="Cut only lines of this color.")
         self.r_colour.connect("notify::selected", self.on_changed)
         page.add(gsrc)
@@ -1010,14 +990,9 @@ class Window(Adw.ApplicationWindow):
         self.r_cutter_divisions = _combo("Show Cutter Divisions", ["Known Cutters", "All Cutters"])
         self.r_cutter_divisions.connect("notify::selected", self._load_materials)
         g3.add(self.r_cutter_divisions)
-        self.r_material = _combo("Factory preset", ["(none loaded)"])
-        apply_row = Adw.ActionRow(
-            title="Apply the selected material",
-            subtitle="Load blade settings from the selected Studio material")
-        apply_btn = Gtk.Button(label="Apply")
-        apply_btn.set_valign(Gtk.Align.CENTER)
-        apply_btn.connect("clicked", self.on_apply_material)
-        apply_row.add_suffix(apply_btn)
+        self.r_material = _combo("Factory preset", ["No materials imported"])
+        self.apply_material_button = Gtk.Button(label="Apply to Cut Settings", halign=Gtk.Align.START)
+        self.apply_material_button.connect("clicked", self.on_apply_material)
         g3.add(self.r_material)
         imports = Gtk.Box(spacing=6, margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
         choose = Gtk.Button(label="Import CSV…")
@@ -1027,14 +1002,18 @@ class Window(Adw.ApplicationWindow):
         choose_folder.connect("clicked", lambda *_: self.on_choose_material_csv(folder=True))
         imports.append(choose_folder)
         g3.add(Adw.PreferencesRow(child=imports, activatable=False, selectable=False))
-        g3.add(apply_row)
+        apply_row = Gtk.Box(margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
+        apply_row.append(self.apply_material_button)
+        g3.add(Adw.PreferencesRow(child=apply_row, activatable=False, selectable=False))
+        page.add(g3)
+        defaults = Adw.PreferencesGroup(title="Defaults")
         restore = Adw.ActionRow(title="Restore Default Materials",
                                 subtitle="Back up edits to built-in materials and restore their original settings")
         restore_button = Gtk.Button(label="Restore", valign=Gtk.Align.CENTER)
         restore_button.connect("clicked", self.on_restore_default_materials)
         restore.add_suffix(restore_button)
-        g3.add(restore)
-        page.add(g3)
+        defaults.add(restore)
+        page.add(defaults)
         self.stack.add_titled(page, "materials", "Materials")
 
     def add_advanced_cut_settings(self, advanced):
@@ -1251,7 +1230,7 @@ class Window(Adw.ApplicationWindow):
         g3.add(dump)
 
         advanced.append(g3)
-        self.stack.add_titled(page, "cut", "Send")
+        self.stack.add_titled(page, "cut", "Cut Job")
 
     def cut_settings_group(self):
         group = Adw.PreferencesGroup(title="Cut Settings", css_classes=["scc-cut-settings"])
@@ -1892,6 +1871,7 @@ class Window(Adw.ApplicationWindow):
 
     def leave_design(self, *_args):
         self.workspaces.set_visible_child_name('tools')
+        self.open_send_workspace()
         self.update_send_actions()
 
     def close_design(self, *_args):
@@ -1941,7 +1921,6 @@ class Window(Adw.ApplicationWindow):
             self._suppress = False
         self.set_artwork(artwork, f'Design · {action}', group_defaults)
         self.reviewed_design = project
-        self.stack.set_visible_child_name('cut')
         self.leave_design()
 
     def set_artwork(self, artwork, name, group_defaults=None):
@@ -2137,6 +2116,7 @@ class Window(Adw.ApplicationWindow):
                 self.describe_bundle_sheet(row)
                 self.update_sheet_controls()
                 self.set_artwork(artwork, row.get('svg') or row['cutFile'])
+                self.stack.set_visible_child_name("sheet")
                 return
             if self.pdf_bundle:
                 self.on_clear_artwork()
@@ -2148,6 +2128,7 @@ class Window(Adw.ApplicationWindow):
             self.sheet_row.set_subtitle(str(self.pdf_path.parent))
             self.update_sheet_controls()
             self.measure_sheet()
+            self.stack.set_visible_child_name("sheet")
 
         dialog.open(self, None, done)
 
@@ -2278,7 +2259,7 @@ class Window(Adw.ApplicationWindow):
                 self.r_cutter_divisions.get_selected() == 1)
         except (OSError, ValueError):
             pass
-        names = sorted(self._materials) or ["(no local CSV selected)"]
+        names = sorted(self._materials) or ["No materials imported"]
         self.r_material.set_model(Gtk.StringList.new(names))
         if selected in self._materials:
             self.r_material.set_selected(names.index(selected))
@@ -2288,6 +2269,7 @@ class Window(Adw.ApplicationWindow):
             self.r_material.set_selected(match)
         elif "Coverstock" in self._materials:
             self.r_material.set_selected(names.index("Coverstock"))
+        self.apply_material_button.set_sensitive(bool(self._materials))
 
     def on_restore_default_materials(self, *_args):
         dialog = Adw.AlertDialog(heading="Restore Default Materials?",
@@ -2323,12 +2305,13 @@ class Window(Adw.ApplicationWindow):
         if self.r_cutter_divisions.get_selected() == 0:
             self.refresh_preset_choices(name)
             self.on_preset()
-            return
-        was, self._suppress = self._suppress, True
-        self._load_blade_settings(for_holder(m.cut_settings(), self.holder_state.active))
-        self._suppress = was
-        self.toast(f"{name}: {m.describe()}")
-        self.on_changed()
+        else:
+            was, self._suppress = self._suppress, True
+            self._load_blade_settings(for_holder(m.cut_settings(), self.holder_state.active))
+            self._suppress = was
+            self.toast(f"{name}: {m.describe()}")
+            self.on_changed()
+        self.open_cut_settings()
 
     # ---- calibration and test cuts -----------------------------------
     def on_save_calibration(self, *_a):

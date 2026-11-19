@@ -8,12 +8,13 @@ from pathlib import Path
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence
-from PySide6.QtWidgets import (QAbstractItemView, QColorDialog, QComboBox, QFileDialog, QHBoxLayout, QInputDialog, QListWidget, QMenuBar,
-                               QMessageBox, QSplitter, QStyle, QTabWidget, QToolBar, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QColorDialog, QComboBox, QFileDialog, QInputDialog, QListWidget,
+                               QMessageBox, QSizePolicy, QSplitter, QTabWidget, QWidget)
 
 from . import editor_model as model, geometry, graphtec, importer, regmarks, template
 from .qt_canvas import SheetView, ZoomControls, draw_feed_arrow, draw_marks, draw_paper, draw_path, pen, rect
-from .qt_controls import Page, bar, button, set_choices, styled_label, themed_icon, workspace_switch
+from .qt_controls import (Page, bar, button, set_choices, styled_label, workspace_header,
+                          workspace_layout, workspace_tool_button, workspace_tools)
 
 DESIGN_FILTER = "Design projects (*.scc-template);;Cut artwork (*.svg *.SVG *.dxf *.DXF *.studio3 *.STUDIO3)"
 TOOLS = ("Select", "Point Edit", *model.KINDS, "Polygon", "Freehand")
@@ -315,7 +316,7 @@ class Canvas(SheetView):
 
 
 class Design(QWidget):
-    def __init__(self, project, device, back, review):
+    def __init__(self, project, device, open_send, review):
         super().__init__()
         self.history = model.History(project)
         self.saved = project
@@ -329,45 +330,32 @@ class Design(QWidget):
         self.setWindowTitle("Design")
         self.setObjectName("workspace")
 
-        body = QVBoxLayout(self)
-        body.setContentsMargins(14, 12, 14, 10)
-        body.setSpacing(8)
-        header, top = bar(self)
-        back_button = button("Back", back, icon=("go-previous", QStyle.StandardPixmap.SP_ArrowBack))
-        back_button.setToolTip("Return to the main workspace and keep this design open.")
-        top.addWidget(back_button)
-        self.document_title = styled_label(role="title")
-        top.addWidget(self.document_title, 1)
-        switch, _, self.send_workspace = workspace_switch(
-            self, lambda: self.canvas.setFocus(), lambda: self.review_button.click(), active="Design")
-        self.send_workspace.setToolTip("Review the selected action in the Send workspace.")
-        top.addWidget(switch)
+        body = workspace_layout(self)
+        header, self.menu_bar, self.design_workspace, self.send_workspace = workspace_header(
+            self, lambda: self.canvas.setFocus(), open_send, active="Design")
         body.addWidget(header)
-        self.menu_bar = QMenuBar()
-        body.addWidget(self.menu_bar)
-        toolbar = QToolBar()
-        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        new = self.command(toolbar, "New", self.new_project, QKeySequence.StandardKey.New,
-                           ("document-new", QStyle.StandardPixmap.SP_FileIcon))
-        open_file = self.command(toolbar, "Open…", self.open_project, QKeySequence.StandardKey.Open,
-                                 ("document-open", QStyle.StandardPixmap.SP_DialogOpenButton))
-        self.save_action = self.command(toolbar, "Save", self.save, QKeySequence.StandardKey.Save,
-                                        ("document-save", QStyle.StandardPixmap.SP_DialogSaveButton))
-        save_as = self.command(toolbar, "Save As…", lambda: self.save(as_new=True), QKeySequence.StandardKey.SaveAs)
-        import_art = self.command(toolbar, "Import Artwork…", self.import_art)
-        toolbar.addSeparator()
-        self.undo_action = self.command(toolbar, "Undo", self.undo, QKeySequence.StandardKey.Undo)
-        self.redo_action = self.command(toolbar, "Redo", self.redo, QKeySequence.StandardKey.Redo)
-        tools = QHBoxLayout()
-        tools.setContentsMargins(0, 0, 0, 0)
-        tools.addWidget(toolbar, 1)
+        new = self.command("New", self.new_project, QKeySequence.StandardKey.New)
+        open_file = self.command("Open…", self.open_project, QKeySequence.StandardKey.Open)
+        self.save_action = self.command("Save", self.save, QKeySequence.StandardKey.Save)
+        save_as = self.command("Save As…", lambda: self.save(as_new=True), QKeySequence.StandardKey.SaveAs)
+        import_art = self.command("Import Artwork…", self.import_art)
+        self.undo_action = self.command("Undo", self.undo, QKeySequence.StandardKey.Undo)
+        self.redo_action = self.command("Redo", self.redo, QKeySequence.StandardKey.Redo)
+
+        self.tools_bar, tools = workspace_tools(self)
+        self.document_title = styled_label()
+        self.document_title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        tools.addWidget(self.document_title, 1)
+        for action in (self.save_action, self.undo_action, self.redo_action):
+            tools.addWidget(workspace_tool_button(action))
         self.canvas = Canvas(self)
         self.zoom = ZoomControls(self.canvas)
         tools.addWidget(self.zoom)
-        body.addLayout(tools)
+        body.addWidget(self.tools_bar)
 
         panes = QSplitter(Qt.Orientation.Horizontal)
         panes.setChildrenCollapsible(False)
+        panes.setHandleWidth(12)
         body.addWidget(panes, 1)
         left = Page()
         palette = left.group("Drawing")
@@ -395,6 +383,7 @@ class Design(QWidget):
         self.inspector.setProperty("role", "settings")
         self.inspector.setAccessibleName("Design properties")
         self.inspector.setDocumentMode(True)
+        self.inspector.tabBar().setDrawBase(False)
         self.inspector.setUsesScrollButtons(True)
         for label, build in (("Page Setup", self.page_panel), ("Transform", self.transform_panel),
                              ("Replicate", self.replicate_panel), ("Line and Fill", self.style_panel)):
@@ -429,10 +418,8 @@ class Design(QWidget):
             self.canvas.addAction(action)
         self.refresh((0,) if project.shapes else ())
 
-    def command(self, toolbar, label, callback, shortcut=None, icon=None):
-        action = toolbar.addAction(label)
-        if icon:
-            action.setIcon(themed_icon(self, *icon))
+    def command(self, label, callback, shortcut=None):
+        action = QAction(label, self)
         if shortcut:
             action.setShortcut(QKeySequence(shortcut))
             action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -582,7 +569,7 @@ class Design(QWidget):
         command(view, "Grid Options…", lambda: self.show_page_options(self.show_grid))
         command(view, "Registration Marks…", lambda: self.show_page_options(self.pattern))
         command(view, "Show Design Page Settings…", lambda: self.inspector.setCurrentIndex(0), "Ctrl+F1")
-        command(view, "Show Send Page", lambda: self.review_button.click(), "Ctrl+F2")
+        command(view, "Switch to Send", self.send_workspace.click, "Ctrl+F2")
 
         panels = self.menu_bar.addMenu("Panels")
         for label, index in (("Page Setup", 0), ("Fill Color", 3), ("Line Style", 3), ("Transform", 1), ("Replicate", 2)):
@@ -771,13 +758,13 @@ class Design(QWidget):
         action = self.action_picker.currentData()
         count = len(project.artwork(action).paths)
         self.review_button.setEnabled(count > 0)
-        self.send_workspace.setEnabled(count > 0)
         self.undo_action.setEnabled(bool(self.history.past))
         self.redo_action.setEnabled(bool(self.history.future))
         self.save_action.setEnabled(self.path is None or self.saved != project)
         name = self.path.name if self.path else self.source or "Untitled"
-        self.document_title.setText(f"Design · {name}" + (" *" if project != self.saved else ""))
-        self.document_title.setToolTip("Unsaved changes" if project != self.saved else name)
+        dirty = project != self.saved
+        self.document_title.setText(name + (" *" if dirty else ""))
+        self.document_title.setToolTip(f"{name} (unsaved changes)" if dirty else name)
         self.status.setText(f"{project.width:g} × {project.height:g} mm · {count} paths · "
                             f"{len(self.selection())} selected")
 
