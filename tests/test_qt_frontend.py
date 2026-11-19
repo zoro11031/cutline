@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest import mock
 
-from cut_proxies import cli, corner_test, editor_model, job, materials, presets, transport
+from cut_proxies import cli, corner_test, editor_model, job, materials, presets, sticker_trace, transport
 from tests.test_vector_editing import compound_project
 from tests.test_sticker_print import make_image
 
@@ -574,6 +574,7 @@ class TestQtFrontend(unittest.TestCase):
         bitmap.save(png, format="PNG")
         report = mock.Mock(marks=())
         window.report = report
+        window.checked_marks = window.job.marks
         window.preview.show_pdf(png.getvalue(), (279.4, 215.9), report)
         window.blade["force"].setValue(20)
         self.assertIs(window.report, report)
@@ -883,6 +884,182 @@ class TestQtFrontend(unittest.TestCase):
         self.assertTrue(window.corner_button.isEnabled())
         self.assertTrue(window.scan_button.isEnabled())
 
+    def test_a_blank_pdf_fails_the_registration_check_and_blocks_the_send(self):
+        import shutil
+        import subprocess
+
+        if not shutil.which("rsvg-convert") or not shutil.which("pdftoppm"):
+            self.skipTest("needs rsvg-convert and pdftoppm")
+        window = self.window
+        window.controls["registration"].setChecked(True)
+        window.rebuild()
+        marks = window.job.marks
+        blank = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{marks.sheet_w_mm}mm" '
+                 f'height="{marks.sheet_h_mm}mm" viewBox="0 0 {marks.sheet_w_mm} {marks.sheet_h_mm}">'
+                 f'<rect width="100%" height="100%" fill="#ffffff"/></svg>')
+        folder = TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        svg = Path(folder.name) / "blank.svg"
+        svg.write_text(blank)
+        pdf = Path(folder.name) / "blank.pdf"
+        rendered = subprocess.run(["rsvg-convert", "-f", "pdf", str(svg), "-o", str(pdf)],
+                                  capture_output=True, check=False)
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+
+        window.pdf = pdf
+        with mock.patch.object(window.tasks, "run", side_effect=lambda work, done: done(work(), None)):
+            window.measure_sheet()
+        self.assertEqual(window.pdf_check_state, qt_gui.sheet.RegistrationDecision.FAILED)
+        self.assertEqual(window.send_refusal(window.job, window.connection()),
+                         "Registration check failed. Open Sheet to see the missing marks.")
+        self.assertFalse(window.send_button.isEnabled())
+        self.assertFalse(window.scan_button.isEnabled())
+        self.assertFalse(window.corner_button.isEnabled())
+        self.assertEqual(window.review_tab(), "Sheet")
+
+    def test_a_passed_check_survives_blade_edits_and_a_late_result_cannot_authorize_it(self):
+        from cut_proxies import sheet
+
+        window = self.window
+        window.pdf = Path("print.pdf")
+        window.controls["registration"].setChecked(True)
+        window.rebuild()
+        window.checked_marks = window.job.marks
+        window.pdf_check_state = sheet.RegistrationDecision.PASSED
+        window.report = mock.Mock(marks=())
+
+        window.blade["force"].setValue(window.blade["force"].value() + 1)
+        window.blade["speed"].setValue(window.blade["speed"].value() + 1)
+        window.blade["passes"].setValue(2)
+        self.assertEqual(window.pdf_check_state, sheet.RegistrationDecision.PASSED)
+        self.assertEqual(window.send_refusal(window.job, window.connection()), "")
+
+        # Changing the mark geometry mid-check invalidates it, and the late result is dropped.
+        started = []
+        with mock.patch.object(window.tasks, "run", side_effect=lambda work, done: started.append(done)):
+            window.measure_sheet()
+        self.assertEqual(window.pdf_check_state, sheet.RegistrationDecision.CHECKING)
+        window.controls["mark_inset_mm"].setValue(window.controls["mark_inset_mm"].value() + 1)
+        self.assertEqual(window.pdf_check_state, sheet.RegistrationDecision.NONE)
+        self.assertIsNone(window.checked_marks)
+        started[0]((mock.Mock(marks=(), preview_rotation=0), [], b""), None)
+        self.assertEqual(window.pdf_check_state, sheet.RegistrationDecision.NONE)
+        self.assertIn("Sheet", window.send_refusal(window.job, window.connection()))
+        self.assertFalse(window.send_button.isEnabled())
+
+    def test_a_refused_connection_returns_the_window_to_an_editable_state(self):
+        window = self.window
+        plan, connection = window.job, window.connection()
+        answers = ["", "the cutter moved"]
+
+        # The cutter is fine when the job is checked and gone by the time the link opens.
+        with mock.patch.object(qt_gui.cutters, "usb_refusal",
+                               side_effect=lambda *_: answers.pop(0) if answers else ""), \
+             mock.patch.object(window.tasks, "run") as run, \
+             mock.patch.object(window, "message") as message:
+            window.start_send(plan, connection)
+        run.assert_not_called()
+        message.assert_called_with("the cutter moved")
+        self.assertIsNone(window.active_job)
+        self.assertFalse(window.busy)
+        self.assertTrue(window.blade["force"].isEnabled())
+        self.assertTrue(window.controls["sheet"].isEnabled())
+        self.assertTrue(window.cutter_model.isEnabled())
+        self.assertTrue(window.send_button.isEnabled())
+
+    def test_a_matched_bundle_keeps_its_layout_locked_across_a_rebuild(self):
+        window = self.window
+        window.lock_bundle_controls(True)
+        for key in window.BUNDLE_LOCKED:
+            self.assertFalse(window.controls[key].isEnabled(), key)
+        window.rebuild()
+        window.update_enabled_fields()
+        for key in window.BUNDLE_LOCKED:
+            self.assertFalse(window.controls[key].isEnabled(), key)
+        self.assertFalse(window.skip.isEnabled())
+        window.lock_bundle_controls(False)
+        self.assertTrue(window.controls["pattern"].isEnabled())
+        self.assertTrue(window.controls["mark_inset_mm"].isEnabled())
+        self.assertTrue(window.skip.isEnabled())
+
+    def test_a_running_job_refuses_a_material_preset_change(self):
+        window = self.window
+        window.blade["force"].setValue(25)
+        window.rebuild()
+        window.active_job = window.job
+        window.update_enabled_fields()
+        with mock.patch.object(window, "message") as message, \
+             mock.patch.object(window, "load_preset") as load:
+            window.apply_material()
+        load.assert_not_called()
+        self.assertIn("running", message.call_args.args[0])
+        self.assertEqual(window.blade["force"].value(), 25)
+
+    def test_the_holder_tabs_name_the_detected_tool_and_depth_follows_it(self):
+        window = self.window
+        picker = window.blade["holder"].holders
+        window.blade["depth"].setValue(7)
+
+        window.apply_tool_detection((2, 0))
+        self.assertEqual(picker.button(1).text(), "Tool Holder 1 · AutoBlade")
+        self.assertEqual(picker.button(2).text(), "Tool Holder 2 · Empty")
+        self.assertEqual(window.blade["depth"].value(), 7)
+
+        with mock.patch.object(window, "message") as message:
+            window.apply_tool_detection((1, 7))
+        self.assertEqual(picker.button(1).text(), "Tool Holder 1 · Ratchet blade")
+        self.assertEqual(picker.button(2).text(), "Tool Holder 2 · Pen")
+        self.assertEqual(window.blade["depth"].value(), -1)
+        self.assertIn("Ratchet blade", message.call_args.args[0])
+
+        # The same reply again does not fight an operator who sets depth back.
+        window.blade["depth"].setValue(5)
+        with mock.patch.object(window, "message") as message:
+            window.apply_tool_detection((1, 7))
+        message.assert_not_called()
+        self.assertEqual(window.blade["depth"].value(), 5)
+
+    def test_an_unread_holder_is_not_reported_as_empty(self):
+        window = self.window
+        picker = window.blade["holder"].holders
+        window.apply_tool_detection((2, 0))
+        window.detected_tools = ()
+        window.update_holder_labels()
+        self.assertEqual(picker.button(1).text(), "Tool Holder 1")
+        self.assertEqual(picker.button(2).text(), "Tool Holder 2")
+
+    def test_tools_are_read_once_per_connection_and_not_during_a_job(self):
+        window = self.window
+        cutter = mock.MagicMock()
+        cutter.__enter__.return_value = cutter
+        cutter.tool_codes.return_value = (2, 0)
+        with mock.patch.object(window.tasks, "run", side_effect=lambda work, done: done(work(), None)), \
+             mock.patch.object(window, "open_link", return_value=cutter):
+            window.detect_tools()
+            self.assertEqual(window.detected_tools, (2, 0))
+            window.detect_tools()
+            self.assertEqual(cutter.tool_codes.call_count, 1)
+
+            window.active_job = window.job
+            window.tools_connection = None
+            window.detect_tools()
+            self.assertEqual(cutter.tool_codes.call_count, 1)
+
+            window.active_job = None
+            window.busy = True
+            window.detect_tools()
+            self.assertEqual(cutter.tool_codes.call_count, 1)
+            window.busy = False
+
+    def test_a_cutter_that_cannot_report_its_tools_is_never_queried(self):
+        window = self.window
+        window.select("cutter", "Silhouette Portrait 2")
+        self.assertFalse(qt_gui.graphtec.device_by_name("Silhouette Portrait 2").detects_tools)
+        with mock.patch.object(window, "open_link") as link:
+            window.detect_tools()
+        link.assert_not_called()
+        self.assertEqual(window.detected_tools, ())
+
     def test_active_and_paused_job_details_and_control_states_in_qt(self):
         window = self.window
         window.blade["force"].setValue(25)
@@ -968,3 +1145,55 @@ class TestQtFrontend(unittest.TestCase):
         self.assertTrue(window.cutter_model.isEnabled())
         self.assertFalse(window.pause_cut.isVisible())
         self.assertFalse(window.cancel_cut.isVisible())
+
+
+@unittest.skipIf(qt_gui is None, "Install PySide6 to run Qt frontend tests")
+class TestQtDesignEditor(unittest.TestCase):
+    """Drive the Qt design editor itself, offscreen."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        cls.app = QApplication.instance() or QApplication([])
+
+    def editor(self, project=None):
+        from cut_proxies import qt_design
+
+        folder = TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        patcher = mock.patch.object(qt_gui.config, "CONFIG_DIR", Path(folder.name))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        project = project or editor_model.Project(279.4, 215.9, ())
+        device = qt_gui.graphtec.device_by_name("Silhouette Cameo 4")
+        design = qt_design.Design(project, device, lambda *_: None, lambda *_: None)
+        self.addCleanup(design.deleteLater)
+        return design
+
+    def test_simplify_reduces_a_selected_path_without_an_error_message(self):
+        curve = tuple((index / 24, (index / 24) ** 2) for index in range(25))
+        project = editor_model.Project(279.4, 215.9, (
+            editor_model.Shape("Path", 30, 30, 60, 60, points=curve, closed=False),))
+        design = self.editor(project)
+        design.select((0,))
+        with mock.patch.object(design, "message") as message:
+            design.convert_selection(True)
+        message.assert_not_called()
+        shape, = design.project.shapes
+        self.assertLess(len(shape.points), len(curve))
+        self.assertEqual(shape.kind, "Path")
+        design.undo()
+        self.assertEqual(len(design.project.shapes[0].points), len(curve))
+
+    def test_simplifying_an_untraced_sticker_reports_instead_of_raising(self):
+        folder = TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        image = Path(folder.name) / "art.png"
+        make_image(image)
+        placed = sticker_trace.place(image, 279.4, 215.9)
+        design = self.editor(editor_model.Project(279.4, 215.9, (placed,)))
+        design.select((0,))
+        with mock.patch.object(design, "message") as message:
+            design.convert_selection(True)
+        message.assert_called_once()
+        self.assertIn("Trace", message.call_args.args[0])

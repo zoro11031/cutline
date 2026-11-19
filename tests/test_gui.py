@@ -15,6 +15,9 @@ except ImportError:
     gui = None
 
 
+_APP_SERIAL = 0
+
+
 @unittest.skipUnless(gui is not None, 'GTK and PyGObject are required')
 class TestDesignWorkspace(unittest.TestCase):
     def make_window(self):
@@ -23,7 +26,11 @@ class TestDesignWorkspace(unittest.TestCase):
         if not gui.Gtk.init_check() or Gdk.Display.get_default() is None:
             self.skipTest('a display is required to create GTK widgets')
         gui.Adw.init()
-        app = gui.Adw.Application(application_id=f'org.printing.DesignSmokeTest.{self._testMethodName}',
+        # A unique id per window: the discrimination suite runs a test class again
+        # in-process, and a repeated application id fails to register.
+        global _APP_SERIAL
+        _APP_SERIAL += 1
+        app = gui.Adw.Application(application_id=f'org.printing.DesignSmokeTest.{self._testMethodName}{_APP_SERIAL}',
                                   flags=gui.Gio.ApplicationFlags.NON_UNIQUE)
         self.assertTrue(app.register(None))
         win = gui.Window(app)
@@ -624,6 +631,7 @@ class TestDesignWorkspace(unittest.TestCase):
         win.pdf_path = Path('sample.pdf')
         report = win.sheet_report = object()
         token = win._sheet_token = object()
+        win.checked_marks = win.job.marks
         win.r_force.set_value(win.r_force.get_value() - 1)
         self.assertIs(win.sheet_report, report)
         self.assertIs(win._sheet_token, token)
@@ -953,6 +961,144 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertTrue(win.corner_button.get_sensitive())
         self.assertTrue(win.scan_button.get_sensitive())
 
+    def test_a_send_locks_the_settings_and_every_ending_unlocks_them(self):
+        from cut_proxies import transport
+
+        win = self.make_window()
+        win.r_force.set_value(25)
+        win.rebuild()
+        checked = win.job
+        self.assertTrue(win.r_force.get_sensitive())
+
+        win.active_job = checked
+        win.cut_control = transport.CutControl(lambda: None)
+        win._sending = True
+        win.lock_job_controls(True)
+        for widget in (win.r_force, win.r_speed, win.r_passes, win.r_cutter, win.r_preset, win.r_sheet):
+            self.assertFalse(widget.get_sensitive())
+
+        # An edit attempt cannot reach the submitted job while it is locked.
+        win.r_force.set_value(10)
+        win.on_changed()
+        self.assertIs(win.active_job, checked)
+        self.assertEqual(win.active_job.settings.force, 25)
+
+        win.release_job()
+        self.assertIsNone(win.active_job)
+        self.assertFalse(win._sending)
+        for widget in (win.r_force, win.r_speed, win.r_passes, win.r_cutter, win.r_preset, win.r_sheet):
+            self.assertTrue(widget.get_sensitive())
+
+    def test_a_matched_bundle_stays_locked_after_a_send_unlocks_the_rest(self):
+        win = self.make_window()
+        win.lock_bundle_layout(True)
+        locked = win.bundle_locked_controls()
+        win.lock_job_controls(True)
+        win.lock_job_controls(False)
+        for widget in locked:
+            self.assertFalse(widget.get_sensitive())
+        self.assertTrue(win.r_force.get_sensitive())
+        win.lock_bundle_layout(False)
+        self.assertTrue(win.r_pattern.get_sensitive())
+
+    def test_a_job_without_steps_is_refused_without_claiming_the_window(self):
+        win = self.make_window()
+        win.r_register.set_active(False)
+        win.rebuild()
+        self.assertFalse(win.job.registration)
+        with mock.patch.object(win, "toast") as toast:
+            gui.Window._cut_response(win, None, "cut", win.job, win._connection(), True)
+        self.assertIn("does not use registration", toast.call_args.args[0])
+        self.assertIsNone(win.active_job)
+        self.assertFalse(win._sending)
+        self.assertTrue(win.r_force.get_sensitive())
+        win.rebuild()
+        self.assertIsNotNone(win.job)
+
+    def test_a_passed_check_survives_blade_edits_and_a_change_during_one_invalidates_it(self):
+        win = self.make_window()
+        win.pdf_path = Path('sample.pdf')
+        win.r_register.set_active(True)
+        win.rebuild()
+        win.checked_marks = win.job.marks
+        win.sheet_report = object()
+        win._sheet_token = object()
+        win.pdf_check_state = gui.sheet_mod.RegistrationDecision.PASSED
+
+        win.r_force.set_value(win.r_force.get_value() - 1)
+        win.r_speed.set_value(win.r_speed.get_value() - 1)
+        self.assertEqual(win.pdf_check_state, gui.sheet_mod.RegistrationDecision.PASSED)
+
+        win.checked_marks = None
+        with mock.patch.object(gui.threading, "Thread") as thread:
+            win.measure_sheet()
+        thread.return_value.start.assert_called_once()
+        self.assertEqual(win.pdf_check_state, gui.sheet_mod.RegistrationDecision.CHECKING)
+        self.assertEqual(win.checked_marks, win.job.marks)
+        win.r_inset.set_value(win.r_inset.get_value() + 1)
+        self.assertEqual(win.pdf_check_state, gui.sheet_mod.RegistrationDecision.NONE)
+        self.assertIsNone(win.checked_marks)
+        self.assertIsNone(win._sheet_token)
+
+    def test_the_holder_tabs_name_the_detected_tool_and_depth_follows_it_in_gtk(self):
+        win = self.make_window()
+        buttons = win.send_holder_buttons
+        win.r_depth.set_value(7)
+
+        win.apply_tool_detection((2, 0))
+        self.assertEqual(buttons[1].get_label(), "Tool Holder 1 · AutoBlade")
+        self.assertEqual(buttons[2].get_label(), "Tool Holder 2 · Empty")
+        self.assertEqual(int(win.r_depth.get_value()), 7)
+
+        with mock.patch.object(win, "toast") as toast:
+            win.apply_tool_detection((4, 0))
+        self.assertEqual(buttons[1].get_label(), "Tool Holder 1 · Kraft blade")
+        self.assertEqual(int(win.r_depth.get_value()), -1)
+        self.assertIn("Kraft blade", toast.call_args.args[0])
+
+        # The same reply again does not fight an operator who sets depth back.
+        win.r_depth.set_value(5)
+        with mock.patch.object(win, "toast") as toast:
+            win.apply_tool_detection((4, 0))
+        toast.assert_not_called()
+        self.assertEqual(int(win.r_depth.get_value()), 5)
+
+        win.forget_tool_detection()
+        self.assertEqual(buttons[1].get_label(), "Tool Holder 1")
+        self.assertEqual(buttons[2].get_label(), "Tool Holder 2")
+
+    def test_tools_are_read_once_per_connection_and_not_during_a_job_in_gtk(self):
+        win = self.make_window()
+        cutter = mock.MagicMock()
+        cutter.__enter__.return_value = cutter
+        cutter.tool_codes.return_value = (2, 0)
+
+        class Immediate:
+            def __init__(self, target=None, daemon=False, **_kwargs):
+                self._target = target
+
+            def start(self):
+                self._target()
+
+        with mock.patch.object(gui.threading, "Thread", Immediate), \
+             mock.patch.object(gui.GLib, "idle_add", side_effect=lambda fn, *a: fn(*a)), \
+             mock.patch.object(gui.cutters, "open_link", return_value=cutter):
+            win.detect_tools()
+            self.assertEqual(win.detected_tools, (2, 0))
+            win.detect_tools()
+            self.assertEqual(cutter.tool_codes.call_count, 1)
+
+            win.tools_connection = None
+            win._sending = True
+            win.detect_tools()
+            self.assertEqual(cutter.tool_codes.call_count, 1)
+            win._sending = False
+
+            win.active_job = win.job
+            win.detect_tools()
+            self.assertEqual(cutter.tool_codes.call_count, 1)
+            win.active_job = None
+
     def test_active_and_paused_job_details_and_control_states_in_gtk(self):
         from cut_proxies import transport
         win = self.make_window()
@@ -1169,7 +1315,8 @@ class TestCutConfirmationGuard(unittest.TestCase):
 @unittest.skipUnless(gui is not None, 'PyGObject is not installed')
 class TestSheetRequestGuard(unittest.TestCase):
     def make_window(self, token):
-        return types.SimpleNamespace(_sheet_token=token, pdf_bundle=None, preview=mock.Mock(),
+        return types.SimpleNamespace(_sheet_token=token, pdf_bundle=None, job=None, checked_marks=None,
+            pdf_check_state=gui.sheet_mod.RegistrationDecision.NONE, preview=mock.Mock(),
             sheet_result=mock.Mock(), rebuild=mock.Mock())
 
     def test_current_result_updates_artwork_and_measurement(self):

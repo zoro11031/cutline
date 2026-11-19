@@ -20,6 +20,7 @@ from . import (actions, bluetooth, bundle, config, corner_test, editor_model, ge
                layout_presets, materials, presets, regmarks, sheet, starting_guide, template, testcut, toolpath, transport)
 from .desktop_help import BLADE_VALUE_TEXT, CONTROL_HELP, SETUP_STEPS
 from .holder_settings import HolderSettings, for_holder
+from . import tooling
 from .qt_canvas import PREVIEW_MODES, Preview, ZoomControls
 from .qt_controls import (AdaptiveActions, Form, Page, SettingsWheel, Tasks, bar, button, set_choices,
                           styled_label, workspace_header, workspace_layout, workspace_style, workspace_tools)
@@ -65,6 +66,11 @@ class Window(QMainWindow):
         self.bundle_row_error = None
         self.bundle_checked = self.busy = self.loading = False
         self.pdf_check_state = sheet.RegistrationDecision.NONE
+        self.checked_marks = None
+        self.detected_tools = ()
+        self.tools_connection = None
+        self.corrected_tools = None
+        self.bundle_locked = False
         self.active_job = None
         self.cut_control = None
         self.tuning = False
@@ -751,6 +757,9 @@ class Window(QMainWindow):
             self.rebuild()
 
     def apply_material(self):
+        if self.active_job is not None or self.busy:
+            self.message("The cutter is running this job. Wait for it to finish before changing settings.")
+            return
         selected = self.materials.get(self.material.currentData())
         if selected is None:
             return
@@ -978,10 +987,15 @@ class Window(QMainWindow):
         fixed_layout = self.bundle or layout_presets.is_published(self.artwork)
         for key in ("sheet", "portrait", "engine", "card", "mode", "radius_mm"):
             self.controls[key].setEnabled(not fixed_layout)
+        if self.bundle_locked:
+            for key in self.BUNDLE_LOCKED:
+                self.controls[key].setEnabled(False)
+            self.skip.setEnabled(False)
         device = graphtec.device_by_name(self.choice("cutter"))
         for name, upper in (("force", device.max_pressure), ("speed", device.max_speed)):
             self.blade[name].setToolTip(f"{CONTROL_HELP[name]} Range on {DEVICES[device.name]} is 1–{upper}.")
         self.blade["holder"].setEnabled(device.two_tools)
+        self.update_holder_labels()
         self.blade["depth"].setEnabled(device.autoblade and self.blade["holder"].value() == 1)
         self.blade["acceleration"].setEnabled(device.detects_tools)
         for field in QUICK_NUMBERS:
@@ -1048,7 +1062,8 @@ class Window(QMainWindow):
                 elif current.warnings:
                     summary += "\n" + current.warnings[0]
         marks = self.job.marks if self.job else None
-        if self.pdf and not self.bundle and previous and previous.marks != marks:
+        if (self.pdf and not self.bundle and self.checked_marks is not None
+                and self.checked_marks != marks):
             self.invalidate_measurement()
             self.sheet_result.setText("Registration geometry changed. Measure the PDF again.")
         self.summary_title.setText(title)
@@ -1229,17 +1244,20 @@ class Window(QMainWindow):
         self.sheet_token = self.report = None
         self.bundle_checked = False
         self.pdf_check_state = sheet.RegistrationDecision.NONE
+        self.checked_marks = None
         self.preview.report = None
         self.clear_scan_result()
         if clear_image:
             self.preview.show_pdf()
             self.preview_mode.hide()
 
+    BUNDLE_LOCKED = ("layout_preset", "sheet", "portrait", "engine", "card", "mode", "radius_mm",
+                     "pattern", "mark_inset_mm", "mark_length_mm", "mark_thickness_mm", "bleed_mm",
+                     "registration")
+
     def lock_bundle_controls(self, locked):
-        for key in ("layout_preset", "sheet", "portrait", "engine", "card", "mode", "radius_mm",
-                    "pattern", "mark_inset_mm", "mark_length_mm", "mark_thickness_mm", "bleed_mm", "registration"):
-            self.controls[key].setEnabled(not locked)
-        self.skip.setEnabled(not locked)
+        self.bundle_locked = bool(locked)
+        self.update_enabled_fields()
 
     def clear_bundle(self):
         if self.bundle:
@@ -1380,6 +1398,7 @@ class Window(QMainWindow):
         self.refresh_send()
         row = self.current_bundle_row()
         marks = matched.marks() if matched else current.marks
+        self.checked_marks = marks
         dpi, page = self.sheet_dpi.currentData(), self.sheet_page_number.value()
         orient_scm = layout_presets.is_published(self.artwork)
 
@@ -1480,23 +1499,82 @@ class Window(QMainWindow):
     def set_cutter_status(self, text):
         self.connection_status.setText(text)
 
+    def update_holder_labels(self):
+        device = graphtec.device_by_name(self.choice("cutter"))
+        labels = tooling.holder_labels(self.detected_tools, device)
+        picker = self.blade["holder"].holders
+        for slot, label in enumerate(labels, 1):
+            picker.button(slot).setText(label)
+        if len(labels) < 2:
+            picker.button(2).setText("Tool Holder 2")
+
+    def apply_tool_detection(self, codes):
+        """Take a holder reply, label the tabs, and send depth back to manual once."""
+        self.detected_tools = tuple(codes)
+        self.tools_connection = self.connection()
+        self.update_holder_labels()
+        if self.active_job is not None or self.busy:
+            return
+        if self.corrected_tools == self.detected_tools:
+            return
+        self.corrected_tools = self.detected_tools
+        holder = self.blade["holder"].value() if graphtec.device_by_name(
+            self.choice("cutter")).two_tools else 1
+        depth, reason = tooling.depth_correction(self.detected_tools, self.blade["depth"].value(), holder)
+        if depth is None:
+            return
+        self.blade["depth"].setValue(depth)
+        self.set_cutter_status(reason)
+        self.message(reason)
+
+    def detect_tools(self):
+        """Read the installed tools once for this connection, in the background."""
+        connection = self.connection()
+        device = graphtec.device_by_name(self.choice("cutter"))
+        if (self.busy or self.active_job is not None or not connection[1]
+                or not device.detects_tools or self.tools_connection == connection):
+            return
+
+        def work():
+            with self.open_link(connection) as cutter:
+                return cutter.tool_codes()
+
+        def done(codes, error):
+            if connection != self.connection():
+                return
+            if error:
+                self.detected_tools = ()
+                self.tools_connection = connection
+                self.update_holder_labels()
+                return
+            self.apply_tool_detection(codes)
+
+        self.tasks.run(work, done)
+
     def select_detected(self):
         if self.link.currentData() == "auto":
             self.preferred_endpoint = self.detected.currentData() or None
         self.device_selected()
 
     def device_selected(self):
+        if self.tools_connection is not None and self.tools_connection != self.connection():
+            self.detected_tools = ()
+            self.tools_connection = None
+            self.corrected_tools = None
+            self.update_holder_labels()
         identifier = self.detected.currentData()
         if self.link.currentData() == "auto":
             model = cutters.auto_model(identifier, self.detected.currentText()) if identifier else None
             if model and self.cutter_model.currentData() == cutters.AUTO:
                 self.select("cutter", model.name)
             self.change_target()
+            self.detect_tools()
             return
         self.identifier.setText(identifier or "")
         device = bluetooth.advertised_model(self.detected.currentText().split(" · ")[0])
         if device and self.cutter_model.currentData() == cutters.AUTO:
             self.select("cutter", device.name)
+        self.detect_tools()
 
     def find_cutters(self):
         from . import ble, rfcomm
@@ -1537,7 +1615,8 @@ class Window(QMainWindow):
         def work():
             with self.open_link(connection) as cutter:
                 version = f" · {cutter.firmware_version()}" if connection[0] != "auto" else ""
-                return cutter.device, f"{cutter.device.name} · {cutter.status_with_tools()}{version}"
+                codes = cutter.tool_codes()
+                return cutter.device, f"{cutter.device.name} · {cutter.status_with_tools()}{version}", codes
 
         def done(value, error):
             self.busy = False
@@ -1545,6 +1624,8 @@ class Window(QMainWindow):
                 self.set_cutter_status(f"Cutter detection unavailable. {error}" if error else value[1])
                 if not error and self.cutter_model.currentData() == cutters.AUTO:
                     self.select("cutter", value[0].name)
+                if not error:
+                    self.apply_tool_detection(value[2])
             self.refresh_send()
 
         self.tasks.run(work, done)
@@ -1628,6 +1709,14 @@ class Window(QMainWindow):
                         on_success=(lambda: self.show_scan_result("Registration passed. No cut paths were sent."))
                         if scan_only else None)
 
+    def release_job(self):
+        """Return the window to an editable state after a send ends, however it ended."""
+        self.cut_control = None
+        self.active_job = None
+        self.busy = False
+        self.update_enabled_fields()
+        self.refresh_send()
+
     def clear_scan_result(self):
         self.scan_result.clear()
         self.scan_box.hide()
@@ -1648,6 +1737,7 @@ class Window(QMainWindow):
                    on_success=None, test=False, wait_done=False, controllable=False):
         refusal = cutters.usb_refusal(connection, device, self.cutter_model.currentData())
         if refusal:
+            self.release_job()
             self.message(refusal)
             return
         self.guide.moved()
@@ -1671,11 +1761,7 @@ class Window(QMainWindow):
                 return cutter.run(steps)
 
         def done(sent, error):
-            self.cut_control = None
-            self.active_job = None
-            self.busy = False
-            self.update_enabled_fields()
-            self.refresh_send()
+            self.release_job()
             if isinstance(error, transport.RegistrationFailed) and on_registration_failure:
                 on_registration_failure(error)
             elif error is None and on_success:
