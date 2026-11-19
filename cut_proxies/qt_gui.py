@@ -336,8 +336,7 @@ class Window(QMainWindow):
         profile.actions(button("Update Preset", self.save_preset),
                         button("Save as New…", self.save_new_preset))
         table = page.group("Material Library")
-        self.divisions = table.choice("Show Cutter Divisions", {False: "Known Cutters", True: "All Cutters"},
-                                     changed=self.load_materials)
+        self.divisions = None
         self.material = table.choice("Material preset", ())
         table.actions(button("Import CSV…", self.choose_material_csv),
                       button("Import Folder…", lambda: self.choose_material_csv(folder=True)))
@@ -635,8 +634,9 @@ class Window(QMainWindow):
 
     def load_materials(self):
         try:
+            show_all = bool(self.divisions and self.divisions.currentData()) if hasattr(self, "divisions") and self.divisions else False
             self.materials = materials.cutter_divisions(
-                materials.load(), self.choice("cutter"), self.divisions.currentData())
+                materials.load(), self.choice("cutter"), show_all)
         except (OSError, ValueError):
             self.materials = {}
         set_choices(self.material, sorted(self.materials) or {"": "No materials imported"})
@@ -677,7 +677,7 @@ class Window(QMainWindow):
             self.message("Select a material preset.")
             return
         name = self.material.currentData()
-        if not self.divisions.currentData() and self.controls["preset"].findData(name) >= 0:
+        if self.controls["preset"].findData(name) >= 0:
             self.select("preset", name)
             self.load_preset()
         else:

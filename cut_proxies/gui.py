@@ -1121,7 +1121,6 @@ class Window(Adw.ApplicationWindow):
             description="Preloaded Studio materials and user presets.")
         self.r_cutter_divisions = _combo("Show Cutter Divisions", ["Known Cutters", "All Cutters"])
         self.r_cutter_divisions.connect("notify::selected", self._load_materials)
-        g3.add(self.r_cutter_divisions)
         self.r_material = _combo("Material preset", ["No materials imported"])
         self.apply_material_button = Gtk.Button(label="Apply to Cut Settings", halign=Gtk.Align.START)
         self.apply_material_button.connect("clicked", self.on_apply_material)
