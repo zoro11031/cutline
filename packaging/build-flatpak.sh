@@ -13,9 +13,10 @@ trap 'rm -rf "$work"' EXIT
 mkdir "$work/src"
 cd "$work/src"
 
+sources=${SCC_FLATPAK_SOURCES:-}
 for tarball in poppler-26.11.0.tar.xz poppler-data-0.4.12.tar.gz geos-3.13.1.tar.bz2; do
-    if [ -f "/tmp/cameo-flatpak-sources/$tarball" ]; then
-        cp "/tmp/cameo-flatpak-sources/$tarball" .
+    if [ -n "$sources" ] && [ -f "$sources/$tarball" ]; then
+        cp "$sources/$tarball" .
     fi
 done
 [ -f poppler-26.11.0.tar.xz ] || curl --http1.1 -fsSLO https://poppler.freedesktop.org/poppler-26.11.0.tar.xz
@@ -33,10 +34,22 @@ tar -xf geos-3.13.1.tar.bz2
 flatpak build-init --arch=x86_64 "$work/build" "$id" org.gnome.Sdk org.gnome.Platform "$branch"
 python3 "$root/packaging/install.py" --destdir "$work/stage" --prefix /app
 cp -a "$work/stage/app/." "$work/build/files/"
-flatpak build --share=network "$work/build" python3 -m pip install \
-    --only-binary=:all: --no-deps --no-compile --target=/app/lib/python \
+# Download on the host using the SDK's interpreter version; install offline.
+# CI hosts that cannot create a network namespace may share the build host network.
+build_network=
+if [ "${SCC_FLATPAK_BUILD_SHARE_NETWORK:-0}" = 1 ]; then
+    build_network=--share=network
+fi
+sdk_python=$(flatpak build $build_network "$work/build" python3 -c \
+    'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+python3 -m pip download --dest "$work/src/wheels" --python-version "$sdk_python" \
+    --implementation cp --platform manylinux_2_28_x86_64 --platform manylinux2014_x86_64 \
+    --only-binary=:all: --no-deps \
     Pillow==13.0.0 pyusb==1.3.1 bleak==3.1.0 dbus-fast==5.2.0
-flatpak build --bind-mount=/run/build/scc="$work/src" "$work/build" sh -ec '
+flatpak build $build_network --bind-mount=/run/build/scc="$work/src" "$work/build" \
+    sh -ec 'python3 -m pip install --no-index --no-deps --no-compile --target=/app/lib/python \
+        /run/build/scc/wheels/*.whl'
+flatpak build $build_network --bind-mount=/run/build/scc="$work/src" "$work/build" sh -ec '
     cd /run/build/scc
     cmake -S geos-3.13.1 -B geos-build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/app -DCMAKE_INSTALL_LIBDIR=lib \
@@ -64,6 +77,7 @@ exec /app/bin/silhouette-control-center "$@"
 LAUNCH
 chmod +x "$work/build/files/bin/launch-silhouette"
 sed -i 's/^Exec=.*/Exec=launch-silhouette gui/' "$work/build/files/share/applications/$id.desktop"
+flatpak build $build_network "$work/build" /app/bin/launch-silhouette cut --dry-run
 flatpak build-finish "$work/build" --command=launch-silhouette \
     --socket=wayland --socket=fallback-x11 --share=ipc \
     --device=usb --system-talk-name=org.bluez \

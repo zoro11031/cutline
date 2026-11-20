@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -44,7 +45,9 @@ class TestStartingGuide(unittest.TestCase):
         self.assertNotIn(graphtec.frame("FY0"), trial.sheet.stream)
         self.assertEqual(trial.sheet.steps[-1].data, graphtec.frame(graphtec.return_to_start_commands(self.device)))
         self.guide.record(trial)
-        self.assertIs(self.prepare(force=32, offset_mm=(2, -1)), trial)
+        self.assertIs(self.prepare(offset_mm=(2, -1)), trial)
+        with self.assertRaisesRegex(ValueError, "settings changed"):
+            self.prepare(force=32)
         with self.assertRaisesRegex(ValueError, "tool holder"):
             self.prepare(blade_options={"holder": 2})
         self.guide.record(trial)
@@ -62,6 +65,70 @@ class TestStartingGuide(unittest.TestCase):
         self.assertEqual(new.sheet.shape, "studio")
         self.assertEqual(new.settings.force, 28)
         self.assertEqual(self.guide.completed, 0)
+
+    def test_all_sample_shapes_and_sizes_build_checked_blank_and_registered_streams(self):
+        connection = ("auto", (1, 2))
+        for registered in (False, True):
+            self.guide.registered = registered
+            for shape in testcut.TEST_SHAPES:
+                for size in starting_guide.SAMPLE_SIZES:
+                    with self.subTest(shape=shape, size=size, registered=registered):
+                        self.guide.configure_sample(shape, size)
+                        trial = self.guide.prepare(connection, self.options, None)
+                        location = trial.sheet.cells[0].rect
+                        self.assertEqual((location.w, location.h), (size, size))
+                        self.assertEqual(trial.sheet.shape, shape)
+                        self.assertEqual(len(trial.sheet.paths), 2 if shape in ("studio", "ring") else 1)
+                        self.assertTrue(all(location.x - 1e-9 <= x <= location.x2 + 1e-9
+                                            and location.y - 1e-9 <= y <= location.y2 + 1e-9
+                                            for path in trial.sheet.paths for x, y in path.points))
+                        scan = [step.expect for step in trial.sheet.steps if step.kind == "expect"]
+                        self.assertEqual(scan, [graphtec.RESP_REGMARK_OK] if registered else [])
+
+    def test_resizing_a_sample_preserves_spots_and_reopens_mixed_sizes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "marked.json"
+            self.guide = starting_guide.Guide(path)
+            self.guide.registered = True
+            connection = ("auto", (1, 2))
+            first = self.prepare(connection=connection)
+            self.guide.record(first)
+            first_rect = self.guide.spot_rect(1)
+            self.guide.configure_sample("card", 88.0)
+            self.assertNotEqual(self.guide.spot, 1)
+            self.assertEqual(self.guide.completed, 0)
+            self.assertEqual(self.guide.spot_rect(1), first_rect)
+            self.assertTrue(all(not area.overlaps(first_rect.grown(testcut.DEFAULT_GAP_MM))
+                                for area in self.guide.fresh_spots().values()))
+            card_spot = self.guide.spot
+            card = self.guide.prepare(connection, self.options, None)
+            self.assertEqual(card.sheet.cells[0].rect, self.guide.spot_rect(card_spot))
+            x_values = [x for x, _ in card.sheet.paths[0].points]
+            self.assertAlmostEqual(max(x_values) - min(x_values), 63.0)
+            self.guide.record(card)
+            self.guide.persist()
+
+            reopened = starting_guide.Guide(path)
+            self.assertEqual(reopened.trial, card)
+            self.assertEqual(reopened.spot_for_point(first_rect.x + 2, first_rect.y + 2), 1)
+            reopened.select_spot(1)
+            self.assertEqual((reopened.shape, reopened.size_mm), ("square", 15.0))
+            self.assertEqual(reopened.prepare(connection, self.options, None), first)
+            reopened.select_spot(card_spot)
+            self.assertEqual((reopened.shape, reopened.size_mm), ("card", 88.0))
+            self.assertEqual(reopened.prepare(connection, self.options, None), card)
+
+    def test_turning_to_a_larger_sample_when_no_space_fits_keeps_the_tested_spot(self):
+        self.guide.placement = starting_guide.Placement(65, 65, (0, 0), "auto")
+        trial = self.prepare()
+        self.guide.record(trial)
+        with self.assertRaisesRegex(ValueError, "No fresh spot fits"):
+            self.guide.configure_sample("card", 88.0)
+        self.assertEqual(self.guide.trial, trial)
+        self.assertEqual(self.guide.size_mm, 15.0)
+        self.guide.configure_sample("triangle", 15.0)
+        self.assertEqual(self.guide.spot, 2)
+        self.assertEqual(self.guide.prepare(self.connection, self.options, None).sheet.shape, "triangle")
 
     def test_repeats_and_tested_settings_do_not_require_an_outcome(self):
         trial = self.prepare()
@@ -219,6 +286,111 @@ class TestStartingGuide(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "one settings combination"):
             testcut.build(self.device, base, forces=(20, 25), spot=2)
         self.assertEqual(testcut.build(self.device, base, spot=2).cells[0].label, "r1c2")
+
+    def test_a_revisited_spot_on_a_marked_sheet_still_guards_changed_settings(self):
+        self.guide.registered = True
+        first = self.prepare()
+        self.guide.record(first)
+        self.assertEqual(self.guide.spot, 1)
+        self.guide.select_spot(2)
+        self.guide.record(self.prepare(force=30))
+        self.guide.select_spot(1)
+
+        self.assertEqual(self.guide.trial, first)
+        self.assertEqual(self.guide.completed, 1)
+        self.assertFalse(self.guide.interrupted)
+        self.assertTrue(self.guide.can_cut)
+        self.assertFalse(self.guide.settings_differ(self.options))
+        self.assertTrue(self.guide.settings_differ(dict(self.options, force=30)))
+        self.assertTrue(self.guide.settings_differ(dict(self.options, speed=5)))
+        self.assertTrue(self.guide.settings_differ(dict(
+            self.options, blade_options=dict(self.options["blade_options"], blade_diameter_mm=0.45))))
+        with self.assertRaisesRegex(ValueError, "settings changed"):
+            self.prepare(blade_options=dict(self.options["blade_options"], acceleration=1))
+        self.assertEqual(self.prepare(), first)
+
+        self.guide.select_spot(2)
+        self.assertTrue(self.guide.settings_differ(self.options))
+        self.assertFalse(self.guide.settings_differ(dict(self.options, force=30)))
+
+    def test_a_revisited_marked_spot_survives_restart_and_repeats_its_original_path(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "marked.json"
+            self.guide = starting_guide.Guide(path)
+            self.guide.registered = True
+            connection = ("auto", (1, 2))
+            first = self.prepare(shape="studio", connection=connection, depth=None)
+            self.guide.record(first)
+            self.guide.select_spot(2)
+            self.guide.record(self.prepare(connection=connection, force=30))
+            self.guide.select_spot(1)
+            self.assertCountEqual([spot.number for spot in self.guide.spots], [1, 2])
+            self.guide.persist()
+
+            self.guide = starting_guide.Guide(path)
+            self.assertEqual(self.guide.completed, 1)
+            self.assertEqual(self.guide.tested_settings.depth, None)
+            self.assertTrue(self.guide.settings_differ(self.options))
+            with self.assertRaisesRegex(ValueError, "cutter changed"):
+                self.prepare(connection=("auto", (1, 3)), depth=None)
+            repeated = self.prepare(connection=connection, depth=None)
+            self.assertEqual(repeated, first)
+            self.guide.record(repeated)
+            self.assertEqual(self.guide.tested_settings.passes, 2)
+
+    def test_a_legacy_archived_spot_keeps_its_count_and_requires_a_fresh_spot(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "marked.json"
+            self.guide = starting_guide.Guide(path)
+            self.guide.registered = True
+            first = self.prepare()
+            self.guide.record(first)
+            self.guide.next_spot()
+            second = self.prepare(force=30)
+            self.guide.record(second)
+            self.guide.persist()
+            before = json.loads(path.read_text())
+            before.pop("spot_trials")
+            before["spot_settings"] = {"1": vars(first.settings)}
+            path.write_text(json.dumps(before))
+
+            self.guide = starting_guide.Guide(path)
+            self.assertEqual(self.prepare(force=30), second)
+            self.guide.select_spot(1)
+            self.assertEqual(self.guide.completed, 1)
+            self.assertFalse(self.guide.can_cut)
+            with self.assertRaisesRegex(ValueError, "original cutter and settings are unavailable"):
+                self.prepare()
+            self.guide.persist()
+
+            self.guide = starting_guide.Guide(path)
+            self.assertTrue(self.guide.registered)
+            self.assertEqual(self.guide.completed, 1)
+            self.guide.next_spot()
+            self.assertEqual(self.guide.spot, 3)
+            self.assertTrue(self.guide.can_cut)
+            self.assertEqual(self.prepare().settings.force, 25)
+
+    def test_a_spot_beyond_the_sheet_is_refused_and_has_tests_sees_any_progress(self):
+        fresh = starting_guide.Guide()
+        self.assertFalse(fresh.has_tests)
+        trial = self.prepare()
+        self.guide.record(trial)
+        self.assertTrue(self.guide.has_tests)
+
+        limit = self.guide.max_spots
+        self.assertGreater(limit, 1)
+        self.guide.select_spot(limit)
+        self.assertEqual(self.guide.spot, limit)
+        with self.assertRaisesRegex(ValueError, "spots"):
+            self.guide.select_spot(limit + 1)
+        self.assertEqual(self.guide.spot, limit)
+        with self.assertRaisesRegex(ValueError, "positive integer"):
+            self.guide.select_spot(0)
+
+        moved = starting_guide.Guide()
+        moved.select_spot(3)
+        self.assertTrue(moved.has_tests, "an untouched later spot is still a test in progress")
 
     def test_spot_selection_and_keyboard_navigation_with_guarded_history(self):
         # 1. Start on spot 1, record 2 passes

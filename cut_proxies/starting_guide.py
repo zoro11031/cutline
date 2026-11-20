@@ -1,6 +1,7 @@
 """State and checked single-spot plans for the material starting guide."""
 
 from dataclasses import asdict, dataclass, replace
+from itertools import count
 import json
 import math
 from pathlib import Path
@@ -40,6 +41,8 @@ ADVICE = {
     "mat": "Reduce blade depth one step on a fresh spot. If the cut still gouges the mat, lower force or use fewer passes.",
 }
 MAX_JOB_PASSES = 10
+SAMPLE_SIZES = {15.0: "Small (15 mm)", 30.0: "Medium (30 mm)", 50.0: "Large (50 mm)",
+                88.0: "Extra large (88 mm)"}
 
 
 def has_cutter_endpoint(connection):
@@ -129,7 +132,8 @@ class Trial:
         location = self.sheet.cells[0].rect
         settings = self.settings
         depth = f"Depth {settings.depth}" if settings.depth is not None else "Depth set on the tool"
-        return (f"X {location.x:g} mm, Y {location.y:g} mm\n"
+        return (f"{testcut.TEST_SHAPES[self.sheet.shape]} · {self.sheet.size_mm:g} mm\n"
+                f"X {location.x:g} mm, Y {location.y:g} mm\n"
                 f"Force {settings.force} · Speed {settings.speed} · {depth} · Holder {settings.holder}")
 
 
@@ -137,18 +141,23 @@ class Guide:
     def __init__(self, storage=None):
         self.storage = storage
         self.registered = False
+        self.shape = "square"
+        self.size_mm = testcut.DEFAULT_SIZE_MM
         self.resume_error = ""
         self.reset()
         self.restore()
 
     def reset(self):
         self.placement = None
+        self.sheet_exported = False
         self.history = ()
+        self.spot_trials = {}
         self.resume_error = ""
         self._set_spot(1)
 
     def _set_spot(self, spot):
         self.spot = spot
+        self._saved_rect = None
         self.trial = None
         self.completed = 0
         self.interrupted = False
@@ -156,8 +165,15 @@ class Guide:
         self.outcome = ""
 
     @property
+    def has_tests(self):
+        """Is there a test to resume? One rule, used by both frontends."""
+        return bool(self.history or self.trial is not None or self.completed > 0 or self.spot > 1)
+
+    @property
     def can_cut(self):
-        return not self.interrupted and self.completed < MAX_JOB_PASSES
+        return (not self.interrupted and self.completed < MAX_JOB_PASSES
+                and (not self.completed or self.trial is not None)
+                and (self.trial is not None or self.placement is None or self.spot in self.fresh_spots()))
 
     @property
     def sheet_status(self):
@@ -169,7 +185,7 @@ class Guide:
         if self.trial is not None:
             return Spot(self.spot, self.trial.sheet.cells[0].rect, self.completed, self.uncertain)
         if self.placement is not None and (self.completed > 0 or self.interrupted):
-            rect = self.spot_rect(self.spot)
+            rect = self._saved_rect or spot_rect_for_placement(self.spot, self.placement)
             if rect is not None:
                 return Spot(self.spot, rect, self.completed, self.uncertain)
         return None
@@ -182,23 +198,45 @@ class Guide:
     @property
     def max_spots(self):
         if self.placement:
-            return max_spots_for_placement(self.placement)
+            return max([0, *self.fresh_spots(), *(s.number for s in self.spots)])
         return 100
 
+    def fresh_spots(self, placement=None):
+        placement = placement or self.placement
+        if placement is None:
+            return {}
+        used = {spot.number: spot.rect.grown(testcut.DEFAULT_GAP_MM) for spot in self.spots}
+        numbers = (number for number in count(1) if number not in used)
+        fresh = {}
+        for index in range(1, max_spots_for_placement(placement, self.size_mm) + 1):
+            rect = spot_rect_for_placement(index, placement, self.size_mm)
+            if not any(rect.overlaps(old) for old in used.values()):
+                fresh[next(numbers)] = rect
+        return fresh
+
+    def configure_sample(self, shape, size_mm):
+        if shape not in testcut.TEST_SHAPES or size_mm not in SAMPLE_SIZES:
+            raise ValueError("Choose a test shape and sample size.")
+        previous = self.shape, self.size_mm
+        self.shape, self.size_mm = shape, size_mm
+        fresh = self.fresh_spots()
+        if self.current_spot is not None and not fresh:
+            self.shape, self.size_mm = previous
+            raise ValueError("No fresh spot fits this sample size. Try a smaller size or use a new sheet.")
+        if fresh and self.spot not in fresh:
+            self.select_spot(next((number for number in fresh if number > self.spot), next(iter(fresh))))
+
     def spot_rect(self, spot):
-        if self.placement:
-            return spot_rect_for_placement(spot, self.placement)
-        return None
+        used = next((row.rect for row in self.spots if row.number == spot), None)
+        return used if used is not None else self.fresh_spots().get(spot)
 
     def spot_for_point(self, x, y):
         if not self.placement:
             return None
-        total = self.max_spots
-        for spot_num in range(1, total + 1):
-            r = spot_rect_for_placement(spot_num, self.placement)
-            if r.x <= x <= r.x2 and r.y <= y <= r.y2:
-                return spot_num
-        return None
+        locations = self.fresh_spots()
+        locations.update((spot.number, spot.rect) for spot in self.spots)
+        return next((number for number, rect in locations.items()
+                     if rect.x <= x <= rect.x2 and rect.y <= y <= rect.y2), None)
 
     @property
     def spot_status(self):
@@ -212,6 +250,8 @@ class Guide:
     def select_spot(self, spot):
         if type(spot) is not int or spot < 1:
             raise ValueError("Test spot must be a positive integer.")
+        if self.placement is not None and self.spot_rect(spot) is None:
+            raise ValueError("Choose one of the available spots shown in the preview.")
         if spot == self.spot:
             return
         if self.current_spot is not None:
@@ -221,42 +261,53 @@ class Guide:
         existing = next((s for s in self.history if s.number == spot), None)
         if existing:
             self.spot = spot
+            self._saved_rect = existing.rect
             self.completed = existing.passes
             self.uncertain = existing.uncertain
             self.interrupted = existing.uncertain or (not self.registered and existing.passes > 0)
             self.outcome = ""
+            self.history = tuple(s for s in self.history if s.number != spot)
+            saved = self.spot_trials.get(spot)
             self.trial = None
+            if saved and self.registered:
+                try:
+                    self.trial = self._restore_trial(saved)
+                except (ValueError, TypeError, KeyError, IndexError, AttributeError, OverflowError):
+                    self.spot_trials.pop(spot)
+            shape = saved.get("shape") if isinstance(saved, dict) else None
+            if isinstance(shape, str) and shape in testcut.TEST_SHAPES and existing.rect.w in SAMPLE_SIZES:
+                self.shape, self.size_mm = shape, existing.rect.w
         else:
             self._set_spot(spot)
 
     def next_spot(self):
-        tested = {s.number for s in self.history}
-        if self.current_spot is not None:
-            tested.add(self.spot)
-        limit = self.max_spots
-        candidate = self.spot + 1
-        while candidate in tested and candidate <= limit:
-            candidate += 1
-        if candidate > limit:
-            candidate = 1
-            while candidate in tested and candidate <= limit:
-                candidate += 1
-        if candidate > limit:
-            candidate = self.spot + 1
-        self.select_spot(candidate)
+        if self.placement is None:
+            self.select_spot(self.spot + 1)
+            return
+        fresh = tuple(number for number in self.fresh_spots() if number != self.spot)
+        if not fresh:
+            raise ValueError("No other fresh spot fits this sample size.")
+        self.select_spot(next((number for number in fresh if number > self.spot), fresh[0]))
 
     def settings_differ(self, options):
-        if not self.trial or self.completed == 0:
+        """Compare the effective settings for one test pass on the selected spot."""
+        if not self.completed or self.trial is None:
             return False
-        ts = self.trial.settings
-        force = options.get("force")
-        speed = options.get("speed")
-        depth = options.get("depth")
-        holder = options.get("blade_options", {}).get("holder", 1)
-        return (force is not None and force != ts.force) or \
-               (speed is not None and speed != ts.speed) or \
-               (depth is not None and depth != ts.depth) or \
-               (holder is not None and holder != ts.holder)
+        device = graphtec.device_by_name(options["cutter"])
+        try:
+            settings = self._pass_settings(device, options, self.trial.sheet.shape)
+        except ValueError:
+            return True
+        return settings != self.trial.settings
+
+    @staticmethod
+    def _pass_settings(device, options, shape):
+        blade = dict(options["blade_options"], track_enhancing=False)
+        if not blade.get("blade_diameter_mm"):
+            raise ValueError("Choose a blade setting for the material test.")
+        settings = graphtec.CutSettings(force=options["force"], speed=options["speed"],
+                                        depth=options["depth"], passes=1, **blade)
+        return testcut.settings_for_shape(settings, shape).clamped(device)
 
     def inspect(self, outcome):
         self.outcome = outcome if outcome in OUTCOMES else ""
@@ -282,35 +333,40 @@ class Guide:
             return "Use a fresh spot to get a reliable pass count."
         if self.completed >= MAX_JOB_PASSES:
             return f"This spot already has {MAX_JOB_PASSES} passes. Use a fresh spot."
+        if self.completed and self.trial is None:
+            return "This spot’s original cutter and settings are unavailable. Use a fresh spot."
         if connection[0] != "auto" and not connection[1]:
             return "Select a Bluetooth cutter first."
         if self.trial and (self.trial.connection != _connection_key(connection) or self.trial.sheet.device.name != cutter):
             return "The cutter changed. Return to the original cutter or start a fresh spot."
         return ""
 
-    def prepare(self, connection, options, job, shape):
+    def prepare(self, connection, options, job, shape=None):
         reason = self.refusal(connection, options["cutter"])
         if reason:
             raise ValueError(reason)
         if self.trial:
             if options["blade_options"].get("holder", 1) != self.trial.settings.holder:
                 raise ValueError("Switch back to the tested tool holder or use a fresh spot.")
-            return self.trial
+            if self.settings_differ(options):
+                raise ValueError("The cut settings changed. Use a fresh spot.")
+            track = options["blade_options"].get("track_enhancing", False)
+            return replace(self.trial, track_enhancing=track) if track != self.trial.track_enhancing else self.trial
         device = graphtec.device_by_name(options["cutter"])
-        blade = dict(options["blade_options"], track_enhancing=False)
-        if not blade["blade_diameter_mm"]:
-            raise ValueError("Choose a blade setting for the material test.")
-        settings = graphtec.CutSettings(force=options["force"], speed=options["speed"],
-                                        depth=options["depth"], passes=1, **blade).clamped(device)
+        shape = shape or self.shape
+        settings = self._pass_settings(device, options, shape)
         placement = self.placement or self.make_placement(job, options)
+        rect = self.fresh_spots(placement).get(self.spot)
+        if rect is None:
+            raise ValueError("No sample fits at this spot. Choose a smaller size or another spot.")
         return self.build_trial(device, settings, placement, _connection_key(connection), shape,
-                                options["blade_options"].get("track_enhancing", False))
+                                options["blade_options"].get("track_enhancing", False), rect)
 
-    def build_trial(self, device, settings, placement, connection, shape, track):
+    def build_trial(self, device, settings, placement, connection, shape, track, rect):
         marks = placement.marks
         margin = marks.inset_mm + marks.length_mm + testcut.DEFAULT_GAP_MM if marks else testcut.DEFAULT_MARGIN_MM
         sheet = testcut.build(device, replace(settings, passes=1, track_enhancing=False),
-                              spot=self.spot, size_mm=testcut.DEFAULT_SIZE_MM, margin_mm=margin, from_bottom=True,
+                              spot=self.spot, spot_rect=rect, size_mm=rect.w, margin_mm=margin, from_bottom=True,
                               sheet_w_mm=placement.width, sheet_h_mm=placement.height,
                               registration=False, offset_mm=placement.offset, shape=shape,
                               mat=placement.mat, end_position="start")
@@ -353,6 +409,7 @@ class Guide:
             self.trial = trial
             self.placement = trial.placement
             self.completed += 1
+            self.spot_trials[self.spot] = self._trial_document(trial)
             self.outcome = ""
         elif isinstance(error, PassUnconfirmed):
             self.trial = trial
@@ -379,6 +436,10 @@ class Guide:
         elif self.trial:
             text += ("\nRepeat on the same marked sheet. You can keep it loaded or reload it." if self.registered else
                      "\nKeep the mat loaded to repeat this spot.")
+        elif self.completed:
+            text += "\nThis spot’s original cutter and settings are unavailable. Use a fresh spot."
+        elif self.placement and self.spot not in self.fresh_spots():
+            text += "\nNo sample fits at this spot. Choose a smaller size or another spot."
         elif self.registered:
             text += "\nPrint the marked test sheet at actual size and load it face-up."
         return text
@@ -393,6 +454,7 @@ class Guide:
                              geometry.card("standard"), 0, 0, (), 0, 0)
         template.write_svg(path, grid, (), mk=marks, proof=True, page_outline=False)
         self.placement = placement
+        self.sheet_exported = True
         self.persist()
 
     def persist(self, pending=None):
@@ -407,10 +469,13 @@ class Guide:
             return
         data = dict(version=1, spot=self.spot, completed=self.completed,
                     interrupted=self.interrupted or pending is not None,
-                    placement=asdict(placement), history=[asdict(spot) for spot in self.history])
+                    placement=asdict(placement), history=[asdict(spot) for spot in self.history],
+                    spot_trials=self.spot_trials, shape=self.shape, size_mm=self.size_mm,
+                    sheet_exported=self.sheet_exported)
+        if self.current_spot:
+            data["current_rect"] = asdict(self.current_spot.rect)
         if trial:
-            data["trial"] = dict(device=trial.sheet.device.name, settings=asdict(trial.settings),
-                                 connection=trial.connection, shape=trial.sheet.shape, track=trial.track_enhancing)
+            data["trial"] = self._trial_document(trial)
         self.storage.parent.mkdir(parents=True, exist_ok=True)
         temporary = None
         try:
@@ -436,28 +501,45 @@ class Guide:
                     or len(self.placement.offset) != 2 or not all(map(math.isfinite, self.placement.offset))):
                 raise ValueError("invalid placement")
             self.registered = True
+            self.sheet_exported = data.get("sheet_exported", False)
             self.spot = data["spot"]
             self.completed = data["completed"]
             self.interrupted = data["interrupted"]
             self.uncertain = self.interrupted
+            shape, size = data.get("shape", "square"), data.get("size_mm", testcut.DEFAULT_SIZE_MM)
+            if shape not in testcut.TEST_SHAPES or size not in SAMPLE_SIZES:
+                raise ValueError("invalid sample settings")
+            self.shape, self.size_mm = shape, size
+            self._saved_rect = geometry.Rect(**data["current_rect"]) if "current_rect" in data else None
             if type(self.completed) is not int or not 0 <= self.completed <= MAX_JOB_PASSES:
                 raise ValueError("invalid pass count")
             self.history = tuple(Spot(row["number"], geometry.Rect(**row["rect"]), row["passes"], row["uncertain"])
-                                 for row in data["history"])
+                                 for row in data["history"] if row["number"] != self.spot)
+            self.spot_trials = {int(number): trial for number, trial in data.get("spot_trials", {}).items()}
             if "trial" in data:
-                trial = data["trial"]
-                connection = tuple(tuple(value) if isinstance(value, list) else value for value in trial["connection"])
-                device = graphtec.device_by_name(trial["device"])
-                self.trial = self.build_trial(device, graphtec.CutSettings(**trial["settings"]), self.placement,
-                                              connection, trial["shape"], trial["track"])
-            elif self.completed or self.interrupted:
-                raise ValueError("missing cut settings")
+                self.trial = self._restore_trial(data["trial"])
+                if self.completed and not self.interrupted:
+                    self.spot_trials[self.spot] = data["trial"]
         except FileNotFoundError:
             return
         except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError, OverflowError):
             self.registered = False
             self.reset()
             self.resume_error = "Could not reopen the marked test sheet history."
+
+    @staticmethod
+    def _trial_document(trial):
+        return dict(device=trial.sheet.device.name, settings=asdict(trial.settings),
+                    connection=trial.connection, shape=trial.sheet.shape, track=trial.track_enhancing,
+                    rect=asdict(trial.sheet.cells[0].rect))
+
+    def _restore_trial(self, trial):
+        connection = tuple(tuple(value) if isinstance(value, list) else value for value in trial["connection"])
+        device = graphtec.device_by_name(trial["device"])
+        rect = (geometry.Rect(**trial["rect"]) if "rect" in trial
+                else spot_rect_for_placement(self.spot, self.placement))
+        return self.build_trial(device, graphtec.CutSettings(**trial["settings"]), self.placement,
+                                connection, trial["shape"], trial["track"], rect)
 
 
 def run_pass(cutter, trial):

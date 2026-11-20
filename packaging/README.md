@@ -38,10 +38,10 @@ Flatpak recipes bundle GTK.
 
 This builder packages the build host's Python, GTK4, libadwaita, GI typelibs,
 Pillow, libraries (including a matching libc and loader), icons, schemas,
-PDF helpers and license files. It currently requires an Arch-based build
-host with `pacman` for dependency provenance, `mksquashfs`, `ldd`, and
-`desktop-file-validate`, plus installed Python GI/cairo/Pillow, GTK4,
-libadwaita, libusb, Poppler and `rsvg-convert`.
+PDF helpers and license files. Build on x86-64 Debian or Arch with
+`mksquashfs`, `ldd`, `glib-compile-schemas`, and `desktop-file-validate`.
+Install Python GI/cairo/Pillow, GTK4, libadwaita, GEOS, libusb, Poppler
+and `rsvg-convert` on the build host.
 
 Download the official x86_64 [AppImage type2 runtime](https://github.com/AppImage/type2-runtime/releases)
 and optionally the official PyUSB 1.3.1 wheel from PyPI. No pip installation
@@ -73,7 +73,8 @@ python3 packaging/smoke-appdir.py out/appimage-smoke/squashfs-root --gui
 ```
 
 The smoke test checks bundled module origins, the libusb backend, a verified
-job and its liveness probes, PDF physical dimensions, and rasterization. With
+job and its liveness probes, PDF physical dimensions, and rasterization.
+Use `--skip-usb-init` in a sandbox that cannot access USB discovery. With
 `--gui`, it briefly opens a separate window, checks its verified preview,
 and closes it. It never sends a cut. Host USB permissions still apply; see
 `docs/SETUP.md`.
@@ -102,7 +103,28 @@ once with `sh install-silverblue.sh --udev`, then reconnect the cutter.
 
 
 Build the Flatpak with `./packaging/build-flatpak.sh` after installing
-`org.gnome.Sdk//50` and `org.gnome.Platform//50` from Flathub. It uses the
-GNOME SDK's Python and compiles the PDF utilities from the pinned
+`org.gnome.Sdk//50` and `org.gnome.Platform//50` from Flathub. Install
+Python with pip on the build host to download the wheels for the SDK
+interpreter. This builder uses the GNOME SDK's Python and compiles the PDF
+utilities from the pinned
 [Poppler source](https://poppler.freedesktop.org/). AppImage build steps
 are above.
+
+
+## Windows installer (x86-64)
+
+Build on Linux with Python 3.12 or newer, pip, NSIS (`makensis`) and `zstd`.
+
+```sh
+python3 packaging/build-windows.py
+```
+
+Run `SilhouetteControlCenter-<version>-Windows-x86_64-Setup.exe` and open
+**Silhouette Control Center** from the Start menu. Setup installs for the
+current user and includes Python, Qt, Poppler, Cairo, Pango, GEOS, PyUSB and
+Bluetooth dependencies. Remove the app from Windows **Installed apps**.
+Presets and settings stay in `%LOCALAPPDATA%\Silhouette Control Center`.
+
+The installed app folder contains `Start Here.txt` and a manifest with
+dependency checksums. USB requires a libusb-compatible Windows cutter
+driver. Setup does not install or replace drivers.

@@ -415,7 +415,14 @@ class Design(QWidget):
         self.build_design_menus((new, open_file, self.save_action, save_as, import_art))
         panes.addWidget(self.inspector)
         panes.setStretchFactor(1, 1)
-        panes.setSizes([205, 550, 328])
+        # The inspector's share is what its four tabs need; below that it
+        # switches to the section selector by itself.
+        panes.setSizes([205, 515, 360])
+        # Both side panes must still fit, with the canvas, at the smallest
+        # window this supports (720 x 520).
+        self.canvas.setMinimumWidth(220)
+        self.inspector.setMinimumWidth(190)
+        left_pane.setMinimumWidth(170)
 
         footer_bar, footer = bar(self)
         self.status = styled_label(role="body")

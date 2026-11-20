@@ -6,12 +6,14 @@ from functools import lru_cache
 import json
 import math
 import os
+import sys
 
 
 @lru_cache(maxsize=1)
 def _library():
     try:
-        candidates = ["libgeos_c.so.1", "libgeos_c.so"]
+        candidates = (["libgeos_c.dll"] if sys.platform == "win32"
+                      else ["libgeos_c.so.1", "libgeos_c.so"])
         user_brew = os.path.expanduser("~/.linuxbrew/lib/libgeos_c.so.1")
         if os.path.exists(user_brew):
             candidates.append(user_brew)

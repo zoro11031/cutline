@@ -10,18 +10,19 @@ import sys
 from time import monotonic
 import zipfile
 
-from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QInputDialog, QMenu,
                                QMainWindow, QMessageBox, QPlainTextEdit,
-                               QSplitter, QStackedWidget, QStyle, QTabWidget, QVBoxLayout, QWidget)
+                               QSizePolicy, QSplitter, QStackedWidget, QStyle, QTabWidget, QVBoxLayout, QWidget)
 
 from . import (actions, bluetooth, bundle, config, corner_test, editor_model, geometry, graphtec, importer, job,
                layout_presets, materials, presets, regmarks, sheet, starting_guide, template, testcut, toolpath, transport)
 from .desktop_help import BLADE_VALUE_TEXT, CONTROL_HELP, SETUP_STEPS
 from .holder_settings import HolderSettings, for_holder
+from . import tooling
 from .qt_canvas import PREVIEW_MODES, Preview, ZoomControls
-from .qt_controls import (Form, Page, SettingsWheel, Tasks, bar, button, set_choices,
+from .qt_controls import (AdaptiveActions, Form, Page, SettingsWheel, Tasks, bar, button, set_choices,
                           styled_label, workspace_header, workspace_layout, workspace_style, workspace_tools)
 
 APP_ID = "org.printing.SilhouetteControlCenter"
@@ -65,6 +66,13 @@ class Window(QMainWindow):
         self.bundle_row_error = None
         self.bundle_checked = self.busy = self.loading = False
         self.pdf_check_state = sheet.RegistrationDecision.NONE
+        self.checked_marks = None
+        self.checked_scm_orientation = False
+        self.detected_tools = ()
+        self.tool_selection = tooling.ToolSelection()
+        self.tools_connection = None
+        self.corrected_tools = None
+        self.bundle_locked = False
         self.active_job = None
         self.cut_control = None
         self.tuning = False
@@ -123,6 +131,17 @@ class Window(QMainWindow):
         self.preview.colorblind = bool(self.settings.get("colorblind_mode"))
         right.addWidget(self.preview, 1)
 
+        self.bundle_notice_bar, bundle_notice_row = bar(preview_panel, (12, 8, 12, 8))
+        self.bundle_notice = styled_label(role="body")
+        self.bundle_notice.setWordWrap(True)
+        self.bundle_notice.setText("Matched ZIP: the cut paths are locked to the printed sheet. "
+                                   "Open Sheet to review the match or clear it.")
+        bundle_notice_row.addWidget(self.bundle_notice, 1)
+        bundle_notice_row.addWidget(button("Open Sheet", lambda: self.tabs.setCurrentIndex(self.tab("Sheet")),
+                                           role="secondary"))
+        self.bundle_notice_bar.hide()
+        right.addWidget(self.bundle_notice_bar)
+
         self.summary_bar, summary_row = bar(preview_panel, (12, 8, 12, 8))
         summary_text = QVBoxLayout()
         summary_text.setSpacing(2)
@@ -157,13 +176,17 @@ class Window(QMainWindow):
         self.footer = footer
         self.footer_status = styled_label(role="body")
         self.footer_status.setWordWrap(True)
+        # The status gives way first: at compact widths it wraps and shrinks so
+        # the actions stay visible, in order, rather than being pushed off.
+        self.footer_status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.footer_status.setMinimumWidth(0)
         footer.addWidget(self.footer_status, 1)
         self.review_button = button("Review Cut Job", self.follow_review, primary=True)
         self.send_button = button("Send to Cutter", self.confirm_send, primary=True,
                                   icon=("media-playback-start", QStyle.StandardPixmap.SP_MediaPlay))
         self.send_button.setMinimumHeight(32)
         self.back_to_send = button("Exit Material Test", self.close_material_guide, primary=True)
-        self.pause_cut = button("Pause Cut", lambda: self.cut_control.toggle_pause())
+        self.pause_cut = button("Pause Cut", lambda: self.cut_control.toggle_pause(), role="secondary")
         self.cancel_cut = button("Cancel Cut", lambda: self.cut_control.cancel(), role="destructive")
         footer.addWidget(self.review_button)
         footer.addWidget(self.send_button)
@@ -222,8 +245,8 @@ class Window(QMainWindow):
             return action
 
         files = self.menu_bar.addMenu("&File")
-        command(files, "Open Cut Artwork…", self.open_artwork)
-        command(files, "Open PDF or ZIP…", self.open_sheet)
+        self.open_artwork_action = command(files, "Open Cut Artwork…", self.open_artwork)
+        self.open_print_action = command(files, "Open PDF or ZIP…", self.open_sheet)
         self.close_print_action = command(files, "Close Print File", self.close_printed_sheet)
         self.paired_cut_action = command(files, "Save Paired Cut File…", self.save_bundle_file)
         files.addSeparator()
@@ -245,12 +268,18 @@ class Window(QMainWindow):
         command(self.menu_bar.addMenu("&Help"), "Setup Guide", self.show_setup_guide)
 
     def open_cut_settings(self):
-        self.open_send_workspace()
+        """Show the editable cut settings. An open material test stays open:
+        only Exit Material Test closes one."""
+        self.tabs.setCurrentIndex(self.tab("Send"))
         page = self.tabs.widget(self.tab("Send"))
-        QTimer.singleShot(0, self, lambda: page.ensureWidgetVisible(self.controls["preset"]))
+        def reveal_settings():
+            position = self.settings_box.mapTo(page.widget(), QPoint()).y()
+            page.verticalScrollBar().setValue(max(0, position - 8))
+
+        QTimer.singleShot(0, self, reveal_settings)
 
     def open_send_advanced(self):
-        self.open_send_workspace()
+        self.tabs.setCurrentIndex(self.tab("Send"))
         self.send_advanced.disclosure.setChecked(True)
         page = self.tabs.widget(self.tab("Send"))
         QTimer.singleShot(0, self, lambda: page.ensureWidgetVisible(self.send_advanced.disclosure))
@@ -275,7 +304,7 @@ class Window(QMainWindow):
         page = Page()
         source = page.group("Cut artwork")
         self.source_label = source.note("Generated card layout")
-        source.push("Open Cut Artwork…", self.open_artwork)
+        self.open_artwork_button = source.push("Open Cut Artwork…", self.open_artwork)
         self.use_generated = source.push("Use Generated Layout", self.reset_artwork)
         layout = page.group("Media and cards")
         self.choose(layout, "layout_preset", "Layout preset",
@@ -306,7 +335,8 @@ class Window(QMainWindow):
         form = page.group("Printed sheet")
         self.sheet_file = form.note("Open a print PDF or a matched Print & Cut ZIP.")
         self.close_print = button("Close File", self.close_printed_sheet)
-        form.actions(button("Open PDF or ZIP…", self.open_sheet), self.close_print)
+        self.open_print_button = button("Open PDF or ZIP…", self.open_sheet)
+        form.actions(self.open_print_button, self.close_print)
         self.bundle_export = form.push("Save Paired Cut File…", self.save_bundle_file)
         self.bundle_print = form.push("Save Print PDF…", self.save_bundle_print)
         self.bundle_export.hide()
@@ -314,7 +344,6 @@ class Window(QMainWindow):
         self.sheet_page_number = form.number("Page", 1, 1, 999, changed=self.change_sheet_page)
         self.sheet_page_label = form.labelForField(self.sheet_page_number)
         self.measure_button = form.push("Measure Registration Marks", self.measure_sheet)
-        self.update_sheet_controls()
         result = page.group("Registration results")
         self.sheet_result = result.note("Not measured")
         scan = page.group("Last cutter scan")
@@ -325,25 +354,33 @@ class Window(QMainWindow):
         self.clear_scan_result()
         self.sheet_advanced = advanced = page.advanced()
         self.sheet_dpi = advanced.group("PDF check").choice("Measurement resolution", (150, 200, 300), 200, self.measure_sheet)
+        self.update_sheet_controls()
         self.install_page("Sheet", page)
 
     def materials_page(self):
         page = Page()
-        self.edit_settings_btn = button("Edit Cut Settings", self.open_cut_settings, role="secondary")
-        profile = page.group("Material Presets", action=self.edit_settings_btn)
-        self.material = profile.choice("Select Preset", (), changed=self.on_select_material_preset)
+        profile = page.group("Material Presets")
+        self.material = profile.choice("Preset", (), changed=self.update_material_details)
         self.provenance = profile.note()
         self.provenance.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.apply_material_button = button("Apply to Cut Settings", self.apply_material, role="primary")
-        self.save_preset_btn = button("Update Preset", self.save_preset)
-        self.save_new_preset_btn = button("Save as New…", self.save_new_preset)
-        self.delete_preset_btn = button("Delete Preset", self.delete_selected_preset, role="destructive")
-        profile.actions(self.apply_material_button, self.save_preset_btn, self.save_new_preset_btn, self.delete_preset_btn)
+        self.apply_material_button = button("Apply Preset", self.apply_material, role="primary")
+        self.delete_preset_btn = button("Delete Preset", self.delete_selected_preset, role="secondary")
+        profile.addRow(AdaptiveActions((self.apply_material_button, self.delete_preset_btn)))
 
-        library = page.group("Library & Defaults")
-        library.actions(button("Import CSV…", self.choose_material_csv),
-                        button("Import Folder…", lambda: self.choose_material_csv(folder=True)),
-                        button("Restore Default Materials…", self.restore_materials))
+        current = page.group("Current Cut Settings")
+        self.material_active = current.note("Edit the current settings in Cut Job, then save them here.")
+        self.edit_settings_btn = button("Edit Cut Settings", self.open_cut_settings, role="secondary")
+        self.save_preset_btn = button("Update Preset", self.save_preset, role="secondary")
+        self.save_new_preset_btn = button("Save as New…", self.save_new_preset, role="secondary")
+        current.actions(self.edit_settings_btn)
+        current.addRow(AdaptiveActions((self.save_preset_btn, self.save_new_preset_btn)))
+
+        advanced = page.advanced()
+        library = advanced.group("Library and Defaults")
+        library.addRow(AdaptiveActions((
+            button("Import CSV…", self.choose_material_csv, role="secondary"),
+            button("Import Folder…", lambda: self.choose_material_csv(folder=True), role="secondary"))))
+        library.actions(button("Restore Defaults…", self.restore_materials, role="secondary"))
         self.install_page("Materials", page, title="Material Presets")
 
     def add_advanced_cut_settings(self, advanced):
@@ -390,12 +427,15 @@ class Window(QMainWindow):
         settings = normal.group("Cut Settings", action=self.material_guide)
         self.settings_box = settings.parentWidget()
         self.blade["holder"] = settings.holders(self.rebuild)
+        self.tool_picker = settings.choice("Blade", (), changed=self.change_tool_selection)
+        self.tool_picker.setToolTip("Choose the blade installed in this holder if detection is wrong.")
         self.choose(settings, "preset", "Material", sorted(presets.all_presets()), config.DEFAULT_PRESET,
                     self.load_preset)
         for key, label, low, high, step, decimals in BLADE_NUMBERS:
             if key in QUICK_NUMBERS:
                 self.blade[key] = settings.number(label, low, low, high, step, decimals, self.rebuild,
                                                   slider=True, special_text=BLADE_VALUE_TEXT.get(key, ""))
+        self.automatic_depth_maximum = self.blade["depth"].maximum()
         for key, label in BLADE_SWITCHES[1:3]:
             self.blade[key] = settings.check(label, changed=self.rebuild)
 
@@ -439,6 +479,12 @@ class Window(QMainWindow):
         guide = self.guide_page.group("Dial In a Material")
         self.guide_box = guide.parentWidget()
         guide.note(starting_guide.GUIDE_TEXT)
+        self.guide_shape = guide.choice("Test shape", testcut.TEST_SHAPES, self.guide.shape,
+                                       self.change_guide_sample)
+        self.guide_size = guide.choice("Sample size", starting_guide.SAMPLE_SIZES, self.guide.size_mm,
+                                      self.change_guide_sample)
+        for field in (self.guide_shape, self.guide_size):
+            field.setToolTip("Changing the sample after a cut moves to a fresh spot.")
         self.guide_spot_selector = guide.number("Test Spot", 1, 1, 999, 1, 0,
                                                 self.on_guide_spot_selected)
         self.guide_spot_status = guide.note("Untouched stock")
@@ -495,14 +541,14 @@ class Window(QMainWindow):
         dialog.setWindowTitle("Set Up Your First Cut")
         dialog.setText("Set up your first cut")
         dialog.setInformativeText(SETUP_STEPS)
-        tune = dialog.addButton("Dial In a Material…", QMessageBox.ButtonRole.ActionRole)
+        tune = dialog.addButton("Resume Material Test" if self.guide.has_tests else "Dial In a Material…",
+                                QMessageBox.ButtonRole.ActionRole)
         dialog.addButton(QMessageBox.StandardButton.Close)
         dialog.exec()
         if dialog.clickedButton() is tune:
             self.open_material_guide()
 
     def open_material_guide(self):
-        self.material_guide.setText("Resume Material Test")
         index = self.tab("Send")
         self.tabs.setCurrentIndex(index)
         self.tuning = True
@@ -516,8 +562,8 @@ class Window(QMainWindow):
         QTimer.singleShot(0, self, lambda: scroll.verticalScrollBar().setValue(self.guide_box.y() - 12))
 
     def open_send_workspace(self):
-        if self.tuning:
-            self.close_material_guide()
+        """The Send workspace toggle. An open material test stays open:
+        only Exit Material Test closes one."""
         self.tabs.setCurrentIndex(self.tab("Send"))
 
     def close_material_guide(self):
@@ -535,7 +581,7 @@ class Window(QMainWindow):
 
     def adjust_guide_settings(self):
         self.open_cut_settings()
-        self.material_guide.setText("Resume Material Test")
+        self.update_guide()
 
     def change_preview(self):
         self.preview.mode = self.preview_mode.currentData()
@@ -588,7 +634,6 @@ class Window(QMainWindow):
         device = graphtec.device_by_name(self.choice("cutter"))
         holder = self.blade["holder"]
         slot = holder.value() if device.two_tools else 1
-        holder.holders.button(2).setEnabled(device.two_tools)
         if slot == self.holder_state.active:
             return
         fresh = slot not in self.holder_state.drafts
@@ -602,8 +647,8 @@ class Window(QMainWindow):
                 settings = for_holder(preset.cut_settings(), slot)
         with self.editing():
             self.select("preset", preset.name if self.controls["preset"].findData(preset.name) >= 0 else config.DEFAULT_PRESET)
-            self.provenance.setText(f"{preset.name}\n{preset.note}")
             self.set_blade_settings(settings)
+        self.update_material_details()
 
     def set_blade_settings(self, settings):
         with self.editing():
@@ -617,62 +662,65 @@ class Window(QMainWindow):
                 widget.setCurrentIndex(widget.findData(getattr(settings, key)))
         self.rebuild()
 
-    def on_select_material_preset(self):
-        self.update_material_details()
-
     def update_material_details(self):
-        name = self.material.currentData() if hasattr(self, "material") and self.material else None
-        cutter = self.choice("cutter") if hasattr(self, "controls") and "cutter" in self.controls else presets.DEFAULT_CUTTER
-        if not name or name not in getattr(self, "materials", {}):
-            if hasattr(self, "provenance"):
-                self.provenance.setText("")
-            if hasattr(self, "delete_preset_btn"):
-                self.delete_preset_btn.setEnabled(False)
-            return
-        preset = self.materials[name]
-        deletable = presets.is_deletable(name, cutter)
-        if hasattr(self, "delete_preset_btn"):
-            self.delete_preset_btn.setEnabled(deletable)
-
-        settings = preset.cut_settings() if hasattr(preset, "cut_settings") else None
-        desc_lines = [f"<b>{name}</b>"]
-        note = getattr(preset, "note", "")
-        if isinstance(note, str) and note:
-            desc_lines.append(note)
-        desc = getattr(preset, "description", "")
-        if isinstance(desc, str) and desc and desc != note:
-            desc_lines.append(desc)
-        if settings is not None and hasattr(settings, "force"):
-            depth_val = getattr(settings, "depth", None)
-            depth_str = f"{depth_val}" if depth_val is not None else "–"
-            desc_lines.append(f"Blade Depth: {depth_str} · Force: {settings.force} · Speed: {settings.speed} · Passes: {settings.passes}")
-        if hasattr(self, "provenance"):
-            self.provenance.setText("\n".join(desc_lines))
+        name = self.material.currentData()
+        cutter = self.choice("cutter")
+        slot = self.holder_state.active
+        active = self.choice("preset")
+        selected = getattr(self, "materials", {}).get(name)
+        can_apply = False
+        details = ""
+        if selected is not None:
+            try:
+                variant = presets.for_context(selected, cutter, slot)
+            except ValueError as error:
+                details = f"{name}\n{presets.describe(selected, selected.cut_settings())}\n{error}"
+            else:
+                can_apply = True
+                title = name if variant.name == name else f"{name}\nUses {variant.name} on Holder {slot}."
+                details = f"{title}\n{presets.describe(variant, for_holder(variant.cut_settings(), slot))}"
+        self.provenance.setText(details)
+        self.apply_material_button.setEnabled(can_apply)
+        self.apply_material_button.setToolTip("Replace the current holder’s cut settings with the selected preset.")
+        action = presets.removal_action(name, cutter) if selected else ""
+        self.delete_preset_btn.setText("Revert to Default" if action == "restore" else "Delete Preset")
+        self.delete_preset_btn.setEnabled(bool(action))
+        can_update = bool(active and active == name)
+        status = f"Holder {slot} · {active}"
+        if not can_update:
+            status += "\nSelect the active preset above to update it."
+        self.material_active.setText(status)
+        self.save_preset_btn.setEnabled(can_update)
+        self.save_preset_btn.setToolTip("Browse the active preset to update it, or use Save as New.")
 
     def delete_selected_preset(self):
-        name = self.material.currentData() if hasattr(self, "material") and self.material else None
-        cutter = self.choice("cutter") if hasattr(self, "controls") and "cutter" in self.controls else presets.DEFAULT_CUTTER
-        if not name or not presets.is_deletable(name, cutter):
-            self.message("Built-in presets cannot be deleted.")
+        name, cutter = self.material.currentData(), self.choice("cutter")
+        action = presets.removal_action(name, cutter)
+        if not action:
             return
-        reply = QMessageBox.question(
-            self,
-            "Delete Preset",
-            f"Are you sure you want to delete preset '{name}'?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            if presets.delete_preset(name, cutter):
-                self.message(f"Preset '{name}' deleted.")
-                self.refresh_preset_choices()
-                self.load_materials()
-                self.load_preset()
-            else:
-                self.message(f"Could not delete preset '{name}'.")
+        restore = action == "restore"
+        title = "Revert to Default" if restore else "Delete Preset"
+        prompt = (f"Remove your saved changes to ‘{name}’ and restore the original settings?"
+                  if restore else f"Delete the saved preset ‘{name}’?")
+
+        if not self.confirm(title, prompt):
+            return
+        if not presets.delete_preset(name, cutter):
+            self.message(f"Could not remove ‘{name}’.")
+            return
+        active = self.choice("preset")
+        self.holder_state.drafts = {slot: (preset, settings) for slot, (preset, settings)
+                                    in self.holder_state.drafts.items() if preset.name != name}
+        self.refresh_preset_choices()
+        self.load_materials()
+        if name == active:
+            self.load_preset()
+        self.message(f"Restored ‘{name}’." if restore else f"Deleted ‘{name}’.")
 
     def save_preset(self, name=None):
-        target_name = name or self.choice("preset")
+        target_name = self.choice("preset")
+        if name is None and self.material.currentData() != target_name:
+            return
         values = self.blade_values()
         try:
             saved = presets.save_blade_settings(
@@ -683,10 +731,10 @@ class Window(QMainWindow):
             self.message(str(error))
             return
         if saved is not None:
-            active_name = name.strip() if name else target_name
+            active_name = name.strip() if name is not None else target_name
             self.refresh_preset_choices(active_name)
-            self.load_materials()
-            self.load_preset()
+            self.load_materials(active_name)
+            self.rebuild()
         self.message("Preset saved." if saved else "Preset settings are already saved.")
 
     def save_new_preset(self):
@@ -694,20 +742,13 @@ class Window(QMainWindow):
         if accepted:
             self.save_preset(name)
 
-    def load_materials(self):
-        try:
-            divs = dict(materials.cutter_divisions(
-                materials.load(), self.choice("cutter"), False))
-        except (OSError, ValueError):
-            divs = {}
-        self.materials = dict(divs)
-        for _, user_preset in presets._read_presets(presets.user_dir()):
-            if user_preset.name not in self.materials:
-                self.materials[user_preset.name] = user_preset
-        current = self.material.currentData() if hasattr(self, "material") and self.material else None
-        choices = sorted(self.materials) if self.materials else {"": "No materials imported"}
-        set_choices(self.material, choices, current or (self.choice("preset") if hasattr(self, "controls") and "preset" in self.controls else None))
-        self.apply_material_button.setEnabled(bool(divs))
+    def load_materials(self, selected=None):
+        self.materials = presets.all_presets(self.choice("cutter"))
+        if selected is None:
+            selected = self.material.currentData()
+        if selected not in self.materials:
+            selected = self.choice("preset")
+        set_choices(self.material, sorted(self.materials), selected)
         self.update_material_details()
 
     def refresh_preset_choices(self, selected=None):
@@ -726,46 +767,57 @@ class Window(QMainWindow):
             except (OSError, ValueError) as error:
                 self.message(str(error))
             else:
-                self.load_materials()
+                active = self.choice("preset")
                 self.refresh_preset_choices()
+                self.load_materials()
+                if self.choice("preset") != active:
+                    self.load_preset()
                 self.message(f"Loaded {len(presets.factory_presets(self.choice('cutter')))} material presets.")
 
     def change_cutter(self):
-        self.load_materials()
         selected = self.choice("preset")
         self.refresh_preset_choices()
-        if selected in presets.factory_presets(self.choice("cutter")) or self.choice("preset") != selected:
+        self.load_materials()
+        active = self.materials[self.choice("preset")]
+        if active.factory_id or active.name != selected:
             self.load_preset()
         else:
             self.rebuild()
 
     def apply_material(self):
+        if self.active_job is not None or self.busy:
+            self.message("The cutter is running this job. Wait for it to finish before changing settings.")
+            return
         selected = self.materials.get(self.material.currentData())
         if selected is None:
-            self.message("Select a material preset.")
             return
-        name = self.material.currentData()
-        if self.controls["preset"].findData(name) >= 0:
-            self.select("preset", name)
-            self.load_preset()
-        else:
-            settings = selected.cut_settings() if hasattr(selected, "cut_settings") else selected
-            self.set_blade_settings(for_holder(settings, self.holder_state.active))
+        try:
+            variant = presets.for_context(selected, self.choice("cutter"), self.holder_state.active)
+        except ValueError as error:
+            self.message(str(error))
+            return
+        with self.editing():
+            self.select("preset", variant.name)
+        self.load_preset()
         self.open_cut_settings()
 
     def restore_materials(self):
         if not self.confirm("Restore Default Materials?",
                             "Edits to built-in presets will be backed up. Custom presets stay available."):
             return
+        active = self.choice("preset")
+        is_override = presets.removal_action(active, self.choice("cutter")) == "restore"
         try:
             count, _ = presets.restore_default_materials()
         except OSError as error:
             self.message(str(error))
             return
-        self.refresh_preset_choices()
-        self.load_materials()
-        self.load_preset()
-        self.message(f"Restored {count} built-in presets.")
+        if count:
+            self.refresh_preset_choices()
+            self.load_materials()
+            if self.choice("preset") != active or is_override:
+                self.load_preset()
+        self.message(f"Restored {count} built-in presets." if count else "Default materials are already restored.")
 
     def save_calibration(self):
         try:
@@ -800,11 +852,15 @@ class Window(QMainWindow):
             self.use_artwork(None, "Generated card layout")
 
     def open_artwork(self):
+        if self.active_job is not None or self.busy:
+            return
         path, _ = QFileDialog.getOpenFileName(self, "Open Cut Artwork", "", ARTWORK_FILTER)
         if path:
             self.load_artwork(Path(path))
 
     def load_artwork(self, path, page=None):
+        if self.active_job is not None or self.busy:
+            return
         try:
             drawing = importer.load(path, page=page)
         except importer.InkscapePageRequired as error:
@@ -822,6 +878,8 @@ class Window(QMainWindow):
         self.use_artwork(drawing, path.name + (f" · Page {page}" if page else ""))
 
     def reset_artwork(self):
+        if self.active_job is not None or self.busy:
+            return
         self.clear_bundle()
         self.project_shapes = self.reviewed_design = None
         with self.editing():
@@ -915,6 +973,9 @@ class Window(QMainWindow):
             values["holder"] = 1
         if not device.autoblade or values["holder"] != 1:
             options["depth"] = None
+        options["manual_depth"] = self.tool_selection.manual_depth
+        if options["manual_depth"] and values["holder"] == 1:
+            options["depth"] = None
         options["blade_options"] = values
         portrait = self.choice("portrait")
         source_sheet = self.choice("sheet")
@@ -937,6 +998,15 @@ class Window(QMainWindow):
 
     def update_enabled_fields(self):
         active = self.active_job is not None or self.busy
+        self.detected.setEnabled(not active)
+        self.tool_picker.setEnabled(not active and bool(self.connection()[1]))
+        device = graphtec.device_by_name(self.choice("cutter"))
+        holders = self.blade["holder"].holders
+        holders.button(1).setEnabled(not active and device.two_tools)
+        holders.button(2).setEnabled(not active and device.two_tools)
+        for group in self.group_rows.values():
+            for field in group:
+                field.setEnabled(not active)
         if active:
             for c in self.controls.values():
                 c.setEnabled(False)
@@ -963,11 +1033,22 @@ class Window(QMainWindow):
         fixed_layout = self.bundle or layout_presets.is_published(self.artwork)
         for key in ("sheet", "portrait", "engine", "card", "mode", "radius_mm"):
             self.controls[key].setEnabled(not fixed_layout)
-        device = graphtec.device_by_name(self.choice("cutter"))
+        if self.bundle_locked:
+            for key in self.BUNDLE_LOCKED:
+                self.controls[key].setEnabled(False)
+            self.skip.setEnabled(False)
         for name, upper in (("force", device.max_pressure), ("speed", device.max_speed)):
             self.blade[name].setToolTip(f"{CONTROL_HELP[name]} Range on {DEVICES[device.name]} is 1–{upper}.")
         self.blade["holder"].setEnabled(device.two_tools)
-        self.blade["depth"].setEnabled(device.autoblade and self.blade["holder"].value() == 1)
+        self.update_holder_labels()
+        depth = self.blade["depth"]
+        maximum = tooling.MANUAL_DEPTH if self.tool_selection.manual_depth else self.automatic_depth_maximum
+        if depth.maximum() != maximum:
+            with self.editing():
+                depth.setMaximum(maximum)
+                depth.slider.setMaximum(maximum)
+        depth.setEnabled(device.autoblade and self.blade["holder"].value() == 1
+                         and not self.tool_selection.manual_depth)
         self.blade["acceleration"].setEnabled(device.detects_tools)
         for field in QUICK_NUMBERS:
             control = self.blade[field]
@@ -998,6 +1079,7 @@ class Window(QMainWindow):
             return
         self.restore_holder()
         self.update_enabled_fields()
+        self.correct_detected_depth()
         previous = self.job
         self.job = None
         problems = []
@@ -1033,8 +1115,10 @@ class Window(QMainWindow):
                 elif current.warnings:
                     summary += "\n" + current.warnings[0]
         marks = self.job.marks if self.job else None
-        if self.pdf and not self.bundle and previous and previous.marks != marks:
-            self.invalidate_measurement()
+        orientation_changed = self.checked_scm_orientation != layout_presets.is_published(self.artwork)
+        if (self.pdf and not self.bundle and self.checked_marks is not None
+                and (self.checked_marks != marks or orientation_changed)):
+            self.invalidate_measurement(clear_image=orientation_changed)
             self.sheet_result.setText("Registration geometry changed. Measure the PDF again.")
         self.summary_title.setText(title)
         self.summary.setText(summary)
@@ -1116,9 +1200,16 @@ class Window(QMainWindow):
         self.settings_box.setVisible(True)
         self.guide_page.setVisible(self.tuning)
         self.review_button.setText(f"Review {'Cut Job' if target == 'Send' else target}")
-        self.close_print_action.setEnabled(self.pdf is not None)
+        editable = self.active_job is None and not self.busy
+        for control in (self.open_artwork_action, self.open_print_action,
+                        self.open_artwork_button, self.open_print_button):
+            control.setEnabled(editable)
+        self.close_print_action.setEnabled(editable and self.pdf is not None)
+        self.update_sheet_controls()
         self.paired_cut_action.setEnabled(self.bundle is not None)
-        self.reset_layout_action.setEnabled(self.artwork is not None or self.bundle is not None)
+        can_reset = editable and (self.artwork is not None or self.bundle is not None)
+        self.reset_layout_action.setEnabled(can_reset)
+        self.use_generated.setEnabled(can_reset)
         self.back_to_send.setText("Exit Material Test")
         self.back_to_send.setVisible(self.tuning)
         self.review_button.setVisible(not self.tuning and (target == "Design" or index != self.tab(target)))
@@ -1162,7 +1253,10 @@ class Window(QMainWindow):
             self.footer_status.setText(control.status_text)
         elif not self.tuning:
             display_job = self.active_job or self.job
-            self.footer_status.setText(reason or (
+            self.footer_status.setProperty("role", "warning" if reason else "body")
+            self.footer_status.style().unpolish(self.footer_status)
+            self.footer_status.style().polish(self.footer_status)
+            self.footer_status.setText((f"⚠ {reason}" if reason else "") or (
                 f"{display_job.device.name} · {len(display_job.paths)} paths · "
                 + ("Registration on" if display_job.registration else "Registration off")))
 
@@ -1214,17 +1308,20 @@ class Window(QMainWindow):
         self.sheet_token = self.report = None
         self.bundle_checked = False
         self.pdf_check_state = sheet.RegistrationDecision.NONE
+        self.checked_marks = None
         self.preview.report = None
         self.clear_scan_result()
         if clear_image:
             self.preview.show_pdf()
             self.preview_mode.hide()
 
+    BUNDLE_LOCKED = ("layout_preset", "sheet", "portrait", "engine", "card", "mode", "radius_mm",
+                     "pattern", "mark_inset_mm", "mark_length_mm", "mark_thickness_mm", "bleed_mm",
+                     "registration")
+
     def lock_bundle_controls(self, locked):
-        for key in ("layout_preset", "sheet", "portrait", "engine", "card", "mode", "radius_mm",
-                    "pattern", "mark_inset_mm", "mark_length_mm", "mark_thickness_mm", "bleed_mm", "registration"):
-            self.controls[key].setEnabled(not locked)
-        self.skip.setEnabled(not locked)
+        self.bundle_locked = bool(locked)
+        self.update_enabled_fields()
 
     def clear_bundle(self):
         if self.bundle:
@@ -1236,10 +1333,12 @@ class Window(QMainWindow):
 
     def update_sheet_controls(self):
         loaded = self.pdf is not None
-        self.close_print.setEnabled(loaded)
-        self.measure_button.setEnabled(loaded and self.bundle_row_error is None)
+        editable = self.active_job is None and not self.busy
+        self.close_print.setEnabled(editable and loaded)
+        self.measure_button.setEnabled(editable and loaded and self.bundle_row_error is None)
+        self.sheet_dpi.setEnabled(editable and loaded)
         self.sheet_page_label.setText("Sheet in ZIP" if self.bundle else "PDF page")
-        self.sheet_page_number.setEnabled(loaded and (not self.bundle or len(self.bundle.rows) > 1))
+        self.sheet_page_number.setEnabled(editable and loaded and (not self.bundle or len(self.bundle.rows) > 1))
 
     def clear_printed_sheet(self):
         self.pdf = self.bundle_row_error = None
@@ -1252,6 +1351,8 @@ class Window(QMainWindow):
         self.update_sheet_controls()
 
     def close_printed_sheet(self):
+        if self.active_job is not None or self.busy:
+            return
         if self.bundle:
             self.reset_artwork()
         else:
@@ -1282,8 +1383,10 @@ class Window(QMainWindow):
                 self.message(str(error))
 
     def open_sheet(self):
+        if self.active_job is not None or self.busy:
+            return
         path = self.select_open("Open Printed Sheet", "Print PDF or matched ZIP (*.pdf *.PDF *.zip *.ZIP)")
-        if not path:
+        if not path or self.active_job is not None or self.busy:
             return
         if path.suffix.casefold() == ".zip" or zipfile.is_zipfile(path):
             try:
@@ -1336,7 +1439,7 @@ class Window(QMainWindow):
         return self.bundle.rows[self.sheet_page_number.value() - 1] if self.bundle else None
 
     def change_sheet_page(self):
-        if self.loading:
+        if self.loading or self.active_job is not None or self.busy:
             return
         if self.bundle:
             row = self.current_bundle_row()
@@ -1351,7 +1454,7 @@ class Window(QMainWindow):
 
     def measure_sheet(self):
         path, matched, current = self.pdf, self.bundle, self.job
-        if self.loading or path is None or self.bundle_row_error:
+        if self.loading or self.active_job is not None or self.busy or path is None or self.bundle_row_error:
             return
         if not matched and not current:
             self.message("Check the layout before measuring the sheet.")
@@ -1365,8 +1468,10 @@ class Window(QMainWindow):
         self.refresh_send()
         row = self.current_bundle_row()
         marks = matched.marks() if matched else current.marks
+        self.checked_marks = marks
         dpi, page = self.sheet_dpi.currentData(), self.sheet_page_number.value()
         orient_scm = layout_presets.is_published(self.artwork)
+        self.checked_scm_orientation = orient_scm
 
         def work():
             if matched:
@@ -1454,16 +1559,110 @@ class Window(QMainWindow):
         self.identifier.clear()
         set_choices(self.detected, {"": "Select a cutter"}, "")
         self.change_target()
-        if mode == "auto":
+        if mode == "auto" and not self.loading:
             self.refresh_usb()
 
     def change_target(self):
+        if self.tools_connection is not None and self.tools_connection != self.connection():
+            self.detected_tools = ()
+            self.tools_connection = self.corrected_tools = None
+        changed = self.update_holder_labels()
+        self.tool_picker.setEnabled(not self.busy and self.active_job is None and bool(self.connection()[1]))
         self.set_cutter_status("Cutter status not checked.")
         self.clear_scan_result()
-        self.refresh_send()
+        if changed:
+            self.rebuild()
+        else:
+            self.refresh_send()
 
     def set_cutter_status(self, text):
         self.connection_status.setText(text)
+
+    def update_holder_labels(self):
+        device = graphtec.device_by_name(self.choice("cutter"))
+        changed = self.tool_selection.bind(self.connection(), device)
+        holder = self.blade["holder"].value() if device.two_tools else 1
+        choices = tooling.tool_choices(device)
+        selected = self.tool_selection.selected(holder)
+        if list(choices) != [self.tool_picker.itemData(i) for i in range(self.tool_picker.count())]:
+            set_choices(self.tool_picker, choices, selected)
+        else:
+            blocked = self.tool_picker.blockSignals(True)
+            self.tool_picker.setCurrentIndex(self.tool_picker.findData(selected))
+            self.tool_picker.blockSignals(blocked)
+        labels = tooling.holder_labels(self.detected_tools, device, self.tool_selection)
+        picker = self.blade["holder"].holders
+        for slot in (1, 2):
+            label = labels[slot - 1] if slot <= len(labels) else f"Tool Holder {slot}"
+            tab = picker.button(slot)
+            tab.setText(label.replace(" · ", "\n", 1))
+            tab.setAccessibleName(label)
+            tab.setToolTip(f"{label} (manually selected)" if self.tool_selection.selected(slot) else label)
+        return changed
+
+    def change_tool_selection(self):
+        if self.loading or self.active_job is not None or self.busy or not self.connection()[1]:
+            return
+        device = graphtec.device_by_name(self.choice("cutter"))
+        holder = self.blade["holder"].value() if device.two_tools else 1
+        choice = self.tool_picker.currentData()
+        self.tool_selection.select(holder, choice)
+        self.rebuild()
+
+    def apply_tool_detection(self, codes):
+        """Take a holder reply, label the tabs, and send depth back to manual once."""
+        self.detected_tools = tuple(codes)
+        self.tools_connection = self.connection()
+        self.update_holder_labels()
+        self.correct_detected_depth()
+
+    def correct_detected_depth(self):
+        if self.active_job is not None or self.busy or self.tool_selection.selected(1):
+            return
+        device = graphtec.device_by_name(self.choice("cutter"))
+        if device.two_tools and self.blade["holder"].value() != 1:
+            return
+        if not self.detected_tools or self.corrected_tools == self.detected_tools:
+            return
+        self.corrected_tools = self.detected_tools
+        depth, reason = tooling.depth_correction(self.detected_tools, self.blade["depth"].value())
+        if depth is None:
+            return
+        self.blade["depth"].setValue(depth)
+        self.set_cutter_status(reason)
+        self.message(reason)
+
+    def detect_tools(self):
+        """Read the installed tools once for this connection, in the background."""
+        connection = self.connection()
+        device = graphtec.device_by_name(self.choice("cutter"))
+        if (self.busy or self.active_job is not None or not connection[1]
+                or not device.detects_tools or self.tools_connection == connection):
+            return
+
+        self.busy = True
+        self.update_enabled_fields()
+        self.refresh_send()
+
+        def work():
+            with self.open_link(connection) as cutter:
+                return cutter.tool_codes()
+
+        def done(codes, error):
+            self.busy = False
+            self.update_enabled_fields()
+            if connection == self.connection():
+                if error:
+                    self.detected_tools = ()
+                    self.tools_connection = connection
+                    self.update_holder_labels()
+                else:
+                    self.apply_tool_detection(codes)
+            else:
+                self.detect_tools()
+            self.refresh_send()
+
+        self.tasks.run(work, done)
 
     def select_detected(self):
         if self.link.currentData() == "auto":
@@ -1477,11 +1676,13 @@ class Window(QMainWindow):
             if model and self.cutter_model.currentData() == cutters.AUTO:
                 self.select("cutter", model.name)
             self.change_target()
+            self.detect_tools()
             return
         self.identifier.setText(identifier or "")
         device = bluetooth.advertised_model(self.detected.currentText().split(" · ")[0])
         if device and self.cutter_model.currentData() == cutters.AUTO:
             self.select("cutter", device.name)
+        self.detect_tools()
 
     def find_cutters(self):
         from . import ble, rfcomm
@@ -1510,26 +1711,31 @@ class Window(QMainWindow):
 
     def check_device(self):
         connection = self.connection()
-        if self.busy:
+        if self.busy or self.active_job is not None:
             return
         if connection[0] != "auto" and not connection[1]:
             self.message("Select a Bluetooth cutter.")
             return
         self.busy = True
+        self.update_enabled_fields()
         self.set_cutter_status("Reading cutter status…")
         self.refresh_send()
 
         def work():
             with self.open_link(connection) as cutter:
                 version = f" · {cutter.firmware_version()}" if connection[0] != "auto" else ""
-                return cutter.device, f"{cutter.device.name} · {cutter.status_with_tools()}{version}"
+                status, codes = cutter.status_and_tools()
+                return cutter.device, f"{cutter.device.name} · {status}{version}", codes
 
         def done(value, error):
             self.busy = False
+            self.update_enabled_fields()
             if connection == self.connection():
                 self.set_cutter_status(f"Cutter detection unavailable. {error}" if error else value[1])
                 if not error and self.cutter_model.currentData() == cutters.AUTO:
                     self.select("cutter", value[0].name)
+                if not error and value[2] is not None:
+                    self.apply_tool_detection(value[2])
             self.refresh_send()
 
         self.tasks.run(work, done)
@@ -1613,6 +1819,14 @@ class Window(QMainWindow):
                         on_success=(lambda: self.show_scan_result("Registration passed. No cut paths were sent."))
                         if scan_only else None)
 
+    def release_job(self):
+        """Return the window to an editable state after a send ends, however it ended."""
+        self.cut_control = None
+        self.active_job = None
+        self.busy = False
+        self.update_enabled_fields()
+        self.refresh_send()
+
     def clear_scan_result(self):
         self.scan_result.clear()
         self.scan_box.hide()
@@ -1633,6 +1847,7 @@ class Window(QMainWindow):
                    on_success=None, test=False, wait_done=False, controllable=False):
         refusal = cutters.usb_refusal(connection, device, self.cutter_model.currentData())
         if refusal:
+            self.release_job()
             self.message(refusal)
             return
         self.guide.moved()
@@ -1656,11 +1871,7 @@ class Window(QMainWindow):
                 return cutter.run(steps)
 
         def done(sent, error):
-            self.cut_control = None
-            self.active_job = None
-            self.busy = False
-            self.update_enabled_fields()
-            self.refresh_send()
+            self.release_job()
             if isinstance(error, transport.RegistrationFailed) and on_registration_failure:
                 on_registration_failure(error)
             elif error is None and on_success:
@@ -1673,22 +1884,31 @@ class Window(QMainWindow):
         state = self.guide
         for field in (self.guide_apply, self.guide_edit, self.guide_next, self.guide_reset, self.exit_guide_btn):
             field.setEnabled(not self.busy)
+        self.guide_next.setEnabled(not self.busy and (
+            state.placement is None or any(number != state.spot for number in state.fresh_spots())))
+        used = state.current_spot
+        sample_shape = state.trial.sheet.shape if state.trial else state.shape
+        sample_size = used.rect.w if used else state.size_mm
+        for field, choice in ((self.guide_shape, sample_shape), (self.guide_size, sample_size)):
+            blocked = field.blockSignals(True)
+            field.setCurrentIndex(field.findData(choice))
+            field.blockSignals(blocked)
+            field.setEnabled(not self.busy)
         connected = starting_guide.has_cutter_endpoint(self.connection())
         self.guide_send.setEnabled(not self.busy and connected and state.can_cut)
         self.guide_use.setEnabled(not self.busy and state.tested_settings is not None)
-        self.guide_registration.setEnabled(not self.busy and state.placement is None)
+        self.guide_registration.setEnabled(not self.busy and not (state.spots or state.sheet_exported))
         self.guide_marked_sheet.setEnabled(not self.busy and state.registered)
         self.guide_send.setText("Repeat One Pass" if (state.completed and not state.interrupted) else "Cut One Pass…")
         if hasattr(self, "guide_spot_selector"):
             blocked = self.guide_spot_selector.blockSignals(True)
-            self.guide_spot_selector.setValue(state.spot)
             self.guide_spot_selector.setMaximum(max(state.max_spots, state.spot))
+            self.guide_spot_selector.setValue(state.spot)
             self.guide_spot_selector.blockSignals(blocked)
             differ = state.completed > 0 and state.settings_differ(self.job_options())
             status_text = f"{state.spot_status} · Settings changed (move to fresh spot)" if differ else state.spot_status
             self.guide_spot_status.setText(status_text)
-        has_tests = state.completed > 0 or len(state.history) > 0
-        self.material_guide.setText("Resume Material Test" if has_tests else "Dial In a Material…")
+        self.material_guide.setText("Resume Material Test" if state.has_tests else "Dial In a Material…")
         if self.tuning:
             self.footer_status.setText(state.sheet_status)
         status = state.status()
@@ -1713,7 +1933,12 @@ class Window(QMainWindow):
             return
         value = int(self.guide_spot_selector.value())
         if value != self.guide.spot:
-            self.guide.select_spot(value)
+            try:
+                self.guide.select_spot(value)
+            except ValueError as error:
+                self.update_guide()
+                self.message(str(error))
+                return
             self.persist_guide()
             self.update_guide()
             self.update_tuning_preview()
@@ -1734,21 +1959,35 @@ class Window(QMainWindow):
         self.guide.inspect(self.guide_outcome.currentData())
         self.update_guide()
 
+    def change_guide_sample(self):
+        if self.busy:
+            return
+        try:
+            self.guide.configure_sample(self.guide_shape.currentData(), self.guide_size.currentData())
+        except ValueError as error:
+            self.message(str(error))
+        else:
+            self.persist_guide()
+        self.update_guide()
+        self.update_tuning_preview()
+
     def update_tuning_preview(self):
         trial = None
         if self.tuning:
             trial = self.guide.trial
             if trial is None:
                 try:
-                    trial = self.guide.prepare(self.connection(), self.job_options(), self.job, "square")
+                    trial = self.guide.prepare(self.connection(), self.job_options(), self.job)
                 except (ValueError, KeyError):
                     pass
         placement = self.guide.placement if self.tuning else None
         active_rect = self.guide.spot_rect(self.guide.spot) if self.tuning else None
-        self.preview.show_trial(trial, self.guide.spots if self.tuning else (), placement, active_rect)
+        self.preview.show_trial(trial, self.guide.spots if self.tuning else (), placement, active_rect,
+                                grid=self.guide.fresh_spots() if self.tuning else {})
         self.preview_title.setText("Material test sheet" if self.preview.test_placement else "Sheet preview")
         self.preview_mode.setVisible(self.preview.test_placement is None and not self.preview.pdf.isNull())
         self.summary_bar.setVisible(not self.tuning)
+        self.bundle_notice_bar.setVisible(self.bundle is not None and not self.tuning)
         self.details.setVisible(not self.tuning and self.details_toggle.isChecked())
 
     def set_guide_blade_values(self, values):
@@ -1799,7 +2038,11 @@ class Window(QMainWindow):
     def next_guide_spot(self):
         if self.busy:
             return
-        self.guide.next_spot()
+        try:
+            self.guide.next_spot()
+        except ValueError as error:
+            self.message(str(error))
+            return
         self.persist_guide()
         self.update_guide()
         self.update_tuning_preview()
@@ -1807,6 +2050,7 @@ class Window(QMainWindow):
     def reset_guide(self):
         if not self.busy and self.confirm("Start a New Test Sheet?", "Load a fresh test sheet to start at the first spot."):
             self.guide.reset()
+            self.guide.placement = self.guide.make_placement(self.job, self.job_options())
             self.persist_guide()
             self.update_guide()
             self.update_tuning_preview()
@@ -1821,7 +2065,7 @@ class Window(QMainWindow):
 
     def change_guide_registration(self):
         self.guide.registered = self.guide_registration.isChecked()
-        if self.guide.placement is not None and self.guide.trial is None:
+        if self.guide.placement is not None and not self.guide.spots:
             from dataclasses import replace
             self.guide.placement = replace(self.guide.placement, registered=self.guide.registered)
         self.update_guide()
@@ -1839,21 +2083,40 @@ class Window(QMainWindow):
             self.update_guide()
             self.update_tuning_preview()
 
+    FRESH_SPOT_REASON = ("A second pass at different settings cuts over the first, so the "
+                         "square no longer shows what one setting does. Move to untouched "
+                         "stock, or pick the spot to test on.")
+
+    def fresh_spot_choice(self):
+        """Ask whether to move on. Returns "next", "choose" or "" for cancel."""
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Use a Fresh Test Spot?")
+        dialog.setText("These cut settings differ from the ones this spot was cut with.")
+        dialog.setInformativeText(self.FRESH_SPOT_REASON)
+        use_next = dialog.addButton("Use Next Spot", QMessageBox.ButtonRole.AcceptRole)
+        choose = dialog.addButton("Choose Spot…", QMessageBox.ButtonRole.ActionRole)
+        dialog.addButton(QMessageBox.StandardButton.Cancel)
+        dialog.exec()
+        clicked = dialog.clickedButton()
+        return "next" if clicked is use_next else "choose" if clicked is choose else ""
+
+    def offer_fresh_spot(self):
+        """Settings changed on a spot that has already been cut: offer a choice."""
+        choice = self.fresh_spot_choice()
+        if choice == "next":
+            self.guide_next.click()
+        elif choice == "choose":
+            self.guide_spot_selector.setFocus()
+            self.guide_spot_selector.selectAll()
+
     def confirm_guide_pass(self):
         if self.busy or not self.guide.can_cut:
             return
         if self.guide.completed > 0 and self.guide.settings_differ(self.job_options()):
-            self.message("Cut settings changed on this spot. Move to untouched stock before testing different settings.")
+            self.offer_fresh_spot()
             return
         try:
-            trial = self.guide.prepare(self.connection(), self.job_options(), self.job, "square")
-        except (ValueError, KeyError) as error:
-            self.message(str(error))
-            return
-        if self.guide.completed or self.confirm("Send One Test Pass?", self.guide.prompt(trial)):
-            self.start_guide_pass(trial)
-        try:
-            trial = self.guide.prepare(self.connection(), self.job_options(), self.job, "square")
+            trial = self.guide.prepare(self.connection(), self.job_options(), self.job)
         except (ValueError, KeyError) as error:
             self.message(str(error))
             return
@@ -1864,7 +2127,7 @@ class Window(QMainWindow):
         if self.busy or not self.guide.can_cut:
             return
         try:
-            current = self.guide.prepare(self.connection(), self.job_options(), self.job, "square")
+            current = self.guide.prepare(self.connection(), self.job_options(), self.job)
         except (ValueError, KeyError) as error:
             self.message(str(error))
             return

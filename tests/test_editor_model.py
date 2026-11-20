@@ -1,9 +1,22 @@
+from dataclasses import replace
 import json
 import pathlib
 import tempfile
 import unittest
 
-from cut_proxies import actions, editor_model, job, regmarks
+from cut_proxies import actions, editor_model, job, regmarks, sticker_assets
+from tests.test_sticker_print import make_image
+
+
+def _encoded_png():
+    import base64
+    with tempfile.TemporaryDirectory() as folder:
+        target = pathlib.Path(folder) / 'art.png'
+        make_image(target)
+        return base64.b64encode(target.read_bytes()).decode('ascii')
+
+
+_PNG = _encoded_png()
 
 
 class TestEditorModel(unittest.TestCase):
@@ -212,3 +225,82 @@ class TestEditorModel(unittest.TestCase):
         released = editor_model.group_selection(copied, (3,), release=True)
         self.assertIsNone(released[4].group)
         self.assertEqual(editor_model.group_members(released, 0), (0, 1))
+
+    def test_simplify_reduces_open_and_closed_paths_and_keeps_the_shape(self):
+        curve = tuple((index / 20, (index / 20) ** 2) for index in range(21))
+        opened = editor_model.Shape('Path', 10, 10, 60, 60, points=curve, closed=False)
+        reduced = editor_model.convert_path(opened, simplify=True)
+        self.assertLess(len(reduced.points), len(curve))
+        self.assertGreaterEqual(len(reduced.points), 2)
+        self.assertEqual(len(editor_model.convert_path(opened).points), len(curve))
+
+        edge = tuple(index / 10 for index in range(10))
+        ring = (*((step, 0) for step in edge), *((1, step) for step in edge),
+                *((1 - step, 1) for step in edge), *((0, 1 - step) for step in edge))
+        closed = editor_model.Shape('Path', 10, 10, 60, 60, points=ring, closed=True)
+        corners = editor_model.convert_path(closed, simplify=True)
+        self.assertEqual(len(corners.points), 4)
+        self.assertTrue(corners.closed)
+        self.assertEqual((corners.x, corners.y, corners.width, corners.height), (10, 10, 60, 60))
+
+    def test_a_project_is_saved_at_the_highest_version_its_features_need(self):
+        plain = editor_model.Shape('Rectangle', 10, 10, 20, 20)
+        text = editor_model.Shape('Text', 10, 10, 20, 20, contours=(((0, 0), (1, 0), (1, 1)),),
+                                  closed=True, text=editor_model.TextSpec('Hi', 'Sans', 10))
+        layered = replace(plain, layer='Crease')
+        sticker = editor_model.Shape('Sticker', 10, 10, 20, 20, closed=True,
+                                     contours=(((0, 0), (1, 0), (1, 1)),),
+                                     sticker=sticker_assets.Sticker(_PNG, 'art.png'))
+        for shapes, guides, expected in (((plain,), (), 2), ((text,), (), 3), ((plain,), (('h', 20.0),), 5),
+                                         ((layered,), (), 5), ((text, layered), (), 5),
+                                         ((sticker,), (), 4),
+                                         ((replace(sticker, layer='Print'),), (), 5),
+                                         ((sticker, layered), (), 5),
+                                         ((sticker,), (('v', 30.0),), 5)):
+            project = editor_model.Project(279.4, 215.9, shapes, guides=guides)
+            self.assertEqual(editor_model.project_version(project), expected)
+            with tempfile.TemporaryDirectory() as folder:
+                target = pathlib.Path(folder) / 'design.scc-template'
+                editor_model.save_project(target, project)
+                self.assertEqual(json.loads(target.read_text())['version'], expected)
+                self.assertEqual(editor_model.load_project(target), project)
+
+    def test_layers_and_guides_are_refused_by_versions_that_never_carried_them(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target = pathlib.Path(folder) / 'old.scc-template'
+            shape = dict(kind='Rectangle', x=10, y=10, width=20, height=20, radius=0, rotation=0,
+                         flip_x=False, flip_y=False, visible=True, action='Cut', points=[],
+                         closed=True)
+            target.write_text(json.dumps(dict(version=3, page_mm=[279.4, 215.9], registration=None,
+                                              mat='auto', objects=[dict(shape, layer='Crease')])))
+            with self.assertRaisesRegex(ValueError, 'Invalid template shape'):
+                editor_model.load_project(target)
+            target.write_text(json.dumps(dict(version=3, page_mm=[279.4, 215.9], registration=None,
+                                              mat='auto', objects=[shape], guides=[['h', 20.0]])))
+            with self.assertRaisesRegex(ValueError, 'version 5'):
+                editor_model.load_project(target)
+            target.write_text(json.dumps(dict(version=5, page_mm=[279.4, 215.9], registration=None,
+                                              mat='auto', objects=[dict(shape, layer='Crease')],
+                                              guides=[['h', 20.0]])))
+            reopened = editor_model.load_project(target)
+            self.assertEqual(reopened.shapes[0].layer, 'Crease')
+            self.assertEqual(reopened.guides, (('h', 20.0),))
+
+    def test_legacy_stickers_with_layers_and_guides_reopen_and_save_at_version_five(self):
+        sticker = editor_model.Shape('Sticker', 10, 10, 20, 20, closed=True, layer='Print',
+                                     contours=(((0, 0), (1, 0), (1, 1)),),
+                                     sticker=sticker_assets.Sticker(_PNG, 'art.png'))
+        project = editor_model.Project(279.4, 215.9, (sticker,), guides=(('h', 20.0),))
+        with tempfile.TemporaryDirectory() as folder:
+            target = pathlib.Path(folder) / 'old.scc-template'
+            legacy = dict(editor_model.project_document(project), version=4)
+            target.write_text(json.dumps(legacy))
+            reopened = editor_model.load_project(target)
+            self.assertEqual(reopened, project)
+            editor_model.save_project(target, reopened)
+            self.assertEqual(json.loads(target.read_text())['version'], 5)
+            for guides in (None, False, {"h": 20}, [["q", 20]], [["h"]]):
+                with self.subTest(guides=guides):
+                    target.write_text(json.dumps(dict(legacy, guides=guides)))
+                    with self.assertRaisesRegex(ValueError, 'Invalid template guides'):
+                        editor_model.load_project(target)

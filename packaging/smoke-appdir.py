@@ -8,6 +8,8 @@ import subprocess
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('appdir', type=pathlib.Path)
 parser.add_argument('--gui', action='store_true', help='open a window briefly on the current display')
+parser.add_argument('--skip-usb-init', action='store_true',
+                    help='verify the bundled library without initializing USB in a restricted sandbox')
 args = parser.parse_args()
 base = args.appdir.resolve()
 env = os.environ.copy()
@@ -17,15 +19,21 @@ env.update(PYTHONHOME=str(base / 'usr'), PYTHONNOUSERSITE='1',
            GIO_EXTRA_MODULES=str(base / 'usr/lib/gio/modules'),
            XDG_DATA_DIRS=str(base / 'usr/share') + ':/usr/local/share:/usr/share',
            PATH=str(base / 'usr/bin') + ':' + os.environ['PATH'], GSK_RENDERER='cairo')
-env.pop('PYTHONPATH', None)
+env['PYTHONPATH'] = os.pathsep.join(str(path) for path in base.glob('usr/lib/python*/site-packages'))
+env['CUT_PROXIES_LIBUSB'] = str(base / 'usr/lib/libusb-1.0.so.0')
+env['SCC_SMOKE_USB_INIT'] = '0' if args.skip_usb_init else '1'
+env.pop('LD_LIBRARY_PATH', None)
 command = [str(base / 'usr/lib/ld-linux-x86-64.so.2'), '--library-path',
            str(base / 'usr/lib'), str(base / 'usr/bin/python3')]
 code = r'''
-import pathlib, sys, tempfile
+import ctypes, os, pathlib, sys, tempfile
 base = pathlib.Path(sys.prefix).parent
 sys.path.insert(0, str(base / 'usr/lib/cut-proxies'))
 import gi, cairo, PIL, usb.core, usb.backend.libusb1
-assert usb.backend.libusb1.get_backend() is not None, 'bundled libusb not found'
+from cut_proxies import transport
+assert ctypes.CDLL(os.environ['CUT_PROXIES_LIBUSB']).libusb_get_version
+if os.environ['SCC_SMOKE_USB_INIT'] == '1':
+    assert transport._bundled_usb_backend() is not None, 'could not initialize bundled libusb'
 for module in (gi, cairo, PIL, usb.core):
     assert pathlib.Path(module.__file__).is_relative_to(base), module.__file__
 from cut_proxies import job, sheet, template

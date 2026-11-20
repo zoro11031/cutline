@@ -15,6 +15,9 @@ except ImportError:
     gui = None
 
 
+_APP_SERIAL = 0
+
+
 @unittest.skipUnless(gui is not None, 'GTK and PyGObject are required')
 class TestDesignWorkspace(unittest.TestCase):
     def make_window(self):
@@ -23,7 +26,11 @@ class TestDesignWorkspace(unittest.TestCase):
         if not gui.Gtk.init_check() or Gdk.Display.get_default() is None:
             self.skipTest('a display is required to create GTK widgets')
         gui.Adw.init()
-        app = gui.Adw.Application(application_id=f'org.printing.DesignSmokeTest.{self._testMethodName}',
+        # A unique id per window: the discrimination suite runs a test class again
+        # in-process, and a repeated application id fails to register.
+        global _APP_SERIAL
+        _APP_SERIAL += 1
+        app = gui.Adw.Application(application_id=f'org.printing.DesignSmokeTest.{self._testMethodName}{_APP_SERIAL}',
                                   flags=gui.Gio.ApplicationFlags.NON_UNIQUE)
         self.assertTrue(app.register(None))
         win = gui.Window(app)
@@ -32,13 +39,20 @@ class TestDesignWorkspace(unittest.TestCase):
         patcher = mock.patch.object(gui.transport, "usb_endpoints", return_value=[(device, "", (1, 2))])
         patcher.start()
         self.addCleanup(patcher.stop)
-        win.refresh_usb()
+        # The tier stays offline even with a cutter on the bus: automatic tool
+        # detection opens a link, so nothing may reach real hardware.
+        offline = mock.patch.object(gui.transport, "open_transport",
+                                    side_effect=gui.transport.NotFound("offline test"))
+        offline.start()
+        self.addCleanup(offline.stop)
+        with mock.patch.object(win, "detect_tools"):
+            win.refresh_usb()
         return win
 
     def test_multiple_usb_cutters_require_an_endpoint_choice(self):
         win = self.make_window()
         device = graphtec.device_by_name("Silhouette Cameo 4")
-        with mock.patch.object(gui.transport, "usb_endpoints",
+        with mock.patch.object(win, "detect_tools"), mock.patch.object(gui.transport, "usb_endpoints",
                                return_value=[(device, "", (1, 2)), (device, "", (1, 3))]):
             win.refresh_usb()
             self.assertIsNone(win._connection()[1])
@@ -108,24 +122,27 @@ class TestDesignWorkspace(unittest.TestCase):
         measure.assert_called_once()
 
     def test_apply_material_opens_the_cut_settings_with_the_selected_values(self):
-        from cut_proxies import materials
-
-        win = self.make_window()
-        win.stack.set_visible_child_name('materials')
-        with mock.patch.object(materials, 'load', return_value={}):
+        with tempfile.TemporaryDirectory() as folder, \
+             mock.patch.object(config, "CONFIG_DIR", Path(folder)), \
+             mock.patch.object(presets, "factory_presets", return_value={}):
+            win = self.make_window()
+            win.stack.set_visible_child_name("materials")
+            presets.save_blade_settings(presets.STARTING_NAME, new_name="Sample", force=16,
+                                        speed=5, depth=None, passes=2)
+            win.refresh_preset_choices()
             win._load_materials()
-        self.assertFalse(win.apply_material_button.get_sensitive())
-        sample = mock.Mock()
-        sample.cut_settings.return_value = graphtec.CutSettings(force=16)
-        sample.describe.return_value = 'Force 16'
-        win.r_cutter_divisions.set_selected(1)
-        with mock.patch.object(materials, 'load', return_value={}), \
-             mock.patch.object(materials, 'cutter_divisions', return_value={'Sample': sample}):
-            win._load_materials()
-        self.assertTrue(win.apply_material_button.get_sensitive())
-        win.apply_material_button.emit('clicked')
-        self.assertEqual(win.stack.get_visible_child_name(), 'cut')
-        self.assertEqual(win.job.settings.force, 16)
+            self.assertEqual(win._text(win.r_material), presets.STARTING_NAME)
+            win.r_material.set_selected(0)
+            self.assertEqual(win._text(win.r_material), "Sample")
+            self.assertFalse(win.save_preset_btn.get_sensitive())
+            self.assertEqual(win.job.settings.force, 25)
+            self.assertIn("Manual / off", win.preset_note.get_subtitle())
+            self.assertTrue(win.apply_material_button.get_sensitive())
+            win.apply_material_button.emit("clicked")
+            self.assertEqual(win.stack.get_visible_child_name(), "cut")
+            self.assertEqual(win._text(win.r_preset), "Sample")
+            self.assertEqual(win.job.settings.force, 16)
+            self.assertTrue(win.save_preset_btn.get_sensitive())
 
     def test_material_presets_page_selection_and_delete_state(self):
         win = self.make_window()
@@ -139,6 +156,7 @@ class TestDesignWorkspace(unittest.TestCase):
             custom = presets.save_blade_settings(
                 presets.STARTING_NAME, force=18, speed=10, depth=2, passes=1,
                 new_name="Custom GTK Test")
+            win.r_force.set_value(28)
             win._load_materials()
             model = win.r_material.get_model()
             names = [model.get_string(i) for i in range(model.get_n_items())]
@@ -152,6 +170,7 @@ class TestDesignWorkspace(unittest.TestCase):
                 win.on_delete_selected_preset()
             self.assertFalse(custom.exists())
             self.assertFalse(win.delete_preset_btn.get_sensitive())
+            self.assertEqual(win.job.settings.force, 28)
 
     def test_send_editors_update_the_job_from_the_same_controls(self):
         win = self.make_window()
@@ -438,9 +457,34 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertFalse(win.guide_send.get_sensitive())
         self.assertIn("select a cutter", win.guide_status.get_subtitle())
 
-        win.r_bluetooth.set_selected(1)
+        with mock.patch.object(win, "detect_tools"):
+            win.r_bluetooth.set_selected(1)
         self.assertTrue(win.guide_send.get_sensitive())
         self.assertNotIn("select a cutter", win.guide_status.get_subtitle())
+
+    def test_material_guide_shape_and_size_controls_move_to_fresh_stock(self):
+        from cut_proxies import testcut
+
+        win = self.make_window()
+        win.open_material_guide()
+        self.assertTrue(win.guide_registration.get_sensitive())
+        small = len(win.preview.test_grid)
+        win.guide_shape.set_selected(tuple(testcut.TEST_SHAPES).index("rounded-square"))
+        win.guide_size.set_selected(tuple(starting_guide.SAMPLE_SIZES).index(50.0))
+        self.assertLess(len(win.preview.test_grid), small)
+        self.assertEqual(win.preview.trial.sheet.shape, "rounded-square")
+        self.assertEqual(win.preview.trial.sheet.size_mm, 50.0)
+        chosen, box = max(win.preview.test_grid.items())
+        self.assertTrue(win.on_preview_spot_clicked(box.x + 2, box.y + 2))
+        self.assertEqual(win.guide.spot, chosen)
+        self.assertEqual(win.preview.trial.sheet.cells[0].rect, box)
+        win.guide.record(win.preview.trial)
+        win.update_guide()
+        self.assertFalse(win.guide_registration.get_sensitive())
+        win.guide_shape.set_selected(tuple(testcut.TEST_SHAPES).index("triangle"))
+        self.assertNotEqual(win.guide.spot, chosen)
+        self.assertEqual(win.guide.spot_rect(chosen), box)
+        self.assertEqual(win.preview.trial.sheet.shape, "triangle")
 
     def test_material_guide_shows_fresh_spots_and_restores_the_cut_preview(self):
         win = self.make_window()
@@ -619,6 +663,7 @@ class TestDesignWorkspace(unittest.TestCase):
         win.pdf_path = Path('sample.pdf')
         report = win.sheet_report = object()
         token = win._sheet_token = object()
+        win.checked_marks = win.job.marks
         win.r_force.set_value(win.r_force.get_value() - 1)
         self.assertIs(win.sheet_report, report)
         self.assertIs(win._sheet_token, token)
@@ -704,18 +749,118 @@ class TestDesignWorkspace(unittest.TestCase):
         prompt.assert_called_once()
         self.assertEqual(win.r_passes.get_value(), 2)
 
-        # Settings differ check on an already-cut spot
+        # Settings differ on an already-cut spot: offer a fresh one, cut nothing.
         win.guide_spot_selector.set_value(1)
         self.assertEqual(win.guide.spot, 1)
         win.r_force.set_value(win.r_force.get_value() + 5)
-        with mock.patch.object(win, 'toast') as toast:
+        sent = len(fake.run.call_args_list)
+        with mock.patch.object(win, 'offer_fresh_spot') as offer:
             win.guide_send.emit('clicked')
-            toast.assert_called_with("Cut settings changed on this spot. Move to untouched stock before testing different settings.")
+        offer.assert_called_once()
+        self.assertEqual(len(fake.run.call_args_list), sent)
+        self.assertEqual(win.guide.spot, 1)
+        self.assertIn('Settings changed', win.guide_spot_status.get_title())
+
+        # The offer's own answers: move on, or stay put.
+        win._fresh_spot_response(None, 'cancel')
+        self.assertEqual(win.guide.spot, 1)
+        win._fresh_spot_response(None, 'next')
+        self.assertEqual(win.guide.spot, 2)
+        win.guide_spot_selector.set_value(1)
 
         win.guide_next.emit('clicked')
         self.assertEqual(win.guide.spot, 2)
         self.assertIn('Spot 1 · 2 passes', win.guide_history.get_subtitle())
         self.assertEqual(win.preview.test_spots[0].passes, 2)
+
+    def test_footer_actions_carry_their_roles_and_the_status_wraps_in_gtk(self):
+        win = self.make_window()
+        self.assertTrue(win.cut_button.has_css_class("suggested-action"))
+        self.assertFalse(win.cut_button.has_css_class("destructive-action"))
+        self.assertTrue(win.cancel_cut.has_css_class("destructive-action"))
+        self.assertTrue(win.review_send.has_css_class("suggested-action"))
+        self.assertFalse(win.scan_button.has_css_class("destructive-action"))
+        self.assertFalse(win.corner_button.has_css_class("destructive-action"))
+
+        # A refusal has to be readable at compact widths, so it wraps.
+        self.assertTrue(win.send_status.get_wrap())
+        self.assertFalse(win.send_status.get_ellipsize() == gui.Pango.EllipsizeMode.END)
+
+    def test_the_material_test_survives_settings_edits_and_page_switches_in_gtk(self):
+        win = self.make_window()
+        win.open_material_guide()
+        self.assertTrue(win.tuning)
+        win.guide_next.emit("clicked")
+        spot = win.guide.spot
+        self.assertEqual(spot, 2)
+
+        win.guide_edit.emit("clicked")
+        self.assertTrue(win.tuning, "editing cut settings closed the material test")
+        self.assertEqual(win.stack.get_visible_child_name(), "cut")
+        self.assertTrue(win.cut_settings.get_visible())
+        self.assertFalse(win.cut_button.get_visible())
+
+        win.r_force.set_value(win.r_force.get_value() + 3)
+        self.assertEqual(win.guide.spot, spot)
+        self.assertTrue(win.tuning)
+
+        win.stack.set_visible_child_name("sheet")
+        win.stack.set_visible_child_name("cut")
+        self.assertTrue(win.tuning)
+        self.assertEqual(win.guide.spot, spot)
+
+        win.edit_settings_btn.emit("clicked")
+        self.assertTrue(win.tuning)
+        win.open_send_workspace()
+        self.assertTrue(win.tuning)
+
+        win.back_to_send.emit("clicked")
+        self.assertFalse(win.tuning)
+        self.assertTrue(win.cut_button.get_visible())
+        self.assertEqual(win.material_guide.get_label(), "Resume Material Test")
+
+    def test_every_test_spot_can_be_reached_from_the_keyboard_in_gtk(self):
+        win = self.make_window()
+        win.open_material_guide()
+        selector = win.guide_spot_selector
+        self.assertTrue(selector.get_sensitive())
+
+        selector.set_value(4)
+        self.assertEqual(win.guide.spot, 4)
+        self.assertIn("Untouched stock", win.guide_spot_status.get_title())
+
+        selector.set_value(1)
+        self.assertEqual(win.guide.spot, 1)
+        win.guide_next.emit("clicked")
+        self.assertEqual(int(selector.get_value()), win.guide.spot)
+        self.assertEqual(selector.get_adjustment().get_upper(),
+                         max(win.guide.max_spots, win.guide.spot))
+
+        # A spot the sheet does not have: the selector clamps, the model refuses.
+        beyond = win.guide.max_spots + 1
+        selector.set_value(beyond)
+        self.assertEqual(int(selector.get_value()), win.guide.max_spots)
+        self.assertEqual(win.guide.spot, win.guide.max_spots)
+        with self.assertRaisesRegex(ValueError, "spots"):
+            win.guide.select_spot(beyond)
+
+        # The selector is not editable while the cutter is working.
+        win._sending = True
+        win.update_guide()
+        self.assertFalse(selector.get_sensitive())
+        win._sending = False
+
+    def test_a_matched_zip_explains_itself_before_an_edit_is_attempted_in_gtk(self):
+        win = self.make_window()
+        self.assertFalse(win.bundle_banner.get_revealed())
+        win.pdf_bundle = mock.MagicMock()
+        win.update_send_actions()
+        self.assertTrue(win.bundle_banner.get_revealed())
+        self.assertIn("locked to the printed sheet", win.bundle_banner.get_title())
+        self.assertEqual(win.bundle_banner.get_button_label(), "Open Sheet")
+        win.pdf_bundle = None
+        win.update_send_actions()
+        self.assertFalse(win.bundle_banner.get_revealed())
 
     def test_workspace_toggle_and_matched_zip_restrictions(self):
         win = self.make_window()
@@ -808,6 +953,7 @@ class TestDesignWorkspace(unittest.TestCase):
             win.r_depth.set_value(-1)
             win.on_save_blade_preset(new_name=" Green holder ")
             self.assertEqual(win._text(win.r_preset), "Green holder")
+            self.assertEqual(win.job.preset.name, "Green holder")
             self.assertEqual(presets.get("Green holder").cut_settings().force, 18)
             self.assertIsNone(presets.get("Green holder").cut_settings().depth)
             self.assertEqual(presets.get(config.DEFAULT_PRESET).cut_settings().force, 25)
@@ -895,7 +1041,8 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertFalse(win.corner_button.get_sensitive())
         self.assertFalse(win.scan_button.get_sensitive())
         self.assertEqual(win.send_status.get_label(),
-                         "Registration check failed. Open Sheet to see the missing marks.")
+                         "⚠ Registration check failed. Open Sheet to see the missing marks.")
+        self.assertTrue(win.send_status.has_css_class("warning"))
 
         toasts = []
         with mock.patch.object(win, "toast", side_effect=toasts.append):
@@ -914,7 +1061,7 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertFalse(win.corner_button.get_sensitive())
         self.assertFalse(win.scan_button.get_sensitive())
         self.assertEqual(win.send_status.get_label(),
-                         "Could not measure registration marks on the print file. Open Sheet to review.")
+                         "⚠ Could not measure registration marks on the print file. Open Sheet to review.")
 
         # Passed check
         win.pdf_check_state = sheet.RegistrationDecision.PASSED
@@ -946,6 +1093,230 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertTrue(win.cut_button.get_sensitive())
         self.assertTrue(win.corner_button.get_sensitive())
         self.assertTrue(win.scan_button.get_sensitive())
+
+    def test_a_send_locks_the_settings_and_every_ending_unlocks_them(self):
+        from cut_proxies import transport
+
+        win = self.make_window()
+        win.r_force.set_value(25)
+        win.rebuild()
+        checked = win.job
+        self.assertTrue(win.r_force.get_sensitive())
+        win.imported = mock.Mock()
+        win.update_send_actions()
+        self.assertTrue(win.use_generated.get_sensitive())
+        self.assertFalse(win.r_sheet_page.get_sensitive())
+
+        win.active_job = checked
+        win.cut_control = transport.CutControl(lambda: None)
+        win._sending = True
+        win.lock_job_controls(True)
+        win.update_send_actions()
+        self.assertFalse(win.use_generated.get_sensitive())
+        self.assertFalse(win.reset_layout_action.get_enabled())
+        self.assertFalse(win.open_print_button.get_sensitive())
+        self.assertFalse(win.send_holder_buttons[2].get_sensitive())
+        win.on_clear_artwork()
+        self.assertIsNotNone(win.imported)
+        for widget in (win.r_force, win.r_speed, win.r_passes, win.r_cutter, win.r_preset, win.r_sheet):
+            self.assertFalse(widget.get_sensitive())
+
+        # An edit attempt cannot reach the submitted job while it is locked.
+        win.r_force.set_value(10)
+        win.on_changed()
+        self.assertIs(win.active_job, checked)
+        self.assertEqual(win.active_job.settings.force, 25)
+
+        win.imported = None
+        win.release_job()
+        self.assertIsNone(win.active_job)
+        self.assertFalse(win._sending)
+        for widget in (win.r_force, win.r_speed, win.r_passes, win.r_cutter, win.r_preset, win.r_sheet):
+            self.assertTrue(widget.get_sensitive())
+        self.assertTrue(win.open_print_button.get_sensitive())
+        self.assertTrue(win.send_holder_buttons[2].get_sensitive())
+        self.assertFalse(win.r_sheet_page.get_sensitive())
+
+    def test_a_matched_bundle_stays_locked_after_a_send_unlocks_the_rest(self):
+        win = self.make_window()
+        win.lock_bundle_layout(True)
+        locked = win.bundle_locked_controls()
+        win.lock_job_controls(True)
+        win.lock_job_controls(False)
+        for widget in locked:
+            self.assertFalse(widget.get_sensitive())
+        self.assertTrue(win.r_force.get_sensitive())
+        win.lock_bundle_layout(False)
+        self.assertTrue(win.r_pattern.get_sensitive())
+
+    def test_a_job_without_steps_is_refused_without_claiming_the_window(self):
+        win = self.make_window()
+        win.r_register.set_active(False)
+        win.rebuild()
+        self.assertFalse(win.job.registration)
+        with mock.patch.object(win, "toast") as toast:
+            gui.Window._cut_response(win, None, "cut", win.job, win._connection(), True)
+        self.assertIn("does not use registration", toast.call_args.args[0])
+        self.assertIsNone(win.active_job)
+        self.assertFalse(win._sending)
+        self.assertTrue(win.r_force.get_sensitive())
+        win.rebuild()
+        self.assertIsNotNone(win.job)
+
+    def test_a_passed_check_survives_blade_edits_and_a_change_during_one_invalidates_it(self):
+        win = self.make_window()
+        win.pdf_path = Path('sample.pdf')
+        win.r_register.set_active(True)
+        win.rebuild()
+        win.checked_marks = win.job.marks
+        win.sheet_report = object()
+        win._sheet_token = object()
+        win.pdf_check_state = gui.sheet_mod.RegistrationDecision.PASSED
+
+        win.r_force.set_value(win.r_force.get_value() - 1)
+        win.r_speed.set_value(win.r_speed.get_value() - 1)
+        self.assertEqual(win.pdf_check_state, gui.sheet_mod.RegistrationDecision.PASSED)
+
+        win.checked_marks = None
+        with mock.patch.object(gui.threading, "Thread") as thread:
+            win.measure_sheet()
+        thread.return_value.start.assert_called_once()
+        self.assertEqual(win.pdf_check_state, gui.sheet_mod.RegistrationDecision.CHECKING)
+        self.assertEqual(win.checked_marks, win.job.marks)
+        win.r_inset.set_value(win.r_inset.get_value() + 1)
+        self.assertEqual(win.pdf_check_state, gui.sheet_mod.RegistrationDecision.NONE)
+        self.assertIsNone(win.checked_marks)
+        self.assertIsNone(win._sheet_token)
+
+    def test_the_holder_tabs_name_the_detected_tool_and_depth_follows_it_in_gtk(self):
+        win = self.make_window()
+        buttons = win.send_holder_buttons
+        win.r_depth.set_value(7)
+
+        win.apply_tool_detection((2, 0))
+        self.assertEqual(buttons[1].get_label(), "Tool Holder 1\nAutoBlade")
+        self.assertEqual(buttons[2].get_label(), "Tool Holder 2\nEmpty")
+        self.assertEqual(int(win.r_depth.get_value()), 7)
+
+        with mock.patch.object(win, "toast") as toast:
+            win.apply_tool_detection((4, 0))
+        self.assertEqual(buttons[1].get_label(), "Tool Holder 1\nKraft blade")
+        self.assertEqual(int(win.r_depth.get_value()), -1)
+        self.assertIn("Kraft blade", toast.call_args.args[0])
+
+        # The same reply again does not fight an operator who sets depth back.
+        win.r_depth.set_value(5)
+        with mock.patch.object(win, "toast") as toast:
+            win.apply_tool_detection((4, 0))
+        toast.assert_not_called()
+        self.assertEqual(int(win.r_depth.get_value()), 5)
+
+        win.forget_tool_detection()
+        self.assertEqual(buttons[1].get_label(), "Tool Holder 1")
+        self.assertEqual(buttons[2].get_label(), "Tool Holder 2")
+
+    def test_a_pdf_check_stops_authorizing_cuts_when_orientation_mode_changes(self):
+        win = self.make_window()
+        win.pdf_path = Path("print.pdf")
+        win.r_register.set_active(True)
+        win.rebuild()
+        win.checked_marks = win.job.marks
+        win._sheet_token = object()
+        win.pdf_check_state = gui.sheet_mod.RegistrationDecision.PASSED
+        win.update_send_actions()
+        self.assertTrue(win.cut_button.get_sensitive())
+        with mock.patch.object(gui.layout_presets, "is_published", return_value=True):
+            win.on_changed()
+        self.assertIsNone(win._sheet_token)
+        self.assertFalse(win.cut_button.get_sensitive())
+
+    def test_manual_depth_is_applied_when_returning_to_holder_one(self):
+        win = self.make_window()
+        win.r_depth.set_value(7)
+        win.r_holder.set_value(2)
+        win.apply_tool_detection((1, 7))
+        self.assertEqual(int(win.r_holder.get_value()), 2)
+        self.assertIsNone(win.corrected_tools)
+        win.r_holder.set_value(1)
+        self.assertEqual(int(win.r_depth.get_value()), -1)
+
+    def test_blade_picker_allows_rotary_in_holder_one_and_ignores_later_detection_errors(self):
+        win = self.make_window()
+        picker = win.r_tool_selection
+        win.apply_tool_detection((2, 255))
+        self.assertEqual(win._text(picker), "Detect automatically")
+        picker.set_selected(win.tool_picker_choices.index("rotary"))
+        win.apply_tool_detection((2, 255))
+        self.assertEqual(win.r_holder.get_value(), 1)
+        self.assertEqual(win.send_holder_buttons[1].get_label(), "Tool Holder 1\nRotary blade")
+        self.assertFalse(win.r_depth.get_sensitive())
+        self.assertEqual(win.job.blocked, [])
+        self.assertEqual(win.job.settings.holder, 1)
+        self.assertNotIn(b"TF", win.job.stream)
+
+        win.r_holder.set_value(2)
+        picker.set_selected(win.tool_picker_choices.index("rotary"))
+        self.assertEqual(win.r_holder.get_value(), 2)
+        self.assertEqual(win.send_holder_buttons[2].get_label(), "Tool Holder 2\nRotary blade")
+        self.assertEqual(win.job.settings.holder, 2)
+        self.assertIn(b"J2\x03", win.job.stream)
+        self.assertNotIn(b"TF", win.job.stream)
+
+        picker.set_selected(0)
+        self.assertIn("Detection error", win.send_holder_buttons[2].get_label())
+
+        win.r_holder.set_value(1)
+        self.assertEqual(win._text(picker), "Rotary blade")
+        picker.set_selected(0)
+        self.assertEqual(win._text(picker), "Detect automatically")
+        self.assertTrue(win.r_depth.get_sensitive())
+
+    def test_a_pending_tool_probe_blocks_other_commands_and_recovers_after_failure(self):
+        win = self.make_window()
+        with mock.patch.object(gui.threading, "Thread") as thread, \
+             mock.patch.object(gui.GLib, "idle_add", side_effect=lambda fn, *a: fn(*a)), \
+             mock.patch.object(gui.cutters, "open_link", side_effect=OSError("gone")):
+            win.detect_tools()
+            win.detect_tools()
+            win.on_refresh_status()
+            thread.assert_called_once()
+            self.assertFalse(win.check_cutter_status.get_sensitive())
+            self.assertFalse(win.cut_button.get_sensitive())
+            thread.call_args.kwargs["target"]()
+        self.assertTrue(win.check_cutter_status.get_sensitive())
+        self.assertFalse(win._checking_status)
+
+    def test_tools_are_read_once_per_connection_and_not_during_a_job_in_gtk(self):
+        win = self.make_window()
+        cutter = mock.MagicMock()
+        cutter.__enter__.return_value = cutter
+        cutter.tool_codes.return_value = (2, 0)
+
+        class Immediate:
+            def __init__(self, target=None, daemon=False, **_kwargs):
+                self._target = target
+
+            def start(self):
+                self._target()
+
+        with mock.patch.object(gui.threading, "Thread", Immediate), \
+             mock.patch.object(gui.GLib, "idle_add", side_effect=lambda fn, *a: fn(*a)), \
+             mock.patch.object(gui.cutters, "open_link", return_value=cutter):
+            win.detect_tools()
+            self.assertEqual(win.detected_tools, (2, 0))
+            win.detect_tools()
+            self.assertEqual(cutter.tool_codes.call_count, 1)
+
+            win.tools_connection = None
+            win._sending = True
+            win.detect_tools()
+            self.assertEqual(cutter.tool_codes.call_count, 1)
+            win._sending = False
+
+            win.active_job = win.job
+            win.detect_tools()
+            self.assertEqual(cutter.tool_codes.call_count, 1)
+            win.active_job = None
 
     def test_active_and_paused_job_details_and_control_states_in_gtk(self):
         from cut_proxies import transport
@@ -1026,7 +1397,7 @@ class TestDesignWorkspace(unittest.TestCase):
 @unittest.skipUnless(gui is not None, 'PyGObject is not installed')
 class TestOpenDialogs(unittest.TestCase):
     def test_svg_button_opens_a_filtered_file_dialog(self):
-        window = mock.Mock()
+        window = mock.Mock(_job_locked=False, _sending=False)
         with mock.patch.object(gui.Gtk, 'FileDialog') as dialog:
             gui.Window.on_open_artwork(window)
         dialog.return_value.open.assert_called_once()
@@ -1035,7 +1406,7 @@ class TestOpenDialogs(unittest.TestCase):
         self.assertEqual(filters.get_item(0).get_name(), 'Cut templates (SVG, DXF, Studio3)')
 
     def test_pdf_button_opens_a_filtered_file_dialog(self):
-        window = mock.Mock()
+        window = mock.Mock(_job_locked=False, _sending=False)
         with mock.patch.object(gui.Gtk, 'FileDialog') as dialog:
             gui.Window.on_pick_pdf(window)
         dialog.return_value.open.assert_called_once()
@@ -1058,7 +1429,8 @@ class TestOpenDialogs(unittest.TestCase):
 
     def test_a_failed_import_keeps_the_previous_artwork_and_job(self):
         previous = object()
-        window = types.SimpleNamespace(imported=previous, toast=mock.Mock(), clear_bundle=mock.Mock())
+        window = types.SimpleNamespace(imported=previous, toast=mock.Mock(), clear_bundle=mock.Mock(),
+                                       _job_locked=False, _sending=False)
         window.load_artwork_file = types.MethodType(gui.Window.load_artwork_file, window)
         with mock.patch.object(gui.Gtk, 'FileDialog') as dialog, \
              mock.patch('cut_proxies.importer.load', side_effect=ValueError('bad file')):
@@ -1072,7 +1444,8 @@ class TestOpenDialogs(unittest.TestCase):
     def test_multipage_svg_prompts_then_loads_the_selected_page(self):
         path = Path("/tmp/multipage.svg")
         artwork = mock.Mock()
-        window = types.SimpleNamespace(clear_bundle=mock.Mock(), set_artwork=mock.Mock())
+        window = types.SimpleNamespace(clear_bundle=mock.Mock(), set_artwork=mock.Mock(),
+                                       _job_locked=False, _sending=False)
         window.load_artwork_file = types.MethodType(gui.Window.load_artwork_file, window)
         with mock.patch.object(gui.Adw, "AlertDialog") as dialog, \
              mock.patch.object(gui.Gtk, "SpinButton") as spin, \
@@ -1163,7 +1536,8 @@ class TestCutConfirmationGuard(unittest.TestCase):
 @unittest.skipUnless(gui is not None, 'PyGObject is not installed')
 class TestSheetRequestGuard(unittest.TestCase):
     def make_window(self, token):
-        return types.SimpleNamespace(_sheet_token=token, pdf_bundle=None, preview=mock.Mock(),
+        return types.SimpleNamespace(_sheet_token=token, pdf_bundle=None, job=None, checked_marks=None,
+            pdf_check_state=gui.sheet_mod.RegistrationDecision.NONE, preview=mock.Mock(),
             sheet_result=mock.Mock(), rebuild=mock.Mock())
 
     def test_current_result_updates_artwork_and_measurement(self):

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 import datetime
 import json
 import os
@@ -76,17 +76,6 @@ def save_to_library(
     target = folder / filename
 
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    objects = []
-    for shape in project.shapes:
-        fields = asdict(shape)
-        for field_name, default in (
-            ("holder", None), ("line_style", "solid"), ("line_width_mm", 0.0),
-            ("text", None), ("contours", ()), ("sticker", None), ("layer", ""),
-        ):
-            if fields.get(field_name) == default:
-                del fields[field_name]
-        objects.append(fields)
-
     data = {
         "id": slug,
         "name": clean_name,
@@ -94,14 +83,8 @@ def save_to_library(
         "tags": list(clean_tags),
         "created": now_iso,
         "modified": now_iso,
-        "version": 5,
-        "page_mm": [project.width, project.height],
-        "registration": asdict(project.registration) if project.registration else None,
-        "mat": project.mat,
-        "objects": objects,
+        **editor_model.project_document(project),
     }
-    if project.guides:
-        data["guides"] = [list(g) for g in project.guides]
 
     content = json.dumps(data, indent=2, allow_nan=False) + "\n"
     with tempfile.NamedTemporaryFile(dir=folder, delete=False, mode="w", encoding="utf-8") as f:

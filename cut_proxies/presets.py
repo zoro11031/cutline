@@ -225,22 +225,37 @@ def _read_presets(folder: pathlib.Path):
         )
 
 
-def all_presets(cutter=DEFAULT_CUTTER) -> dict[str, Preset]:
-    """Starting point, factory materials for this cutter, and local presets."""
-    out = {**BUILTIN_BY_NAME, **factory_presets(cutter)}
-    for folder in (bundled_dir(), user_dir()):
-        for _, preset in _read_presets(folder):
+def _catalog_entries(cutter, *, include_user=True):
+    """Map each displayed name to its preset and optional user file."""
+    out = {name: (preset, None) for name, preset in
+           {**BUILTIN_BY_NAME, **factory_presets(cutter)}.items()}
+    for folder, user in ((bundled_dir(), False), (user_dir(), True)):
+        if user and not include_user:
+            break
+        for path, preset in _read_presets(folder):
             if preset.factory_id:
-                for label, factory in out.items():
+                for label, (factory, _) in out.items():
                     if factory.factory_id == preset.factory_id:
-                        out[label] = dataclasses.replace(preset, name=label)
+                        out[label] = dataclasses.replace(preset, name=label), path if user else None
                         break
             else:
                 label = preset.name
-                if label in out and out[label].factory_id:
+                if label in out and out[label][0].factory_id:
                     label += " · Personal"
-                out[label] = dataclasses.replace(preset, name=label)
+                out[label] = dataclasses.replace(preset, name=label), path if user else None
     return out
+
+
+def all_presets(cutter=DEFAULT_CUTTER) -> dict[str, Preset]:
+    """Starting point, factory materials for this cutter, and local presets."""
+    return {name: preset for name, (preset, _) in _catalog_entries(cutter).items()}
+
+
+def describe(preset: Preset, settings: CutSettings) -> str:
+    depth = "Manual / off" if settings.depth is None else str(settings.depth)
+    summary = (f"Blade Depth {depth} · Force {settings.force} · Speed {settings.speed}"
+               f" · Passes {settings.passes}")
+    return "\n".join(filter(None, (preset.note or preset.description, summary)))
 
 
 def for_context(preset, cutter, holder, *, tool=None, action=None):
@@ -312,6 +327,12 @@ def save_blade_settings(name: str, *, force: int, speed: int, depth: int | None,
                                      factory_holder=None, factory_tool="", factory_action="")
     elif CutSettings(**settings) == preset.cut_settings():
         return None
+    elif not preset.factory_id and preset.name.endswith(" · Personal"):
+        entry = _catalog_entries(cutter).get(preset.name)
+        if entry is not None and entry[1] is not None:
+            stored_name = next((stored.name for path, stored in _read_presets(user_dir())
+                                if path == entry[1]), preset.name)
+            preset = dataclasses.replace(preset, name=stored_name)
     return save(dataclasses.replace(
         preset, origin="derived", settings=settings, description="Settings you saved.",
         note="Saved without a recorded test. Never cut as part of this project’s verification."))
@@ -354,37 +375,28 @@ def restore_default_materials() -> tuple[int, pathlib.Path | None]:
     return len(moved), backup
 
 
+def removal_action(name: str, cutter=DEFAULT_CUTTER) -> str:
+    """Return the action available for the selected catalog entry."""
+    entry = _catalog_entries(cutter).get(name)
+    if entry is None or entry[1] is None:
+        return ""
+    return "restore" if name in _catalog_entries(cutter, include_user=False) else "delete"
+
+
 def is_deletable(name: str, cutter=DEFAULT_CUTTER) -> bool:
-    """True if the preset is a user-created preset or a user-overridden factory preset."""
-    folder = user_dir()
-    if not folder.is_dir():
-        return False
-    factory = factory_presets(cutter)
-    target_factory_id = factory[name].factory_id if name in factory else None
-    for path, preset in _read_presets(folder):
-        if preset.name == name:
-            return True
-        if target_factory_id and preset.factory_id == target_factory_id:
-            return True
-    return False
+    return bool(removal_action(name, cutter))
 
 
 def delete_preset(name: str, cutter=DEFAULT_CUTTER) -> bool:
-    """Delete a user-saved preset or user override, reverting to factory/builtin if applicable."""
-    folder = user_dir()
-    if not folder.is_dir():
+    """Remove only the user file that supplies this displayed preset."""
+    entry = _catalog_entries(cutter).get(name)
+    if entry is None or entry[1] is None:
         return False
-    factory = factory_presets(cutter)
-    target_factory_id = factory[name].factory_id if name in factory else None
-    deleted = False
-    for path, preset in _read_presets(folder):
-        if preset.name == name or (target_factory_id and preset.factory_id == target_factory_id):
-            try:
-                path.unlink(missing_ok=True)
-                deleted = True
-            except OSError:
-                return False
-    return deleted
+    try:
+        entry[1].unlink()
+    except OSError:
+        return False
+    return True
 
 
 def save(preset: Preset) -> pathlib.Path:

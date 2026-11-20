@@ -67,6 +67,22 @@ class TestLibrary(unittest.TestCase):
         self.assertEqual(loaded.shapes[0].layer, "Outline")
         self.assertEqual(loaded.guides, (("v", 105.0),))
 
+    def test_a_saved_entry_matches_the_editor_serializer_exactly(self):
+        import json
+
+        rect = model.Shape("Rectangle", 30, 30, 50, 40, layer="Outline")
+        project = model.Project(210.0, 297.0, (rect,), guides=(("v", 105.0),))
+        path = library.save_to_library("A4 Frame", project, directory=self.folder)
+        stored = json.loads(path.read_text(encoding="utf-8"))
+        document = json.loads(json.dumps(model.project_document(project)))
+        self.assertEqual({key: stored[key] for key in document}, document)
+        self.assertEqual(stored["version"], 5)
+
+        plain = model.Project(210.0, 297.0, (model.Shape("Rectangle", 10, 10, 20, 20),))
+        plain_path = library.save_to_library("Plain", plain, directory=self.folder)
+        self.assertEqual(json.loads(plain_path.read_text(encoding="utf-8"))["version"], 2)
+        self.assertEqual(library.load_entry("Plain", self.folder), plain)
+
     def test_delete_entry(self):
         s = model.Shape("Line", 10, 10, 50, 50)
         library.save_to_library("To Delete", (s,), directory=self.folder)
