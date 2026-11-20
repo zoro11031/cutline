@@ -10,14 +10,15 @@ from pathlib import Path
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence, QPixmap, QTransform
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
-                               QFileDialog, QFormLayout, QInputDialog, QLabel, QListWidget, QMessageBox,
-                               QPlainTextEdit, QSizePolicy, QSpinBox, QSplitter, QTabWidget, QWidget)
+                               QFileDialog, QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QMenu, QMessageBox,
+                               QPlainTextEdit, QSizePolicy, QSpinBox, QSplitter, QStackedWidget, QTabWidget, QToolButton,
+                               QVBoxLayout, QWidget)
 
 from . import design_text, editor_model as model, geometry, graphtec, importer, regmarks, sticker_assets, sticker_print, sticker_trace, template
-from .design_tools import TOOL_KEYS
+from .design_tools import COMMAND_ICONS, TOOL_KEYS
 from .qt_canvas import SheetView, ZoomControls, draw_contours, draw_feed_arrow, draw_marks, draw_paper, draw_path, pen, rect
-from .qt_controls import (AdaptiveActions, Page, ResponsiveInspector, Tasks, ToolStrip, bar, button, set_choices,
-                          styled_label, workspace_header, workspace_layout, workspace_tool_button, workspace_tools)
+from .qt_controls import (DesignIconButton, Page, ResponsiveInspector, Tasks, ToolStrip, bar, button, design_divider,
+                          set_choices, styled_label, workspace_header, workspace_layout, workspace_tools)
 
 DESIGN_FILTER = "Design projects (*.scc-template);;Cut templates (*.svg *.SVG *.dxf *.DXF *.studio3 *.STUDIO3)"
 
@@ -363,51 +364,38 @@ class Design(QWidget):
         self.redo_action = self.command("Redo", self.redo, QKeySequence.StandardKey.Redo)
 
         self.tools_bar, tools = workspace_tools(self)
+        tools.setSpacing(4)
+        for icon, action in (("save", self.save_action), ("undo", self.undo_action), ("redo", self.redo_action)):
+            tools.addWidget(DesignIconButton(COMMAND_ICONS[icon], action=action))
+        tools.addWidget(design_divider(vertical=True))
+        tools.addWidget(self.icon_button("shape", self.add_default))
+        self.text_button = self.icon_button("text", self.text_dialog)
+        tools.addWidget(self.text_button)
+        tools.addWidget(self.icon_button("image", self.place_sticker))
+        self.trace_button = self.icon_button("trace", self.trace_sticker)
+        tools.addWidget(self.trace_button)
+        tools.addWidget(design_divider(vertical=True))
         self.document_title = styled_label()
+        self.document_title.setIndent(6)
         self.document_title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         tools.addWidget(self.document_title, 1)
-        for action in (self.save_action, self.undo_action, self.redo_action):
-            tools.addWidget(workspace_tool_button(action))
         self.canvas = Canvas(self)
-        self.zoom = ZoomControls(self.canvas)
+        self.canvas.setMinimumWidth(220)
+        self.zoom = ZoomControls(self.canvas, fit_button=self.icon_button("fit", self.canvas.fit))
         tools.addWidget(self.zoom)
         body.addWidget(self.tools_bar)
 
+        workspace = QHBoxLayout()
+        workspace.setSpacing(6)
+        self.tool = ToolStrip(changed=self.change_tool)
+        workspace.addWidget(self.tool)
         panes = QSplitter(Qt.Orientation.Horizontal)
         panes.setChildrenCollapsible(False)
-        panes.setHandleWidth(12)
-        body.addWidget(panes, 1)
-        left = Page()
-        palette = left.group("Drawing tools")
-        self.tool = ToolStrip(changed=self.change_tool)
-        palette.addRow(self.tool)
-        artwork = left.group("Artwork")
-        add_shape = button("Add Shape", self.add_default)
-        add_shape.setToolTip(model.ADD_SHAPE_TIP)
-        self.text_button = button("Add Text…", self.text_dialog)
-        artwork.addRow(AdaptiveActions((add_shape, self.text_button)))
-        place_image = button("Image…", self.place_sticker)
-        place_image.setToolTip("Place Image…")
-        self.trace_button = button("Trace…", self.trace_sticker)
-        self.trace_button.setToolTip("Trace and Bleed…")
-        artwork.addRow(AdaptiveActions((place_image, self.trace_button)))
+        panes.setHandleWidth(8)
+        workspace.addWidget(panes, 1)
+        body.addLayout(workspace, 1)
         self.export_tasks = Tasks(self)
         self.exporting_stickers = False
-        objects = left.group("Objects")
-        self.objects = QListWidget()
-        self.objects.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.objects.itemSelectionChanged.connect(self.refresh_selection)
-        objects.addRow(self.objects)
-        self.duplicate_button = objects.push("Duplicate", self.duplicate)
-        self.delete_button = objects.push("Delete", self.delete)
-        more_objects = left.advanced("Object Options").group("Arrange")
-        self.group_button = more_objects.push("Group", self.group)
-        self.ungroup_button = more_objects.push("Ungroup", lambda: self.group(release=True))
-        more_objects.push("Bring Forward", lambda: self.reorder(1))
-        more_objects.push("Send Backward", lambda: self.reorder(-1))
-        left_pane = left.finish()
-        left_pane.setMinimumWidth(205)
-        panes.addWidget(left_pane)
         panes.addWidget(self.canvas)
 
         self.inspector = ResponsiveInspector()
@@ -421,19 +409,23 @@ class Design(QWidget):
             panel = Page()
             build(panel)
             self.inspector.addTab(panel.finish(), label)
-        self.build_design_menus((new, open_file, self.save_action, save_as, import_art))
-        panes.addWidget(self.inspector)
+        dock = QSplitter(Qt.Orientation.Vertical)
+        dock.setChildrenCollapsible(False)
+        dock.setHandleWidth(6)
+        dock.setMinimumWidth(240)
+        self.inspector.setMinimumHeight(125)
+        dock.addWidget(self.inspector)
+        dock.addWidget(self.objects_panel())
+        dock.setSizes([360, 255])
+        panes.addWidget(dock)
+        panes.setStretchFactor(0, 1)
         panes.setStretchFactor(1, 1)
-        # The inspector's share is what its four tabs need; below that it
-        # switches to the section selector by itself.
-        panes.setSizes([205, 515, 360])
-        # Both side panes must still fit, with the canvas, at the smallest
-        # window this supports (720 x 520).
-        self.canvas.setMinimumWidth(220)
-        self.inspector.setMinimumWidth(190)
-        left_pane.setMinimumWidth(170)
+        panes.setSizes([740, 385])
+        self.build_design_menus((new, open_file, self.save_action, save_as, import_art))
 
         footer_bar, footer = bar(self)
+        footer.addWidget(self.tool.active_label)
+        footer.addWidget(design_divider(vertical=True))
         self.status = styled_label(role="body")
         self.status.setWordWrap(True)
         footer.addWidget(self.status, 1)
@@ -452,6 +444,50 @@ class Design(QWidget):
             self.canvas.addAction(action)
         self.refresh((0,) if project.shapes else ())
 
+    @staticmethod
+    def icon_button(icon, callback):
+        widget = DesignIconButton(COMMAND_ICONS[icon])
+        widget.clicked.connect(lambda _checked: callback())
+        return widget
+
+    def objects_panel(self):
+        panel = QWidget()
+        panel.setAccessibleName("Objects")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(6, 2, 3, 0)
+        layout.setSpacing(4)
+        header = QHBoxLayout()
+        header.setSpacing(2)
+        header.addWidget(styled_label("Objects"), 1)
+        self.duplicate_button = self.icon_button("duplicate", self.duplicate)
+        self.delete_button = self.icon_button("delete", self.delete)
+        options = DesignIconButton(COMMAND_ICONS["more"])
+        menu = QMenu(options)
+        self.group_button = self.command("Group", self.group)
+        self.ungroup_button = self.command("Ungroup", lambda: self.group(release=True))
+        menu.addActions([self.group_button, self.ungroup_button])
+        menu.addSeparator()
+        self.forward_action = self.command("Bring Forward", lambda: self.reorder(1))
+        self.backward_action = self.command("Send Backward", lambda: self.reorder(-1))
+        menu.addActions([self.forward_action, self.backward_action])
+        options.setMenu(menu)
+        options.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        for control in (self.duplicate_button, self.delete_button, options):
+            header.addWidget(control)
+        layout.addLayout(header)
+        self.objects = QListWidget()
+        self.objects.setAccessibleName("Object list")
+        self.objects.setProperty("role", "designObjects")
+        self.objects.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.objects.itemSelectionChanged.connect(self.refresh_selection)
+        empty = styled_label("No objects yet", role="caption")
+        empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.object_list = QStackedWidget()
+        self.object_list.addWidget(self.objects)
+        self.object_list.addWidget(empty)
+        layout.addWidget(self.object_list, 1)
+        return panel
+
     def command(self, label, callback, shortcut=None):
         action = QAction(label, self)
         if shortcut:
@@ -466,12 +502,6 @@ class Design(QWidget):
         if hasattr(self, "canvas") and self.canvas.draft is not None:
             return replace(self.history.current, shapes=self.canvas.draft)
         return self.history.current
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        narrow = self.width() < 900
-        if self.inspector.isVisible() == narrow:
-            self.inspector.setVisible(not narrow)
 
     def mat_bounds(self):
         project = self.project
@@ -547,13 +577,9 @@ class Design(QWidget):
 
     def style_panel(self, page):
         style = page.group("Object appearance")
-        self.line_color = style.text("Line color", changed=lambda: self.change_color("stroke", self.line_color))
-        self.fill_color = style.text("Fill color", changed=lambda: self.change_color("fill", self.fill_color))
-        for widget in (self.line_color, self.fill_color):
-            widget.setPlaceholderText("#rrggbb or blank")
-        self.color_buttons = (button("Pick Line Color…", lambda: self.pick_color("stroke", self.line_color)),
-                              button("Pick Fill Color…", lambda: self.pick_color("fill", self.fill_color)))
-        style.actions(*self.color_buttons)
+        self.line_color, pick_line = self.color_field(style, "Line color", "stroke")
+        self.fill_color, pick_fill = self.color_field(style, "Fill color", "fill")
+        self.color_buttons = (pick_line, pick_fill)
         self.line_style = style.choice("Line Style", model.LINE_STYLES,
                                        changed=lambda: self.change_selected(line_style=self.line_style.currentData()))
         self.line_width = style.number("Line Width (mm)", 0, 0, 5, 0.1, 2,
@@ -561,6 +587,23 @@ class Design(QWidget):
         self.line_style.setToolTip("Appearance only. The cutter follows the whole line.")
         self.line_width.setSpecialValueText("Hairline")
         self.action = style.choice("Object action", model.ACTIONS, changed=self.change_action)
+
+    def color_field(self, form, label, channel):
+        entry = QLineEdit(placeholderText="#rrggbb or blank")
+        entry.setAccessibleName(label)
+        entry.editingFinished.connect(lambda: self.change_color(channel, entry))
+        pick = self.icon_button("color", lambda: self.pick_color(channel, entry))
+        title = f"Pick {label.lower()}…"
+        pick.setAccessibleName(title)
+        pick.setToolTip(title)
+        row = QHBoxLayout()
+        row.setSpacing(4)
+        row.addWidget(entry, 1)
+        row.addWidget(pick)
+        caption = QLabel(label)
+        caption.setBuddy(entry)
+        form.addRow(caption, row)
+        return entry, pick
 
     def pick_color(self, field, entry):
         initial = QColor(entry.text() or "#313945")
@@ -863,6 +906,7 @@ class Design(QWidget):
             if shape.holder:
                 details += f" · Tool {shape.holder}"
             self.objects.addItem(f"{number}. {model.object_name(shape)}{details}")
+        self.object_list.setCurrentIndex(0 if self.objects.count() else 1)
         self.sync_page()
         self.loading = prev
         self.select(selection)
@@ -899,7 +943,12 @@ class Design(QWidget):
         indices = self.selection()
         shapes = self.project.shapes
         shape = shapes[indices[0]] if len(indices) == 1 else None
-        self.text_button.setText("Edit Text…" if shape and shape.text else "Add Text…")
+        text_label = "Edit Text…" if shape and shape.text else "Add Text…"
+        self.text_button.setText(text_label)
+        self.text_button.setAccessibleName(text_label)
+        self.text_button.setAccessibleDescription("Edit the selected text." if shape and shape.text
+                                                  else COMMAND_ICONS["text"].hint)
+        self.text_button.setToolTip(text_label)
         can_trace = bool(shape and shape.sticker)
         self.trace_button.setEnabled(can_trace)
         self.trace_action.setEnabled(can_trace)
@@ -934,6 +983,8 @@ class Design(QWidget):
         self.group_button.setEnabled(enough)
         self.align_button.setEnabled(enough)
         self.ungroup_button.setEnabled(any(shapes[i].group for i in indices))
+        self.forward_action.setEnabled(bool(indices) and indices[-1] + 1 < len(shapes))
+        self.backward_action.setEnabled(bool(indices) and indices[0] > 0)
         self.loading = False
         self.canvas.redraw()
         self.refresh_status()

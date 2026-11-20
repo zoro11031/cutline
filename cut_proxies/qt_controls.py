@@ -5,11 +5,11 @@ import threading
 from PySide6.QtCore import QEvent, QObject, QPointF, Qt, Signal, Slot
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPalette, QPen, QWheelEvent
 from PySide6.QtWidgets import (QAbstractScrollArea, QAbstractSpinBox, QApplication, QBoxLayout, QButtonGroup, QCheckBox,
-                               QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLayout,
+                               QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QLayout,
                                QLabel, QLineEdit, QMenuBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QStackedWidget, QStyle,
-                               QTabBar, QToolButton, QVBoxLayout, QWidget)
+                               QStyleOptionToolButton, QStylePainter, QTabBar, QToolButton, QVBoxLayout, QWidget)
 
-from .design_tools import TOOL_NAMES, TOOL_ROWS
+from .design_tools import TOOL_GROUPS, TOOL_NAMES
 
 _WORKSPACE_STYLE = """
 QWidget#workspace { background: palette(window); }
@@ -65,12 +65,20 @@ QToolButton[role="workspaceTool"]:hover, QToolButton[role="workspaceTool"]:focus
     border-color: palette(highlight);
 }
 QToolButton[role="workspaceTool"]:disabled { background: @disabled_button; color: @disabled_text; }
+QFrame#designToolRail { border-right: 1px solid palette(midlight); }
+QFrame[role="designDivider"] { background: palette(midlight); }
 QToolButton[role="designTool"] {
-    background: palette(base); border: 2px solid transparent; border-radius: 6px;
+    background: transparent; border: 2px solid transparent; border-radius: 6px;
 }
 QToolButton[role="designTool"]:hover { background: palette(alternate-base); }
-QToolButton[role="designTool"]:checked { background: palette(highlight); }
+QToolButton[role="designTool"]:checked, QToolButton[role="designTool"]:pressed { background: palette(highlight); }
 QToolButton[role="designTool"]:focus { border-color: palette(button-text); }
+QToolButton[role="designTool"]::menu-indicator { image: none; }
+QListWidget[role="designObjects"] { border: 0; border-radius: 5px; }
+QListWidget[role="designObjects"]::item { padding: 4px 8px; border-radius: 4px; }
+QListWidget[role="designObjects"]::item:selected {
+    background: palette(highlight); color: @accent_text;
+}
 QPushButton[role="holder"]:checked {
     background: palette(highlight); color: @accent_text; border-radius: 5px;
 }
@@ -282,14 +290,6 @@ def workspace_tools(parent):
     surface, layout = bar(parent, (2, 0, 2, 0))
     surface.setObjectName("workspaceTools")
     return surface, layout
-
-
-def workspace_tool_button(action):
-    widget = QToolButton()
-    widget.setDefaultAction(action)
-    widget.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-    widget.setProperty("role", "workspaceTool")
-    return widget
 
 
 def workspace_header(parent, design, send, *, active):
@@ -598,28 +598,45 @@ class Form(QFormLayout):
         self.addRow(row)
 
 
-class DesignToolButton(QToolButton):
-    def __init__(self, tool):
+def design_divider(*, vertical=False):
+    divider = QFrame()
+    divider.setProperty("role", "designDivider")
+    if vertical:
+        divider.setFixedSize(1, 22)
+    else:
+        divider.setFixedHeight(1)
+    return divider
+
+
+class DesignIconButton(QToolButton):
+    def __init__(self, tool, *, checkable=False, action=None):
         super().__init__()
-        self.setCheckable(True)
+        if action is not None:
+            self.setDefaultAction(action)
+        else:
+            self.setText(tool.name)
+        self.setCheckable(checkable)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setProperty("role", "designTool")
         self.setAccessibleName(tool.name)
-        self.setAccessibleDescription(f"Shortcut {tool.shortcut}. {tool.hint}")
-        self.setToolTip(tool.tooltip)
-        self.setFixedSize(36, 36)
+        self.setAccessibleDescription(tool.hint)
+        self.setToolTip(action.toolTip() if action is not None else tool.tooltip)
+        self.setFixedSize(34, 34)
         self.outline = QPainterPath()
         for first, *rest in tool.strokes:
             self.outline.moveTo(*first)
             for point in rest:
                 self.outline.lineTo(*point)
 
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        palette = self.palette()
+    def paintEvent(self, _event):
+        option = QStyleOptionToolButton()
+        self.initStyleOption(option)
+        option.text = ""
+        painter = QStylePainter(self)
+        painter.drawComplexControl(QStyle.ComplexControl.CC_ToolButton, option)
+        palette = option.palette
         color = (_legible(palette.highlightedText().color(), palette.highlight().color())
-                 if self.isChecked() else palette.buttonText().color())
-        painter = QPainter(self)
+                 if self.isChecked() or self.isDown() else palette.buttonText().color())
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.translate((self.width() - 24) / 2, (self.height() - 24) / 2)
         painter.setPen(QPen(color, 1.7, Qt.PenStyle.SolidLine,
@@ -628,29 +645,29 @@ class DesignToolButton(QToolButton):
         painter.end()
 
 
-class ToolStrip(QWidget):
-    """Compact palette of exclusive canvas modes."""
+class ToolStrip(QFrame):
+    """One column of exclusive canvas modes."""
 
     def __init__(self, *, changed):
         super().__init__()
         self.setAccessibleName("Drawing tools")
-        layout = QGridLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-        layout.setColumnStretch(3, 1)
+        self.setObjectName("designToolRail")
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 0, 5, 0)
+        layout.setSpacing(2)
         self.group = QButtonGroup(self)
         self.buttons = []
-        for row, tools in zip((0, 2, 3), TOOL_ROWS):
-            for column, tool in enumerate(tools):
-                button = DesignToolButton(tool)
+        for tools in TOOL_GROUPS:
+            if self.buttons:
+                layout.addWidget(design_divider())
+            for tool in tools:
+                button = DesignIconButton(tool, checkable=True)
                 self.group.addButton(button, len(self.buttons))
-                layout.addWidget(button, row, column)
+                layout.addWidget(button)
                 self.buttons.append(button)
-        divider = QFrame()
-        divider.setFrameShape(QFrame.Shape.HLine)
-        layout.addWidget(divider, 1, 0, 1, 3)
+        layout.addStretch(1)
         self.active_label = styled_label(TOOL_NAMES[0], role="caption")
-        layout.addWidget(self.active_label, 4, 0, 1, 4)
         self.buttons[0].setChecked(True)
         self.group.idToggled.connect(self._toggled)
         self.group.idClicked.connect(lambda _index: changed())

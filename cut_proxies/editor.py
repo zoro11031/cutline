@@ -9,7 +9,7 @@ import cairo
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 from . import design_text, editor_model, geometry, graphtec, importer, regmarks, sticker_assets, sticker_print, sticker_trace, template
-from .design_tools import TOOL_KEYS, TOOL_NAMES, TOOL_ROWS
+from .design_tools import COMMAND_ICONS, TOOL_GROUPS, TOOL_KEYS, TOOL_NAMES
 from .editor_canvas import DesignCanvas
 from .editor_model import (ACTIONS, ALIGNMENTS,
                            History, Registration, Shape,
@@ -52,36 +52,44 @@ def draw_tool_icon(area, context, width, height, tool):
     context.stroke()
 
 
-class GtkToolStrip(Gtk.Grid):
-    """Compact palette of exclusive canvas modes."""
+def design_icon_button(tool, *, toggle=False):
+    button_type = Gtk.ToggleButton if toggle else Gtk.Button
+    button = button_type(css_classes=["image-button", "flat"])
+    button.set_size_request(34, 34)
+    button.set_tooltip_text(tool.tooltip)
+    button.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION],
+                           [tool.name, tool.hint])
+    if tool.shortcut:
+        button.update_property([Gtk.AccessibleProperty.KEY_SHORTCUTS], [tool.shortcut])
+    icon = Gtk.DrawingArea(content_width=22, content_height=22)
+    icon.set_draw_func(draw_tool_icon, tool)
+    button.set_child(icon)
+    return button
+
+
+class GtkToolStrip(Gtk.Box):
+    """One column of exclusive canvas modes."""
 
     def __init__(self, *, changed):
-        super().__init__(row_spacing=4, column_spacing=4)
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=2,
+                         margin_start=6, margin_end=6)
         self.update_property([Gtk.AccessibleProperty.LABEL], ["Drawing tools"])
         self.buttons = []
         self._selected = 0
         self._changed = changed
-        for row, tools in zip((0, 2, 3), TOOL_ROWS):
-            for column, tool in enumerate(tools):
-                button = Gtk.ToggleButton(css_classes=["image-button", "flat"])
-                button.set_size_request(36, 36)
-                button.set_tooltip_text(tool.tooltip)
-                button.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION,
-                                        Gtk.AccessibleProperty.KEY_SHORTCUTS],
-                                       [tool.name, tool.hint, tool.shortcut])
-                icon = Gtk.DrawingArea(content_width=24, content_height=24)
-                icon.set_draw_func(draw_tool_icon, tool)
-                button.set_child(icon)
+        for tools in TOOL_GROUPS:
+            if self.buttons:
+                self.append(Gtk.Separator())
+            for tool in tools:
+                button = design_icon_button(tool, toggle=True)
                 if self.buttons:
                     button.set_group(self.buttons[0])
                 else:
                     button.set_active(True)
                 button.connect("toggled", self._on_toggled, len(self.buttons))
-                self.attach(button, column, row, 1, 1)
+                self.append(button)
                 self.buttons.append(button)
-        self.attach(Gtk.Separator(), 0, 1, 3, 1)
         self.active_label = Gtk.Label(label=TOOL_NAMES[0], xalign=0, css_classes=["caption"])
-        self.attach(self.active_label, 0, 4, 3, 1)
 
     def _on_toggled(self, button, index):
         if button.get_active():
@@ -125,49 +133,35 @@ class DesignWorkspace:
 
         toolbar = workspace_tools(margin_start=12, margin_end=12, margin_bottom=8)
         self.view.add_top_bar(toolbar)
+        history_tools = Gtk.Box(spacing=2)
+        self.save_button = self.icon_button(history_tools, 'save', self.save)
+        self.undo_button = self.icon_button(history_tools, 'undo', lambda *_: self.change_history(self.history.undo))
+        self.redo_button = self.icon_button(history_tools, 'redo', lambda *_: self.change_history(self.history.redo))
+        toolbar.append(history_tools)
+        toolbar.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL, margin_top=6, margin_bottom=6))
+        artwork = Gtk.Box(spacing=2)
+        self.add_button = self.icon_button(artwork, 'shape', self.add_shape)
+        self.text_button = self.icon_button(artwork, 'text', lambda *_: self.text_dialog())
+        self.icon_button(artwork, 'image', lambda *_: self.place_sticker())
+        self.trace_button = self.icon_button(artwork, 'trace', lambda *_: self.trace_sticker())
+        toolbar.append(artwork)
+        toolbar.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL, margin_top=6, margin_bottom=6))
         self.document_title = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.MIDDLE,
                                         css_classes=["heading"])
         toolbar.append(self.document_title)
-        self.save_button = self.button(toolbar, 'Save', self.save)
-        self.undo_button = self.button(toolbar, 'Undo', lambda *_: self.change_history(self.history.undo))
-        self.redo_button = self.button(toolbar, 'Redo', lambda *_: self.change_history(self.history.redo))
-        zoom, self.zoom_readout = zoom_controls(lambda factor: self.canvas.zoom_by(factor), lambda: self.fit(None))
+        fit_button = design_icon_button(COMMAND_ICONS['fit'])
+        fit_button.connect('clicked', self.fit)
+        zoom, self.zoom_readout = zoom_controls(lambda factor: self.canvas.zoom_by(factor),
+                                               lambda: self.fit(None), fit_button=fit_button)
         toolbar.append(zoom)
 
-        left, objects = panel(174)
-        objects.append(Gtk.Label(label='Drawing tools', xalign=0, css_classes=['heading']))
         self.tools = TOOL_NAMES
         self.tool = GtkToolStrip(changed=self.tool_changed)
-        objects.append(self.tool)
-        objects.append(Gtk.Label(label='Artwork', xalign=0, css_classes=['heading'], margin_top=6))
-        artwork = Gtk.FlowBox(column_spacing=4, row_spacing=4, homogeneous=True,
-                              min_children_per_line=1, max_children_per_line=2,
-                              selection_mode=Gtk.SelectionMode.NONE, activate_on_single_click=False)
-        objects.append(artwork)
-        self.add_button = self.button(artwork, 'Add Shape', self.add_shape)
-        self.add_button.set_tooltip_text(editor_model.ADD_SHAPE_TIP)
-        self.text_button = self.button(artwork, 'Add Text…', lambda *_: self.text_dialog())
-        image_button = self.button(artwork, 'Image…', lambda *_: self.place_sticker())
-        image_button.set_tooltip_text('Place Image…')
-        self.trace_button = self.button(artwork, 'Trace…', lambda *_: self.trace_sticker())
-        self.trace_button.set_tooltip_text('Trace and Bleed…')
         self.exporting_stickers = False
-        objects.append(Gtk.Label(label='Objects', xalign=0, css_classes=['heading'], margin_top=10))
-        self.objects = Gtk.ListBox(selection_mode=Gtk.SelectionMode.MULTIPLE)
-        self.objects.add_css_class('boxed-list')
-        self.objects.connect('selected-rows-changed', self.select_shape)
-        objects.append(self.objects)
-        self.duplicate = self.button(objects, 'Duplicate', self.duplicate_shape)
-        self.remove = self.button(objects, 'Delete', self.delete_shape)
-        more_objects, _ = disclosure(objects, 'Object Options')
-        self.group_button = self.button(more_objects, 'Group', lambda *_: self.group_selected())
-        self.ungroup_button = self.button(more_objects, 'Ungroup', lambda *_: self.group_selected(release=True))
-        self.forward = self.button(more_objects, 'Bring Forward', lambda *_: self.reorder(1))
-        self.backward = self.button(more_objects, 'Send Backward', lambda *_: self.reorder(-1))
 
         self.canvas = DesignCanvas(self)
         self.canvas.set_cursor_from_name('default')
-        right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, width_request=252, hexpand=False)
+        properties = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, height_request=125)
         self.inspector = Gtk.Stack(vexpand=True)
         panels = (('Page Setup', self.page_panel), ('Transform', self.transform_panel),
                   ('Replicate', self.replicate_panel), ('Line and Fill', self.style_panel))
@@ -181,27 +175,27 @@ class DesignWorkspace:
         switcher.set_margin_top(8)
         switcher.connect('notify::selected', lambda widget, *_: self.inspector.set_visible_child_name(
             panels[widget.get_selected()][0]))
-        right.append(switcher)
-        right.append(self.inspector)
-        drawing_panes = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL, wide_handle=True,
-                                  position=180, resize_start_child=False, resize_end_child=True,
-                                  shrink_start_child=False, shrink_end_child=False)
-        drawing_panes.set_start_child(left)
-        drawing_panes.set_end_child(self.canvas)
+        properties.append(switcher)
+        properties.append(self.inspector)
+        dock = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL, wide_handle=True, position=340, width_request=252,
+                         resize_start_child=True, resize_end_child=True,
+                         shrink_start_child=False, shrink_end_child=False)
+        dock.set_start_child(properties)
+        dock.set_end_child(self.objects_panel())
         workspace_panes = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL, wide_handle=True,
                                     resize_start_child=True, resize_end_child=False,
-                                    shrink_start_child=False, shrink_end_child=False)
-        workspace_panes.set_start_child(drawing_panes)
-        workspace_panes.set_end_child(right)
-
-        breakpoint_bin = Adw.BreakpointBin()
-        bp = Adw.Breakpoint.new(Adw.breakpoint_condition_parse("max-width: 900px"))
-        bp.add_setter(right, "visible", False)
-        breakpoint_bin.add_breakpoint(bp)
-        breakpoint_bin.set_child(workspace_panes)
-        self.view.set_content(breakpoint_bin)
+                                    shrink_start_child=False, shrink_end_child=False, hexpand=True)
+        workspace_panes.set_start_child(self.canvas)
+        workspace_panes.set_end_child(dock)
+        workspace = Gtk.Box()
+        workspace.append(self.tool)
+        workspace.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
+        workspace.append(workspace_panes)
+        self.view.set_content(workspace)
 
         footer = Gtk.Box(spacing=8, margin_start=12, margin_end=12, margin_top=6, margin_bottom=8)
+        footer.append(self.tool.active_label)
+        footer.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
         self.status = Gtk.Label(xalign=0, hexpand=True, wrap=True)
         footer.append(self.status)
         # As in Silhouette Studio, the Send switch sends the design; only a
@@ -215,6 +209,51 @@ class DesignWorkspace:
         self.view.add_css_class('scc-workspace')
         self.refresh_objects((0,))
         self.tool_changed()
+
+    @staticmethod
+    def icon_button(parent, icon, callback):
+        button = design_icon_button(COMMAND_ICONS[icon])
+        button.connect('clicked', callback)
+        parent.append(button)
+        return button
+
+    def objects_panel(self):
+        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, height_request=110,
+                        margin_start=12, margin_end=12, margin_bottom=6)
+        header = Gtk.Box(spacing=2)
+        header.append(Gtk.Label(label='Objects', xalign=0, hexpand=True, css_classes=['heading']))
+        self.duplicate = self.icon_button(header, 'duplicate', self.duplicate_shape)
+        self.remove = self.icon_button(header, 'delete', self.delete_shape)
+        options = Gtk.MenuButton(icon_name='view-more-symbolic', tooltip_text='Object options',
+                                 css_classes=['flat'])
+        options.update_property([Gtk.AccessibleProperty.LABEL], ['Object options'])
+        menu = Gtk.Popover()
+        more_objects = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        for field, label, callback in (
+                ('group_button', 'Group', lambda: self.group_selected()),
+                ('ungroup_button', 'Ungroup', lambda: self.group_selected(release=True)),
+                ('forward', 'Bring Forward', lambda: self.reorder(1)),
+                ('backward', 'Send Backward', lambda: self.reorder(-1))):
+            def activate(_button, command=callback):
+                menu.popdown()
+                command()
+
+            item = self.button(more_objects, label, activate)
+            item.add_css_class('flat')
+            setattr(self, field, item)
+        menu.set_child(more_objects)
+        options.set_popover(menu)
+        header.append(options)
+        panel.append(header)
+        self.objects = Gtk.ListBox(selection_mode=Gtk.SelectionMode.MULTIPLE, css_classes=['boxed-list'])
+        self.objects.update_property([Gtk.AccessibleProperty.LABEL], ['Object list'])
+        self.objects.set_placeholder(Gtk.Label(label='No objects yet', margin_top=14, margin_bottom=14,
+                                               css_classes=['dim-label']))
+        self.objects.connect('selected-rows-changed', self.select_shape)
+        scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
+        scroller.set_child(self.objects)
+        panel.append(scroller)
+        return panel
 
     @staticmethod
     def spin(parent, label, low, high, value, step=0.1, digits=2):
@@ -761,13 +800,15 @@ class DesignWorkspace:
     def refresh_objects(self, selection=()):
         self.loading = True
         self.refresh_page()
-        while (child := self.objects.get_first_child()) is not None:
-            self.objects.remove(child)
+        while (row := self.objects.get_row_at_index(0)) is not None:
+            self.objects.remove(row)
         for i, obj in enumerate(self.project.shapes, 1):
             tooltip = obj.action if obj.group is None else f'{obj.action} · Group {obj.group}'
             tool = f' · Tool {obj.holder}' if obj.holder else ''
-            label = Gtk.Label(label=f'{i}. {editor_model.object_name(obj)}{tool}', xalign=0, tooltip_text=tooltip,
-                              margin_top=7, margin_bottom=7, margin_start=8, margin_end=8)
+            name = f'{i}. {editor_model.object_name(obj)}{tool}'
+            label = Gtk.Label(label=name, xalign=0, tooltip_text=f'{name}\n{tooltip}',
+                              ellipsize=Pango.EllipsizeMode.END,
+                              margin_top=2, margin_bottom=2, margin_start=8, margin_end=8)
             self.objects.append(label)
         self.loading = False
         self.set_selection(selection)
@@ -818,7 +859,11 @@ class DesignWorkspace:
         indices = self.selected_indices()
         shapes = self.project.shapes
         obj = shapes[indices[0]] if len(indices) == 1 else None
-        self.text_button.set_label('Edit Text…' if obj and obj.text else 'Add Text…')
+        text_label = 'Edit Text…' if obj and obj.text else 'Add Text…'
+        self.text_button.set_tooltip_text(text_label)
+        hint = 'Edit the selected text.' if obj and obj.text else COMMAND_ICONS['text'].hint
+        self.text_button.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION],
+                                         [text_label, hint])
         can_trace = bool(obj and obj.sticker)
         self.trace_button.set_sensitive(can_trace)
         self.menu_actions.lookup_action('trace-sticker').set_enabled(can_trace)
