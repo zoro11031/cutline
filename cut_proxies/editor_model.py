@@ -235,6 +235,28 @@ def rotate_selection(shapes, indices, angle, *, center=None):
     return tuple(result)
 
 
+def scale_selection(shapes, indices, anchor, factor):
+    """Scale selected objects proportionally about a fixed paper coordinate."""
+    if not indices or factor == 1:
+        return shapes
+    if not math.isfinite(factor) or factor <= 0:
+        raise ValueError("Drag away from the opposite corner to scale.")
+    cx, cy = anchor
+    result = list(shapes)
+    for index in indices:
+        shape = shapes[index]
+        x, y = cx + (shape.x - cx) * factor, cy + (shape.y - cy) * factor
+        width, height = shape.width * factor, shape.height * factor
+        radius = shape.radius * factor if shape.kind == "Rounded rectangle" else shape.radius
+        if not all(_number(v) for v in (x, y, width, height, radius)):
+            raise ValueError("This scale would place a shape outside the editable size or coordinate range.")
+        if max(abs(width), abs(height)) < 0.1 or (
+                shape.kind not in ("Line", "Path") and min(width, height) < 0.1):
+            raise ValueError("The shape is too small to scale further.")
+        result[index] = replace(shape, x=x, y=y, width=width, height=height, radius=radius)
+    return tuple(result)
+
+
 def matching_color(shapes, indices, field):
     colors = {getattr(shapes[index], field) for index in indices}
     return tuple(i for i, shape in enumerate(shapes) if shape.visible and getattr(shape, field) in colors)

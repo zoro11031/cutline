@@ -9,7 +9,7 @@ import cairo
 from gi.repository import Adw, Gdk, Gtk
 
 from . import editor_model
-from .design_tools import TURN_RIGHT, rotation_handle
+from .design_tools import ROTATE_MODES, SCALE_MODES, TRANSFORM_MODES, TURN_RIGHT, rotation_handle
 
 
 @lru_cache(maxsize=4)
@@ -159,6 +159,7 @@ class DesignCanvas(Gtk.DrawingArea):
             self.draw_marks(cr, marks, scale)
 
         indices = editor.selected_indices()
+        mode = editor.active_tool
         for i, shape in enumerate(project.shapes):
             if shape.visible:
                 self.draw_shape(cr, shape, i in indices, scale)
@@ -168,11 +169,15 @@ class DesignCanvas(Gtk.DrawingArea):
             cr.set_source_rgba(0.16, 0.36, 0.73, 0.85)
             cr.set_line_width(1 / scale)
             cr.stroke()
-        if editor.active_tool == 'Transform':
+        if mode in TRANSFORM_MODES:
             drag = editor.drag
-            handle = drag.rotation if drag and drag.rotation else rotation_handle(project.shapes, indices, scale)
+            handle = rotation_handle(project.shapes, indices, scale)
             if handle:
-                self.draw_rotation_handle(cr, handle, drag.angle if drag else 0, scale)
+                if mode in SCALE_MODES:
+                    self.draw_scale_handles(cr, handle, scale)
+                if mode in ROTATE_MODES:
+                    self.draw_rotation_handle(cr, drag.rotation if drag and drag.rotation else handle,
+                                              drag.angle if drag else 0, scale)
         if editor.active_tool == 'Point Edit' and len(indices) == 1:
             shape = project.shapes[indices[0]]
             if shape.visible and shape.kind in editor_model.POINT_EDIT_KINDS:
@@ -191,6 +196,17 @@ class DesignCanvas(Gtk.DrawingArea):
             cr.set_source_rgba(0.12, 0.38, 0.75, 0.15)
             cr.fill_preserve()
             cr.set_source_rgba(0.12, 0.38, 0.75, 0.85)
+            cr.stroke()
+
+    @staticmethod
+    def draw_scale_handles(cr, handle, scale):
+        half = 3.5 / scale
+        cr.set_line_width(1.3 / scale)
+        for x, y in handle.corners():
+            cr.rectangle(x - half, y - half, 2 * half, 2 * half)
+            cr.set_source_rgb(1, 1, 1)
+            cr.fill_preserve()
+            cr.set_source_rgb(0.20, 0.44, 0.78)
             cr.stroke()
 
     @staticmethod

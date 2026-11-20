@@ -2,14 +2,14 @@
 
 import threading
 
-from PySide6.QtCore import QEvent, QObject, QPointF, Qt, Signal, Slot
-from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPalette, QPen, QWheelEvent
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, Qt, QTimer, Signal, Slot
+from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (QAbstractScrollArea, QAbstractSpinBox, QApplication, QBoxLayout, QButtonGroup, QCheckBox,
                                QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QLayout,
-                               QLabel, QLineEdit, QMenuBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QStackedWidget, QStyle,
+                               QLabel, QLineEdit, QMenu, QMenuBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QStackedWidget, QStyle,
                                QStyleOptionToolButton, QStylePainter, QTabBar, QToolButton, QVBoxLayout, QWidget)
 
-from .design_tools import TOOL_GROUPS, TOOL_NAMES
+from .design_tools import TOOL_GROUPS, TOOL_NAMES, TOOLS
 
 _WORKSPACE_STYLE = """
 QWidget#workspace { background: palette(window); }
@@ -22,6 +22,7 @@ QFrame#workspaceBar {
     border-radius: 9px;
 }
 QFrame#workspaceTools { border-bottom: 1px solid palette(midlight); }
+QFrame#designToolOptions { background: palette(base); border: 1px solid palette(midlight); border-radius: 6px; }
 QScrollArea[role="settings"], QWidget[role="settingsPage"] { background: palette(window); }
 QTabWidget[role="settings"]::pane { border: 0; border-top: 1px solid palette(midlight); }
 QTabWidget[role="settings"] QTabBar::tab {
@@ -74,6 +75,9 @@ QToolButton[role="designTool"]:hover { background: palette(alternate-base); }
 QToolButton[role="designTool"]:checked, QToolButton[role="designTool"]:pressed { background: palette(highlight); }
 QToolButton[role="designTool"]:focus { border-color: palette(button-text); }
 QToolButton[role="designTool"]::menu-indicator { image: none; }
+QToolButton[role="toolGroupMenu"]:hover, QToolButton[role="toolGroupMenu"]:focus {
+    background: palette(alternate-base); border-radius: 4px;
+}
 QListWidget[role="designObjects"] { border: 0; border-radius: 5px; }
 QListWidget[role="designObjects"]::item { padding: 4px 8px; border-radius: 4px; }
 QListWidget[role="designObjects"]::item:selected {
@@ -617,21 +621,39 @@ def icon_outline(strokes):
     return outline
 
 
+def design_icon(tool, color, size=18):
+    pixmap = QPixmap(size * 2, size * 2)
+    pixmap.setDevicePixelRatio(2)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.scale(size / 24, size / 24)
+    painter.setPen(QPen(color, 1.7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+    painter.drawPath(icon_outline(tool.strokes))
+    painter.end()
+    return QIcon(pixmap)
+
+
 class DesignIconButton(QToolButton):
     def __init__(self, tool, *, checkable=False, action=None):
         super().__init__()
         if action is not None:
             self.setDefaultAction(action)
-        else:
-            self.setText(tool.name)
         self.setCheckable(checkable)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setProperty("role", "designTool")
+        self.setFixedSize(34, 34)
+        self.set_tool(tool)
+        if action is not None:
+            self.setToolTip(action.toolTip())
+
+    def set_tool(self, tool):
+        self.setText(tool.name)
         self.setAccessibleName(tool.name)
         self.setAccessibleDescription(tool.hint)
-        self.setToolTip(action.toolTip() if action is not None else tool.tooltip)
-        self.setFixedSize(34, 34)
+        self.setToolTip(tool.tooltip)
         self.outline = icon_outline(tool.strokes)
+        self.update()
 
     def paintEvent(self, _event):
         option = QStyleOptionToolButton()
@@ -651,46 +673,114 @@ class DesignIconButton(QToolButton):
 
 
 class ToolStrip(QFrame):
-    """One column of exclusive canvas modes."""
+    """A toolbox with split buttons for groups of related tools."""
 
     def __init__(self, *, changed):
         super().__init__()
-        self.setAccessibleName("Drawing tools")
+        self.setAccessibleName("Design toolbox")
         self.setObjectName("designToolRail")
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 0, 5, 0)
         layout.setSpacing(2)
         self.group = QButtonGroup(self)
-        self.buttons = []
-        for tools in TOOL_GROUPS:
-            if self.buttons:
-                layout.addWidget(design_divider())
-            for tool in tools:
-                button = DesignIconButton(tool, checkable=True)
-                self.group.addButton(button, len(self.buttons))
-                layout.addWidget(button)
-                self.buttons.append(button)
-        layout.addStretch(1)
-        self.active_label = styled_label(TOOL_NAMES[0], role="caption")
-        self.buttons[0].setChecked(True)
-        self.group.idToggled.connect(self._toggled)
-        self.group.idClicked.connect(lambda _index: changed())
+        self.slots = {}
+        self.menus = {}
+        self.menu_buttons = {}
+        self.choices = {}
+        self._buttons_by_tool = {}
+        self._last_choice = {}
+        self._index = 0
         self._changed = changed
+        self.active_label = styled_label(TOOL_NAMES[0], role="heading")
+        for title, tools in TOOL_GROUPS:
+            if title == "Shape tools":
+                layout.addWidget(design_divider())
+            slot = QWidget()
+            row = QHBoxLayout(slot)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(1)
+            primary = DesignIconButton(tools[0], checkable=True)
+            self.group.addButton(primary)
+            self.slots[title] = primary
+            self._last_choice[primary] = TOOL_NAMES.index(tools[0].name)
+            primary.clicked.connect(lambda _checked, button=primary: self.setCurrentIndex(self._last_choice[button]))
+            row.addWidget(primary)
+            for tool in tools:
+                self._buttons_by_tool[tool.name] = primary
+            if len(tools) > 1:
+                self.add_flyout(title, slot, row, primary, tools)
+            else:
+                row.addStretch()
+            layout.addWidget(slot)
+        layout.addStretch(1)
+        self.slots["Select"].setChecked(True)
 
-    def _toggled(self, index, checked):
-        if checked:
-            self.active_label.setText(TOOL_NAMES[index])
+    def add_flyout(self, title, slot, row, primary, tools):
+        menu = QMenu(slot)
+        menu.setAccessibleName(title)
+        self.menus[title] = menu
+        for tool in tools:
+            name = f"{tool.name}\t{tool.shortcut}" if tool.shortcut else tool.name
+            command = menu.addAction(name)
+            command.setCheckable(True)
+            command.setChecked(tool is tools[0])
+            command.triggered.connect(lambda _checked, name=tool.name: self.setCurrentText(name))
+            self.choices[tool.name] = command
+        menu.aboutToShow.connect(lambda: self.color_menu_icons(tools, menu.palette().text().color()))
+        arrow = QToolButton(arrowType=Qt.ArrowType.RightArrow)
+        arrow.setProperty("role", "toolGroupMenu")
+        arrow.setAccessibleName(title)
+        arrow.setToolTip(title)
+        arrow.setFixedSize(20, 34)
+        self.menu_buttons[title] = arrow
+        row.addWidget(arrow)
+
+        def show_menu():
+            menu.popup(slot.mapToGlobal(QPoint(slot.width(), 0)))
+
+        arrow.clicked.connect(show_menu)
+        primary.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        primary.customContextMenuRequested.connect(lambda _point: show_menu())
+        hold = QTimer(primary)
+        hold.setSingleShot(True)
+        hold.setInterval(450)
+        primary.pressed.connect(hold.start)
+        primary.released.connect(hold.stop)
+
+        def show_on_hold():
+            primary.setDown(False)
+            show_menu()
+
+        hold.timeout.connect(show_on_hold)
+
+    def color_menu_icons(self, tools, color):
+        for tool in tools:
+            self.choices[tool.name].setIcon(design_icon(tool, color))
+
+    def button_for(self, tool):
+        return self._buttons_by_tool[tool]
 
     def currentData(self):
         return TOOL_NAMES[self.currentIndex()]
 
     def currentIndex(self):
-        return self.group.checkedId()
+        return self._index
 
     def setCurrentIndex(self, index):
-        if 0 <= index < len(self.buttons):
-            self.buttons[index].setChecked(True)
+        if 0 <= index < len(TOOLS):
+            tool = TOOLS[index]
+            primary = self.button_for(tool.name)
+            last = self._last_choice[primary]
+            if last != index:
+                self.choices[TOOLS[last].name].setChecked(False)
+                primary.set_tool(tool)
+                self._last_choice[primary] = index
+            if tool.name in self.choices:
+                self.choices[tool.name].setChecked(True)
+            self._index = index
+            primary.setChecked(True)
+            self.active_label.setText(tool.name)
             self._changed()
 
     def setCurrentText(self, text):
