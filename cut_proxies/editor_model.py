@@ -455,7 +455,7 @@ def artwork(shapes, width, height, action="Cut"):
 def holder_defaults(drawing):
     labels = set(actions.HOLDER_SETTINGS.values())
     groups = actions.group_paths(drawing.paths, "layer")
-    if any(key.rsplit(" / ", 1)[-1] in labels for key in groups):
+    if len(groups) > 1 or any(key.rsplit(" / ", 1)[-1] in labels for key in groups):
         return {key: (True, label if (label := key.rsplit(" / ", 1)[-1]) in labels else actions.CURRENT_SETTINGS,
                       None, position)
                 for position, key in enumerate(groups, 1)}
@@ -758,4 +758,32 @@ def read_project(path, width, height):
     if (project.width, project.height) != (width, height):
         raise ValueError("Select the project's sheet size and orientation first.")
     return project.shapes
+
+
+def object_name(shape: Shape) -> str:
+    """Format an informative human-readable name for an object by kind and size."""
+    kind_labels = {
+        "Rounded Rectangle": "Rounded rect",
+        "Rectangle": "Rectangle",
+        "Ellipse": "Ellipse",
+        "Polygon": "Polygon",
+        "Line": "Line",
+        "Compound": "Compound path",
+        "Path": "Path",
+        "Sticker": "Sticker",
+        "Text": "Text",
+    }
+    label = kind_labels.get(shape.kind, shape.kind)
+    w = abs(shape.width)
+    h = abs(shape.height)
+    if shape.kind == "Line":
+        length = round((w * w + h * h) ** 0.5, 1)
+        dim = f"{length:g} mm"
+    elif shape.kind == "Text" and shape.text and getattr(shape.text, "text", ""):
+        snippet = shape.text.text.strip().split("\n")[0][:12]
+        dim = f"‘{snippet}’"
+    else:
+        dim = f"{round(w, 1):g}×{round(h, 1):g}"
+    return f"{label} {dim}"
+
 

@@ -40,7 +40,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 
-from . import (actions, bluetooth, bundle, config, corner_test, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
+from . import (actions, bluetooth, bundle, config, confirmation, corner_test, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
                sheet as sheet_mod, starting_guide, template, testcut, toolpath, tooling, transport)  # noqa: E402
 from .desktop_help import BLADE_VALUE_TEXT, CONTROL_HELP, SETUP_STEPS  # noqa: E402
 from .editor_canvas import DesignCanvas, draw_feed_arrow  # noqa: E402
@@ -453,10 +453,19 @@ class Preview(Gtk.DrawingArea):
                 continue
             if i in crowded:
                 cr.set_source_rgba(0.90, 0.64, 0.23, 0.38)
+                cr.rectangle(rect.x, rect.y, rect.w, rect.h)
+                cr.fill()
+                cr.save()
+                cr.set_source_rgba(0.71, 0.34, 0.07, 0.9)
+                cr.set_line_width(0.4)
+                cr.set_dash([1.5, 1.5], 0)
+                cr.rectangle(rect.x, rect.y, rect.w, rect.h)
+                cr.stroke()
+                cr.restore()
             else:
                 cr.set_source_rgba(0.25, 0.5, 0.85, 0.12)
-            cr.rectangle(rect.x, rect.y, rect.w, rect.h)
-            cr.fill()
+                cr.rectangle(rect.x, rect.y, rect.w, rect.h)
+                cr.fill()
 
         # The physical placement includes the same correction as the stream.
         cr.save()
@@ -859,6 +868,11 @@ class Window(Adw.ApplicationWindow):
         can_reset_layout = self.imported is not None or self.pdf_bundle is not None
         self.reset_layout_action.set_enabled(editable and can_reset_layout)
         self.use_generated.set_sensitive(editable and can_reset_layout)
+        self.use_generated.set_tooltip_text(
+            "Discard the custom cut template and restore the generated card layout."
+            if can_reset_layout
+            else "Already using the generated layout."
+        )
         self.review_send.set_visible(not self.tuning and page != destination)
         at_send = not self.tuning and page == "cut" and self.cut_control is None
         for control in (self.cut_button, self.scan_button, self.corner_button):
@@ -936,13 +950,20 @@ class Window(Adw.ApplicationWindow):
         self.corner_button.set_sensitive(not reason)
         if not self.tuning:
             display_job = self.active_job or job
-            status = (f"⚠ {reason}" if reason else "") or (
-                f"{len(display_job.paths)} paths · {display_job.device.name} · {'Registration on' if display_job.registration else 'Registration off'}")
-            self.send_status.set_label(status)
-            self.send_status.set_tooltip_text(status)
-            warned = bool(reason)
-            if warned != self.send_status.has_css_class("warning"):
-                getattr(self.send_status, "add_css_class" if warned else "remove_css_class")("warning")
+            is_send_page = self.stack.get_visible_child_name() == "cut"
+            if reason == "Connect a cutter." and not is_send_page:
+                status = "No cutter connected."
+                self.send_status.set_label(status)
+                self.send_status.set_tooltip_text(status)
+                self.send_status.remove_css_class("warning")
+            else:
+                status = (f"⚠ {reason}" if reason else "") or (
+                    f"{len(display_job.paths)} paths · {display_job.device.name} · {'Registration on' if display_job.registration else 'Registration off'}")
+                self.send_status.set_label(status)
+                self.send_status.set_tooltip_text(status)
+                warned = bool(reason)
+                if warned != self.send_status.has_css_class("warning"):
+                    getattr(self.send_status, "add_css_class" if warned else "remove_css_class")("warning")
         self.update_guide()
         self.update_tuning_preview()
 
@@ -1025,11 +1046,15 @@ class Window(Adw.ApplicationWindow):
         self.open_artwork_button = open_btn = Gtk.Button(label="Open Cut Template…")
         open_btn.set_tooltip_text("Open an SVG, DXF, or Studio3 file.")
         open_btn.connect("clicked", self.on_open_artwork)
+        self.draw_in_design_btn = draw_btn = Gtk.Button(label="Draw in Design")
+        draw_btn.set_tooltip_text("Open the Design workspace to draw custom cut paths.")
+        draw_btn.connect("clicked", self.on_edit_template)
         self.use_generated = Gtk.Button(label="Use Generated Layout", sensitive=False)
         self.use_generated.connect("clicked", self.on_clear_artwork)
         actions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
                           margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
         actions.append(open_btn)
+        actions.append(draw_btn)
         actions.append(self.use_generated)
         gsrc.add(self.import_row)
         gsrc.add(Adw.PreferencesRow(child=actions, activatable=False, selectable=False))
@@ -1664,7 +1689,8 @@ class Window(Adw.ApplicationWindow):
         names = [actions.CURRENT_SETTINGS, *profiles]
         for index, (key, paths) in enumerate(found.items(), 1):
             active, preset_name, slot, position = choices.get(key, (False, names[0], 0, index))
-            row = Adw.ExpanderRow(title=key, subtitle=f"{len(paths)} path(s)")
+            p_unit = "path" if len(paths) == 1 else "paths"
+            row = Adw.ExpanderRow(title=key, subtitle=f"{len(paths)} {p_unit}")
             enabled = _switch("Send this group", active)
             preset = _combo("Preset", names, names.index(preset_name) if preset_name in names else 0)
             holder = _combo("Tool Holder", ["Use preset", "1", "2"], slot or 0)
@@ -1945,7 +1971,8 @@ class Window(Adw.ApplicationWindow):
             'PDF registration needs attention' if failed_pdf else 'Layout checked')
         orientation = 'portrait' if j.grid.portrait else 'landscape'
         dimensions = f'{j.grid.sheet_w_mm:g} × {j.grid.sheet_h_mm:g} mm'
-        self.summary_layout.set_label(f'{j.grid.sheet_name} {orientation} · {dimensions}')
+        ver_text = confirmation.verification_statement(j)
+        self.summary_layout.set_label(f'{ver_text}\n{j.grid.sheet_name} {orientation} · {dimensions}')
         if j.action_groups:
             holders = ", ".join(str(holder) for holder in sorted({group.settings.holder for group in j.action_groups}))
             caption = f"{len(j.action_groups)} send groups · Tool holders: {holders}"
@@ -1953,11 +1980,17 @@ class Window(Adw.ApplicationWindow):
             passes = "pass" if j.settings.passes == 1 else "passes"
             caption = f"{j.preset.name} · {j.settings.passes} {passes}"
         self.summary_material.set_label(caption)
+        mask_hint_text = (
+            f"Artwork is close to a registration mark (card{'s' if len(j.mask_hints) > 1 else ''} "
+            f"{', '.join(str(h['index'] + 1) for h in j.mask_hints)})."
+            if j.mask_hints
+            else ""
+        )
         self.summary_note.set_label(
             j.blocked[0] if j.blocked else
             'Open Sheet to see which marks failed the PDF check.' if failed_pdf else
             j.warnings[0] if j.warnings else
-            'Artwork is close to a registration mark.' if j.mask_hints else
+            mask_hint_text if mask_hint_text else
             'Test these material settings on an offcut.' if j.preset.origin == 'derived' else '')
 
         lines = [f"{label}: {value}" for label, value in j.summary()]
@@ -1980,7 +2013,8 @@ class Window(Adw.ApplicationWindow):
 
         blocked = j.blocked
         if blocked:
-            self.banner.set_title(f"{len(blocked)} problem(s): {blocked[0]}")
+            p_unit = "problem" if len(blocked) == 1 else "problems"
+            self.banner.set_title(f"{len(blocked)} {p_unit}: {blocked[0]}")
             self.banner.set_revealed(True)
         elif not j.registration:
             self.banner.set_title(
@@ -1994,7 +2028,7 @@ class Window(Adw.ApplicationWindow):
 
     # ---- actions ------------------------------------------------------
     def toast(self, text):
-        self.toasts.add_toast(Adw.Toast(title=text, timeout=5))
+        self.toasts.add_toast(Adw.Toast(title=GLib.markup_escape_text(text), timeout=5))
 
     def on_export(self, *_a):
         if self.job is None:
@@ -2009,7 +2043,8 @@ class Window(Adw.ApplicationWindow):
         except OSError as exc:
             self.toast(f"Could not write: {exc}")
             return
-        self.toast(f"Wrote {len(written)} file(s) to {config.TEMPLATE_DIR}")
+        f_unit = "file" if len(written) == 1 else "files"
+        self.toast(f"Wrote {len(written)} {f_unit} to {config.TEMPLATE_DIR}")
 
     def on_dump(self, *_a):
         if self.job is None:
@@ -2318,7 +2353,14 @@ class Window(Adw.ApplicationWindow):
     def update_sheet_controls(self):
         loaded = self.pdf_path is not None
         self.close_print.set_sensitive(loaded)
-        self.measure_button.set_sensitive(loaded and self.bundle_row_error is None)
+        self.close_print.set_tooltip_text("Close the open PDF." if loaded else "No print file open.")
+        can_measure = loaded and self.bundle_row_error is None
+        self.measure_button.set_sensitive(can_measure)
+        self.measure_button.set_tooltip_text(
+            "Measure printed registration marks on the open PDF."
+            if can_measure
+            else (self.bundle_row_error or "Open a PDF first.")
+        )
         self.r_sheet_page.set_sensitive(loaded and (not self.pdf_bundle or len(self.pdf_bundle.rows) > 1))
 
     def clear_printed_sheet(self):
@@ -2565,9 +2607,10 @@ class Window(Adw.ApplicationWindow):
         lines.append(report.diagnosis())
         for pr in problems:
             lines.append(f"PROBLEM: {pr}")
+        p_unit = "problem" if len(problems) == 1 else "problems"
         self.sheet_result.set_title(
             "Sheet matches the template" if not problems
-            else f"{len(problems)} problem(s)")
+            else f"{len(problems)} {p_unit}")
         self.sheet_result.set_subtitle("\n".join(lines))
         self.rebuild()
 
@@ -3458,35 +3501,18 @@ class Window(Adw.ApplicationWindow):
             dialog.connect("response", self._cut_response, j, connection, False, sample)
             dialog.present(self)
             return
-        profiles = ("\n".join(f"{i + 1}. {group.key} · {group.describe()}"
-                              for i, group in enumerate(j.action_groups))
-                    if j.action_groups else
-                    f"{j.preset.name}: force {j.settings.force}, speed "
-                    f"{j.settings.speed}, {j.settings.passes} pass(es)")
-        dx, dy = j.offset_mm
-        body = (f"This moves the blade.\n\n{j.grid.describe()}\n{profiles}\n\n"
-                f"Cutter offset: X {dx:+.2f} mm, Y {dy:+.2f} mm.\n\n")
-        used = [group.preset for group in j.action_groups] or [j.preset]
-        if any(preset.origin != "measured" for preset in used):
-            body += "The selected settings need a hardware test on this stock.\n\n"
-        body += ("The cutter will search for the printed marks first."
-                 if j.registration else "Registration is off; this uses sheet coordinates.")
-        if scan_only:
-            body = "This test ends after the cutter reports the scan result."
-        if j.registration and not j.auto_search:
-            body += "\n\nPosition the cutter head over the first mark before starting the scan."
-        if self.pdf_bundle:
-            body += "\n\n" + self.pdf_bundle.mat_placement()
-        if self.imported is not None and self.imported.studio3_page:
-            body += "\n\nCheck the imported outlines and match the registration settings to the printed Studio3 sheet."
-        dialog = Adw.AlertDialog(heading="Test registration?" if scan_only else "Send this cut?", body=body)
+        conf = confirmation.build_send_confirmation(
+            j, connection, scan_only=scan_only, bundle=self.pdf_bundle, artwork=self.imported
+        )
+        dialog = Adw.AlertDialog(heading=conf.title, body=conf.body)
         dialog.add_response("cancel", "Cancel")
-        dialog.add_response("cut", "Scan" if scan_only else "Cut")
-        dialog.set_response_appearance("cut", Adw.ResponseAppearance.SUGGESTED
-                                       if scan_only else Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.add_response("cut", conf.confirm_label)
+        dialog.set_response_appearance(
+            "cut",
+            Adw.ResponseAppearance.DESTRUCTIVE if conf.destructive else Adw.ResponseAppearance.SUGGESTED,
+        )
         dialog.set_default_response("cancel")
-        if connection[1]:
-            dialog.set_body(f"{body}\n\nConnection: {j.device.name} ({connection[1]})")
+        dialog.set_close_response("cancel")
         dialog.connect("response", self._cut_response, j, connection, scan_only)
         dialog.present(self)
 

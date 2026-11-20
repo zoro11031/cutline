@@ -36,6 +36,71 @@ def panel(width):
     return scroll, body
 
 
+class GtkToolStrip(Gtk.Box):
+    """Vertical strip of exclusive tool toggle buttons for GTK."""
+
+    TOOL_SHORTCUTS = {
+        "Select": ("Select", "V"),
+        "Point Edit": ("Point Edit", "A"),
+        "Rectangle": ("Rectangle", "R"),
+        "Rounded Rectangle": ("Rounded Rect", "U"),
+        "Ellipse": ("Ellipse", "E"),
+        "Line": ("Line", "L"),
+        "Polygon": ("Polygon", "P"),
+        "Freehand": ("Freehand", "F"),
+    }
+
+    def __init__(self, tools):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self.tools = list(tools)
+        self.buttons = []
+        self._selected = 0
+        self._callbacks = []
+        first = None
+        for index, tool in enumerate(self.tools):
+            label, key = self.TOOL_SHORTCUTS.get(tool, (tool, ""))
+            btn_text = f"{label} ({key})" if key else label
+            btn = Gtk.ToggleButton(label=btn_text)
+            if first is None:
+                first = btn
+                btn.set_active(True)
+            else:
+                btn.set_group(first)
+            btn.connect("toggled", self._on_toggled, index)
+            self.append(btn)
+            self.buttons.append(btn)
+
+    def _on_toggled(self, button, index):
+        if button.get_active() and self._selected != index:
+            self._selected = index
+            for cb in self._callbacks:
+                cb(self, None)
+
+    def get_selected(self) -> int:
+        return self._selected
+
+    def set_selected(self, index: int):
+        if 0 <= index < len(self.buttons):
+            if self._selected != index:
+                self._selected = index
+                self.buttons[index].set_active(True)
+                for cb in self._callbacks:
+                    cb(self, None)
+            else:
+                self.buttons[index].set_active(True)
+
+    def set_tooltip_text(self, tip: str):
+        super().set_tooltip_text(tip)
+        for btn in self.buttons:
+            btn.set_tooltip_text(tip)
+
+    def connect(self, signal, callback, *args):
+        if signal == "notify::selected":
+            self._callbacks.append(callback)
+            return len(self._callbacks)
+        return super().connect(signal, callback, *args)
+
+
 class DesignWorkspace:
     def __init__(self, parent, project, open_send, on_review, *, cutter=None):
         self.view = Adw.ToolbarView()
@@ -76,7 +141,7 @@ class DesignWorkspace:
         left, objects = panel(174)
         objects.append(Gtk.Label(label='Drawing Tool', xalign=0, css_classes=['heading']))
         self.tools = ("Select", "Point Edit", *KINDS, "Polygon", "Freehand")
-        self.tool = Gtk.DropDown.new_from_strings(self.tools)
+        self.tool = GtkToolStrip(self.tools)
         self.tool.connect('notify::selected', self.tool_changed)
         objects.append(self.tool)
         self.add_button = self.button(objects, 'Add Shape', self.add_shape)
@@ -128,7 +193,13 @@ class DesignWorkspace:
                                     shrink_start_child=False, shrink_end_child=False)
         workspace_panes.set_start_child(drawing_panes)
         workspace_panes.set_end_child(right)
-        self.view.set_content(workspace_panes)
+
+        breakpoint_bin = Adw.BreakpointBin()
+        bp = Adw.Breakpoint.new(Adw.breakpoint_condition_parse("max-width: 900px"))
+        bp.add_setter(right, "visible", False)
+        breakpoint_bin.add_breakpoint(bp)
+        breakpoint_bin.set_child(workspace_panes)
+        self.view.set_content(breakpoint_bin)
 
         footer = Gtk.Box(spacing=8, margin_start=12, margin_end=12, margin_top=6, margin_bottom=8)
         self.status = Gtk.Label(xalign=0, hexpand=True, wrap=True)
@@ -695,7 +766,7 @@ class DesignWorkspace:
         for i, obj in enumerate(self.project.shapes, 1):
             tooltip = obj.action if obj.group is None else f'{obj.action} · Group {obj.group}'
             tool = f' · Tool {obj.holder}' if obj.holder else ''
-            label = Gtk.Label(label=f'{i}. {obj.kind}{tool}', xalign=0, tooltip_text=tooltip,
+            label = Gtk.Label(label=f'{i}. {editor_model.object_name(obj)}{tool}', xalign=0, tooltip_text=tooltip,
                               margin_top=7, margin_bottom=7, margin_start=8, margin_end=8)
             self.objects.append(label)
         self.loading = False
@@ -1164,6 +1235,20 @@ class DesignWorkspace:
             self.tool.set_selected(0)
         elif self.active_tool == 'Polygon' and key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
             self.finish_polygon()
+        elif not ctrl and not (state & Gdk.ModifierType.ALT_MASK):
+            key_map = {
+                Gdk.KEY_v: 0, Gdk.KEY_V: 0,
+                Gdk.KEY_a: 1, Gdk.KEY_A: 1,
+                Gdk.KEY_r: 2, Gdk.KEY_R: 2,
+                Gdk.KEY_u: 3, Gdk.KEY_U: 3,
+                Gdk.KEY_e: 4, Gdk.KEY_E: 4,
+                Gdk.KEY_l: 5, Gdk.KEY_L: 5,
+                Gdk.KEY_p: 6, Gdk.KEY_P: 6,
+                Gdk.KEY_f: 7, Gdk.KEY_F: 7,
+            }
+            if key in key_map:
+                self.tool.set_selected(key_map[key])
+                return True
         elif ctrl and key == Gdk.KEY_a:
             self.set_selection(i for i, shape in enumerate(self.project.shapes) if shape.visible)
         elif ctrl and key in (Gdk.KEY_g, Gdk.KEY_G):
@@ -1311,8 +1396,9 @@ class DesignWorkspace:
     def import_vector(self, _button):
         def opened(path):
             shapes, details = import_shapes(path)
+            p_unit = 'path' if len(shapes) == 1 else 'paths'
             alert = Adw.AlertDialog(heading='Place imported paths?',
-                                    body=f'{len(shapes)} path(s) · {path.name}\n{details}')
+                                    body=f'{len(shapes)} {p_unit} · {path.name}\n{details}')
             alert.add_response('cancel', 'Cancel')
             alert.add_response('place', 'Place')
             alert.set_close_response('cancel')

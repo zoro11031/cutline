@@ -591,6 +591,78 @@ class Form(QFormLayout):
         self.addRow(row)
 
 
+class ToolStrip(QWidget):
+    """Vertical strip of exclusive tool buttons for the drawing workspace."""
+
+    TOOL_SHORTCUTS = {
+        "Select": ("Select", "V"),
+        "Point Edit": ("Point Edit", "A"),
+        "Rectangle": ("Rectangle", "R"),
+        "Rounded Rectangle": ("Rounded Rect", "U"),
+        "Ellipse": ("Ellipse", "E"),
+        "Line": ("Line", "L"),
+        "Polygon": ("Polygon", "P"),
+        "Freehand": ("Freehand", "F"),
+    }
+
+    def __init__(self, tools, *, changed=None, parent=None):
+        super().__init__(parent)
+        self.tools = list(tools)
+        self._changed = changed
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        self.group = QButtonGroup(self)
+        self.group.setExclusive(True)
+        self.buttons: list[QPushButton] = []
+        for index, tool in enumerate(self.tools):
+            label, key = self.TOOL_SHORTCUTS.get(tool, (tool, ""))
+            btn_text = f"{label} ({key})" if key else label
+            btn = QPushButton(btn_text)
+            btn.setCheckable(True)
+            btn.setAutoDefault(False)
+            btn.setProperty("role", "tool-strip-button")
+            self.group.addButton(btn, index)
+            layout.addWidget(btn)
+            self.buttons.append(btn)
+        if self.buttons:
+            self.buttons[0].setChecked(True)
+        self.group.idClicked.connect(self._on_clicked)
+
+    def _on_clicked(self, index):
+        if self._changed:
+            self._changed()
+
+    def currentData(self):
+        idx = self.currentIndex()
+        return self.tools[idx] if 0 <= idx < len(self.tools) else None
+
+    def currentIndex(self):
+        return self.group.checkedId()
+
+    def setCurrentIndex(self, index):
+        if 0 <= index < len(self.buttons):
+            self.buttons[index].setChecked(True)
+            if self._changed:
+                self._changed()
+
+    def setCurrentText(self, text):
+        idx = self.findData(text)
+        if idx >= 0:
+            self.setCurrentIndex(idx)
+
+    def findData(self, text):
+        try:
+            return self.tools.index(text)
+        except ValueError:
+            return -1
+
+    def setToolTip(self, tip):
+        super().setToolTip(tip)
+        for btn in self.buttons:
+            btn.setToolTip(tip)
+
+
 class ResponsiveInspector(QWidget):
     def __init__(self):
         super().__init__()

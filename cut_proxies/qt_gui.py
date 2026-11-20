@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QGroupBox, 
                                QMainWindow, QMessageBox, QPlainTextEdit,
                                QSizePolicy, QSplitter, QStackedWidget, QStyle, QTabWidget, QVBoxLayout, QWidget)
 
-from . import (actions, bluetooth, bundle, config, corner_test, editor_model, geometry, graphtec, importer, job,
+from . import (actions, bluetooth, bundle, config, confirmation, corner_test, editor_model, geometry, graphtec, importer, job,
                layout_presets, materials, presets, regmarks, sheet, starting_guide, template, testcut, toolpath, transport)
 from .desktop_help import BLADE_VALUE_TEXT, CONTROL_HELP, SETUP_STEPS
 from .holder_settings import HolderSettings, for_holder
@@ -314,6 +314,7 @@ class Window(QMainWindow):
         source = page.group("Cut template")
         self.source_label = source.note("Generated card layout")
         self.open_artwork_button = source.push("Open Cut Template…", self.open_artwork)
+        self.draw_in_design_btn = source.push("Draw in Design", self.open_design)
         self.use_generated = source.push("Use Generated Layout", self.reset_artwork)
         layout = page.group("Media and cards")
         self.choose(layout, "layout_preset", "Layout preset",
@@ -1048,7 +1049,13 @@ class Window(QMainWindow):
         self.controls["auto_search"].setEnabled(self.controls["registration"].isChecked())
         self.group_mode_box.setVisible(self.artwork is not None)
         self.group_box.setVisible(self.shows_cut_groups())
-        self.use_generated.setEnabled(self.artwork is not None or self.bundle is not None)
+        can_reset = self.artwork is not None or self.bundle is not None
+        self.use_generated.setEnabled(can_reset)
+        self.use_generated.setToolTip(
+            "Discard the custom cut template and restore the generated card layout."
+            if can_reset
+            else "Already using the generated layout."
+        )
 
     def rebuild(self):
         if self.loading:
@@ -1080,9 +1087,11 @@ class Window(QMainWindow):
                 caption = f"{len(current.action_groups)} Send groups" if current.action_groups else (
                     f"{current.preset.name} · {current.settings.passes} {passes}")
                 orientation = "portrait" if current.grid.portrait else "landscape"
-                summary = (f"{current.grid.sheet_name} {orientation} · "
+                ver_text = confirmation.verification_statement(current)
+                summary = (f"{ver_text}\n"
+                           f"{current.grid.sheet_name} {orientation} · "
                            f"{current.grid.sheet_w_mm:g} × {current.grid.sheet_h_mm:g} mm · "
-                           f"{len(current.paths)} paths\n{caption}")
+                           f"{caption}")
                 if problems:
                     title = "Layout needs attention"
                     summary += "\n" + problems[0]
@@ -1090,7 +1099,8 @@ class Window(QMainWindow):
                     title = "Layout checked · Registration off"
                     summary += "\nThe cutter uses sheet coordinates. Use a blank sheet."
                 elif current.mask_hints:
-                    summary += "\nArtwork is close to a registration mark."
+                    indices = ", ".join(str(h["index"] + 1) for h in current.mask_hints)
+                    summary += f"\nArtwork is close to a registration mark (card{'s' if len(current.mask_hints) > 1 else ''} {indices})."
                 elif current.warnings:
                     summary += "\n" + current.warnings[0]
         marks = self.job.marks if self.job else None
@@ -1238,14 +1248,34 @@ class Window(QMainWindow):
             self.footer_status.setText(control.status_text)
         elif not self.tuning:
             display_job = self.active_job or self.job
-            self.footer_status.setProperty("role", "warning" if reason else "body")
-            self.footer_status.style().unpolish(self.footer_status)
-            self.footer_status.style().polish(self.footer_status)
-            self.footer_status.setText((f"⚠ {reason}" if reason else "") or (
-                f"{display_job.device.name} · {len(display_job.paths)} paths · "
-                + ("Registration on" if display_job.registration else "Registration off")))
+            is_send_page = self.tabs.currentIndex() == self.tab("Send")
+            if reason == "Connect a cutter." and not is_send_page:
+                self.footer_status.setProperty("role", "body")
+                self.footer_status.style().unpolish(self.footer_status)
+                self.footer_status.style().polish(self.footer_status)
+                self.footer_status.setText("No cutter connected.")
+            else:
+                self.footer_status.setProperty("role", "warning" if reason else "body")
+                self.footer_status.style().unpolish(self.footer_status)
+                self.footer_status.style().polish(self.footer_status)
+                self.footer_status.setText((f"⚠ {reason}" if reason else "") or (
+                    f"{display_job.device.name} · {len(display_job.paths)} paths · "
+                    + ("Registration on" if display_job.registration else "Registration off")))
 
-    def confirm(self, title, prompt):
+    def confirm(self, title, prompt, *, confirm_label=None, destructive=False):
+        if confirm_label:
+            box = QMessageBox(self)
+            box.setWindowTitle(title)
+            box.setText(prompt)
+            btn = box.addButton(
+                confirm_label,
+                QMessageBox.ButtonRole.DestructiveRole if destructive else QMessageBox.ButtonRole.AcceptRole,
+            )
+            cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(cancel)
+            box.setIcon(QMessageBox.Icon.Warning if destructive else QMessageBox.Icon.Information)
+            box.exec()
+            return box.clickedButton() == btn
         return QMessageBox.question(self, title, prompt, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                     QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes
 
@@ -1320,7 +1350,14 @@ class Window(QMainWindow):
         loaded = self.pdf is not None
         editable = self.active_job is None and not self.busy
         self.close_print.setEnabled(editable and loaded)
-        self.measure_button.setEnabled(editable and loaded and self.bundle_row_error is None)
+        self.close_print.setToolTip("Close the open PDF." if loaded else "No print file open.")
+        can_measure = editable and loaded and self.bundle_row_error is None
+        self.measure_button.setEnabled(can_measure)
+        self.measure_button.setToolTip(
+            "Measure printed registration marks on the open PDF."
+            if can_measure
+            else (self.bundle_row_error or "Open a PDF first.")
+        )
         self.sheet_dpi.setEnabled(editable and loaded)
         self.sheet_page_label.setText("Sheet in ZIP" if self.bundle else "PDF page")
         self.sheet_page_number.setEnabled(editable and loaded and (not self.bundle or len(self.bundle.rows) > 1))
@@ -1732,30 +1769,10 @@ class Window(QMainWindow):
         if reason:
             self.message(reason)
             return
-        prompt = "\n".join((plan.device.name, plan.grid.describe(), *(
-            f"{group.key} · {group.describe()}" for group in plan.action_groups)))
-        if not plan.action_groups:
-            prompt += f"\nForce {plan.settings.force} · Speed {plan.settings.speed} · {plan.settings.passes} passes"
-        if any(preset.origin != "measured" for preset in (
-                [group.preset for group in plan.action_groups] or [plan.preset])) and not scan_only:
-            prompt += "\nTest these settings on this material before cutting the full sheet."
-        dx, dy = plan.offset_mm
-        if dx or dy:
-            prompt += f"\nCalibration: X {dx:+.2f} mm, Y {dy:+.2f} mm"
-        if plan.registration and not plan.auto_search:
-            prompt += "\nPosition the cutter head over the first registration mark before starting."
-        if self.bundle:
-            prompt += "\n" + self.bundle.mat_placement()
-        if self.artwork and self.artwork.studio3_page:
-            prompt += "\nMatch the registration settings to the printed Studio3 sheet."
-        if scan_only:
-            prompt += "\nThis scans the printed marks without sending cut paths."
-        elif not plan.registration:
-            prompt += "\nRegistration is off. The cutter uses sheet coordinates."
-        if connection[1]:
-            prompt += f"\nConnection: {connection[1]}"
-        title = "Test Registration?" if scan_only else "Send to Cutter?"
-        if self.confirm(title, prompt):
+        conf = confirmation.build_send_confirmation(
+            plan, connection, scan_only=scan_only, bundle=self.bundle, artwork=self.artwork
+        )
+        if self.confirm(conf.title, conf.body, confirm_label=conf.confirm_label, destructive=conf.destructive):
             self.start_send(plan, connection, scan_only=scan_only)
 
     def confirm_corner_test(self):

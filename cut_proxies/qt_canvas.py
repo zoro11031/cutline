@@ -309,8 +309,16 @@ class Preview(SheetView):
             skipped = set(job.skip)
             for index, box in enumerate(job.grid.cards):
                 if index not in skipped:
-                    tint = QColor(234, 157, 60, 51) if index in crowded else QColor(48, 126, 165, 18)
-                    scene.addRect(rect(box), QPen(Qt.PenStyle.NoPen), QBrush(tint))
+                    if index in crowded:
+                        tint = QColor(234, 157, 60, 51)
+                        if self.colorblind:
+                            scene.addRect(rect(box), QPen(QColor(181, 87, 19), 0.4, Qt.PenStyle.DashLine),
+                                          QBrush(tint, Qt.BrushStyle.DiagCrossPattern))
+                        else:
+                            scene.addRect(rect(box), QPen(Qt.PenStyle.NoPen), QBrush(tint))
+                    else:
+                        tint = QColor(48, 126, 165, 18)
+                        scene.addRect(rect(box), QPen(Qt.PenStyle.NoPen), QBrush(tint))
         if job.registration:
             draw_marks(scene, job.marks, ink=not image)
             crosshair(scene, *job.marks.origin_mm, "#ad561b", 2.2)

@@ -224,7 +224,7 @@ class TestQtFrontend(unittest.TestCase):
         with mock.patch.object(QFileDialog, "getOpenFileName", return_value=(str(path), "")):
             design.open_project()
         self.assertEqual(design.project, reopened)
-        design.review_button.click()
+        design.send_workspace.click()
         self.assertFalse(window.job.blocked)
         self.assertCountEqual(window.job.paths, reopened.artwork().paths)
         self.assertEqual(len(window.job.paths), 4)
@@ -236,7 +236,7 @@ class TestQtFrontend(unittest.TestCase):
         window.open_design()
         design = window.design
         design.commit_shapes((), ())
-        self.assertFalse(design.review_button.isEnabled())
+        self.assertTrue(design.review_button.isHidden())
         self.assertTrue(design.send_workspace.isEnabled())
         self.assertIs(design.menu_bar.parentWidget(), design.send_workspace.parentWidget().parentWidget())
         design.send_workspace.click()
@@ -538,7 +538,7 @@ class TestQtFrontend(unittest.TestCase):
         self.assertTrue(design.page_advanced.disclosure.isChecked())
         design.print_border.setChecked(True)
         self.assertTrue(design.print_border.isChecked())
-        design.review_button.click()
+        design.send_workspace.click()
         self.assertFalse(window.job.blocked)
         self.assertEqual([(group.settings.holder, group.settings.force) for group in window.job.action_groups],
                          [(1, 28), (2, 12)])
@@ -574,7 +574,7 @@ class TestQtFrontend(unittest.TestCase):
         with mock.patch.object(QFileDialog, "getSaveFileName", return_value=(str(target), "")):
             self.assertTrue(design.save())
         self.assertEqual(editor_model.load_project(target), design.project)
-        design.review_button.click()
+        design.send_workspace.click()
         self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
         self.assertEqual(len(window.job.paths), 1)
         self.assertFalse(window.job.blocked)

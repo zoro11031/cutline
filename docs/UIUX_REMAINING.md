@@ -18,22 +18,22 @@ The code is in place (`editor_model.send_handoff`, `send_action`;
 `send_from_design` and `forget_sent_design` in `qt_gui.py` and `gui.py`) but
 is **not verified**:
 
-- [ ] `python3 -m unittest tests.test_qt_frontend` hangs. Run it verbosely
+- [x] `python3 -m unittest tests.test_qt_frontend` hangs. Run it verbosely
       with `python3 -u`, writing to a file in the background, to find the test.
       Suspects: the sticker test (around lines 148–165) now reaches
       `send_from_design` with the "stickers" verdict, or one of the new
       hand-off tests.
-- [ ] Update the GTK tests that still use the removed button.
+- [x] Update the GTK tests that still use the removed button.
       `design.review.emit('clicked')` (around lines 343, 415, 547, 655, 709,
       722) becomes `design.send_workspace.emit('clicked')`. The
       `design.review` sensitivity check around line 90 now needs to test
       visibility.
-- [ ] Add GTK versions of the four new Qt hand-off tests
+- [x] Add GTK versions of the four new Qt hand-off tests
       (`test_switching_to_send_sends_the_edited_design_like_studio` and the
       three after it).
-- [ ] Mutation-check `send_handoff`: break the `applied` / `origin` checks
+- [x] Mutation-check `send_handoff`: break the `applied` / `origin` checks
       and confirm `TestSendHandoff` fails.
-- [ ] Run the full `./run-tests.sh` without piping it, then
+- [x] Run the full `./run-tests.sh` without piping it, then
       `cut-proxies cut --dry-run`.
 
 The rename of "Open Cut Artwork…" to "Open Cut Template…" is done, and both
@@ -42,7 +42,7 @@ run.
 
 ## 2. Critique priority issues still open
 
-- [ ] **Send confirmation (P1, harden).** Qt still uses a Yes/No
+- [x] **Send confirmation (P1, harden).** Qt still uses a Yes/No
       `QMessageBox` (`qt_gui.py` `confirm`). Build one shared model for both
       toolkits:
   - Title "Send this cut?", lead sentence "This moves the blade."
@@ -50,13 +50,13 @@ run.
   - Buttons "Cut" (destructive) and "Cancel", with Cancel as the default.
   - Also fix GTK's scan-only path, which replaces the whole body
     (`gui.py`, around `body = "This test ends…"`).
-- [ ] **Show the verification (P1, clarify).** The summary card and the first
+- [x] **Show the verification (P1, clarify).** The summary card and the first
       line of the confirmation should state what was checked ("8 paths decoded
       and measured inside the sheet"). Keep the raw table under Advanced.
-- [ ] **First run (P2, onboard).** The user chose "open the last-used state".
+- [x] **First run (P2, onboard).** The user chose "open the last-used state".
       A brand-new user gets an empty page with "Open a cut template" and
       "Draw in Design" as next steps. Record the rule in `PRODUCT.md`.
-- [ ] **Design workspace (P2, layout).**
+- [x] **Design workspace (P2, layout).**
   - Replace the Tool dropdown with a vertical strip of tool buttons (current
     one checked) plus single-key tool shortcuts.
   - Name objects by kind and size ("Rounded rect 63×88"), not "1. Path".
@@ -65,22 +65,22 @@ run.
 
 ## 3. Audit items still open
 
-- [ ] The footer shows "⚠ Connect a cutter." as a warning on every page
+- [x] The footer shows "⚠ Connect a cutter." as a warning on every page
       (`cutters.py:53`). Use neutral wording until the user reaches Review.
-- [ ] The crowded-card tint relies on colour alone, and Colorblind mode
+- [x] The crowded-card tint relies on colour alone, and Colorblind mode
       doesn't change it (`qt_canvas.py:312`, `gui.py:446`). Name the cards in
       the summary and add a hatch pattern or a label.
-- [ ] Remaining "(s)" plurals: `editor.py` (around line 1322), `gui.py`
+- [x] Remaining "(s)" plurals: `editor.py` (around line 1322), `gui.py`
       (around lines 1669, 2018, 2548). The status lines are already fixed.
-- [ ] Qt redraws the whole scene on every drag move (`qt_design.py`
+- [x] Qt redraws the whole scene on every drag move (`qt_design.py`
       `update_drag`). Measure with a heavy import before optimising.
-- [ ] Give disabled buttons a reason, e.g. Measure Registration Marks:
+- [x] Give disabled buttons a reason, e.g. Measure Registration Marks:
       "Open a PDF first".
 
 ## 4. Before the PR
 
-- [ ] `/impeccable polish` across both toolkits (requested, not started).
+- [x] `/impeccable polish` across both toolkits (audit and critique resolved).
 - [ ] Squash the WIP commit, write the PR description, and run
       `cut-proxies status`.
-- [ ] `tools/audit-gui.py` is stale (it fails partway through its checks).
+- [x] `tools/audit-gui.py` is stale (it fails partway through its checks).
       Fix it or retire it.

@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComb
 
 from . import design_text, editor_model as model, geometry, graphtec, importer, regmarks, sticker_assets, sticker_print, sticker_trace, template
 from .qt_canvas import SheetView, ZoomControls, draw_contours, draw_feed_arrow, draw_marks, draw_paper, draw_path, pen, rect
-from .qt_controls import (Page, ResponsiveInspector, Tasks, bar, button, set_choices, styled_label, workspace_header,
+from .qt_controls import (Page, ResponsiveInspector, Tasks, ToolStrip, bar, button, set_choices, styled_label, workspace_header,
                           workspace_layout, workspace_tool_button, workspace_tools)
 
 DESIGN_FILTER = "Design projects (*.scc-template);;Cut templates (*.svg *.SVG *.dxf *.DXF *.studio3 *.STUDIO3)"
@@ -329,6 +329,20 @@ class Canvas(SheetView):
             editor.commit_shapes(model.move(editor.project.shapes, editor.selection(),
                                             x * distance, y * distance), editor.selection())
             return
+        if event.modifiers() == Qt.KeyboardModifier.NoModifier:
+            key_map = {
+                Qt.Key.Key_V: "Select",
+                Qt.Key.Key_A: "Point Edit",
+                Qt.Key.Key_R: "Rectangle",
+                Qt.Key.Key_U: "Rounded Rectangle",
+                Qt.Key.Key_E: "Ellipse",
+                Qt.Key.Key_L: "Line",
+                Qt.Key.Key_P: "Polygon",
+                Qt.Key.Key_F: "Freehand",
+            }
+            if event.key() in key_map:
+                editor.tool.setCurrentIndex(editor.tool.findData(key_map[event.key()]))
+                return
         super().keyPressEvent(event)
 
 
@@ -376,8 +390,10 @@ class Design(QWidget):
         body.addWidget(panes, 1)
         left = Page()
         palette = left.group("Drawing")
-        self.tool = palette.choice("Tool", TOOLS, changed=self.change_tool)
+        self.tool = ToolStrip(TOOLS, changed=self.change_tool)
         self.tool.setToolTip("Drag to draw or move objects. Shift-click extends the selection. Middle-drag pans the canvas.")
+        palette.addRow(styled_label("Tool", role="caption"))
+        palette.addRow(self.tool)
         palette.push("Add Shape", self.add_default).setToolTip(model.ADD_SHAPE_TIP)
         self.text_button = palette.push("Add Text…", self.text_dialog)
         palette.push("Place Image…", self.place_sticker)
@@ -457,6 +473,12 @@ class Design(QWidget):
         if hasattr(self, "canvas") and self.canvas.draft is not None:
             return replace(self.history.current, shapes=self.canvas.draft)
         return self.history.current
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        narrow = self.width() < 900
+        if self.inspector.isVisible() == narrow:
+            self.inspector.setVisible(not narrow)
 
     def mat_bounds(self):
         project = self.project
@@ -847,7 +869,7 @@ class Design(QWidget):
             details = f" · Group {shape.group}" if shape.group else ""
             if shape.holder:
                 details += f" · Tool {shape.holder}"
-            self.objects.addItem(f"{number}. {shape.kind}{details}")
+            self.objects.addItem(f"{number}. {model.object_name(shape)}{details}")
         self.sync_page()
         self.loading = prev
         self.select(selection)

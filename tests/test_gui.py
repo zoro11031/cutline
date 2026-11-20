@@ -5,7 +5,7 @@ from pathlib import Path
 import unittest
 import types
 from unittest import mock
-from cut_proxies import config, corner_test, graphtec, importer, job, presets, starting_guide
+from cut_proxies import config, corner_test, editor_model, graphtec, importer, job, presets, starting_guide
 from tests.test_vector_editing import compound_project
 from tests.test_sticker_print import make_image
 
@@ -87,7 +87,7 @@ class TestDesignWorkspace(unittest.TestCase):
         design = win.design
         self.assertIs(win.workspaces.get_visible_child(), design.view)
         design.commit((), ())
-        self.assertFalse(design.review.get_sensitive())
+        self.assertFalse(design.review.get_visible())
         self.assertTrue(design.send_workspace.get_sensitive())
         design.send_workspace.emit('clicked')
         self.assertEqual(win.stack.get_visible_child_name(), 'cut')
@@ -412,7 +412,7 @@ class TestDesignWorkspace(unittest.TestCase):
             with mock.patch.object(design, 'file_dialog', side_effect=lambda _title, opened, **_: opened(path)):
                 design.open_project(None)
         self.assertEqual(design.project, reopened)
-        design.review.emit('clicked')
+        design.send_workspace.emit('clicked')
         self.assertFalse(win.job.blocked)
         self.assertCountEqual(win.job.paths, reopened.artwork().paths)
         self.assertEqual(len(win.job.paths), 4)
@@ -544,7 +544,7 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertTrue(design.page_advanced.get_expanded())
         design.menu_actions.lookup_action('print-border').activate(None)
         self.assertTrue(design.print_border.get_active())
-        design.review.emit('clicked')
+        design.send_workspace.emit('clicked')
         self.assertFalse(win.job.blocked)
         self.assertEqual([(group.settings.holder, group.settings.force) for group in win.job.action_groups],
                          [(1, 28), (2, 12)])
@@ -652,7 +652,7 @@ class TestDesignWorkspace(unittest.TestCase):
         design.mark_length.set_value(9)
         self.assertEqual(design.mat_size, (304.8, 304.8))
         self.assertEqual(design.cut_border.x, 14)
-        design.review.emit('clicked')
+        design.send_workspace.emit('clicked')
         self.assertEqual(win.stack.get_visible_child_name(), 'cut')
         self.assertEqual((win.job.grid.sheet_w_mm, win.job.grid.sheet_h_mm), (150, 180))
         self.assertEqual(win.job.mat, 'cameo-12x12')
@@ -706,11 +706,12 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertTrue(win.cut_button.get_visible())
         win.on_edit_template()
         design = win.design
-        design.review.emit('clicked')
+        design.commit((replace(design.project.shapes[0], x=40),), (0,))
+        design.send_workspace.emit('clicked')
         self.assertTrue(win.cut_button.get_sensitive())
         win.on_edit_template()
         design.commit((replace(design.project.shapes[0], x=45),), (0,))
-        design.send_workspace.emit('clicked')
+        win.leave_design()
         self.assertEqual(win.stack.get_visible_child_name(), 'cut')
         self.assertEqual(win.review_send.get_label(), 'Review Design')
         self.assertFalse(win.cut_button.get_sensitive())
@@ -719,8 +720,61 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertIs(win.design, design)
         self.assertEqual(design.project.shapes[0].x, 45)
         self.assertTrue(design.dirty)
-        design.review.emit('clicked')
+        design.send_workspace.emit('clicked')
         self.assertTrue(win.cut_button.get_sensitive())
+
+    def test_switching_to_send_sends_the_edited_design_like_studio(self):
+        win = self.make_window()
+        generated = len(win.job.paths)
+        win.on_edit_template()
+        design = win.design
+        design.send_workspace.emit('clicked')
+        self.assertEqual(len(win.job.paths), generated, "a design only looked at leaves Send alone")
+        win.on_edit_template()
+        cut = editor_model.Shape("Rectangle", 30, 40)
+        score = editor_model.Shape("Line", 80, 40, action="Score")
+        design.commit((cut, score), (0, 1))
+        design.send_workspace.emit('clicked')
+        self.assertEqual(win.workspaces.get_visible_child_name(), 'tools')
+        self.assertEqual(win.stack.get_visible_child_name(), 'cut')
+        self.assertEqual(len(win.job.paths), 2)
+        groups = [key for key, *_ in win._send_rows]
+        self.assertEqual(sorted(groups), ["Cut", "Score"], "mixed actions get their own groups")
+        self.assertNotIn("design", win.send_status.get_label().lower())
+
+    def test_newly_opened_send_artwork_is_not_replaced_by_an_older_design(self):
+        win = self.make_window()
+        win.on_edit_template()
+        win.design.commit((editor_model.Shape("Rectangle", 30, 40),), (0,))
+        win.design.send_workspace.emit('clicked')
+        self.assertEqual(len(win.job.paths), 1)
+        win.on_clear_artwork()
+        generated = len(win.job.paths)
+        self.assertGreater(generated, 1)
+        win.on_edit_template()
+        win.design.send_workspace.emit('clicked')
+        self.assertEqual(len(win.job.paths), generated)
+
+    def test_an_unusable_design_stays_in_design_with_the_reason(self):
+        win = self.make_window()
+        win.on_edit_template()
+        design = win.design
+        with mock.patch.object(editor_model, "send_handoff",
+                               return_value=("invalid", "Draw or resize the paths before sending.")):
+            design.send_workspace.emit('clicked')
+        self.assertIs(win.workspaces.get_visible_child(), design.view)
+        self.assertIn("resize the paths", design.status.get_text())
+
+    def test_send_refuses_a_design_edit_it_has_not_used(self):
+        win = self.make_window()
+        win.on_edit_template()
+        design = win.design
+        design.commit((editor_model.Shape("Rectangle", 30, 40),), (0,))
+        design.send_workspace.emit('clicked')
+        self.assertNotIn("has not used", win.send_status.get_label())
+        design.commit((editor_model.Shape("Ellipse", 30, 40),), (0,))  # edited without switching
+        win.update_send_actions()
+        self.assertIn("has not used", win.send_status.get_label())
 
     def test_save_updates_the_open_project_without_opening_the_picker(self):
         from cut_proxies.editor_model import load_project

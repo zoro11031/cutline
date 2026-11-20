@@ -64,6 +64,10 @@ long-term feature reference; the verification is the difference.
 - Standard library only on the template path; no `pip` dependencies there.
 - Stocked sheets are Letter and A4; other sizes are behind `--all-sheets`.
 - Projects save as `.scc-template` (v1 and v2).
+- **First run and state persistence**: The app restores last-used workspace state
+  when available. A brand-new user without saved state lands on the Layout page
+  with default settings, offering "Open Cut Template…" and "Draw in Design" as
+  next steps.
 - Undecided: the product name (see Brand Commitments).
 
 ## Brand Commitments
