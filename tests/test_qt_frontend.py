@@ -1519,6 +1519,7 @@ class TestQtDesignEditor(unittest.TestCase):
             with self.subTest(size=(width, height)):
                 design.resize(width, height)
                 self.app.processEvents()
+                self.assertTrue(inspector.isVisibleTo(design))
                 sections = [inspector.combo.itemText(i) for i in range(inspector.combo.count())]
                 self.assertEqual(sections, [inspector.tabs.tabText(i) for i in range(inspector.tabs.count())])
                 for index in range(inspector.count()):
@@ -1568,22 +1569,38 @@ class TestQtDesignEditor(unittest.TestCase):
         design.add_default()
         self.assertEqual([shape.kind for shape in design.project.shapes], ["Rectangle", "Ellipse"])
 
-    def test_design_icon_palette_tracks_canvas_shortcuts(self):
+    def test_design_toolbar_rail_and_objects_dock_at_compact_width(self):
+        from PySide6.QtWidgets import QToolButton
+
         design = self.editor()
         design.resize(720, 520)
         design.show()
         self.app.processEvents()
+        command_buttons = design.tools_bar.findChildren(QToolButton, options=Qt.FindChildOption.FindDirectChildrenOnly)
+        self.assertEqual([item.accessibleName() for item in command_buttons],
+                         ["Save", "Undo", "Redo", "Add Shape", "Add Text…", "Place Image…", "Trace and Bleed…"])
+        self.assertTrue(all(item.isVisibleTo(design) for item in command_buttons))
+        self.assertEqual(design.zoom.fit_button.accessibleName(), "Fit to view")
         palette = design.tool
         rounded = palette.buttons[palette.findData("Rounded rectangle")]
         self.assertTrue(rounded.isVisible())
-        self.assertEqual(design.text_button.visibleRegion().boundingRect().width(), design.text_button.width())
+        self.assertEqual(len({item.x() for item in palette.buttons}), 1)
+        self.assertEqual(len({item.y() for item in palette.buttons}), 8)
         self.assertEqual(rounded.accessibleName(), "Rounded rectangle")
         self.assertIn("(U)", rounded.toolTip())
         QTest.keyClick(design.canvas, Qt.Key.Key_U)
         self.assertTrue(rounded.isChecked())
         self.assertEqual(palette.active_label.text(), "Rounded rectangle")
-        design.add_default()
+        command_buttons[3].click()
         self.assertEqual(design.project.shapes[0].kind, "Rounded rectangle")
+        self.assertEqual(design.objects.count(), 1)
+        self.assertTrue(design.objects.isVisibleTo(design))
+        canvas = design.canvas.mapTo(design, QPoint())
+        props = design.inspector.mapTo(design, QPoint())
+        objects = design.objects.mapTo(design, QPoint())
+        self.assertLess(palette.mapTo(design, QPoint()).x(), canvas.x())
+        self.assertLess(canvas.x(), props.x())
+        self.assertGreater(objects.y(), props.y())
 
         polygon = palette.buttons[palette.findData("Polygon")]
         QTest.mouseClick(polygon, Qt.MouseButton.LeftButton)

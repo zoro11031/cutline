@@ -402,7 +402,8 @@ class TestDesignWorkspace(unittest.TestCase):
         add = next(widget for widget in children(dialog) if isinstance(widget, gui.Gtk.Button) and
                    widget.get_label() == 'Add')
         add.emit('clicked')
-        self.assertEqual(design.text_button.get_label(), 'Edit Text…')
+        self.assertEqual(design.text_button.get_tooltip_text(), 'Edit Text…')
+        self.assertIsInstance(design.text_button.get_child(), gui.Gtk.DrawingArea)
         self.assertEqual(design.project.shapes[1].text.value, 'O')
         design.commit((design.project.shapes[0], replace(design.project.shapes[1], x=110, y=40)), (1,))
         with tempfile.TemporaryDirectory() as tmp:
@@ -666,6 +667,12 @@ class TestDesignWorkspace(unittest.TestCase):
         win.design_button.emit('clicked')
         design = win.design
         palette = design.tool
+        for button, name in ((design.save_button, 'Save'), (design.undo_button, 'Undo'),
+                             (design.redo_button, 'Redo'), (design.add_button, 'Add Shape'),
+                             (design.text_button, 'Add Text…'), (design.trace_button, 'Trace and Bleed…')):
+            self.assertTrue(button.get_tooltip_text().startswith(name))
+            self.assertIsInstance(button.get_child(), gui.Gtk.DrawingArea)
+        self.assertEqual(palette.get_orientation(), gui.Gtk.Orientation.VERTICAL)
         no_modifiers = Gdk.ModifierType(0)
         rounded = palette.buttons[design.tools.index('Rounded rectangle')]
         self.assertIn('(U)', rounded.get_tooltip_text())
