@@ -11,6 +11,15 @@ from .sticker_assets import Sticker
 
 
 KINDS = ("Rectangle", "Rounded rectangle", "Ellipse", "Line")
+
+
+def shape_to_add(tool):
+    """What Add Shape places: the chosen shape tool's shape, or a rectangle
+    when the tool is not a shape tool, so the button always does something."""
+    return tool if tool in KINDS else "Rectangle"
+
+
+ADD_SHAPE_TIP = "Add the shape tool's shape, or a rectangle, at the centre of the page."
 ACTIONS = ("Cut", "Score", "None")
 LINE_STYLES = {"solid": "Solid", "dashed": "Dashed", "dotted": "Dotted"}
 ALL_ACTIONS = "All actions"
@@ -479,6 +488,39 @@ class Project:
 
     def artwork(self, action="Cut"):
         return artwork(self.shapes, self.width, self.height, action)
+
+
+def send_action(shapes):
+    """The actions a design carries to Send: Cut, Score, or both."""
+    present = {shape.action for shape in shapes if shape.visible and shape.action in ACTIONS[:2]}
+    if len(present) > 1:
+        return ALL_ACTIONS
+    return present.pop() if present else None
+
+
+def send_handoff(project, origin, applied):
+    """What switching to Send does with the design, as Silhouette Studio's
+    SEND tab does: Send cuts the design. A design left as it was opened, or
+    already in Send, changes nothing, and neither does one with nothing to
+    cut, so a look at Design never replaces Send's artwork.
+
+    Returns (verdict, action): "apply", "keep", "empty", "stickers" (those
+    go through Export Print & Cut) or "invalid" (refused, with the reason
+    as the second item)."""
+    if project == applied or (applied is None and project == origin):
+        return "keep", None
+    if any(shape.visible and shape.sticker for shape in project.shapes):
+        return "stickers", None
+    action = send_action(project.shapes)
+    if action is None:
+        return "empty", None
+    try:
+        drawing = project.artwork(action)
+    except ValueError as error:
+        return "invalid", str(error)
+    if not drawing.paths or any(path.length_mm() <= 0 for path in drawing.paths):
+        return "invalid", "Draw or resize the paths before sending."
+    return "apply", action
 
 
 class History:

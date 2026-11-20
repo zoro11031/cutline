@@ -232,7 +232,7 @@ class Preview(SheetView):
         image = not self.pdf.isNull() and (self.mode != "Cut paths" or job is None)
         if not job and not image:
             self.set_page_bounds(QRectF(0, 0, 250, 160))
-            text = scene.addSimpleText("Choose a layout or open cut artwork")
+            text = scene.addSimpleText("Choose a layout or open a cut template")
             text.setBrush(self.palette().windowText().color())
             text.setPos(self.page_bounds.center() - text.boundingRect().center())
             if self.fitted:

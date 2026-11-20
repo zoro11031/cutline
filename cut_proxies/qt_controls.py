@@ -298,7 +298,13 @@ def workspace_header(parent, design, send, *, active):
     row.setSpacing(4)
     buttons = []
     for name, callback in (("Design", design), ("Send", send)):
+        # Checkable, so assistive technology hears which workspace is current.
+        # Each workspace has its own header, so its state never changes:
+        # a click switches workspace and the check is put back afterwards.
         item = button(name, callback)
+        item.setCheckable(True)
+        item.setChecked(name == active)
+        item.clicked.connect(lambda _checked=False, item=item, keep=name == active: item.setChecked(keep))
         item.setProperty("role", "workspaceTab")
         item.setProperty("active", name == active)
         if name == active:

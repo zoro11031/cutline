@@ -341,7 +341,7 @@ def build(sheet: str = config.DEFAULT_SHEET,
     else:
         paths = template.cut_paths(grid, mode, radius_mm, skip=skip)
         if weed_border_mm or weed_lines != "none":
-            raise ValueError("Open cut artwork or review a Design to add a Weed Border.")
+            raise ValueError("Open a cut template or send a Design to add a Weed Border.")
     weed = toolpath.weed_paths(paths, weed_border_mm, weed_lines)
     paths += weed
     if groups and weed:

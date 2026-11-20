@@ -9,10 +9,11 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 from . import design_text, editor_model, geometry, graphtec, importer, regmarks, sticker_assets, sticker_print, sticker_trace, template
 from .editor_canvas import DesignCanvas
-from .editor_model import (ACTIONS, ALIGNMENTS, ALL_ACTIONS, KINDS, REVIEW_ACTIONS,
+from .editor_model import (ACTIONS, ALIGNMENTS, KINDS,
                            History, Registration, Shape,
                            import_shapes, load_project, save_project)
-from .gtk_controls import disclosure, protect_settings_wheel, workspace_header, workspace_tools, zoom_controls
+from .gtk_controls import (disclosure, menu_item, protect_settings_wheel, workspace_header, workspace_tools,
+                           zoom_controls)
 
 
 @dataclass
@@ -58,7 +59,7 @@ class DesignWorkspace:
         header, self.design_workspace, self.send_workspace = workspace_header(
             lambda *_: self.canvas.grab_focus(), open_send, active="Design")
         self.view.add_top_bar(header)
-        shortcuts = Gtk.ShortcutController(scope=Gtk.ShortcutScope.MANAGED)
+        self.shortcuts = shortcuts = Gtk.ShortcutController(scope=Gtk.ShortcutScope.MANAGED)
         self.view.add_controller(shortcuts)
 
         toolbar = workspace_tools(margin_start=12, margin_end=12, margin_bottom=8)
@@ -79,6 +80,7 @@ class DesignWorkspace:
         self.tool.connect('notify::selected', self.tool_changed)
         objects.append(self.tool)
         self.add_button = self.button(objects, 'Add Shape', self.add_shape)
+        self.add_button.set_tooltip_text(editor_model.ADD_SHAPE_TIP)
         self.text_button = self.button(objects, 'Add Text…', lambda *_: self.text_dialog())
         self.button(objects, 'Place Image…', lambda *_: self.place_sticker())
         self.trace_button = self.button(objects, 'Trace and Bleed…', lambda *_: self.trace_sticker())
@@ -131,11 +133,9 @@ class DesignWorkspace:
         footer = Gtk.Box(spacing=8, margin_start=12, margin_end=12, margin_top=6, margin_bottom=8)
         self.status = Gtk.Label(xalign=0, hexpand=True, wrap=True)
         footer.append(self.status)
-        self.review_action = Gtk.DropDown.new_from_strings(REVIEW_ACTIONS)
-        self.review_action.set_tooltip_text('Action to review')
-        self.review_action.connect('notify::selected', lambda *_: self.refresh_status())
-        footer.append(self.review_action)
-        self.review = self.button(footer, 'Review in Send', self.review_paths)
+        # As in Silhouette Studio, the Send switch sends the design; only a
+        # sticker sheet has a step of its own, its Print & Cut export.
+        self.review = self.button(footer, 'Export Print & Cut…', lambda *_: self.export_stickers())
         self.review.add_css_class('suggested-action')
         self.view.add_bottom_bar(footer)
         self.menu_bar = self.build_design_menus(shortcuts)
@@ -258,7 +258,7 @@ class DesignWorkspace:
             action.connect('activate', lambda *_: callback())
             self.menu_actions.add_action(action)
             full_name = f'design.{name}'
-            menu.append(label, full_name)
+            menu.append_item(menu_item(label, full_name, shortcut))
             if shortcut:
                 shortcuts.add_shortcut(Gtk.Shortcut.new(
                     Gtk.ShortcutTrigger.parse_string(shortcut), Gtk.NamedAction.new(full_name)))
@@ -284,9 +284,9 @@ class DesignWorkspace:
         view = Gio.Menu()
         zoom = Gio.Menu()
         view.append_submenu('Zoom', zoom)
-        command(zoom, 'Zoom In', 'zoom-in', lambda: self.canvas.zoom_by(1.25))
-        command(zoom, 'Zoom Out', 'zoom-out', lambda: self.canvas.zoom_by(0.8))
-        command(zoom, 'Fit', 'fit', lambda: self.fit(None))
+        command(zoom, 'Zoom In', 'zoom-in', lambda: self.canvas.zoom_by(1.25), '<Control>equal|<Control>plus')
+        command(zoom, 'Zoom Out', 'zoom-out', lambda: self.canvas.zoom_by(0.8), '<Control>minus')
+        command(zoom, 'Fit', 'fit', lambda: self.fit(None), '<Control>0')
         rotate = Gio.Menu()
         view.append_submenu('Rotate Page', rotate)
         command(rotate, 'Left', 'rotate-page-left', lambda: self.rotate_page(False))
@@ -725,11 +725,10 @@ class DesignWorkspace:
 
     def refresh_status(self):
         p = self.project
-        action = REVIEW_ACTIONS[self.review_action.get_selected()]
-        count = len(p.artwork(action).paths)
-        label = "cut and score" if action == ALL_ACTIONS else action.lower()
+        action = editor_model.send_action(p.shapes)
+        count = len(p.artwork(action).paths) if action else 0
         selection = len(self.selected_indices())
-        self.status.set_text(f'{p.width:g} × {p.height:g} mm · {count} {label} path(s)'
+        self.status.set_text(f'{p.width:g} × {p.height:g} mm · ' + ('1 path' if count == 1 else f'{count} paths')
                              + (f' · {selection} selected' if selection else ''))
         name = self.project_path.name if self.project_path else self.source_name or "Untitled"
         self.document_title.set_text(name + (" *" if self.dirty else ""))
@@ -739,10 +738,7 @@ class DesignWorkspace:
         self.redo_button.set_sensitive(bool(self.history.future))
         self.menu_actions.lookup_action('undo').set_enabled(bool(self.history.past))
         self.menu_actions.lookup_action('redo').set_enabled(bool(self.history.future))
-        has_stickers = any(shape.visible and shape.sticker for shape in p.shapes)
-        self.review.set_label('Export Print & Cut…' if has_stickers else 'Review in Send')
-        self.review.set_sensitive(count > 0 or has_stickers)
-        self.review_action.set_sensitive(not has_stickers)
+        self.review.set_visible(any(shape.visible and shape.sticker for shape in p.shapes))
         self.canvas.queue_draw()
 
     def select_shape(self, *_args):
@@ -912,11 +908,9 @@ class DesignWorkspace:
         self.refresh_status()
 
     def add_shape(self, _button):
-        kind = self.active_tool
-        if kind in KINDS:
-            p = self.project
-            shape = Shape(kind, x=(p.width - 40) / 2, y=(p.height - 30) / 2)
-            self.commit(p.shapes + (shape,), (len(p.shapes),))
+        p = self.project
+        shape = Shape(editor_model.shape_to_add(self.active_tool), x=(p.width - 40) / 2, y=(p.height - 30) / 2)
+        self.commit(p.shapes + (shape,), (len(p.shapes),))
 
     def group_selected(self, *, release=False):
         shapes, indices = self.project.shapes, self.selected_indices()
@@ -979,7 +973,6 @@ class DesignWorkspace:
         self.polygon.clear()
         self.cancel_drag()
         mode = self.active_tool
-        self.add_button.set_sensitive(mode in KINDS)
         self.canvas.set_cursor_from_name('crosshair' if mode not in ('Select', 'Point Edit') else 'default')
 
     def pick_polygon_point(self, _gesture, presses, x, y):
@@ -1330,9 +1323,3 @@ class DesignWorkspace:
 
         self.file_dialog('Import cut geometry', opened, filters=('*.svg','*.dxf','*.SVG','*.DXF','*.studio3','*.STUDIO3'))
 
-    def review_paths(self, _button):
-        if any(shape.visible and shape.sticker for shape in self.project.shapes):
-            self.export_stickers()
-            return
-        action = REVIEW_ACTIONS[self.review_action.get_selected()]
-        self.on_review(self.project, action)

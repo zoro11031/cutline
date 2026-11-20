@@ -11,7 +11,7 @@ from time import monotonic
 import zipfile
 
 from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QIcon, QKeySequence
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QInputDialog, QMenu,
                                QMainWindow, QMessageBox, QPlainTextEdit,
                                QSizePolicy, QSplitter, QStackedWidget, QStyle, QTabWidget, QVBoxLayout, QWidget)
@@ -26,7 +26,7 @@ from .qt_controls import (AdaptiveActions, Form, Page, SettingsWheel, Tasks, bar
                           styled_label, workspace_header, workspace_layout, workspace_style, workspace_tools)
 
 APP_ID = "org.printing.SilhouetteControlCenter"
-ARTWORK_FILTER = "Cut artwork (*.svg *.SVG *.dxf *.DXF *.studio3 *.STUDIO3)"
+ARTWORK_FILTER = "Cut templates (*.svg *.SVG *.dxf *.DXF *.studio3 *.STUDIO3)"
 from . import cutters
 
 DEVICES = {device.name: device.name.removeprefix("Silhouette ") for device in graphtec.DEVICES}
@@ -61,7 +61,7 @@ class Window(QMainWindow):
         self.setWindowIcon(QIcon.fromTheme(APP_ID))
         self.tasks = Tasks(self)
         self.settings = config.load_settings()
-        self.job = self.artwork = self.project_shapes = self.design = self.reviewed_design = None
+        self.job = self.artwork = self.project_shapes = self.design = self.reviewed_design = self.design_origin = None
         self.pdf = self.bundle = self.sheet_token = self.report = None
         self.bundle_row_error = None
         self.bundle_checked = self.busy = self.loading = False
@@ -89,7 +89,7 @@ class Window(QMainWindow):
         self.workspaces = QStackedWidget()
         self.setCentralWidget(self.workspaces)
         self.workspaces.setStyleSheet(workspace_style(self.palette()))
-        setup = QWidget()
+        self.send_view = setup = QWidget()
         setup.setObjectName("workspace")
         self.workspaces.addWidget(setup)
         content = workspace_layout(setup)
@@ -198,7 +198,6 @@ class Window(QMainWindow):
         with self.editing():
             self.layout_page()
             self.sheet_page()
-            self.materials_page()
             self.send_page()
             self.load_preset()
             self.load_materials()
@@ -239,28 +238,38 @@ class Window(QMainWindow):
         self.pages[name] = self.tabs.addTab(page.finish(), title or name)
 
     def build_workspace_menus(self):
-        def command(menu, title, callback):
+        # Shortcuts are scoped to the Send page, so Design's own keys (Ctrl+O
+        # opens a project there) never reach it. Nothing that moves the
+        # cutter gets one: sending stays a deliberate click.
+        def command(menu, title, callback, *keys):
             action = menu.addAction(title)
             action.triggered.connect(lambda: callback())
+            if keys:
+                action.setShortcuts([QKeySequence(key) for key in keys])
+                action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+                self.send_view.addAction(action)
             return action
 
         files = self.menu_bar.addMenu("&File")
-        self.open_artwork_action = command(files, "Open Cut Artwork…", self.open_artwork)
-        self.open_print_action = command(files, "Open PDF or ZIP…", self.open_sheet)
+        self.open_artwork_action = command(files, "Open Cut Template…", self.open_artwork, "Ctrl+O")
+        self.open_print_action = command(files, "Open PDF or ZIP…", self.open_sheet, "Ctrl+Shift+O")
         self.close_print_action = command(files, "Close Print File", self.close_printed_sheet)
         self.paired_cut_action = command(files, "Save Paired Cut File…", self.save_bundle_file)
         files.addSeparator()
         command(files, "Export Cut Templates…", self.export_job)
 
         edit = self.menu_bar.addMenu("&Edit")
-        command(edit, "Edit in Design", self.open_design)
+        command(edit, "Edit in Design", self.open_design, "Ctrl+F1")
         self.reset_layout_action = command(edit, "Use Generated Layout", self.reset_artwork)
 
         view = self.menu_bar.addMenu("&View")
-        for index in self.pages.values():
-            command(view, self.tabs.tabText(index), lambda page=index: self.tabs.setCurrentIndex(page))
+        for number, index in enumerate(self.pages.values(), 1):
+            command(view, self.tabs.tabText(index), lambda page=index: self.tabs.setCurrentIndex(page),
+                    f"Ctrl+{number}")
         view.addSeparator()
-        command(view, "Fit Preview", self.preview.fit)
+        command(view, "Zoom In", lambda: self.preview.zoom_by(1.25), "Ctrl+=", "Ctrl++")
+        command(view, "Zoom Out", lambda: self.preview.zoom_by(0.8), "Ctrl+-")
+        command(view, "Fit Preview", self.preview.fit, "Ctrl+0")
 
         settings = self.menu_bar.addMenu("&Settings")
         command(settings, "Cut Settings", self.open_cut_settings)
@@ -302,9 +311,9 @@ class Window(QMainWindow):
 
     def layout_page(self):
         page = Page()
-        source = page.group("Cut artwork")
+        source = page.group("Cut template")
         self.source_label = source.note("Generated card layout")
-        self.open_artwork_button = source.push("Open Cut Artwork…", self.open_artwork)
+        self.open_artwork_button = source.push("Open Cut Template…", self.open_artwork)
         self.use_generated = source.push("Use Generated Layout", self.reset_artwork)
         layout = page.group("Media and cards")
         self.choose(layout, "layout_preset", "Layout preset",
@@ -357,32 +366,6 @@ class Window(QMainWindow):
         self.update_sheet_controls()
         self.install_page("Sheet", page)
 
-    def materials_page(self):
-        page = Page()
-        profile = page.group("Material Presets")
-        self.material = profile.choice("Preset", (), changed=self.update_material_details)
-        self.provenance = profile.note()
-        self.provenance.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.apply_material_button = button("Apply Preset", self.apply_material, role="primary")
-        self.delete_preset_btn = button("Delete Preset", self.delete_selected_preset, role="secondary")
-        profile.addRow(AdaptiveActions((self.apply_material_button, self.delete_preset_btn)))
-
-        current = page.group("Current Cut Settings")
-        self.material_active = current.note("Edit the current settings in Cut Job, then save them here.")
-        self.edit_settings_btn = button("Edit Cut Settings", self.open_cut_settings, role="secondary")
-        self.save_preset_btn = button("Update Preset", self.save_preset, role="secondary")
-        self.save_new_preset_btn = button("Save as New…", self.save_new_preset, role="secondary")
-        current.actions(self.edit_settings_btn)
-        current.addRow(AdaptiveActions((self.save_preset_btn, self.save_new_preset_btn)))
-
-        advanced = page.advanced()
-        library = advanced.group("Library and Defaults")
-        library.addRow(AdaptiveActions((
-            button("Import CSV…", self.choose_material_csv, role="secondary"),
-            button("Import Folder…", lambda: self.choose_material_csv(folder=True), role="secondary"))))
-        library.actions(button("Restore Defaults…", self.restore_materials, role="secondary"))
-        self.install_page("Materials", page, title="Material Presets")
-
     def add_advanced_cut_settings(self, advanced):
         blade_details = advanced.group("Blade details")
         for key, label, lo, hi, step, decimals in BLADE_NUMBERS:
@@ -431,6 +414,10 @@ class Window(QMainWindow):
         self.tool_picker.setToolTip("Choose the blade installed in this holder if detection is wrong.")
         self.choose(settings, "preset", "Material", sorted(presets.all_presets()), config.DEFAULT_PRESET,
                     self.load_preset)
+        # One place to choose a material: where it comes from sits under the
+        # choice, and saving the tuned values sits after the values.
+        self.material_note = settings.note()
+        self.material_note.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         for key, label, low, high, step, decimals in BLADE_NUMBERS:
             if key in QUICK_NUMBERS:
                 self.blade[key] = settings.number(label, low, low, high, step, decimals, self.rebuild,
@@ -438,6 +425,10 @@ class Window(QMainWindow):
         self.automatic_depth_maximum = self.blade["depth"].maximum()
         for key, label in BLADE_SWITCHES[1:3]:
             self.blade[key] = settings.check(label, changed=self.rebuild)
+        self.save_preset_btn = button("Update Preset", self.save_preset, role="secondary")
+        self.save_new_preset_btn = button("Save as New…", self.save_new_preset, role="secondary")
+        self.preset_actions = AdaptiveActions((self.save_preset_btn, self.save_new_preset_btn))
+        settings.addRow(self.preset_actions)
 
         registration = normal.group("Registration")
         self.registration_box = registration.parentWidget()
@@ -474,6 +465,15 @@ class Window(QMainWindow):
                                           self.settings.get("show_weed_settings"), self.update_weed_preference)
         self.check(media, "auto_search", "Search automatically", True)
         self.add_advanced_cut_settings(advanced)
+        library = advanced.group("Material library")
+        self.delete_preset_btn = button("Delete Preset", self.delete_selected_preset, role="secondary")
+        self.import_csv_btn = button("Import CSV…", self.choose_material_csv, role="secondary")
+        self.import_folder_btn = button("Import Folder…", lambda: self.choose_material_csv(folder=True),
+                                        role="secondary")
+        self.restore_materials_btn = button("Restore Defaults…", self.restore_materials, role="secondary")
+        library.actions(self.delete_preset_btn)
+        library.addRow(AdaptiveActions((self.import_csv_btn, self.import_folder_btn)))
+        library.actions(self.restore_materials_btn)
 
         self.guide_page = page.section()
         guide = self.guide_page.group("Dial In a Material")
@@ -620,9 +620,6 @@ class Window(QMainWindow):
         if selected.name != name:
             with self.editing():
                 self.select("preset", selected.name)
-        if hasattr(self, "material") and self.material.findData(selected.name) >= 0:
-            with self.editing():
-                self.material.setCurrentIndex(self.material.findData(selected.name))
         self.update_material_details()
         self.set_blade_settings(for_holder(selected.cut_settings(), slot))
 
@@ -663,38 +660,29 @@ class Window(QMainWindow):
         self.rebuild()
 
     def update_material_details(self):
-        name = self.material.currentData()
-        cutter = self.choice("cutter")
-        slot = self.holder_state.active
-        active = self.choice("preset")
-        selected = getattr(self, "materials", {}).get(name)
-        can_apply = False
-        details = ""
-        if selected is not None:
-            try:
-                variant = presets.for_context(selected, cutter, slot)
-            except ValueError as error:
-                details = f"{name}\n{presets.describe(selected, selected.cut_settings())}\n{error}"
-            else:
-                can_apply = True
-                title = name if variant.name == name else f"{name}\nUses {variant.name} on Holder {slot}."
-                details = f"{title}\n{presets.describe(variant, for_holder(variant.cut_settings(), slot))}"
-        self.provenance.setText(details)
-        self.apply_material_button.setEnabled(can_apply)
-        self.apply_material_button.setToolTip("Replace the current holder’s cut settings with the selected preset.")
-        action = presets.removal_action(name, cutter) if selected else ""
-        self.delete_preset_btn.setText("Revert to Default" if action == "restore" else "Delete Preset")
-        self.delete_preset_btn.setEnabled(bool(action))
-        can_update = bool(active and active == name)
-        status = f"Holder {slot} · {active}"
-        if not can_update:
-            status += "\nSelect the active preset above to update it."
-        self.material_active.setText(status)
-        self.save_preset_btn.setEnabled(can_update)
-        self.save_preset_btn.setToolTip("Browse the active preset to update it, or use Save as New.")
+        cutter, name = self.choice("cutter"), self.choice("preset")
+        preset = getattr(self, "materials", {}).get(name)
+        self.material_note.setText((preset.note or preset.description) if preset else "")
+        action = presets.removal_action(name, cutter) if preset else ""
+        self.delete_preset_btn.setText(f"Revert ‘{name}’ to Default" if action == "restore"
+                                       else f"Delete ‘{name}’")
+        self.delete_preset_btn.setEnabled(bool(action) and not self.settings_locked())
+        self.delete_preset_btn.setToolTip("" if action else "Built-in presets cannot be deleted.")
+        self.save_preset_btn.setToolTip(f"Save the current values to ‘{name}’.")
+
+    def material_buttons(self):
+        return (self.save_preset_btn, self.save_new_preset_btn, self.delete_preset_btn,
+                self.import_csv_btn, self.import_folder_btn, self.restore_materials_btn)
+
+    def settings_locked(self):
+        """A sent job owns its settings until it ends."""
+        return self.active_job is not None or self.busy
 
     def delete_selected_preset(self):
-        name, cutter = self.material.currentData(), self.choice("cutter")
+        if self.settings_locked():
+            self.message("The cutter is running this job. Wait for it to finish before changing settings.")
+            return
+        name, cutter = self.choice("preset"), self.choice("cutter")
         action = presets.removal_action(name, cutter)
         if not action:
             return
@@ -708,19 +696,18 @@ class Window(QMainWindow):
         if not presets.delete_preset(name, cutter):
             self.message(f"Could not remove ‘{name}’.")
             return
-        active = self.choice("preset")
         self.holder_state.drafts = {slot: (preset, settings) for slot, (preset, settings)
                                     in self.holder_state.drafts.items() if preset.name != name}
         self.refresh_preset_choices()
         self.load_materials()
-        if name == active:
-            self.load_preset()
+        self.load_preset()
         self.message(f"Restored ‘{name}’." if restore else f"Deleted ‘{name}’.")
 
     def save_preset(self, name=None):
-        target_name = self.choice("preset")
-        if name is None and self.material.currentData() != target_name:
+        if self.settings_locked():
+            self.message("The cutter is running this job. Wait for it to finish before changing settings.")
             return
+        target_name = self.choice("preset")
         values = self.blade_values()
         try:
             saved = presets.save_blade_settings(
@@ -733,7 +720,7 @@ class Window(QMainWindow):
         if saved is not None:
             active_name = name.strip() if name is not None else target_name
             self.refresh_preset_choices(active_name)
-            self.load_materials(active_name)
+            self.load_materials()
             self.rebuild()
         self.message("Preset saved." if saved else "Preset settings are already saved.")
 
@@ -742,13 +729,8 @@ class Window(QMainWindow):
         if accepted:
             self.save_preset(name)
 
-    def load_materials(self, selected=None):
+    def load_materials(self):
         self.materials = presets.all_presets(self.choice("cutter"))
-        if selected is None:
-            selected = self.material.currentData()
-        if selected not in self.materials:
-            selected = self.choice("preset")
-        set_choices(self.material, sorted(self.materials), selected)
         self.update_material_details()
 
     def refresh_preset_choices(self, selected=None):
@@ -759,6 +741,9 @@ class Window(QMainWindow):
             self.change_group_mode()
 
     def choose_material_csv(self, *, folder=False):
+        if self.settings_locked():
+            self.message("The cutter is running this job. Wait for it to finish before changing settings.")
+            return
         path = (QFileDialog.getExistingDirectory(self, "Choose Studio factory folder") if folder
                 else self.select_open("Choose Silhouette condition.csv", "CSV files (*.csv *.CSV)"))
         if path:
@@ -784,24 +769,10 @@ class Window(QMainWindow):
         else:
             self.rebuild()
 
-    def apply_material(self):
-        if self.active_job is not None or self.busy:
+    def restore_materials(self):
+        if self.settings_locked():
             self.message("The cutter is running this job. Wait for it to finish before changing settings.")
             return
-        selected = self.materials.get(self.material.currentData())
-        if selected is None:
-            return
-        try:
-            variant = presets.for_context(selected, self.choice("cutter"), self.holder_state.active)
-        except ValueError as error:
-            self.message(str(error))
-            return
-        with self.editing():
-            self.select("preset", variant.name)
-        self.load_preset()
-        self.open_cut_settings()
-
-    def restore_materials(self):
         if not self.confirm("Restore Default Materials?",
                             "Edits to built-in presets will be backed up. Custom presets stay available."):
             return
@@ -837,7 +808,8 @@ class Window(QMainWindow):
             return
         settings = profile.options()
         self.clear_bundle()
-        self.project_shapes = self.reviewed_design = None
+        self.project_shapes = None
+        self.forget_sent_design()
         with self.editing():
             for key in ("sheet", "card", "engine", "portrait", "mode", "pattern"):
                 self.select(key, settings[key])
@@ -854,7 +826,7 @@ class Window(QMainWindow):
     def open_artwork(self):
         if self.active_job is not None or self.busy:
             return
-        path, _ = QFileDialog.getOpenFileName(self, "Open Cut Artwork", "", ARTWORK_FILTER)
+        path, _ = QFileDialog.getOpenFileName(self, "Open Cut Template", "", ARTWORK_FILTER)
         if path:
             self.load_artwork(Path(path))
 
@@ -872,7 +844,8 @@ class Window(QMainWindow):
             self.message(str(error))
             return
         self.clear_bundle()
-        self.project_shapes = self.reviewed_design = None
+        self.project_shapes = None
+        self.forget_sent_design()
         with self.editing():
             self.select("layout_preset", "")
         self.use_artwork(drawing, path.name + (f" · Page {page}" if page else ""))
@@ -881,7 +854,8 @@ class Window(QMainWindow):
         if self.active_job is not None or self.busy:
             return
         self.clear_bundle()
-        self.project_shapes = self.reviewed_design = None
+        self.project_shapes = None
+        self.forget_sent_design()
         with self.editing():
             self.select("layout_preset", "")
         self.use_artwork(None, "Generated card layout")
@@ -1020,6 +994,8 @@ class Window(QMainWindow):
             self.channel.setEnabled(False)
             self.skip.setEnabled(False)
             self.use_generated.setEnabled(False)
+            for c in self.material_buttons():
+                c.setEnabled(False)
             return
         for c in self.blade.values():
             c.setEnabled(True)
@@ -1030,6 +1006,9 @@ class Window(QMainWindow):
         self.identifier.setEnabled(True)
         self.channel.setEnabled(True)
         self.skip.setEnabled(True)
+        for c in self.material_buttons():
+            c.setEnabled(True)
+        self.update_material_details()
         fixed_layout = self.bundle or layout_presets.is_published(self.artwork)
         for key in ("sheet", "portrait", "engine", "card", "mode", "radius_mm"):
             self.controls[key].setEnabled(not fixed_layout)
@@ -1068,7 +1047,7 @@ class Window(QMainWindow):
         self.controls["end_feed_mm"].setEnabled(self.choice("end_position") == "below")
         self.controls["auto_search"].setEnabled(self.controls["registration"].isChecked())
         self.group_mode_box.setVisible(self.artwork is not None)
-        self.group_box.setVisible(self.artwork is not None and self.choice("send_mode") != "simple")
+        self.group_box.setVisible(self.shows_cut_groups())
         self.use_generated.setEnabled(self.artwork is not None or self.bundle is not None)
 
     def rebuild(self):
@@ -1155,7 +1134,7 @@ class Window(QMainWindow):
         if self.busy:
             return "The cutter connection is busy."
         if self.pending_design():
-            return "Review the latest edits in Design."
+            return "The design has edits Send has not used. Open Design, then switch to Send."
         if self.bundle and self.artwork is None:
             return ("Choose another sheet or reopen the ZIP in Sheet." if self.bundle_row_error
                     else "Save the legacy cut file from Sheet.")
@@ -1187,17 +1166,23 @@ class Window(QMainWindow):
             return "Set at least one pass to send cut paths."
         return ""
 
+    def shows_cut_groups(self):
+        """Cut groups exist only for a grouped send; with nothing to list the
+        box would be an empty frame."""
+        return not self.tuning and self.artwork is not None and self.choice("send_mode") != "simple"
+
     def refresh_send(self):
         if self.loading or "Send" not in self.pages:
             return
         target = self.review_tab()
         index = self.tabs.currentIndex()
         self.cutter_box.setVisible(not self.tuning)
-        self.group_box.setVisible(not self.tuning)
+        self.group_box.setVisible(self.shows_cut_groups())
         self.registration_box.setVisible(not self.tuning)
         self.send_advanced.disclosure.setVisible(not self.tuning)
         self.send_advanced.setVisible(not self.tuning and self.send_advanced.disclosure.isChecked())
         self.settings_box.setVisible(True)
+        self.preset_actions.setVisible(not self.tuning)
         self.guide_page.setVisible(self.tuning)
         self.review_button.setText(f"Review {'Cut Job' if target == 'Send' else target}")
         editable = self.active_job is None and not self.busy
@@ -1414,7 +1399,8 @@ class Window(QMainWindow):
         self.bundle, self.pdf = matched, path
         self.bundle_export.show()
         self.bundle_print.show()
-        self.reviewed_design = self.project_shapes = None
+        self.project_shapes = None
+        self.forget_sent_design()
         self.lock_bundle_controls(True)
         with self.editing():
             self.select("layout_preset", "")
@@ -2215,9 +2201,34 @@ class Window(QMainWindow):
                 return
             registration = editor_model.Registration.from_marks(plan.marks) if plan.registration else None
             project = editor_model.Project(plan.grid.sheet_w_mm, plan.grid.sheet_h_mm, shapes, registration, plan.mat)
-            self.design = Design(project, plan.device, self.leave_design, self.review_design)
+            self.design = Design(project, plan.device, self.send_from_design, self.review_design)
+            self.design_origin = project
             self.workspaces.addWidget(self.design)
         self.workspaces.setCurrentWidget(self.design)
+
+    def send_from_design(self):
+        """Design's Send switch. As in Silhouette Studio, Send cuts the
+        design: an edited one replaces Send's artwork, while one left as it
+        was opened, or with nothing to cut, leaves Send as it is."""
+        verdict, detail = editor_model.send_handoff(self.design.project, self.design_origin, self.reviewed_design)
+        if verdict == "invalid":
+            self.design.message(detail)
+            return
+        if verdict == "apply":
+            self.review_design(self.design.project, detail)
+            return
+        if verdict == "stickers":
+            self.message("Sticker sheets are cut from their Print & Cut ZIP. Choose Export Print & Cut, "
+                         "then open the ZIP in Sheet.")
+        if verdict != "keep":
+            self.forget_sent_design()
+        self.leave_design()
+
+    def forget_sent_design(self):
+        """Send has artwork of its own now: the design as it stands counts as
+        seen, so only later edits replace that artwork."""
+        self.reviewed_design = None
+        self.design_origin = self.design.project if self.design is not None else None
 
     def leave_design(self):
         self.workspaces.setCurrentIndex(0)

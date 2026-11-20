@@ -18,7 +18,7 @@ from .qt_canvas import SheetView, ZoomControls, draw_contours, draw_feed_arrow, 
 from .qt_controls import (Page, ResponsiveInspector, Tasks, bar, button, set_choices, styled_label, workspace_header,
                           workspace_layout, workspace_tool_button, workspace_tools)
 
-DESIGN_FILTER = "Design projects (*.scc-template);;Cut artwork (*.svg *.SVG *.dxf *.DXF *.studio3 *.STUDIO3)"
+DESIGN_FILTER = "Design projects (*.scc-template);;Cut templates (*.svg *.SVG *.dxf *.DXF *.studio3 *.STUDIO3)"
 TOOLS = ("Select", "Point Edit", *model.KINDS, "Polygon", "Freehand")
 
 
@@ -378,7 +378,7 @@ class Design(QWidget):
         palette = left.group("Drawing")
         self.tool = palette.choice("Tool", TOOLS, changed=self.change_tool)
         self.tool.setToolTip("Drag to draw or move objects. Shift-click extends the selection. Middle-drag pans the canvas.")
-        palette.push("Add Shape", self.add_default)
+        palette.push("Add Shape", self.add_default).setToolTip(model.ADD_SHAPE_TIP)
         self.text_button = palette.push("Add Text…", self.text_dialog)
         palette.push("Place Image…", self.place_sticker)
         self.trace_button = palette.push("Trace and Bleed…", self.trace_sticker)
@@ -428,13 +428,9 @@ class Design(QWidget):
         self.status = styled_label(role="body")
         self.status.setWordWrap(True)
         footer.addWidget(self.status, 1)
-        self.action_picker = QComboBox(self)
-        set_choices(self.action_picker, model.REVIEW_ACTIONS)
-        self.action_picker.setAccessibleName("Design Send action")
-        self.action_picker.currentIndexChanged.connect(lambda: self.refresh_status())
-        footer.addWidget(self.action_picker)
-        self.review_button = button("Review in Send", lambda: self.review_paths(review),
-                                    primary=True)
+        # As in Silhouette Studio, the Send switch sends the design; only a
+        # sticker sheet has a step of its own, its Print & Cut export.
+        self.review_button = button("Export Print && Cut…", self.export_stickers, primary=True)
         footer.addWidget(self.review_button)
         body.addWidget(footer_bar)
 
@@ -582,9 +578,12 @@ class Design(QWidget):
 
         view = self.menu_bar.addMenu("&View")
         zoom = view.addMenu("Zoom")
-        for label, callback in (("Zoom In", lambda: self.canvas.zoom_by(1.25)),
-                                ("Zoom Out", lambda: self.canvas.zoom_by(0.8)), ("Fit", self.canvas.fit)):
-            command(zoom, label, callback)
+        for label, callback, keys in (("Zoom In", lambda: self.canvas.zoom_by(1.25), ("Ctrl+=", "Ctrl++")),
+                                      ("Zoom Out", lambda: self.canvas.zoom_by(0.8), ("Ctrl+-",)),
+                                      ("Fit", self.canvas.fit, ("Ctrl+0",))):
+            action = self.command(label, callback, keys[0])
+            action.setShortcuts([QKeySequence(key) for key in keys])
+            zoom.addAction(action)
         rotate = view.addMenu("Rotate Page")
         command(rotate, "Left", lambda: self.rotate_page(False))
         command(rotate, "Right", lambda: self.rotate_page(True))
@@ -829,12 +828,6 @@ class Design(QWidget):
 
         self.export_tasks.run(lambda: sticker_print.export(target, project, cutter=cutter), done)
 
-    def review_paths(self, review):
-        if any(shape.visible and shape.sticker for shape in self.project.shapes):
-            self.export_stickers()
-        else:
-            review(self.project, self.action_picker.currentData())
-
     def selection(self):
         return tuple(sorted(index.row() for index in self.objects.selectedIndexes()))
 
@@ -932,12 +925,10 @@ class Design(QWidget):
 
     def refresh_status(self):
         project = self.project
-        action = self.action_picker.currentData()
-        count = len(project.artwork(action).paths)
+        action = model.send_action(project.shapes)
+        count = len(project.artwork(action).paths) if action else 0
         has_stickers = any(shape.visible and shape.sticker for shape in project.shapes)
-        self.review_button.setText("Export Print && Cut…" if has_stickers else "Review in Send")
-        self.review_button.setEnabled(count > 0 or has_stickers)
-        self.action_picker.setEnabled(not has_stickers)
+        self.review_button.setVisible(has_stickers)
         self.undo_action.setEnabled(bool(self.history.past))
         self.redo_action.setEnabled(bool(self.history.future))
         self.save_action.setEnabled(self.path is None or self.saved != project)
@@ -945,7 +936,8 @@ class Design(QWidget):
         dirty = project != self.saved
         self.document_title.setText(name + (" *" if dirty else ""))
         self.document_title.setToolTip(f"{name} (unsaved changes)" if dirty else name)
-        self.status.setText(f"{project.width:g} × {project.height:g} mm · {count} paths · "
+        paths = "1 path" if count == 1 else f"{count} paths"
+        self.status.setText(f"{project.width:g} × {project.height:g} mm · {paths} · "
                             f"{len(self.selection())} selected")
 
     def change_size(self):
@@ -1039,11 +1031,8 @@ class Design(QWidget):
         self.commit_shapes(self.project.shapes + (shape,), (count,))
 
     def add_default(self):
-        tool = self.tool.currentData()
-        if tool in model.KINDS:
-            self.add_shape(model.Shape(tool, (self.project.width - 40)/2, (self.project.height - 30)/2))
-        else:
-            self.message("Select a shape tool before adding an object.")
+        kind = model.shape_to_add(self.tool.currentData())
+        self.add_shape(model.Shape(kind, (self.project.width - 40)/2, (self.project.height - 30)/2))
 
     def change_tool(self):
         self.canvas.cancel()
