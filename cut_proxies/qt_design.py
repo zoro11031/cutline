@@ -14,12 +14,12 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComb
                                QPlainTextEdit, QSizePolicy, QSpinBox, QSplitter, QTabWidget, QWidget)
 
 from . import design_text, editor_model as model, geometry, graphtec, importer, regmarks, sticker_assets, sticker_print, sticker_trace, template
+from .design_tools import TOOL_KEYS
 from .qt_canvas import SheetView, ZoomControls, draw_contours, draw_feed_arrow, draw_marks, draw_paper, draw_path, pen, rect
 from .qt_controls import (Page, ResponsiveInspector, Tasks, ToolStrip, bar, button, set_choices, styled_label, workspace_header,
                           workspace_layout, workspace_tool_button, workspace_tools)
 
 DESIGN_FILTER = "Design projects (*.scc-template);;Cut templates (*.svg *.SVG *.dxf *.DXF *.studio3 *.STUDIO3)"
-TOOLS = ("Select", "Point Edit", *model.KINDS, "Polygon", "Freehand")
 
 
 @lru_cache(maxsize=4)
@@ -329,20 +329,9 @@ class Canvas(SheetView):
             editor.commit_shapes(model.move(editor.project.shapes, editor.selection(),
                                             x * distance, y * distance), editor.selection())
             return
-        if event.modifiers() == Qt.KeyboardModifier.NoModifier:
-            key_map = {
-                Qt.Key.Key_V: "Select",
-                Qt.Key.Key_A: "Point Edit",
-                Qt.Key.Key_R: "Rectangle",
-                Qt.Key.Key_U: "Rounded Rectangle",
-                Qt.Key.Key_E: "Ellipse",
-                Qt.Key.Key_L: "Line",
-                Qt.Key.Key_P: "Polygon",
-                Qt.Key.Key_F: "Freehand",
-            }
-            if event.key() in key_map:
-                editor.tool.setCurrentIndex(editor.tool.findData(key_map[event.key()]))
-                return
+        if event.modifiers() == Qt.KeyboardModifier.NoModifier and event.key() in TOOL_KEYS:
+            editor.tool.setCurrentIndex(TOOL_KEYS[event.key()])
+            return
         super().keyPressEvent(event)
 
 
@@ -389,15 +378,19 @@ class Design(QWidget):
         panes.setHandleWidth(12)
         body.addWidget(panes, 1)
         left = Page()
-        palette = left.group("Drawing")
-        self.tool = ToolStrip(TOOLS, changed=self.change_tool)
-        self.tool.setToolTip("Drag to draw or move objects. Shift-click extends the selection. Middle-drag pans the canvas.")
-        palette.addRow(styled_label("Tool", role="caption"))
+        palette = left.group("Drawing tools")
+        self.tool = ToolStrip(changed=self.change_tool)
         palette.addRow(self.tool)
-        palette.push("Add Shape", self.add_default).setToolTip(model.ADD_SHAPE_TIP)
-        self.text_button = palette.push("Add Text…", self.text_dialog)
-        palette.push("Place Image…", self.place_sticker)
-        self.trace_button = palette.push("Trace and Bleed…", self.trace_sticker)
+        artwork = left.group("Artwork")
+        add_shape = button("Add Shape", self.add_default)
+        add_shape.setToolTip(model.ADD_SHAPE_TIP)
+        self.text_button = button("Add Text…", self.text_dialog)
+        artwork.actions(add_shape, self.text_button)
+        place_image = button("Image…", self.place_sticker)
+        place_image.setToolTip("Place Image…")
+        self.trace_button = button("Trace…", self.trace_sticker)
+        self.trace_button.setToolTip("Trace and Bleed…")
+        artwork.actions(place_image, self.trace_button)
         self.export_tasks = Tasks(self)
         self.exporting_stickers = False
         objects = left.group("Objects")
@@ -1057,6 +1050,7 @@ class Design(QWidget):
         self.add_shape(model.Shape(kind, (self.project.width - 40)/2, (self.project.height - 30)/2))
 
     def change_tool(self):
+        self.canvas.setFocus()
         self.canvas.cancel()
         self.canvas.polygon.clear()
         if self.tool.currentData() in ("Select", "Point Edit"):

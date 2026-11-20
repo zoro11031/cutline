@@ -659,6 +659,34 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertEqual((win.job.marks.inset_mm, win.job.marks.length_mm), (14, 9))
         self.assertEqual(win.job.blocked, [])
 
+    def test_design_icon_palette_tracks_canvas_shortcuts_and_object_keys(self):
+        from gi.repository import Gdk
+
+        win = self.make_window()
+        win.design_button.emit('clicked')
+        design = win.design
+        palette = design.tool
+        no_modifiers = Gdk.ModifierType(0)
+        rounded = palette.buttons[design.tools.index('Rounded rectangle')]
+        self.assertIn('(U)', rounded.get_tooltip_text())
+        self.assertTrue(design.canvas_key(None, Gdk.KEY_u, 0, no_modifiers))
+        self.assertTrue(rounded.get_active())
+        self.assertEqual(palette.active_label.get_label(), 'Rounded rectangle')
+        design.add_button.emit('clicked')
+        self.assertEqual(design.project.shapes[-1].kind, 'Rounded rectangle')
+
+        select = palette.buttons[0]
+        select.emit('clicked')
+        self.assertTrue(select.get_active())
+        self.assertFalse(rounded.get_active())
+        self.assertEqual(palette.active_label.get_label(), 'Select')
+        start = design.project.shapes[-1].x
+        self.assertTrue(design.canvas_key(None, Gdk.KEY_Right, 0, no_modifiers))
+        self.assertEqual(design.project.shapes[-1].x, start + 1)
+        count = len(design.project.shapes)
+        self.assertTrue(design.canvas_key(None, Gdk.KEY_Delete, 0, no_modifiers))
+        self.assertEqual(len(design.project.shapes), count - 1)
+
     def test_design_drawing_points_selection_and_replicate_enter_history(self):
         from cut_proxies.editor_model import Shape
         from gi.repository import Gdk

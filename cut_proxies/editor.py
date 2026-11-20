@@ -5,11 +5,13 @@ import math
 from pathlib import Path
 import threading
 
+import cairo
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 from . import design_text, editor_model, geometry, graphtec, importer, regmarks, sticker_assets, sticker_print, sticker_trace, template
+from .design_tools import TOOL_KEYS, TOOL_NAMES, TOOL_ROWS
 from .editor_canvas import DesignCanvas
-from .editor_model import (ACTIONS, ALIGNMENTS, KINDS,
+from .editor_model import (ACTIONS, ALIGNMENTS,
                            History, Registration, Shape,
                            import_shapes, load_project, save_project)
 from .gtk_controls import (disclosure, menu_item, protect_settings_wheel, workspace_header, workspace_tools,
@@ -36,69 +38,63 @@ def panel(width):
     return scroll, body
 
 
-class GtkToolStrip(Gtk.Box):
-    """Vertical strip of exclusive tool toggle buttons for GTK."""
+def draw_tool_icon(area, context, width, height, tool):
+    color = area.get_style_context().get_color()
+    context.set_source_rgba(color.red, color.green, color.blue, color.alpha)
+    context.translate((width - 24) / 2, (height - 24) / 2)
+    context.set_line_width(1.7)
+    context.set_line_cap(cairo.LINE_CAP_ROUND)
+    context.set_line_join(cairo.LINE_JOIN_ROUND)
+    for first, *rest in tool.strokes:
+        context.move_to(*first)
+        for point in rest:
+            context.line_to(*point)
+    context.stroke()
 
-    TOOL_SHORTCUTS = {
-        "Select": ("Select", "V"),
-        "Point Edit": ("Point Edit", "A"),
-        "Rectangle": ("Rectangle", "R"),
-        "Rounded Rectangle": ("Rounded Rect", "U"),
-        "Ellipse": ("Ellipse", "E"),
-        "Line": ("Line", "L"),
-        "Polygon": ("Polygon", "P"),
-        "Freehand": ("Freehand", "F"),
-    }
 
-    def __init__(self, tools):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        self.tools = list(tools)
+class GtkToolStrip(Gtk.Grid):
+    """Compact palette of exclusive canvas modes."""
+
+    def __init__(self, *, changed):
+        super().__init__(row_spacing=4, column_spacing=4)
+        self.update_property([Gtk.AccessibleProperty.LABEL], ["Drawing tools"])
         self.buttons = []
         self._selected = 0
-        self._callbacks = []
-        first = None
-        for index, tool in enumerate(self.tools):
-            label, key = self.TOOL_SHORTCUTS.get(tool, (tool, ""))
-            btn_text = f"{label} ({key})" if key else label
-            btn = Gtk.ToggleButton(label=btn_text)
-            if first is None:
-                first = btn
-                btn.set_active(True)
-            else:
-                btn.set_group(first)
-            btn.connect("toggled", self._on_toggled, index)
-            self.append(btn)
-            self.buttons.append(btn)
+        self._changed = changed
+        for row, tools in zip((0, 2, 3), TOOL_ROWS):
+            for column, tool in enumerate(tools):
+                button = Gtk.ToggleButton(css_classes=["image-button", "flat"])
+                button.set_size_request(36, 36)
+                button.set_tooltip_text(tool.tooltip)
+                button.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION,
+                                        Gtk.AccessibleProperty.KEY_SHORTCUTS],
+                                       [tool.name, tool.hint, tool.shortcut])
+                icon = Gtk.DrawingArea(content_width=24, content_height=24)
+                icon.set_draw_func(draw_tool_icon, tool)
+                button.set_child(icon)
+                if self.buttons:
+                    button.set_group(self.buttons[0])
+                else:
+                    button.set_active(True)
+                button.connect("toggled", self._on_toggled, len(self.buttons))
+                self.attach(button, column, row, 1, 1)
+                self.buttons.append(button)
+        self.attach(Gtk.Separator(), 0, 1, 3, 1)
+        self.active_label = Gtk.Label(label=TOOL_NAMES[0], xalign=0, css_classes=["caption"])
+        self.attach(self.active_label, 0, 4, 3, 1)
 
     def _on_toggled(self, button, index):
-        if button.get_active() and self._selected != index:
+        if button.get_active():
             self._selected = index
-            for cb in self._callbacks:
-                cb(self, None)
+            self.active_label.set_label(TOOL_NAMES[index])
+            self._changed()
 
     def get_selected(self) -> int:
         return self._selected
 
     def set_selected(self, index: int):
         if 0 <= index < len(self.buttons):
-            if self._selected != index:
-                self._selected = index
-                self.buttons[index].set_active(True)
-                for cb in self._callbacks:
-                    cb(self, None)
-            else:
-                self.buttons[index].set_active(True)
-
-    def set_tooltip_text(self, tip: str):
-        super().set_tooltip_text(tip)
-        for btn in self.buttons:
-            btn.set_tooltip_text(tip)
-
-    def connect(self, signal, callback, *args):
-        if signal == "notify::selected":
-            self._callbacks.append(callback)
-            return len(self._callbacks)
-        return super().connect(signal, callback, *args)
+            self.buttons[index].set_active(True)
 
 
 class DesignWorkspace:
@@ -139,16 +135,22 @@ class DesignWorkspace:
         toolbar.append(zoom)
 
         left, objects = panel(174)
-        objects.append(Gtk.Label(label='Drawing Tool', xalign=0, css_classes=['heading']))
-        self.tools = ("Select", "Point Edit", *KINDS, "Polygon", "Freehand")
-        self.tool = GtkToolStrip(self.tools)
-        self.tool.connect('notify::selected', self.tool_changed)
+        objects.append(Gtk.Label(label='Drawing tools', xalign=0, css_classes=['heading']))
+        self.tools = TOOL_NAMES
+        self.tool = GtkToolStrip(changed=self.tool_changed)
         objects.append(self.tool)
-        self.add_button = self.button(objects, 'Add Shape', self.add_shape)
+        objects.append(Gtk.Label(label='Artwork', xalign=0, css_classes=['heading'], margin_top=6))
+        add_row = Gtk.Box(spacing=4, homogeneous=True)
+        objects.append(add_row)
+        self.add_button = self.button(add_row, 'Add Shape', self.add_shape)
         self.add_button.set_tooltip_text(editor_model.ADD_SHAPE_TIP)
-        self.text_button = self.button(objects, 'Add Text…', lambda *_: self.text_dialog())
-        self.button(objects, 'Place Image…', lambda *_: self.place_sticker())
-        self.trace_button = self.button(objects, 'Trace and Bleed…', lambda *_: self.trace_sticker())
+        self.text_button = self.button(add_row, 'Add Text…', lambda *_: self.text_dialog())
+        image_row = Gtk.Box(spacing=4, homogeneous=True)
+        objects.append(image_row)
+        image_button = self.button(image_row, 'Image…', lambda *_: self.place_sticker())
+        image_button.set_tooltip_text('Place Image…')
+        self.trace_button = self.button(image_row, 'Trace…', lambda *_: self.trace_sticker())
+        self.trace_button.set_tooltip_text('Trace and Bleed…')
         self.exporting_stickers = False
         objects.append(Gtk.Label(label='Objects', xalign=0, css_classes=['heading'], margin_top=10))
         self.objects = Gtk.ListBox(selection_mode=Gtk.SelectionMode.MULTIPLE)
@@ -165,8 +167,6 @@ class DesignWorkspace:
 
         self.canvas = DesignCanvas(self)
         self.canvas.set_cursor_from_name('default')
-        self.tool.set_tooltip_text('Drag to draw or move. Shift-click extends the selection. '
-                                    'Use the middle button to pan.')
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, width_request=252, hexpand=False)
         self.inspector = Gtk.Stack(vexpand=True)
         panels = (('Page Setup', self.page_panel), ('Transform', self.transform_panel),
@@ -1040,7 +1040,8 @@ class DesignWorkspace:
     def active_tool(self):
         return self.tools[self.tool.get_selected()]
 
-    def tool_changed(self, *_args):
+    def tool_changed(self):
+        self.canvas.grab_focus()
         self.polygon.clear()
         self.cancel_drag()
         mode = self.active_tool
@@ -1235,20 +1236,9 @@ class DesignWorkspace:
             self.tool.set_selected(0)
         elif self.active_tool == 'Polygon' and key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
             self.finish_polygon()
-        elif not ctrl and not (state & Gdk.ModifierType.ALT_MASK):
-            key_map = {
-                Gdk.KEY_v: 0, Gdk.KEY_V: 0,
-                Gdk.KEY_a: 1, Gdk.KEY_A: 1,
-                Gdk.KEY_r: 2, Gdk.KEY_R: 2,
-                Gdk.KEY_u: 3, Gdk.KEY_U: 3,
-                Gdk.KEY_e: 4, Gdk.KEY_E: 4,
-                Gdk.KEY_l: 5, Gdk.KEY_L: 5,
-                Gdk.KEY_p: 6, Gdk.KEY_P: 6,
-                Gdk.KEY_f: 7, Gdk.KEY_F: 7,
-            }
-            if key in key_map:
-                self.tool.set_selected(key_map[key])
-                return True
+        elif not (state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK)) and (
+                tool_index := TOOL_KEYS.get(Gdk.keyval_to_upper(key))) is not None:
+            self.tool.set_selected(tool_index)
         elif ctrl and key == Gdk.KEY_a:
             self.set_selection(i for i, shape in enumerate(self.project.shapes) if shape.visible)
         elif ctrl and key in (Gdk.KEY_g, Gdk.KEY_G):

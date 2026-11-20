@@ -1568,6 +1568,29 @@ class TestQtDesignEditor(unittest.TestCase):
         design.add_default()
         self.assertEqual([shape.kind for shape in design.project.shapes], ["Rectangle", "Ellipse"])
 
+    def test_design_icon_palette_tracks_canvas_shortcuts(self):
+        design = self.editor()
+        design.resize(720, 520)
+        design.show()
+        self.app.processEvents()
+        palette = design.tool
+        rounded = palette.buttons[palette.findData("Rounded rectangle")]
+        self.assertTrue(rounded.isVisible())
+        self.assertEqual(rounded.accessibleName(), "Rounded rectangle")
+        self.assertIn("(U)", rounded.toolTip())
+        QTest.keyClick(design.canvas, Qt.Key.Key_U)
+        self.assertTrue(rounded.isChecked())
+        self.assertEqual(palette.active_label.text(), "Rounded rectangle")
+        design.add_default()
+        self.assertEqual(design.project.shapes[0].kind, "Rounded rectangle")
+
+        polygon = palette.buttons[palette.findData("Polygon")]
+        QTest.mouseClick(polygon, Qt.MouseButton.LeftButton)
+        self.assertTrue(polygon.isChecked())
+        self.assertFalse(rounded.isChecked())
+        self.assertEqual(palette.active_label.text(), "Polygon")
+        self.assertTrue(design.canvas.hasFocus())
+
     def test_design_zoom_has_keyboard_shortcuts_scoped_to_the_editor(self):
         from PySide6.QtGui import QKeySequence
         design = self.editor()
