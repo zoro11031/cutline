@@ -1576,6 +1576,7 @@ class TestQtDesignEditor(unittest.TestCase):
         palette = design.tool
         rounded = palette.buttons[palette.findData("Rounded rectangle")]
         self.assertTrue(rounded.isVisible())
+        self.assertEqual(design.text_button.visibleRegion().boundingRect().width(), design.text_button.width())
         self.assertEqual(rounded.accessibleName(), "Rounded rectangle")
         self.assertIn("(U)", rounded.toolTip())
         QTest.keyClick(design.canvas, Qt.Key.Key_U)

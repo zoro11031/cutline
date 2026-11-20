@@ -16,8 +16,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComb
 from . import design_text, editor_model as model, geometry, graphtec, importer, regmarks, sticker_assets, sticker_print, sticker_trace, template
 from .design_tools import TOOL_KEYS
 from .qt_canvas import SheetView, ZoomControls, draw_contours, draw_feed_arrow, draw_marks, draw_paper, draw_path, pen, rect
-from .qt_controls import (Page, ResponsiveInspector, Tasks, ToolStrip, bar, button, set_choices, styled_label, workspace_header,
-                          workspace_layout, workspace_tool_button, workspace_tools)
+from .qt_controls import (AdaptiveActions, Page, ResponsiveInspector, Tasks, ToolStrip, bar, button, set_choices,
+                          styled_label, workspace_header, workspace_layout, workspace_tool_button, workspace_tools)
 
 DESIGN_FILTER = "Design projects (*.scc-template);;Cut templates (*.svg *.SVG *.dxf *.DXF *.studio3 *.STUDIO3)"
 
@@ -385,12 +385,12 @@ class Design(QWidget):
         add_shape = button("Add Shape", self.add_default)
         add_shape.setToolTip(model.ADD_SHAPE_TIP)
         self.text_button = button("Add Text…", self.text_dialog)
-        artwork.actions(add_shape, self.text_button)
+        artwork.addRow(AdaptiveActions((add_shape, self.text_button)))
         place_image = button("Image…", self.place_sticker)
         place_image.setToolTip("Place Image…")
         self.trace_button = button("Trace…", self.trace_sticker)
         self.trace_button.setToolTip("Trace and Bleed…")
-        artwork.actions(place_image, self.trace_button)
+        artwork.addRow(AdaptiveActions((place_image, self.trace_button)))
         self.export_tasks = Tasks(self)
         self.exporting_stickers = False
         objects = left.group("Objects")
