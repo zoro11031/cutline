@@ -192,6 +192,8 @@ def rotate_page(project, clockwise):
 
 
 def transform_selection(shapes, indices, operation):
+    if operation in ("left", "right"):
+        return rotate_selection(shapes, indices, -90 if operation == "left" else 90)
     if not indices:
         return shapes
     area = bounds(shapes[i] for i in indices)
@@ -200,18 +202,36 @@ def transform_selection(shapes, indices, operation):
     for index in indices:
         shape = shapes[index]
         x, y = shape.x + shape.width / 2, shape.y + shape.height / 2
-        if operation == "left":
-            result[index] = _place_center(shape, cx + y - cy, cy - x + cx,
-                                          rotation=(shape.rotation - 90) % 360)
-        elif operation == "right":
-            result[index] = _place_center(shape, cx - y + cy, cy + x - cx,
-                                          rotation=(shape.rotation + 90) % 360)
-        elif operation == "horizontal":
+        if operation == "horizontal":
             result[index] = _place_center(shape, 2 * cx - x, y,
                                           rotation=-shape.rotation, flip_x=not shape.flip_x)
         elif operation == "vertical":
             result[index] = _place_center(shape, x, 2 * cy - y,
                                           rotation=-shape.rotation, flip_y=not shape.flip_y)
+    return tuple(result)
+
+
+def rotate_point(point, center, angle):
+    """Rotate paper coordinates clockwise around a fixed center."""
+    radians = math.radians(angle)
+    c, s = round(math.cos(radians), 15), round(math.sin(radians), 15)
+    cx, cy = center
+    dx, dy = point[0] - cx, point[1] - cy
+    return cx + c * dx - s * dy, cy + s * dx + c * dy
+
+
+def rotate_selection(shapes, indices, angle, *, center=None):
+    if not indices or not angle % 360:
+        return shapes
+    if center is None:
+        area = bounds(shapes[i] for i in indices)
+        center = (area.x + area.w / 2, area.y + area.h / 2)
+    result = list(shapes)
+    for index in indices:
+        shape = shapes[index]
+        point = (shape.x + shape.width / 2, shape.y + shape.height / 2)
+        result[index] = _place_center(shape, *rotate_point(point, center, angle),
+                                      rotation=(shape.rotation + angle) % 360)
     return tuple(result)
 
 

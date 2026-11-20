@@ -1,8 +1,10 @@
 """Names, shortcuts and 24-unit icon outlines shared by both editors."""
 
 from dataclasses import dataclass
+import math
 
-from .editor_model import ADD_SHAPE_TIP, KINDS
+from .editor_model import ADD_SHAPE_TIP, ALIGNMENTS, KINDS, bounds, rotate_point
+from .geometry import Rect
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,10 @@ TOOL_GROUPS = (
               ((3, 16), (7, 16), (7, 20), (3, 20), (3, 16)),
               ((10, 4), (14, 4), (14, 8), (10, 8), (10, 4)),
               ((17, 14), (21, 14), (21, 18), (17, 18), (17, 14)))),
+        Tool("Transform", "T", "Drag objects to move them, or drag the rotation handle. Hold Shift to snap rotation to 15°.",
+             (((4, 4), (20, 4), (20, 20), (4, 20), (4, 4)),
+              ((14, 10), (18, 6)), ((15, 6), (18, 6), (18, 9)),
+              ((10, 14), (6, 18)), ((6, 15), (6, 18), (9, 18)))),
     ),
     (
         Tool(RECTANGLE, "R", "Drag to draw a rectangle.",
@@ -95,3 +101,65 @@ COMMAND_ICONS = {
     "more": Tool("Object options", "", "Arrange or group selected objects.",
                  (((6, 12), (6.5, 12)), ((11.75, 12), (12.25, 12)), ((17.5, 12), (18, 12)))),
 }
+
+
+TURN_LEFT = (((8, 4), (4, 8), (9, 10)),
+             ((4, 8), (8, 5), (13, 4), (17, 6), (20, 10), (20, 15), (17, 19), (12, 20), (8, 18)))
+TURN_RIGHT = tuple(tuple((24 - x, y) for x, y in stroke) for stroke in TURN_LEFT)
+FLIP = (((12, 3), (12, 21)), ((8, 6), (3, 12), (8, 18), (8, 6)),
+        ((16, 6), (21, 12), (16, 18), (16, 6)))
+TRANSFORM_ICONS = {
+    "left": Tool("Rotate 90° counterclockwise", "", "Rotate the selected objects around their shared center.", TURN_LEFT),
+    "right": Tool("Rotate 90° clockwise", "", "Rotate the selected objects around their shared center.", TURN_RIGHT),
+    "horizontal": Tool("Flip horizontally", "", "Mirror the selection left to right.", FLIP),
+    "vertical": Tool("Flip vertically", "", "Mirror the selection top to bottom.",
+                     tuple(tuple((y, x) for x, y in stroke) for stroke in FLIP)),
+}
+
+_ALIGN_HORIZONTAL = (
+    (((4, 4), (4, 20)), ((8, 7), (17, 7)), ((8, 12), (20, 12)), ((8, 17), (15, 17))),
+    (((12, 3), (12, 21)), ((7, 7), (17, 7)), ((4, 12), (20, 12)), ((8, 17), (16, 17))),
+    (((20, 4), (20, 20)), ((7, 7), (16, 7)), ((4, 12), (16, 12)), ((9, 17), (16, 17))),
+    (((4, 4), (4, 20)), ((20, 4), (20, 20)), ((9.5, 7), (9.5, 17)), ((14.5, 7), (14.5, 17))),
+)
+ALIGNMENT_ROWS = (
+    tuple(Tool(ALIGNMENTS[i], "", "Align or space the selected objects.", strokes)
+          for i, strokes in zip((0, 1, 2, 6), _ALIGN_HORIZONTAL)),
+    tuple(Tool(ALIGNMENTS[i], "", "Align or space the selected objects.",
+               tuple(tuple((y, x) for x, y in stroke) for stroke in strokes))
+          for i, strokes in zip((3, 4, 5, 7), _ALIGN_HORIZONTAL)),
+)
+
+
+@dataclass(frozen=True)
+class RotationHandle:
+    box: Rect
+    scale: float
+
+    @property
+    def center(self):
+        return self.box.x + self.box.w / 2, self.box.y + self.box.h / 2
+
+    def positions(self, angle=0):
+        x, _ = self.center
+        top = self.box.y
+        return (rotate_point((x, top), self.center, angle),
+                rotate_point((x, top - 23 / self.scale), self.center, angle))
+
+    def hit(self, point):
+        return math.dist(point, self.positions()[1]) <= 11 / self.scale
+
+    def angle(self, start, end, *, snap=False):
+        cx, cy = self.center
+        if math.dist(end, self.center) <= 3 / self.scale:
+            return None
+        first = math.atan2(start[1] - cy, start[0] - cx)
+        last = math.atan2(end[1] - cy, end[0] - cx)
+        angle = (math.degrees(last - first) + 180) % 360 - 180
+        return 15 * round(angle / 15) if snap else round(angle, 3)
+
+
+def rotation_handle(shapes, indices, scale):
+    if any(shapes[i].visible for i in indices):
+        return RotationHandle(bounds(shapes[i] for i in indices), scale)
+    return None

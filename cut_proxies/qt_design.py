@@ -15,10 +15,11 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComb
                                QVBoxLayout, QWidget)
 
 from . import design_text, editor_model as model, geometry, graphtec, importer, regmarks, sticker_assets, sticker_print, sticker_trace, template
-from .design_tools import COMMAND_ICONS, TOOL_KEYS
+from .design_tools import ALIGNMENT_ROWS, COMMAND_ICONS, TOOL_KEYS, TRANSFORM_ICONS, TURN_RIGHT, rotation_handle
 from .qt_canvas import SheetView, ZoomControls, draw_contours, draw_feed_arrow, draw_marks, draw_paper, draw_path, pen, rect
-from .qt_controls import (DesignIconButton, Page, ResponsiveInspector, Tasks, ToolStrip, bar, button, design_divider,
-                          set_choices, styled_label, workspace_header, workspace_layout, workspace_tools)
+from .qt_controls import (AdaptiveActions, DesignIconButton, Page, ResponsiveInspector, Tasks, ToolStrip, bar, button,
+                          design_divider, icon_outline, set_choices, styled_label, workspace_header, workspace_layout,
+                          workspace_tools)
 
 DESIGN_FILTER = "Design projects (*.scc-template);;Cut templates (*.svg *.SVG *.dxf *.DXF *.studio3 *.STUDIO3)"
 
@@ -42,6 +43,43 @@ class Canvas(SheetView):
         self.marquee = None
         self.draft = None
         self.active = ()
+        self.rotation = None
+        self.angle = 0
+        self.rotation_icon = icon_outline(TURN_RIGHT)
+
+    def rotation_handle(self):
+        return rotation_handle(self.design.project.shapes, self.design.selection(), self.transform().m11())
+
+    def drawForeground(self, painter, area):
+        super().drawForeground(painter, area)
+        if self.design.tool.currentData() != "Transform":
+            return
+        handle = self.rotation or self.rotation_handle()
+        if handle is None:
+            return
+        scale = self.transform().m11()
+        outline = "#3271c8"
+        edge, grip = map(lambda point: QPointF(*point), handle.positions(self.angle))
+        center = QPointF(*handle.center)
+        painter.save()
+        painter.setPen(pen(outline, 1.3 / scale, dashed=True))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(rect(handle.box) if self.rotation is None else
+                         rect(model.bounds(self.design.project.shapes[i] for i in self.active)))
+        painter.setPen(pen(outline, 1.5 / scale))
+        painter.drawLine(edge, grip)
+        for dx, dy in ((4 / scale, 0), (0, 4 / scale)):
+            delta = QPointF(dx, dy)
+            painter.drawLine(center - delta, center + delta)
+        painter.setBrush(QColor("white"))
+        painter.drawEllipse(grip, 10 / scale, 10 / scale)
+        painter.translate(grip)
+        painter.scale(0.75 / scale, 0.75 / scale)
+        painter.translate(-12, -12)
+        painter.setPen(pen(outline, 1.8))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(self.rotation_icon)
+        painter.restore()
 
     def redraw(self):
         editor, scene = self.design, self.scene()
@@ -185,8 +223,13 @@ class Canvas(SheetView):
             self.redraw()
         elif tool == "Point Edit":
             self.begin_point_edit()
-        elif tool == "Select":
-            self.edit = "move" if self.select_at(self.start, shift) else "marquee"
+        elif tool in ("Select", "Transform"):
+            handle = self.rotation_handle() if tool == "Transform" else None
+            if handle and handle.hit((self.start.x(), self.start.y())):
+                self.edit, self.rotation = "rotate", handle
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            else:
+                self.edit = "move" if self.select_at(self.start, shift) else "marquee"
             self.active = editor.selection()
         else:
             self.edit = "draw"
@@ -215,13 +258,28 @@ class Canvas(SheetView):
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - round(delta.y()))
             self.pan = event.position()
             return
-        if self.start is not None and (self.anchor - event.position().toPoint()).manhattanLength() >= 2:
-            self.update_drag(self.mapToScene(event.position().toPoint()))
+        if self.start is not None:
+            self.update_from_pointer(event)
 
-    def update_drag(self, point):
+    def update_from_pointer(self, event):
+        position = event.position().toPoint()
+        if (self.anchor - position).manhattanLength() >= 2 or (
+                self.rotation is not None and self.draft is not None):
+            self.update_drag(self.mapToScene(position), snap=bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier))
+
+    def update_drag(self, point, *, snap=False):
         base = self.design.history.current.shapes
         delta = point - self.start
-        if self.edit == "move" and self.active:
+        if self.edit == "rotate":
+            angle = self.rotation.angle((self.start.x(), self.start.y()), (point.x(), point.y()), snap=snap)
+            if angle is not None:
+                try:
+                    self.draft = model.rotate_selection(base, self.active, angle, center=self.rotation.center)
+                except ValueError:
+                    self.draft, self.angle = None, 0
+                else:
+                    self.angle = angle
+        elif self.edit == "move" and self.active:
             anchor = base[self.active[0]]
             x, y = self.point(QPointF(anchor.x + delta.x(), anchor.y + delta.y()))
             dx, dy = x - anchor.x, y - anchor.y
@@ -271,8 +329,7 @@ class Canvas(SheetView):
             return
         if event.button() != Qt.MouseButton.LeftButton or self.start is None:
             return super().mouseReleaseEvent(event)
-        if (self.anchor - event.position().toPoint()).manhattanLength() >= 2:
-            self.update_drag(self.mapToScene(event.position().toPoint()))
+        self.update_from_pointer(event)
         editor = self.design
         if self.marquee is not None:
             selected = set(self.active)
@@ -309,15 +366,24 @@ class Canvas(SheetView):
         self.design.add_shape(shape)
 
     def cancel(self):
+        if self.rotation is not None:
+            self.unsetCursor()
+        self.rotation, self.angle = None, 0
         self.start = self.edit = self.anchor = self.marquee = self.draft = None
         self.freehand.clear()
 
     def keyPressEvent(self, event):
         editor = self.design
         if event.key() == Qt.Key.Key_Escape:
+            rotating = self.rotation is not None
             self.cancel()
             self.polygon.clear()
-            editor.select(())
+            if rotating:
+                self.redraw()
+            else:
+                editor.select(())
+            return
+        if self.rotation is not None:
             return
         if editor.tool.currentData() == "Polygon" and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self.finish_polygon()
@@ -446,7 +512,7 @@ class Design(QWidget):
 
     @staticmethod
     def icon_button(icon, callback):
-        widget = DesignIconButton(COMMAND_ICONS[icon])
+        widget = DesignIconButton(COMMAND_ICONS[icon] if isinstance(icon, str) else icon)
         widget.clicked.connect(lambda _checked: callback())
         return widget
 
@@ -550,22 +616,74 @@ class Design(QWidget):
         self.spacing = view.number("Grid spacing (mm)", 5, 0.5, 100, 0.5, 2, self.canvas.redraw)
 
     def transform_panel(self, page):
-        form = page.group("Position and size")
-        advanced = page.advanced().group("Shape options")
-        self.fields = {}
-        for key, label, lo, hi in (
-                ("x", "X (mm)", -1000, 1000), ("y", "Y (mm)", -1000, 1000),
-                ("width", "Width (mm)", -1000, 1000), ("height", "Height (mm)", -1000, 1000),
-                ("rotation", "Rotation (°)", -360, 360), ("radius", "Corner radius (mm)", 0, 1000)):
-            target = advanced if key == "radius" else form
-            self.fields[key] = target.number(label, 0, lo, hi, 0.1, 3, lambda field=key: self.change_number(field))
-        self.lock_ratio = form.check("Lock Aspect Ratio")
-        self.flags = {}
-        for key, label in (("flip_x", "Mirror Horizontally"), ("flip_y", "Mirror Vertically"), ("visible", "Visible")):
-            self.flags[key] = advanced.check(label, changed=lambda field=key: self.change_flag(field))
+        page.body.setSpacing(6)
+        orient = page.group("Rotate and flip")
+        orient.setContentsMargins(12, 13, 12, 8)
+        self.transform_buttons = {
+            name: self.icon_button(icon, lambda operation=name: self.transform_objects(operation))
+            for name, icon in TRANSFORM_ICONS.items()
+        }
+        angle = QDoubleSpinBox(decimals=3, minimum=-360, maximum=360, singleStep=1, keyboardTracking=False)
+        angle.valueChanged.connect(lambda: self.change_number("rotation"))
+        angle.setAccessibleName("Angle (°)")
+        angle.setToolTip("Enter an exact angle. Positive angles rotate clockwise. Use Transform (T) to drag on the canvas.")
+        caption = styled_label("Angle (°)", role="caption")
+        caption.setBuddy(angle)
+        orient.addRow(AdaptiveActions((self.transform_row(self.transform_buttons.values()),
+                                      self.transform_row((caption, angle)))))
+        self.fields = {"rotation": angle}
+
+        form = page.group("Position and size (mm)")
+        form.setContentsMargins(12, 13, 12, 8)
+        for pairs in ((("x", "X"), ("y", "Y")), (("width", "Width"), ("height", "Height"))):
+            row = QHBoxLayout()
+            row.setSpacing(10)
+            for field, label in pairs:
+                column = QVBoxLayout()
+                column.setSpacing(2)
+                spin = QDoubleSpinBox(decimals=3, minimum=-1000, maximum=1000, singleStep=0.1,
+                                      keyboardTracking=False)
+                spin.setAccessibleName(f"{label} (mm)")
+                spin.valueChanged.connect(lambda _value, key=field: self.change_number(key))
+                caption = styled_label(label, role="caption")
+                caption.setBuddy(spin)
+                column.addWidget(caption)
+                column.addWidget(spin)
+                row.addLayout(column, 1)
+                self.fields[field] = spin
+            form.addRow(row)
+        self.fields["x"].setToolTip("Horizontal position of the object frame from the left edge of the page.")
+        self.fields["y"].setToolTip("Vertical position of the object frame from the top edge of the page.")
+        self.lock_ratio = form.check("Lock proportions")
+
         align = page.group("Align and space")
-        self.alignment = align.choice("Alignment", model.ALIGNMENTS)
-        self.align_button = align.push("Apply Alignment", self.align)
+        align.setContentsMargins(12, 13, 12, 8)
+        self.alignment_buttons = {}
+        rows = []
+        for icons in ALIGNMENT_ROWS:
+            buttons = {icon.name: self.icon_button(icon, lambda option=icon.name: self.align_objects(option))
+                       for icon in icons}
+            self.alignment_buttons.update(buttons)
+            rows.append(self.transform_row(buttons.values()))
+        align.addRow(AdaptiveActions(rows))
+
+        advanced = page.advanced().group("Shape options")
+        self.fields["radius"] = advanced.number("Corner radius (mm)", 0, 0, 1000, 0.1, 3,
+                                                lambda: self.change_number("radius"))
+        self.flags = {}
+        for key, label in (("flip_x", "Flip local X"), ("flip_y", "Flip local Y"), ("visible", "Visible")):
+            self.flags[key] = advanced.check(label, changed=lambda field=key: self.change_flag(field))
+
+    @staticmethod
+    def transform_row(widgets):
+        group = QWidget()
+        row = QHBoxLayout(group)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+        for widget in widgets:
+            row.addWidget(widget)
+        row.addStretch()
+        return group
 
     def replicate_panel(self, page):
         panel = page.group("Rows and columns")
@@ -721,8 +839,13 @@ class Design(QWidget):
         self.commit_shapes(shapes, self.selection())
 
     def align_objects(self, option):
-        self.alignment.setCurrentIndex(self.alignment.findData(option))
-        self.align()
+        selection = self.selection()
+        try:
+            shapes = model.align(self.project.shapes, selection, option)
+        except ValueError as error:
+            self.message(str(error))
+            return
+        self.commit_shapes(shapes, selection)
 
     def select_color(self, field):
         self.select(model.matching_color(self.project.shapes, self.selection(), field))
@@ -979,9 +1102,16 @@ class Design(QWidget):
         for widget in (self.duplicate_button, self.delete_button, self.replicate_button,
                        self.duplicate_action, self.delete_action):
             widget.setEnabled(bool(indices))
-        enough = len(model.selected_units(shapes, indices)) > 1
+        units = len(model.selected_units(shapes, indices))
+        enough = units > 1
         self.group_button.setEnabled(enough)
-        self.align_button.setEnabled(enough)
+        for command in self.transform_buttons.values():
+            command.setEnabled(bool(indices))
+        for option, command in self.alignment_buttons.items():
+            space = option.startswith("Space ")
+            command.setEnabled(units >= (3 if space else 2))
+            command.setToolTip(f"{option}\nSelect {'three objects to space' if space else 'two objects to align'}."
+                               if not command.isEnabled() else option)
         self.ungroup_button.setEnabled(any(shapes[i].group for i in indices))
         self.forward_action.setEnabled(bool(indices) and indices[-1] + 1 < len(shapes))
         self.backward_action.setEnabled(bool(indices) and indices[0] > 0)
@@ -1104,10 +1234,13 @@ class Design(QWidget):
         self.canvas.setFocus()
         self.canvas.cancel()
         self.canvas.polygon.clear()
-        if self.tool.currentData() in ("Select", "Point Edit"):
+        tool = self.tool.currentData()
+        if tool in ("Select", "Point Edit", "Transform"):
             self.canvas.unsetCursor()
         else:
             self.canvas.setCursor(Qt.CursorShape.CrossCursor)
+        if tool == "Transform":
+            self.inspector.setCurrentIndex(1)
         self.canvas.redraw()
 
     def undo(self):
@@ -1150,14 +1283,6 @@ class Design(QWidget):
         shapes = self.project.shapes
         members = {member for index in selection for member in model.group_members(shapes, index)}
         self.commit_shapes(model.group_selection(shapes, selection, release=release), members)
-
-    def align(self):
-        try:
-            shapes = model.align(self.project.shapes, self.selection(), self.alignment.currentData())
-        except ValueError as error:
-            self.message(str(error))
-            return
-        self.commit_shapes(shapes, self.selection())
 
     def replicate(self):
         shapes, selection = self.project.shapes, self.selection()

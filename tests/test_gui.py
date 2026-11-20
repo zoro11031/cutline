@@ -694,6 +694,53 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertTrue(design.canvas_key(None, Gdk.KEY_Delete, 0, no_modifiers))
         self.assertEqual(len(design.project.shapes), count - 1)
 
+    def test_transform_tool_previews_and_commits_snapped_rotation(self):
+        from gi.repository import Gdk
+        from cut_proxies.design_tools import rotation_handle
+
+        win = self.make_window()
+        win.design_button.emit('clicked')
+        design = win.design
+        shapes = (editor_model.Shape('Rectangle', 50, 60, 20, 20),
+                  editor_model.Shape('Rectangle', 90, 80, 20, 20))
+        design.commit(shapes, (0, 1))
+        self.assertTrue(design.canvas_key(None, Gdk.KEY_t, 0, Gdk.ModifierType(0)))
+        self.assertEqual(design.active_tool, 'Transform')
+        self.assertEqual(design.panel_switcher.get_selected(), 1)
+        self.assertTrue(design.alignment_buttons['Align Left'].get_sensitive())
+        self.assertFalse(design.alignment_buttons['Space Horizontally'].get_sensitive())
+        handle = rotation_handle(shapes, (0, 1), 2)
+        x, y = handle.positions()[1]
+        end = editor_model.rotate_point((x, y), handle.center, 42)
+        delta = (2 * (end[0] - x), 2 * (end[1] - y))
+        gesture = mock.Mock()
+        gesture.get_current_event_state.return_value = Gdk.ModifierType.SHIFT_MASK
+        depth = len(design.history.past)
+        with mock.patch.object(design.canvas, 'viewport', return_value=(0, 0, 2)):
+            design.drag_begin(gesture, 2*x, 2*y)
+            design.drag_update(gesture, *delta)
+            self.assertEqual([shape.rotation for shape in design.project.shapes], [45, 45])
+            self.assertEqual(design.history.current.shapes, shapes)
+            self.assertTrue(design.canvas_key(None, Gdk.KEY_Escape, 0, Gdk.ModifierType(0)))
+            self.assertEqual(design.project.shapes, shapes)
+            self.assertEqual(design.selected_indices(), (0, 1))
+            design.drag_begin(gesture, 2*x, 2*y)
+            design.drag_update(gesture, *delta)
+            design.drag_end(gesture, 0, 0)
+            self.assertEqual(design.project.shapes, shapes)
+            self.assertEqual(len(design.history.past), depth)
+            design.drag_begin(gesture, 2*x, 2*y)
+            design.drag_end(gesture, *delta)
+        self.assertEqual([shape.rotation for shape in design.project.shapes], [45, 45])
+        self.assertEqual(len(design.history.past), depth + 1)
+        design.undo_button.emit('clicked')
+        self.assertEqual(design.project.shapes, shapes)
+        design.transform_buttons['right'].emit('clicked')
+        self.assertEqual([shape.rotation for shape in design.project.shapes], [90, 90])
+        design.undo_button.emit('clicked')
+        design.alignment_buttons['Align Left'].emit('clicked')
+        self.assertEqual([shape.x for shape in design.project.shapes], [50, 50])
+
     def test_design_drawing_points_selection_and_replicate_enter_history(self):
         from cut_proxies.editor_model import Shape
         from gi.repository import Gdk
