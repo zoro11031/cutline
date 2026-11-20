@@ -35,6 +35,46 @@ class CutGroup:
                 f"speed {s.speed}, {s.passes} pass(es){depth}")
 
 
+def light_pass_problem(key: str, settings: CutSettings) -> str | None:
+    """Light passes must leave at least one full pass: otherwise the job
+    would never reach full force, which is the point of staging."""
+    count = settings.light_passes
+    if count < 0 or count >= settings.passes:
+        return (f"{key}: set fewer light passes than passes ({count} of {settings.passes}), "
+                "so at least one full pass remains.")
+    return None
+
+
+def stage_passes(groups) -> tuple[CutGroup, ...]:
+    """Split each group whose settings ask for light first passes into a
+    light group and a full group over the same paths, light first.
+
+    A forum report on laminated card: full force on the first pass lifts
+    the edge; easing the first passes through the top film and finishing
+    at full force did not. This makes that one job instead of a template
+    copied onto a second colour."""
+    staged = []
+    for group in groups:
+        s = group.settings
+        count = s.light_passes
+        if not count:
+            staged.append(group)
+            continue
+        problem = light_pass_problem(group.key, s)
+        if problem:
+            raise ValueError(problem)
+        light = dataclasses.replace(s, passes=count, light_passes=0,
+                                    force=s.force if s.light_force is None else s.light_force,
+                                    speed=s.speed if s.light_speed is None else s.light_speed)
+        full = dataclasses.replace(s, passes=s.passes - count, light_passes=0)
+        warnings = group.warnings
+        if light.force > full.force or light.speed > full.speed:
+            warnings += ("the light passes are not lighter than the full passes",)
+        staged.append(CutGroup(f"{group.key} · light passes", group.preset, light, group.paths, warnings))
+        staged.append(CutGroup(f"{group.key} · full passes", group.preset, full, group.paths))
+    return tuple(staged)
+
+
 def _paint_key(value: str) -> str:
     return "(none)" if value in ("", "none", "(none)", "transparent") else importer.normalise_colour(value)
 

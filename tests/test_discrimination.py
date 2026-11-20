@@ -19,7 +19,7 @@ cheap: nine sub-suites of a few tests each.
 import io
 import unittest
 
-from cut_proxies import (corner_test, cutters, editor_model, graphtec, job, regmarks, sheet, starting_guide,
+from cut_proxies import (actions, corner_test, pixscan, cutters, editor_model, graphtec, job, regmarks, sheet, starting_guide,
                          sticker_print, testcut, tooling, transport, verify)
 
 
@@ -170,6 +170,23 @@ CASES += tuple(
     for allowed in (True, False)
 )
 
+
+CASES += tuple(
+    (actions, "light_pass_problem", stub, description,
+     ["tests.test_actions.TestStagedPasses.test_light_passes_must_leave_a_full_pass",
+      "tests.test_actions.TestStagedPasses.test_light_passes_below_the_total_are_allowed"])
+    for stub, description in ((lambda *a: None, "every light pass count accepted"),
+                              (lambda key, s: "refused", "every light pass count refused"))
+)
+
+CASES += tuple(
+    (pixscan, "check_fit", stub, description,
+     ["tests.test_pixscan.TestFitGuard",
+      "tests.test_pixscan.TestStraightening.test_markers_no_perspective_explains_are_refused",
+      "tests.test_pixscan.TestStraightening.test_each_mat_is_recognised_and_straightened_to_true_size"])
+    for stub, description in ((lambda *a: None, "every PixScan fit accepted"),
+                              (lambda *a: "refused", "every PixScan fit refused"))
+)
 
 def _refuse_testcut(*args):
     raise ValueError("refused")

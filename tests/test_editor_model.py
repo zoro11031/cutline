@@ -384,3 +384,45 @@ class TestSendHandoff(unittest.TestCase):
         self.assertEqual(editor_model.send_handoff(flat, origin, None)[0], "invalid")
         sticker = replace(editor_model.Shape("Rectangle", 10, 10), sticker=object())
         self.assertEqual(editor_model.send_handoff(self.project(sticker), origin, None), ("stickers", None))
+
+
+class TestTemplateTracing(unittest.TestCase):
+    """The pieces of tracing a template around a real blank."""
+
+    square = editor_model.shape_from_path(
+        editor_model.template.CutPath(((0, 0), (10, 0), (10, 10), (0, 10)), closed=True))
+
+    def test_a_curve_passes_through_every_point_and_bends_between_them(self):
+        points = ((0, 0), (10, 0), (10, 10), (0, 10))
+        curve = editor_model.smooth_points(points)
+        for point in points:
+            self.assertIn(point, [tuple(round(v, 9) for v in p) for p in curve])
+        self.assertTrue(any(p[1] < 0 for p in curve), "a closed curve bulges past the polygon's edge")
+        self.assertEqual(editor_model.smooth_points(points[:2]), points[:2], "two points stay a line")
+        opened = editor_model.smooth_points(points, closed=False)
+        self.assertEqual((opened[0], opened[-1]), (points[0], points[-1]))
+
+    def test_a_point_is_added_on_the_nearest_edge_and_nowhere_else(self):
+        shape, (contour, vertex) = editor_model.insert_vertex(self.square, (4, 0.4), 1)
+        self.assertEqual((contour, vertex), (0, 1))
+        self.assertEqual(shape.paths()[0].points[1], (4, 0))
+        self.assertEqual(len(shape.paths()[0].points), 5)
+        # The closing edge counts too.
+        shape, (_contour, vertex) = editor_model.insert_vertex(self.square, (0.2, 6), 1)
+        self.assertEqual(vertex, 4)
+        self.assertEqual(shape.paths()[0].points[4], (0, 6))
+
+    def test_a_point_is_refused_away_from_the_outline_or_on_a_plain_shape(self):
+        with self.assertRaisesRegex(ValueError, "outline"):
+            editor_model.insert_vertex(self.square, (5, 5), 1)
+        with self.assertRaisesRegex(ValueError, "Convert"):
+            editor_model.insert_vertex(editor_model.Shape("Rectangle", 0, 0, 10, 10), (5, 0), 1)
+
+    def test_paste_keeps_place_and_renumbers_groups(self):
+        existing = (editor_model.Shape("Rectangle", group=1),)
+        copied = (editor_model.Shape("Ellipse", 7, 8, group=1), editor_model.Shape("Line", 9, 9, group=1),
+                  editor_model.Shape("Rectangle", 3, 3))
+        result = editor_model.paste(existing, copied)
+        self.assertEqual(result[0], existing[0])
+        self.assertEqual([(s.x, s.y) for s in result[1:]], [(7, 8), (9, 9), (3, 3)])
+        self.assertEqual([s.group for s in result[1:]], [2, 2, None])

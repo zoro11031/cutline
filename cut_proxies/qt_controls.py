@@ -3,13 +3,14 @@
 import threading
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap, QWheelEvent
+from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap, QPolygonF, QWheelEvent
 from PySide6.QtWidgets import (QAbstractScrollArea, QAbstractSpinBox, QApplication, QBoxLayout, QButtonGroup, QCheckBox,
                                QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QLayout,
                                QLabel, QLineEdit, QMenu, QMenuBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QStackedWidget, QStyle,
                                QStyleOptionToolButton, QStylePainter, QTabBar, QToolButton, QVBoxLayout, QWidget)
 
-from .design_tools import TOOL_GROUPS, TOOL_NAMES, TOOLS
+from .design_tools import WORKSPACE_TOOL_GROUPS as TOOL_GROUPS, WORKSPACE_TOOL_NAMES as TOOL_NAMES, \
+    WORKSPACE_TOOLS as TOOLS
 
 _WORKSPACE_STYLE = """
 QWidget#workspace { background: palette(window); }
@@ -75,9 +76,11 @@ QToolButton[role="designTool"]:hover { background: palette(alternate-base); }
 QToolButton[role="designTool"]:checked, QToolButton[role="designTool"]:pressed { background: palette(highlight); }
 QToolButton[role="designTool"]:focus { border-color: palette(button-text); }
 QToolButton[role="designTool"]::menu-indicator { image: none; }
-QToolButton[role="toolGroupMenu"]:hover, QToolButton[role="toolGroupMenu"]:focus {
-    background: palette(alternate-base); border-radius: 4px;
+QFrame#designDocument { border: 1px solid palette(midlight); border-radius: 6px; }
+QTabBar[role="document"]::tab {
+    padding: 5px 14px; border: 0; border-bottom: 2px solid palette(highlight); background: palette(base);
 }
+QLabel[role="panelTitle"] { font-weight: 600; padding: 2px 0 4px 2px; }
 QListWidget[role="designObjects"] { border: 0; border-radius: 5px; }
 QListWidget[role="designObjects"]::item { padding: 4px 8px; border-radius: 4px; }
 QListWidget[role="designObjects"]::item:selected {
@@ -643,6 +646,7 @@ class DesignIconButton(QToolButton):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setProperty("role", "designTool")
         self.setFixedSize(34, 34)
+        self.flyout = False
         self.set_tool(tool)
         if action is not None:
             self.setToolTip(action.toolTip())
@@ -669,6 +673,12 @@ class DesignIconButton(QToolButton):
         painter.setPen(QPen(color, 1.7, Qt.PenStyle.SolidLine,
                             Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
         painter.drawPath(self.outline)
+        if self.flyout:
+            # Photoshop's mark for a tool with others behind it: a small
+            # filled triangle in the bottom-right corner.
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(color)
+            painter.drawPolygon(QPolygonF([QPointF(26.5, 26.5), QPointF(26.5, 22), QPointF(22, 26.5)]))
         painter.end()
 
 
@@ -681,12 +691,12 @@ class ToolStrip(QFrame):
         self.setObjectName("designToolRail")
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 0, 5, 0)
-        layout.setSpacing(2)
+        layout.setContentsMargins(5, 0, 6, 0)
+        layout.setSpacing(3)
         self.group = QButtonGroup(self)
         self.slots = {}
         self.menus = {}
-        self.menu_buttons = {}
+        self.show_group = {}
         self.choices = {}
         self._buttons_by_tool = {}
         self._last_choice = {}
@@ -694,30 +704,24 @@ class ToolStrip(QFrame):
         self._changed = changed
         self.active_label = styled_label(TOOL_NAMES[0], role="heading")
         for title, tools in TOOL_GROUPS:
-            if title == "Shape tools":
+            if title in ("Shape tools", "Measure"):
                 layout.addWidget(design_divider())
-            slot = QWidget()
-            row = QHBoxLayout(slot)
-            row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(1)
             primary = DesignIconButton(tools[0], checkable=True)
             self.group.addButton(primary)
             self.slots[title] = primary
             self._last_choice[primary] = TOOL_NAMES.index(tools[0].name)
             primary.clicked.connect(lambda _checked, button=primary: self.setCurrentIndex(self._last_choice[button]))
-            row.addWidget(primary)
             for tool in tools:
                 self._buttons_by_tool[tool.name] = primary
             if len(tools) > 1:
-                self.add_flyout(title, slot, row, primary, tools)
-            else:
-                row.addStretch()
-            layout.addWidget(slot)
+                self.add_flyout(title, primary, tools)
+            layout.addWidget(primary)
         layout.addStretch(1)
         self.slots["Select"].setChecked(True)
 
-    def add_flyout(self, title, slot, row, primary, tools):
-        menu = QMenu(slot)
+    def add_flyout(self, title, primary, tools):
+        """Right-click, the menu key or a held press opens the group, as in Photoshop."""
+        menu = QMenu(primary)
         menu.setAccessibleName(title)
         self.menus[title] = menu
         for tool in tools:
@@ -728,18 +732,9 @@ class ToolStrip(QFrame):
             command.triggered.connect(lambda _checked, name=tool.name: self.setCurrentText(name))
             self.choices[tool.name] = command
         menu.aboutToShow.connect(lambda: self.color_menu_icons(tools, menu.palette().text().color()))
-        arrow = QToolButton(arrowType=Qt.ArrowType.RightArrow)
-        arrow.setProperty("role", "toolGroupMenu")
-        arrow.setAccessibleName(title)
-        arrow.setToolTip(title)
-        arrow.setFixedSize(20, 34)
-        self.menu_buttons[title] = arrow
-        row.addWidget(arrow)
-
-        def show_menu():
-            menu.popup(slot.mapToGlobal(QPoint(slot.width(), 0)))
-
-        arrow.clicked.connect(show_menu)
+        primary.flyout = True
+        primary.setAccessibleDescription(f"{primary.accessibleDescription()} Right-click for more {title.lower()}.")
+        self.show_group[title] = show_menu = lambda: menu.popup(primary.mapToGlobal(QPoint(primary.width(), 0)))
         primary.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         primary.customContextMenuRequested.connect(lambda _point: show_menu())
         hold = QTimer(primary)
@@ -793,110 +788,3 @@ class ToolStrip(QFrame):
             return TOOL_NAMES.index(text)
         except ValueError:
             return -1
-
-
-class ResponsiveInspector(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.setProperty("role", "settings")
-        self.setAccessibleName("Design properties")
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        header = QWidget()
-        header_layout = QVBoxLayout(header)
-        header_layout.setContentsMargins(4, 4, 4, 0)
-        header_layout.setSpacing(0)
-
-        self.tabs = QTabBar()
-        self.tabs.setDrawBase(False)
-        self.tabs.setExpanding(True)
-        self.tabs.currentChanged.connect(self._on_tab_changed)
-        header_layout.addWidget(self.tabs)
-
-        self.combo = QComboBox()
-        self.combo.setAccessibleName("Design properties section")
-        self.combo.currentIndexChanged.connect(self._on_combo_changed)
-        self.combo.hide()
-        header_layout.addWidget(self.combo)
-
-        layout.addWidget(header)
-
-        self.stack = QStackedWidget()
-        layout.addWidget(self.stack, 1)
-
-    def addTab(self, widget, label):
-        self.tabs.addTab(label)
-        self.combo.addItem(label)
-        self.stack.addWidget(widget)
-
-    def currentIndex(self):
-        return self.stack.currentIndex()
-
-    def setCurrentIndex(self, index):
-        self.stack.setCurrentIndex(index)
-        self.tabs.blockSignals(True)
-        self.tabs.setCurrentIndex(index)
-        self.tabs.blockSignals(False)
-        self.combo.blockSignals(True)
-        self.combo.setCurrentIndex(index)
-        self.combo.blockSignals(False)
-
-    def currentWidget(self):
-        return self.stack.currentWidget()
-
-    def count(self):
-        return self.stack.count()
-
-    def widget(self, index):
-        return self.stack.widget(index)
-
-    def setDocumentMode(self, enabled):
-        self.tabs.setDocumentMode(enabled)
-
-    def tabBar(self):
-        return self.tabs
-
-    def setUsesScrollButtons(self, enabled):
-        self.tabs.setUsesScrollButtons(enabled)
-
-    def _on_tab_changed(self, index):
-        self.setCurrentIndex(index)
-
-    def _on_combo_changed(self, index):
-        self.setCurrentIndex(index)
-
-    #: Hysteresis, so a width that sits exactly on the threshold cannot flip
-    #: between the two presentations on every resize.
-    SWITCH_MARGIN = 24
-
-    def natural_tab_width(self):
-        """What the tabs want, not what they were stretched to.
-
-        `setExpanding(True)` makes `tabRect` fill the bar, so measuring it
-        compares the bar against itself and always reads as too narrow.
-        """
-        return sum(self.tabs.tabSizeHint(i).width() for i in range(self.tabs.count()))
-
-    def wants_combo(self, width):
-        needed = self.natural_tab_width() + 16
-        if self.combo.isVisibleTo(self):
-            return width < needed + self.SWITCH_MARGIN
-        return width < needed
-
-    def apply_width(self, width):
-        narrow = self.wants_combo(width)
-        if narrow == self.combo.isVisibleTo(self):
-            return narrow
-        self.tabs.setVisible(not narrow)
-        self.combo.setVisible(narrow)
-        return narrow
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        self.apply_width(self.width())
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.apply_width(self.width())

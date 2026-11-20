@@ -1776,3 +1776,105 @@ pathname scan found no `SPEC_S/condition.csv` marker in that recording.
 The raw trace was not decoded into process-attributed read events, so a
 missing marker does not prove the CSV is unused. The temporary trace,
 account, and profile were cleaned up.
+
+## 37. Staged passes: light first, full after, in one job (2026-11-20)
+
+**Why.** A user report on laminated card stock: at full force the first pass
+lifts the cut edge. Easing through the top film with a lighter cut first,
+then finishing at the usual settings, removed the raised edge. The usual
+workaround is to copy the template onto a second colour and send it as
+another group.
+
+**What was built.** `CutSettings.light_passes`, `light_force`, `light_speed`.
+`Passes` stays the total: 8 passes with 2 light ones is 2 at the light
+settings, then 6 at Force and Speed. `job.build` splits each group (or the
+whole sheet in Simple mode) into a light group and a full group over the
+same paths and sends them through `plan_matrix`, the grouped-Send route.
+**No new command bytes:** the light block is the same force/speed setup
+block the grouped Send already re-sends between groups. Light passes that
+leave no full pass are refused (`actions.light_pass_problem`); lighter-is-
+heavier settings are allowed with a warning.
+
+**Verified, stream only.** A Letter eight-up job (8 passes, 2 at force 10
+speed 3, 6 at force 20 speed 5) decodes to 64 card paths, the first 16 at
+the light settings and the last 48 at full. "group blade settings" checks
+the settings at every cut, and changing only the light block's force is
+refused. All 15 liveness probes are caught. `light_pass_problem` is pinned
+both ways in `test_discrimination.py`.
+
+**Not verified.** No cutter is attached. Whether a lighter first pass stops
+the raised edge on any stock is the user's report, not a measurement here.
+
+## 38. PixScan, read out of Studio itself (2026-11-20)
+
+**Why.** Silhouette School's template tutorial photographs a blank on a
+PixScan mat and imports the photo at true size. Recreating that without
+guessing needs the mat's marker geometry, which Silhouette does not publish.
+
+**Method.** Static reading only; nothing was run in the guest.
+`Studio.exe` 5.0.556.1 (sha256 `4871EDB71FB28B02…`) is a Xojo build that
+ships its full COFF symbol table (2,416,951 symbols), so every method can be
+disassembled by name with `llvm-objdump --disassemble-symbols`. Resources
+were copied out of the WinBoat disk read-only with `guestfish --ro` into the
+ignored `guest-staging/pixscan/`. `aspx_util_lib.dll` (sha256
+`0fb8999d67041470…`) holds a C++ port (`ASPEX::Pixscan::*`), which Studio
+calls as `PixscanWrapper` from `PhotoScanThread.RunV2`. `RunOriginal` is the
+Xojo path, read here.
+
+**The mats.** `PhotoScan_spec.!spec(i4)` builds four mat specs, stored
+under keys 1, 2, 4 and 3 in code order. Each is a set of `ScanLine_spec(type,
+name, marks, start, end)`: a black bar `MARKER_THICKNESS_MM` = 1.5 mm thick,
+1.5 mm outside a frame, broken by 1.5 or 3 mm gaps. `marks` are the switch
+points along the line from `start`, beginning at 0 and ending at the line's
+length. Lines are `photo_left/top/right` (type 1) bounding the photo area,
+and `scan_*` (types 2 and 3) further along the mat.
+
+| key | photo area (mm) | lines | two values set after the lines |
+|---|---|---|---|
+| 1 | 212 × 218 | 7 | 212, 360 |
+| 2 | 275 × 215 | 7 | 275, 311 |
+| 3 | 314.5 × 186 | 7 | 314.5, 236 |
+| 4 | 225 × 123 | 5 | 225, 165 |
+
+**How the decode was checked.** Every line's last mark equals its own
+length. Where two lines lie on one physical edge (eleven pairs across the
+four mats, some read in opposite directions), their gaps fall at the same mat
+coordinates in the overlap. The DLL carries the same seven line names, and
+all 132 distinct numbers appear in it.
+
+**The calibration sheet.** The bundled `PixScan Calibration (Letter|A4|
+Ledger|A3).pdf` are a single dot grid: 1 mm dots on a 5 mm pitch from
+(5.5, 5.5) mm, Letter 42 × 55 (A4 at 4.99 mm). Camera profiles
+(`SPEC_SS/cal/*.calibration`, 25 phones) are big-endian `calibrate01`
+records: id, name, image size, the photo's EXIF, then a dot lattice of
+records of three doubles (46 × 35 for an iPhone 6).
+
+**Not established.** Which physical mat each key is. The telemetry table
+names `pixscan_cameo`, `_curio_large`, `_curio_small`, `_curio_portrait`, but
+nothing read so far ties a name to a key, and size alone does not settle it,
+so keys are reported by number and photo-area size. Where the frame sits
+relative to the cutter's origin on each mat is also not read yet, so a scan
+gives true size, not absolute position. The detection algorithm here is this
+project's own; Studio's (`ScanLine.walkPixels`, `HotspotSquare_persp`, the
+`Morph_profile` lens correction, `Unperspectivize(…, 10.0, 0.4, …)`) is
+not reproduced. No photograph of a real mat has been tried.
+
+**Built on it (same day).** `cut_proxies/pixscan.py` holds the four mats
+as read, and Design's File → Import PixScan Photo straightens a photo to the
+photo area at 8 px/mm and places it as an image that is not cut. Detection is
+this project's own. A local-contrast threshold finds the bars and their
+collinear pieces. Studio's lines are merged into physical edges, since the
+break where two lines meet end to end is itself a gap. Detected gap runs (at
+least three) are matched to edge runs in either direction with a 1-D
+projective fit that absorbs a constant bar widening from blur, and a
+homography is fitted to every matched gap edge on at least two non-parallel
+edges. A fit over 0.5 mm RMS or 1.0 mm at any gap edge is refused
+(`pixscan.check_fit`, pinned both ways in `test_discrimination.py`).
+
+Synthetic photos (the recovered bars drawn, tilted, rotated, blurred): all
+four mats are identified and an item lands within 0.5 mm, at 0.06–0.08 mm
+RMS. A bar slid 2 mm is refused; one slid 0.5 mm is absorbed (0.12 mm).
+Lens barrel distortion of 0.05 is refused; 0.02 is accepted at 0.27 mm RMS
+(0.49 mm worst), which is the guard working as designed. An item lying
+across a bar defeats detection, because the remaining usable edges are
+parallel. **Still untested on a real photograph.**

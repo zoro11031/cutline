@@ -712,6 +712,74 @@ def move_vertex(shape, index, position):
     return styled_contours(paths, shape)
 
 
+def insert_vertex(shape, position, tolerance):
+    """Add a point to the outline edge nearest *position*, as Studio's edit
+    points do when a template outline needs more detail."""
+    if shape.kind not in POINT_EDIT_KINDS:
+        raise ValueError("Convert the object to a path before adding points.")
+    best = None
+    paths = list(shape.paths())
+    for contour, path in enumerate(paths):
+        points = path.points
+        count = len(points) if path.closed else len(points) - 1
+        for i in range(count):
+            a, b = points[i], points[(i + 1) % len(points)]
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            length = dx * dx + dy * dy
+            t = 0 if not length else max(0, min(1, ((position[0] - a[0]) * dx + (position[1] - a[1]) * dy) / length))
+            near = (a[0] + t * dx, a[1] + t * dy)
+            distance = math.dist(near, position)
+            if 0 < t < 1 and (best is None or distance < best[0]):
+                best = (distance, contour, i + 1, near)
+    if best is None or best[0] > tolerance:
+        raise ValueError("Double-click on the outline to add a point.")
+    _distance, contour, vertex, near = best
+    path = paths[contour]
+    paths[contour] = replace(path, points=path.points[:vertex] + (near,) + path.points[vertex:])
+    return styled_contours(paths, shape), (contour, vertex)
+
+
+def smooth_points(points, *, closed=True, steps=10):
+    """A Catmull-Rom curve through every placed point, flattened to a polyline.
+
+    The Curve tool's outline passes through each click, so a template traced
+    around a blank lands where the user clicked, between them it bends."""
+    points = tuple(points)
+    if len(points) < 3:
+        return points
+    count = len(points)
+    if closed:
+        at = lambda i: points[i % count]  # noqa: E731
+        segments = range(count)
+    else:
+        at = lambda i: points[max(0, min(count - 1, i))]  # noqa: E731
+        segments = range(count - 1)
+    curve = []
+    for i in segments:
+        p0, p1, p2, p3 = at(i - 1), at(i), at(i + 1), at(i + 2)
+        for step in range(steps):
+            t = step / steps
+            t2, t3 = t * t, t * t * t
+            curve.append(tuple(0.5 * (2 * p1[k] + (p2[k] - p0[k]) * t + (2 * p0[k] - 5 * p1[k] + 4 * p2[k] - p3[k]) * t2
+                                      + (3 * p1[k] - p0[k] - 3 * p2[k] + p3[k]) * t3) for k in (0, 1)))
+    if not closed:
+        curve.append(points[-1])
+    return tuple(curve)
+
+
+def paste(shapes, clipboard):
+    """Paste copied objects in place, giving their groups fresh numbers."""
+    groups = {}
+    next_group = _next_group(shapes)
+    pasted = []
+    for shape in clipboard:
+        group = shape.group
+        if group is not None:
+            group = groups.setdefault(group, next_group + len(groups))
+        pasted.append(replace(shape, group=group))
+    return tuple(shapes) + tuple(pasted)
+
+
 def load_project(path, legacy_registration=None):
     document = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(document, dict) or document.get("version") not in (1, 2, 3, 4, 5):

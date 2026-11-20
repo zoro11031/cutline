@@ -356,6 +356,12 @@ def build(sheet: str = config.DEFAULT_SHEET,
     if registration and mk.pattern == regmarks.FOUR and not device.quad_regmarks:
         off.append("This cutter does not support four-mark registration.")
 
+    # Staged passes become two setting blocks over the same paths, so they
+    # reach the blade, and the verifier, by the grouped Send route.
+    if requested.light_passes or any(group.settings.light_passes for group in groups):
+        base = groups or (actions.CutGroup("Sheet", preset, requested, paths, tuple(requested.warnings(device))),)
+        groups = actions.stage_passes(base)
+
     # 4. the settings and the stream
     if groups:
         warnings = [f"{group.key}: {msg}" for group in groups for msg in group.warnings]
@@ -390,7 +396,7 @@ def build(sheet: str = config.DEFAULT_SHEET,
         check_options["action_groups"] = groups
     if imported is not None:
         check_options["expected_paths"] = paths
-    elif cut.custom_toolpath:
+    elif cut.custom_toolpath or groups:
         check_options["source_paths"] = paths
     ok, rows = verify.expectations_met(stream, grid, mk, cut, device, verify_mode,
                                        **check_options)

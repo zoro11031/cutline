@@ -127,6 +127,47 @@ COMMAND_ICONS = {
     "path": Tool("Path", "", "", (((5, 17), (11, 6), (19, 12), (15, 20), (5, 17)),)),
 }
 
+def _tool(name):
+    return TOOLS[TOOL_NAMES.index(name)]
+
+
+# The Qt workspace's toolbox, laid out as Photoshop's: one Select tool whose
+# selection always carries its transform box, so moving, scaling and rotating
+# need no tools of their own, and a Type tool beside the drawing tools.
+# The GTK editor still uses TOOL_GROUPS until it is ported.
+SELECT_TOOL = Tool("Select", "V", "Click to select and drag to move. Drag a corner to scale or the round grip "
+                   "to rotate; hold Shift for 15° steps. Shift-click adds to the selection.",
+                   _tool("Select").strokes)
+TYPE_TOOL = Tool("Type", "T", "Click to place text, or click text to edit it.",
+                 COMMAND_ICONS["text"].strokes)
+POINT_EDIT_TOOL = Tool("Point Edit", "A", "Drag a point to move it. Double-click the outline to add a point.",
+                       _tool("Point Edit").strokes)
+# For tracing a template around a real blank, as Silhouette School's
+# PixScan template tutorial does with Studio's Draw a Curve tool.
+CURVE_TOOL = Tool("Curve", "C", "Click to place points; the outline curves smoothly through them. "
+                  "Click the first point or press Enter to close it.",
+                  (((4, 18), (6, 11), (10, 6), (15, 6), (18, 10), (17, 15), (20, 19)),
+                   ((3, 17), (5, 17), (5, 19), (3, 19), (3, 17)),
+                   ((19, 18), (21, 18), (21, 20), (19, 20), (19, 18))))
+# Photoshop's Ruler tool: measure a known distance, then scale to it, which
+# is how a photo of a blank is brought to its real size.
+MEASURE_TOOL = Tool("Measure", "I", "Drag across a distance you know. Then scale the selection so it matches.",
+                    (((3, 16), (16, 3), (21, 8), (8, 21), (3, 16)),
+                     ((7, 12), (9, 14)), ((10, 9), (13, 12)), ((13, 6), (15, 8))))
+WORKSPACE_TOOL_GROUPS = (
+    ("Select", (SELECT_TOOL,)),
+    ("Point Edit", (POINT_EDIT_TOOL,)),
+    ("Shape tools", tuple(_tool(name) for name in KINDS)),
+    ("Path tools", (_tool("Polygon"), CURVE_TOOL, _tool("Freehand"))),
+    ("Type", (TYPE_TOOL,)),
+    ("Measure", (MEASURE_TOOL,)),
+)
+CLICK_PATH_TOOLS = ("Polygon", "Curve")
+WORKSPACE_TOOLS = tuple(tool for _title, group in WORKSPACE_TOOL_GROUPS for tool in group)
+WORKSPACE_TOOL_NAMES = tuple(tool.name for tool in WORKSPACE_TOOLS)
+WORKSPACE_KEYS = {ord(tool.shortcut): index for index, tool in enumerate(WORKSPACE_TOOLS) if tool.shortcut}
+DRAWING_TOOLS = (*KINDS, "Polygon", "Curve", "Freehand", "Type")
+
 OBJECT_ICONS = {tool.name: tool for tool in TOOLS if tool.name in (*KINDS, "Polygon")}
 OBJECT_ICONS.update(Path=COMMAND_ICONS["path"], Compound=COMMAND_ICONS["group"],
                     Text=COMMAND_ICONS["text"], Sticker=COMMAND_ICONS["image"])

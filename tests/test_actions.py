@@ -195,3 +195,76 @@ class TestGroupedSend(unittest.TestCase):
                 ((), "at least one")):
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 self.grouped(assignments=assignments)
+
+
+class TestStagedPasses(unittest.TestCase):
+    """The first passes at a lighter force and speed, the rest at full, in one job."""
+
+    def staged(self, **kwargs):
+        options = dict(passes=8, force=20, speed=5, offset_mm=(0, 0),
+                       blade_options=dict(light_passes=2, light_force=10, light_speed=3))
+        options.update(kwargs)
+        return job.build(**options)
+
+    def test_light_passes_come_first_then_the_rest_at_full_settings(self):
+        checked = self.staged()
+        self.assertEqual(checked.blocked, [])
+        self.assertEqual([(g.settings.passes, g.settings.force, g.settings.speed) for g in checked.action_groups],
+                         [(2, 10, 3), (6, 20, 5)])
+        decoded = verify.decode(checked.stream)
+        self.assertEqual(len(decoded.paths), checked.grid.count * 8, "Passes stays the total")
+        states = verify._observed_motion_settings(decoded.commands)
+        cards = checked.grid.count
+        self.assertEqual({state[1:3] for state in states[:2 * cards]}, {(10, 3)})
+        self.assertEqual({state[1:3] for state in states[2 * cards:]}, {(20, 5)})
+        self.assertEqual(checked.stream.count(b"TB123,"), 1, "one registration for both stages")
+        self.assertIn("group blade settings", {row.label for row in checked.rows})
+
+    def test_unset_light_values_keep_the_full_ones(self):
+        checked = self.staged(blade_options=dict(light_passes=1, light_force=12))
+        self.assertEqual([(g.settings.force, g.settings.speed) for g in checked.action_groups], [(12, 5), (20, 5)])
+
+    def test_a_corrupted_light_stage_is_refused(self):
+        checked = self.staged()
+        stream = checked.stream.replace(b"FX10,", b"FX11,")
+        ok, rows = verify.expectations_met(
+            stream, checked.grid, checked.marks, checked.settings, checked.device,
+            cards=checked.grid.cards, offset_mm=(0, 0), action_groups=checked.action_groups,
+            source_paths=checked.paths)
+        self.assertFalse(ok)
+        self.assertIn("group blade settings", {row.label for row in rows if not row.ok})
+
+    def test_light_passes_must_leave_a_full_pass(self):
+        for light in (8, 9):
+            with self.subTest(light=light), self.assertRaisesRegex(ValueError, "at least one full pass"):
+                self.staged(blade_options=dict(light_passes=light))
+
+    def test_light_passes_below_the_total_are_allowed(self):
+        checked = self.staged(blade_options=dict(light_passes=7, light_force=10))
+        self.assertEqual(checked.blocked, [])
+        self.assertEqual([g.settings.passes for g in checked.action_groups], [7, 1])
+
+    def test_no_light_passes_leaves_a_plain_single_settings_job(self):
+        checked = self.staged(blade_options={})
+        self.assertEqual(checked.action_groups, ())
+        self.assertEqual(checked.settings.passes, 8)
+
+    def test_heavier_light_passes_are_allowed_with_a_warning(self):
+        checked = self.staged(blade_options=dict(light_passes=2, light_force=30))
+        self.assertEqual(checked.blocked, [])
+        self.assertTrue(any("not lighter" in warning for warning in checked.warnings))
+
+    def test_grouped_send_stages_each_group(self):
+        checked = job.build(imported=importer.load_svg(StringIO(ART)), send_mode="line", offset_mm=(0, 0),
+                            passes=3, blade_options=dict(light_passes=1, light_force=5),
+                            assignments=(actions.Assignment("red"),))
+        self.assertEqual(checked.blocked, [])
+        self.assertEqual([group.key for group in checked.action_groups],
+                         ["#ff0000 · light passes", "#ff0000 · full passes"])
+        self.assertEqual([group.settings.passes for group in checked.action_groups], [1, 2])
+
+    def test_presets_remember_staged_passes(self):
+        settings = graphtec.CutSettings(passes=6, light_passes=2, light_force=8, light_speed=2)
+        preset = presets.Preset("Staged", "", "measured", __import__("dataclasses").asdict(settings))
+        self.assertEqual(preset.cut_settings(), settings)
+        self.assertEqual(presets.Preset("Old", "", "measured", dict(force=20)).cut_settings().light_passes, 0)
