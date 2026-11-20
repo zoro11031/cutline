@@ -177,6 +177,14 @@ class TestGroupedSend(unittest.TestCase):
         self.assertEqual(checked.blocked, [])
         self.assertEqual([group.settings.holder for group in checked.action_groups], [1, 1])
         self.assertEqual([group.settings.depth for group in checked.action_groups], [2, 7])
+        self.assertIn(b"TF", checked.stream)
+
+        manual = self.grouped(manual_depth=True, assignments=(
+            actions.Assignment("blue", "Plain paper test"),
+            actions.Assignment("red", "330 gsm black-core")))
+        self.assertEqual(manual.blocked, [])
+        self.assertEqual([group.settings.depth for group in manual.action_groups], [None, None])
+        self.assertNotIn(b"TF", manual.stream)
 
     def test_incompatible_tools_and_duplicate_or_empty_groups_are_refused(self):
         for assignments, message in (

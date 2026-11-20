@@ -462,6 +462,30 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertTrue(win.guide_send.get_sensitive())
         self.assertNotIn("select a cutter", win.guide_status.get_subtitle())
 
+    def test_material_guide_shape_and_size_controls_move_to_fresh_stock(self):
+        from cut_proxies import testcut
+
+        win = self.make_window()
+        win.open_material_guide()
+        self.assertTrue(win.guide_registration.get_sensitive())
+        small = len(win.preview.test_grid)
+        win.guide_shape.set_selected(tuple(testcut.TEST_SHAPES).index("rounded-square"))
+        win.guide_size.set_selected(tuple(starting_guide.SAMPLE_SIZES).index(50.0))
+        self.assertLess(len(win.preview.test_grid), small)
+        self.assertEqual(win.preview.trial.sheet.shape, "rounded-square")
+        self.assertEqual(win.preview.trial.sheet.size_mm, 50.0)
+        chosen, box = max(win.preview.test_grid.items())
+        self.assertTrue(win.on_preview_spot_clicked(box.x + 2, box.y + 2))
+        self.assertEqual(win.guide.spot, chosen)
+        self.assertEqual(win.preview.trial.sheet.cells[0].rect, box)
+        win.guide.record(win.preview.trial)
+        win.update_guide()
+        self.assertFalse(win.guide_registration.get_sensitive())
+        win.guide_shape.set_selected(tuple(testcut.TEST_SHAPES).index("triangle"))
+        self.assertNotEqual(win.guide.spot, chosen)
+        self.assertEqual(win.guide.spot_rect(chosen), box)
+        self.assertEqual(win.preview.trial.sheet.shape, "triangle")
+
     def test_material_guide_shows_fresh_spots_and_restores_the_cut_preview(self):
         win = self.make_window()
         win.preview.zoom_by(1.25)
@@ -1215,6 +1239,37 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertIsNone(win.corrected_tools)
         win.r_holder.set_value(1)
         self.assertEqual(int(win.r_depth.get_value()), -1)
+
+    def test_blade_picker_allows_rotary_in_holder_one_and_ignores_later_detection_errors(self):
+        win = self.make_window()
+        picker = win.r_tool_selection
+        win.apply_tool_detection((2, 255))
+        self.assertEqual(win._text(picker), "Detect automatically")
+        picker.set_selected(win.tool_picker_choices.index("rotary"))
+        win.apply_tool_detection((2, 255))
+        self.assertEqual(win.r_holder.get_value(), 1)
+        self.assertEqual(win.send_holder_buttons[1].get_label(), "Tool Holder 1\nRotary blade")
+        self.assertFalse(win.r_depth.get_sensitive())
+        self.assertEqual(win.job.blocked, [])
+        self.assertEqual(win.job.settings.holder, 1)
+        self.assertNotIn(b"TF", win.job.stream)
+
+        win.r_holder.set_value(2)
+        picker.set_selected(win.tool_picker_choices.index("rotary"))
+        self.assertEqual(win.r_holder.get_value(), 2)
+        self.assertEqual(win.send_holder_buttons[2].get_label(), "Tool Holder 2\nRotary blade")
+        self.assertEqual(win.job.settings.holder, 2)
+        self.assertIn(b"J2\x03", win.job.stream)
+        self.assertNotIn(b"TF", win.job.stream)
+
+        picker.set_selected(0)
+        self.assertIn("Detection error", win.send_holder_buttons[2].get_label())
+
+        win.r_holder.set_value(1)
+        self.assertEqual(win._text(picker), "Rotary blade")
+        picker.set_selected(0)
+        self.assertEqual(win._text(picker), "Detect automatically")
+        self.assertTrue(win.r_depth.get_sensitive())
 
     def test_a_pending_tool_probe_blocks_other_commands_and_recovers_after_failure(self):
         win = self.make_window()

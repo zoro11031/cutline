@@ -734,6 +734,27 @@ class TestQtFrontend(unittest.TestCase):
         self.assertTrue(window.guide_send.isEnabled())
         self.assertNotIn("select a cutter", window.guide_status.text())
 
+    def test_material_guide_shape_and_size_controls_update_the_clickable_grid(self):
+        window = self.window
+        window.open_material_guide()
+        small = len(window.preview.test_grid)
+        window.guide_shape.setCurrentIndex(window.guide_shape.findData("card"))
+        window.guide_size.setCurrentIndex(window.guide_size.findData(88.0))
+        self.assertLess(len(window.preview.test_grid), small)
+        self.assertEqual(window.preview.trial.sheet.shape, "card")
+        self.assertEqual(window.preview.trial.sheet.size_mm, 88.0)
+        number, box = max(window.preview.test_grid.items())
+        self.assertTrue(window.on_preview_spot_clicked(box.x + 2, box.y + 2))
+        self.assertEqual(window.guide.spot, number)
+        self.assertEqual(window.preview.trial.sheet.cells[0].rect, box)
+
+        window.guide.record(window.preview.trial)
+        window.update_guide()
+        window.guide_shape.setCurrentIndex(window.guide_shape.findData("ring"))
+        self.assertNotEqual(window.guide.spot, number)
+        self.assertEqual(window.guide.spot_rect(number), box)
+        self.assertEqual(len(window.preview.trial.sheet.paths), 2)
+
     def test_material_guide_previews_fresh_spots_without_replacing_the_job(self):
         window = self.window
         window.show()
@@ -1177,6 +1198,46 @@ class TestQtFrontend(unittest.TestCase):
         self.assertIsNone(window.corrected_tools)
         window.blade["holder"].setValue(1)
         self.assertEqual(window.blade["depth"].value(), -1)
+
+    def test_blade_picker_can_override_failed_detection_and_allows_rotary_in_holder_one(self):
+        window = self.window
+        picker = window.tool_picker
+        holders = window.blade["holder"]
+        self.assertEqual(picker.currentText(), "Detect automatically")
+        for name in ("AutoBlade", "Ratchet blade", "Manual blade (1 mm)", "Manual blade (2 mm)",
+                     "Deep-cut blade", "Fabric blade", "Premium blade", "Kraft blade (2 mm)",
+                     "Kraft blade (3 mm)", "Rotary blade", "Other manual blade"):
+            self.assertGreaterEqual(picker.findText(name), 0)
+        window.apply_tool_detection((2, 255))
+        # Select rotary for holder 1
+        picker.setCurrentIndex(picker.findData("rotary"))
+        window.apply_tool_detection((2, 255))
+        self.assertEqual(holders.value(), 1)
+        self.assertEqual(holders.holders.button(1).text(), "Tool Holder 1\nRotary blade")
+        self.assertFalse(window.blade["depth"].isEnabled())
+        self.assertEqual(window.job.blocked, [])
+        self.assertEqual(window.job.settings.holder, 1)
+        self.assertNotIn(b"TF", window.job.stream)
+
+        # Select rotary for holder 2
+        holders.setValue(2)
+        picker.setCurrentIndex(picker.findData("rotary"))
+        self.assertEqual(holders.value(), 2)
+        self.assertEqual(holders.holders.button(2).text(), "Tool Holder 2\nRotary blade")
+        self.assertEqual(window.job.settings.holder, 2)
+        self.assertIn(b"J2\x03", window.job.stream)
+        self.assertNotIn(b"TF", window.job.stream)
+
+        # Clear holder 2
+        picker.setCurrentIndex(picker.findData(""))
+        self.assertIn("Detection error", holders.holders.button(2).text())
+
+        # Switch back to holder 1: manual rotary is still selected
+        holders.setValue(1)
+        self.assertEqual(picker.currentData(), "rotary")
+        picker.setCurrentIndex(picker.findData(""))
+        self.assertEqual(picker.currentText(), "Detect automatically")
+        self.assertTrue(window.blade["depth"].isEnabled())
 
     def test_tools_are_read_once_per_connection_and_not_during_a_job(self):
         window = self.window

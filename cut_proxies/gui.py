@@ -175,6 +175,7 @@ class Preview(Gtk.DrawingArea):
         self.trial = None
         self.test_placement = None
         self.test_spots = ()
+        self.test_grid = {}
         self.active_spot_rect = None
         self.on_spot_clicked = None
         self.zoom = 1.0
@@ -221,11 +222,14 @@ class Preview(Gtk.DrawingArea):
             self.fit()
         self.queue_draw()
 
-    def set_trial(self, trial, spots=(), placement=None, active_rect=None):
+    def set_trial(self, trial, spots=(), placement=None, active_rect=None, *, grid=None):
         placement = trial.placement if trial else placement
-        if (trial, spots, placement, active_rect) != (self.trial, self.test_spots, self.test_placement, self.active_spot_rect):
+        grid = grid or {}
+        if ((trial, spots, placement, active_rect, grid)
+                != (self.trial, self.test_spots, self.test_placement, self.active_spot_rect, self.test_grid)):
             previous = self.page_size()
             self.trial, self.test_spots, self.test_placement, self.active_spot_rect = trial, spots, placement, active_rect
+            self.test_grid = grid
             if self.page_size() != previous:
                 self.fit()
             self.queue_draw()
@@ -313,6 +317,15 @@ class Preview(Gtk.DrawingArea):
         cr.set_line_width(0.45)
         cr.select_font_face("Sans")
         cr.set_font_size(min(6, max(4, 11 / scale)))
+        for number, box in self.test_grid.items():
+            if box == active_rect:
+                continue
+            cr.rectangle(box.x, box.y, box.w, box.h)
+            cr.set_source_rgb(0.71, 0.76, 0.8)
+            cr.stroke()
+            cr.move_to(box.x + 1, box.y + 6)
+            cr.set_source_rgb(0.31, 0.38, 0.43)
+            cr.show_text(str(number))
         if active_rect:
             sample = active_rect
             cr.rectangle(sample.x, sample.y, sample.w, sample.h)
@@ -342,6 +355,16 @@ class Preview(Gtk.DrawingArea):
             cr.stroke()
             cr.move_to(box.x + 1, box.y + 6)
             cr.show_text(f"{spot.number}: {spot.passes}{'?' if spot.uncertain else ''}")
+        if self.trial:
+            cr.set_source_rgb(0.05, 0.24, 0.39)
+            cr.set_line_width(0.6)
+            for path in self.trial.sheet.paths:
+                cr.move_to(*path.points[0])
+                for point in path.points[1:]:
+                    cr.line_to(*point)
+                if path.closed:
+                    cr.close_path()
+                cr.stroke()
 
     @staticmethod
     def draw_orientation(cr, width, scale):
@@ -521,6 +544,7 @@ class Window(Adw.ApplicationWindow):
         self.checked_marks = None
         self.checked_scm_orientation = False
         self.detected_tools = ()
+        self.tool_selection = tooling.ToolSelection()
         self.tools_connection = None
         self.corrected_tools = None
         self._bundle_locked = False
@@ -869,6 +893,7 @@ class Window(Adw.ApplicationWindow):
         mode, identifier, *_ = self._connection()
         can_check = bool(identifier) and not (self._sending or self._checking_status)
         self.check_cutter_status.set_sensitive(can_check)
+        self.r_tool_selection.set_sensitive(editable and can_check)
         pdf_refusal = ""
         if job and job.registration_steps() and self.pdf_path is not None:
             allowed, pdf_reason = sheet_mod.RegistrationDecision.evaluate(
@@ -955,7 +980,8 @@ class Window(Adw.ApplicationWindow):
                     pass
         placement = self.guide.placement if self.tuning else None
         active_rect = self.guide.spot_rect(self.guide.spot) if self.tuning else None
-        self.preview.set_trial(trial, self.guide.spots if self.tuning else (), placement, active_rect)
+        self.preview.set_trial(trial, self.guide.spots if self.tuning else (), placement, active_rect,
+                               grid=self.guide.fresh_spots() if self.tuning else {})
         self.preview_title.set_label("Material test sheet" if self.preview.test_placement else "Sheet preview")
         self.preview_mode.set_visible(not self.tuning and self.preview.pdf_surface is not None)
         self.summary_card.set_visible(not self.tuning)
@@ -1312,6 +1338,13 @@ class Window(Adw.ApplicationWindow):
         self.guide_view = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, visible=False)
         page.add(self.guide_view)
         self.guide_group = guide = Adw.PreferencesGroup(title="Dial In a Material", description=starting_guide.GUIDE_TEXT)
+        self.guide_shape = _combo("Test shape", list(testcut.TEST_SHAPES.values()))
+        self.guide_size = _combo("Sample size", list(starting_guide.SAMPLE_SIZES.values()))
+        for field in (self.guide_shape, self.guide_size):
+            field.set_tooltip_text("Changing the sample after a cut moves to a fresh spot.")
+            guide.add(field)
+        self.guide_shape_id = self.guide_shape.connect("notify::selected", self.on_guide_sample)
+        self.guide_size_id = self.guide_size.connect("notify::selected", self.on_guide_sample)
         self.guide_apply, self.guide_edit = self.guide_buttons(
             guide, ("Use Starting Settings", self.on_guide_start), ("Adjust Cut Settings", self.adjust_guide_settings))
         self.guide_spot_selector = _spin("Test Spot", 1, 999, 1, 1, 0)
@@ -1416,6 +1449,12 @@ class Window(Adw.ApplicationWindow):
         self.r_holder = _spin("Tool Holder", 1, 2, 1)
         self.r_holder.connect("notify::value", self.on_changed)
         self.send_holder_buttons = self.tool_holder_picker(group)
+        self.r_tool_selection = _combo("Blade", ["Detect automatically"])
+        self.r_tool_selection.set_tooltip_text(
+            "Choose the blade installed in this holder if detection is wrong.")
+        self.tool_picker_choices = ("",)
+        self.tool_picker_id = self.r_tool_selection.connect("notify::selected", self.on_tool_selection)
+        group.add(self.r_tool_selection)
         names = sorted(presets.all_presets())
         default = names.index(config.DEFAULT_PRESET) if config.DEFAULT_PRESET in names else 0
         self.r_preset = _combo("Material", names, default)
@@ -1563,6 +1602,7 @@ class Window(Adw.ApplicationWindow):
             passes=int(self.r_passes.get_value()),
             depth=(int(self.r_depth.get_value())
                    if self.r_depth.get_sensitive() and self.r_depth.get_value() >= 0 else None),
+            manual_depth=self.tool_selection.manual_depth,
             blade_options=self._blade_options(),
             bleed_mm=self.r_bleed.get_value(),
             registration=self.r_register.get_active(),
@@ -1666,11 +1706,12 @@ class Window(Adw.ApplicationWindow):
             control.set_sensitive(not fixed_layout)
         device = graphtec.device_by_name(self._text(self.r_cutter))
         self.restore_holder(device)
+        self.update_holder_labels()
         self.correct_detected_depth()
         self.r_holder.set_sensitive(device.two_tools)
-        self.r_depth.set_sensitive(device.autoblade and (not device.two_tools or self.r_holder.get_value() == 1))
+        self.r_depth.set_sensitive(device.autoblade and (not device.two_tools or self.r_holder.get_value() == 1)
+                                   and not self.tool_selection.manual_depth)
         self.r_acceleration.set_sensitive(device.detects_tools)
-        self.update_holder_labels()
         self.r_lift.set_sensitive(device.cameo3_on)
         corner_capable = device.cameo3_on and self.r_diameter.get_value() > 0
         self.r_corners.set_sensitive(corner_capable)
@@ -2732,10 +2773,21 @@ class Window(Adw.ApplicationWindow):
         for field in (self.guide_apply, self.guide_edit, self.guide_next, self.guide_reset):
             field.set_sensitive(not busy)
         state = self.guide
+        self.guide_next.set_sensitive(not busy and (
+            state.placement is None or any(number != state.spot for number in state.fresh_spots())))
+        used = state.current_spot
+        shape = state.trial.sheet.shape if state.trial else state.shape
+        size = used.rect.w if used and used.rect.w in starting_guide.SAMPLE_SIZES else state.size_mm
+        for field, handler, selection in (
+                (self.guide_shape, self.guide_shape_id, tuple(testcut.TEST_SHAPES).index(shape)),
+                (self.guide_size, self.guide_size_id, tuple(starting_guide.SAMPLE_SIZES).index(size))):
+            with field.handler_block(handler):
+                field.set_selected(selection)
+            field.set_sensitive(not busy)
         connected = starting_guide.has_cutter_endpoint(self._connection())
         self.guide_send.set_sensitive(not busy and connected and state.can_cut)
         self.guide_use.set_sensitive(not busy and state.tested_settings is not None)
-        self.guide_registration.set_sensitive(not busy and state.placement is None)
+        self.guide_registration.set_sensitive(not busy and not (state.spots or state.sheet_exported))
         self.guide_marked_sheet.set_sensitive(not busy and state.registered)
         if self.tuning:
             self.send_status.set_label(state.sheet_status)
@@ -2767,6 +2819,20 @@ class Window(Adw.ApplicationWindow):
     def on_guide_outcome(self, row, *_args):
         self.guide.inspect(tuple(starting_guide.OUTCOMES)[row.get_selected()])
         self.update_guide()
+
+    def on_guide_sample(self, *_args):
+        if self._sending or self._checking_status:
+            return
+        shape = tuple(testcut.TEST_SHAPES)[self.guide_shape.get_selected()]
+        size = tuple(starting_guide.SAMPLE_SIZES)[self.guide_size.get_selected()]
+        try:
+            self.guide.configure_sample(shape, size)
+        except ValueError as error:
+            self.toast(str(error))
+        else:
+            self.persist_guide()
+        self.update_guide()
+        self.update_tuning_preview()
 
     def set_guide_blade_values(self, values):
         fields = {"force": self.r_force, "speed": self.r_speed, "depth": self.r_depth, "passes": self.r_passes}
@@ -2832,7 +2898,11 @@ class Window(Adw.ApplicationWindow):
     def on_guide_next(self, *_args):
         if self._sending or self._checking_status:
             return
-        self.guide.next_spot()
+        try:
+            self.guide.next_spot()
+        except ValueError as error:
+            self.toast(str(error))
+            return
         self.persist_guide()
         self.update_guide()
         self.update_tuning_preview()
@@ -2848,6 +2918,7 @@ class Window(Adw.ApplicationWindow):
         def reset(_dialog, response):
             if response == "new" and not (self._sending or self._checking_status):
                 self.guide.reset()
+                self.guide.placement = self.guide.make_placement(self.job, self.options())
                 self.persist_guide()
                 self.update_guide()
                 self.update_tuning_preview()
@@ -2865,7 +2936,7 @@ class Window(Adw.ApplicationWindow):
 
     def change_guide_registration(self, row, *_args):
         self.guide.registered = row.get_active()
-        if self.guide.placement is not None and self.guide.trial is None:
+        if self.guide.placement is not None and not self.guide.spots:
             from dataclasses import replace
             self.guide.placement = replace(self.guide.placement, registered=self.guide.registered)
         self.update_guide()
@@ -2917,7 +2988,7 @@ class Window(Adw.ApplicationWindow):
             self.guide_spot_selector.grab_focus()
 
     def guide_proposal(self):
-        return self.guide.prepare(self._connection(), self.options(), self.job, "square")
+        return self.guide.prepare(self._connection(), self.options(), self.job)
 
     def on_guide_pass(self, *_args):
         if self._sending or self._checking_status or not self.guide.can_cut:
@@ -3011,10 +3082,9 @@ class Window(Adw.ApplicationWindow):
             self.toast(str(exc))
             return
         rows = "\n".join(f"{label}  {desc}" for label, desc in ts.map_rows())
-        label = "square-and-triangle" if ts.shape == "studio" else "square"
         dialog = Adw.AlertDialog(
-            heading=f"Cut {len(ts.cells)} {label} test samples?",
-            body="Load a blank offcut of the material. Registration is off.\n\n" + rows)
+            heading=f"Cut {len(ts.cells)} test samples?",
+            body=f"{testcut.TEST_SHAPES[ts.shape]} · Load a blank offcut. Registration is off.\n\n" + rows)
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("cut", "Cut")
         dialog.set_response_appearance("cut",
@@ -3131,10 +3201,15 @@ class Window(Adw.ApplicationWindow):
 
     def on_connection_target_changed(self, *_args):
         if self.tools_connection is not None and self.tools_connection != self._connection():
-            self.forget_tool_detection()
+            self.detected_tools = ()
+            self.tools_connection = self.corrected_tools = None
+        changed = self.update_holder_labels()
         self.connection_status.set_subtitle("Not checked")
         self.scan_result.set_visible(False)
-        self.update_send_actions()
+        if changed:
+            self.on_changed()
+        else:
+            self.update_send_actions()
 
     def _scan_bluetooth(self, button):
         from . import ble, rfcomm
@@ -3207,16 +3282,36 @@ class Window(Adw.ApplicationWindow):
     def update_holder_labels(self):
         buttons = getattr(self, "send_holder_buttons", None)
         if not buttons:
-            return
+            return False
         device = graphtec.device_by_name(self._text(self.r_cutter))
-        labels = tooling.holder_labels(self.detected_tools, device)
+        changed = self.tool_selection.bind(self._connection(), device)
+        holder = int(self.r_holder.get_value()) if device.two_tools else 1
+        choices = tooling.tool_choices(device)
+        with self.r_tool_selection.handler_block(self.tool_picker_id):
+            if tuple(choices) != self.tool_picker_choices:
+                self.tool_picker_choices = tuple(choices)
+                self.r_tool_selection.set_model(Gtk.StringList.new(list(choices.values())))
+            self.r_tool_selection.set_selected(self.tool_picker_choices.index(self.tool_selection.selected(holder)))
+        labels = tooling.holder_labels(self.detected_tools, device, self.tool_selection)
         for slot, button in buttons.items():
             label = labels[slot - 1] if slot <= len(labels) else f"Tool Holder {slot}"
             button.set_label(label.replace(" · ", "\n", 1))
             button.get_child().set_justify(Gtk.Justification.CENTER)
             button.get_child().set_wrap(True)
             button.update_property([Gtk.AccessibleProperty.LABEL], [label])
-            button.set_tooltip_text(label)
+            button.set_tooltip_text(f"{label} (manually selected)" if self.tool_selection.selected(slot) else label)
+        return changed
+
+    def on_tool_selection(self, *_args):
+        if self._suppress or self._sending or self._checking_status or self.active_job is not None:
+            return
+        if not self._connection()[1]:
+            return
+        device = graphtec.device_by_name(self._text(self.r_cutter))
+        holder = int(self.r_holder.get_value()) if device.two_tools else 1
+        choice = self.tool_picker_choices[self.r_tool_selection.get_selected()]
+        self.tool_selection.select(holder, choice)
+        self.on_changed()
 
     def apply_tool_detection(self, codes):
         """Take a holder reply, label the tabs, and send depth back to manual once."""
@@ -3226,10 +3321,20 @@ class Window(Adw.ApplicationWindow):
         self.correct_detected_depth()
 
     def correct_detected_depth(self):
-        if self.active_job is not None or self._sending or not self.detected_tools:
+        if self.active_job is not None or self._sending:
             return
         device = graphtec.device_by_name(self._text(self.r_cutter))
-        if (device.two_tools and self.r_holder.get_value() != 1) or self.corrected_tools == self.detected_tools:
+        if device.two_tools and self.r_holder.get_value() != 1:
+            return
+        if self.tool_selection.selected(1):
+            if self.tool_selection.manual_depth:
+                was, self._suppress = self._suppress, True
+                try:
+                    self.r_depth.set_value(tooling.MANUAL_DEPTH)
+                finally:
+                    self._suppress = was
+            return
+        if not self.detected_tools or self.corrected_tools == self.detected_tools:
             return
         self.corrected_tools = self.detected_tools
         depth, reason = tooling.depth_correction(self.detected_tools, int(self.r_depth.get_value()))
