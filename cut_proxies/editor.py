@@ -9,8 +9,9 @@ import cairo
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 from . import design_text, editor_model, geometry, graphtec, importer, regmarks, sticker_assets, sticker_print, sticker_trace, template
-from .design_tools import COMMAND_ICONS, TOOL_GROUPS, TOOL_KEYS, TOOL_NAMES
-from .editor_canvas import DesignCanvas
+from .design_tools import (ALIGNMENT_ROWS, COMMAND_ICONS, TOOL_GROUPS, TOOL_KEYS, TOOL_NAMES,
+                           TRANSFORM_ICONS, RotationHandle, rotation_handle)
+from .editor_canvas import DesignCanvas, draw_strokes
 from .editor_model import (ACTIONS, ALIGNMENTS,
                            History, Registration, Shape,
                            import_shapes, load_project, save_project)
@@ -27,6 +28,8 @@ class Drag:
     indices: tuple[int, ...] = ()
     points: list | None = None
     vertex: tuple[int, int] | None = None
+    rotation: RotationHandle | None = None
+    angle: float = 0
 
 
 def panel(width):
@@ -45,11 +48,7 @@ def draw_tool_icon(area, context, width, height, tool):
     context.set_line_width(1.7)
     context.set_line_cap(cairo.LINE_CAP_ROUND)
     context.set_line_join(cairo.LINE_JOIN_ROUND)
-    for first, *rest in tool.strokes:
-        context.move_to(*first)
-        for point in rest:
-            context.line_to(*point)
-    context.stroke()
+    draw_strokes(context, tool.strokes)
 
 
 def design_icon_button(tool, *, toggle=False):
@@ -212,7 +211,7 @@ class DesignWorkspace:
 
     @staticmethod
     def icon_button(parent, icon, callback):
-        button = design_icon_button(COMMAND_ICONS[icon])
+        button = design_icon_button(COMMAND_ICONS[icon] if isinstance(icon, str) else icon)
         button.connect('clicked', callback)
         parent.append(button)
         return button
@@ -327,32 +326,52 @@ class DesignWorkspace:
         return toggle
 
     def transform_panel(self, inspector):
+        inspector.set_spacing(5)
+        self.heading(inspector, 'Rotate and Flip')
+        row = Gtk.Box(spacing=4)
+        inspector.append(row)
+        self.transform_buttons = {
+            action: self.icon_button(row, icon, lambda _button, command=action: self.transform_objects(command))
+            for action, icon in TRANSFORM_ICONS.items()
+        }
+        angle = self.spin(inspector, 'Angle (°)', -360, 360, 0, step=1, digits=3)
+        angle.set_width_chars(8)
+        angle.set_tooltip_text('Enter an exact angle. Positive angles rotate clockwise. '
+                               'Use Transform (T) to drag on the canvas.')
+        angle.connect('value-changed', self.change_field, 'rotation')
         self.heading(inspector, 'Position and Size')
         fields = (
             ('x', 'X (mm)', -1000, 1000), ('y', 'Y (mm)', -1000, 1000),
             ('width', 'Width (mm)', -1000, 1000), ('height', 'Height (mm)', -1000, 1000),
-            ('rotation', 'Rotation (°)', -360, 360), ('radius', 'Radius (mm)', 0, 1000),
         )
-        self.fields = {}
-        for field, label, low, high in fields[:-1]:
-            spin = self.spin(inspector, label, low, high, 0)
+        self.fields = {'rotation': angle}
+        for field, label, low, high in fields:
+            spin = self.spin(inspector, label, low, high, 0, digits=3)
             spin.connect('value-changed', self.change_field, field)
             self.fields[field] = spin
-        self.lock_aspect = Gtk.CheckButton(label='Lock Aspect Ratio')
+        self.fields['x'].set_tooltip_text('Horizontal position of the object frame from the left edge of the page.')
+        self.fields['y'].set_tooltip_text('Vertical position of the object frame from the top edge of the page.')
+        self.lock_aspect = Gtk.CheckButton(label='Lock proportions')
         inspector.append(self.lock_aspect)
+
+        self.heading(inspector, 'Align and Space')
+        self.alignment_buttons = {}
+        for icons in ALIGNMENT_ROWS:
+            row = Gtk.Box(spacing=4)
+            inspector.append(row)
+            for icon in icons:
+                self.alignment_buttons[icon.name] = self.icon_button(
+                    row, icon, lambda _button, option=icon.name: self.align_objects(option))
+
+        advanced, _ = disclosure(inspector, 'Shape Options')
         self.flips = {}
-        for field, label in (('flip_x', 'Mirror Horizontally'), ('flip_y', 'Mirror Vertically'),
+        for field, label in (('flip_x', 'Flip local X'), ('flip_y', 'Flip local Y'),
                              ('visible', 'Visible')):
             toggle = Gtk.CheckButton(label=label)
             toggle.connect('toggled', self.change_toggle, field)
-            inspector.append(toggle)
+            advanced.append(toggle)
             self.flips[field] = toggle
-        self.heading(inspector, 'Align')
-        self.alignment = Gtk.DropDown.new_from_strings(ALIGNMENTS)
-        inspector.append(self.alignment)
-        self.align_button = self.button(inspector, 'Apply Alignment', self.align_selection)
-        advanced, _ = disclosure(inspector)
-        self.fields['radius'] = self.spin(advanced, 'Radius (mm)', 0, 1000, 0)
+        self.fields['radius'] = self.spin(advanced, 'Corner radius (mm)', 0, 1000, 0, digits=3)
         self.fields['radius'].connect('value-changed', self.change_field, 'radius')
 
     def build_design_menus(self, shortcuts):
@@ -438,7 +457,7 @@ class DesignWorkspace:
         align = Gio.Menu()
         objects.append_submenu('Align', align)
         for index, label in enumerate(ALIGNMENTS):
-            command(align, label, f'align-{index}', lambda option=index: self.align_objects(option))
+            command(align, label, f'align-{index}', lambda option=label: self.align_objects(option))
         command(objects, 'Replicate…', 'object-replicate', lambda: self.panel_switcher.set_selected(2))
         command(objects, 'Group', 'group', self.group_selected)
         command(objects, 'Ungroup', 'ungroup', lambda: self.group_selected(release=True))
@@ -495,8 +514,11 @@ class DesignWorkspace:
         self.commit(shapes, selected)
 
     def align_objects(self, option):
-        self.alignment.set_selected(option)
-        self.align_selection(None)
+        indices = self.selected_indices()
+        try:
+            self.commit(editor_model.align(self.project.shapes, indices, option), indices)
+        except ValueError as error:
+            self.status.set_text(str(error))
 
     def select_color(self, field):
         self.set_selection(editor_model.matching_color(self.project.shapes, self.selected_indices(), field))
@@ -911,7 +933,14 @@ class DesignWorkspace:
                                         (shapes[indices[0]].group is None or
                                          len({shapes[i].group for i in indices}) > 1))
         self.ungroup_button.set_sensitive(any(shapes[i].group is not None for i in indices))
-        self.align_button.set_sensitive(len(editor_model.selected_units(shapes, indices)) >= 2)
+        units = len(editor_model.selected_units(shapes, indices))
+        for command in self.transform_buttons.values():
+            command.set_sensitive(bool(indices))
+        for option, command in self.alignment_buttons.items():
+            space = option.startswith('Space ')
+            command.set_sensitive(units >= (3 if space else 2))
+            command.set_tooltip_text(f"{option}\nSelect {'three objects to space' if space else 'two objects to align'}."
+                                     if not command.get_sensitive() else option)
         self.forward.set_sensitive(bool(indices) and indices[-1] + 1 < len(shapes))
         self.backward.set_sensitive(bool(indices) and indices[0] > 0)
         self.loading = False
@@ -1057,14 +1086,6 @@ class DesignWorkspace:
             shapes[i], shapes[i+step] = shapes[i+step], shapes[i]
         self.commit(shapes, (i + step for i in indices))
 
-    def align_selection(self, _button):
-        indices = self.selected_indices()
-        operation = ALIGNMENTS[self.alignment.get_selected()]
-        try:
-            self.commit(editor_model.align(self.project.shapes, indices, operation), indices)
-        except ValueError as error:
-            self.status.set_text(str(error))
-
     def replicate_selection(self, _button):
         original, indices = self.project.shapes, self.selected_indices()
         try:
@@ -1090,7 +1111,10 @@ class DesignWorkspace:
         self.polygon.clear()
         self.cancel_drag()
         mode = self.active_tool
-        self.canvas.set_cursor_from_name('crosshair' if mode not in ('Select', 'Point Edit') else 'default')
+        self.canvas.set_cursor_from_name('crosshair' if mode not in ('Select', 'Point Edit', 'Transform')
+                                         else 'default')
+        if mode == 'Transform':
+            self.panel_switcher.set_selected(1)
 
     def pick_polygon_point(self, _gesture, presses, x, y):
         if self.active_tool != 'Polygon':
@@ -1139,7 +1163,7 @@ class DesignWorkspace:
         if mode == 'Point Edit':
             self.begin_point_edit(x, y, scale)
             return
-        if mode != "Select":
+        if mode not in ('Select', 'Transform'):
             if not (-editor_model.SHAPE_LIMIT <= x <= editor_model.SHAPE_LIMIT
                     and -editor_model.SHAPE_LIMIT <= y <= editor_model.SHAPE_LIMIT):
                 return
@@ -1150,6 +1174,11 @@ class DesignWorkspace:
 
         extend = bool(gesture.get_current_event_state() & Gdk.ModifierType.SHIFT_MASK)
         indices = self.selected_indices()
+        handle = rotation_handle(self.project.shapes, indices, scale) if mode == 'Transform' else None
+        if handle and handle.hit((x, y)):
+            self.drag = Drag('rotate', x, y, scale, indices, rotation=handle)
+            self.canvas.set_cursor_from_name('grabbing')
+            return
         for index in reversed(range(len(self.project.shapes))):
             shape = self.project.shapes[index]
             if shape.visible and editor_model.hit(shape, (x, y), 5 / scale):
@@ -1198,7 +1227,7 @@ class DesignWorkspace:
             return None
         return Shape(drag.mode, min(start[0], end[0]), min(start[1], end[1]), w, h)
 
-    def drag_update(self, _gesture, dx, dy):
+    def drag_update(self, gesture, dx, dy):
         drag = self.drag
         if drag is None or (self.draft is None and abs(dx) + abs(dy) < 2):
             return
@@ -1220,6 +1249,16 @@ class DesignWorkspace:
             else:
                 shapes = base.shapes[:index] + (edited,) + base.shapes[index+1:]
                 self.draft = replace(base, shapes=shapes)
+        elif drag.mode == 'rotate':
+            state = gesture.get_current_event_state() if gesture is not None else Gdk.ModifierType(0)
+            angle = drag.rotation.angle((drag.x, drag.y), (x, y), snap=bool(state & Gdk.ModifierType.SHIFT_MASK))
+            if angle is not None:
+                try:
+                    rotated = editor_model.rotate_selection(base.shapes, drag.indices, angle, center=drag.rotation.center)
+                except ValueError:
+                    self.draft, drag.angle = None, 0
+                else:
+                    self.draft, drag.angle = replace(base, shapes=rotated), angle
         elif drag.mode == 'move':
             if drag.indices:
                 anchor = base.shapes[drag.indices[0]]
@@ -1242,11 +1281,11 @@ class DesignWorkspace:
             self.draft = replace(base, shapes=base.shapes + (shape,)) if valid else None
         self.canvas.queue_draw()
 
-    def drag_end(self, _gesture, dx, dy):
+    def drag_end(self, gesture, dx, dy):
         if self.drag is None:
             return
-        if dx or dy:
-            self.drag_update(None, dx, dy)
+        if dx or dy or self.drag.mode == 'rotate':
+            self.drag_update(gesture, dx, dy)
         indices = self.selected_indices()
         if self.marquee is not None:
             region = self.marquee
@@ -1268,6 +1307,8 @@ class DesignWorkspace:
             self.set_selection(indices)
 
     def cancel_drag(self, *_args):
+        if self.drag and self.drag.mode == 'rotate':
+            self.canvas.set_cursor_from_name('default')
         self.drag = self.draft = self.marquee = None
         self.drawing = False
         self.select_shape()
@@ -1276,9 +1317,13 @@ class DesignWorkspace:
         ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
         indices = self.selected_indices()
         if key == Gdk.KEY_Escape:
+            rotating = self.drag is not None and self.drag.mode == 'rotate'
             self.cancel_drag()
-            self.set_selection(())
-            self.tool.set_selected(0)
+            if not rotating:
+                self.set_selection(())
+                self.tool.set_selected(0)
+        elif self.drag is not None and self.drag.mode == 'rotate':
+            return True
         elif self.active_tool == 'Polygon' and key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
             self.finish_polygon()
         elif not (state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK)) and (

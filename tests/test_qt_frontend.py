@@ -1585,7 +1585,7 @@ class TestQtDesignEditor(unittest.TestCase):
         rounded = palette.buttons[palette.findData("Rounded rectangle")]
         self.assertTrue(rounded.isVisible())
         self.assertEqual(len({item.x() for item in palette.buttons}), 1)
-        self.assertEqual(len({item.y() for item in palette.buttons}), 8)
+        self.assertEqual(len({item.y() for item in palette.buttons}), 9)
         self.assertEqual(rounded.accessibleName(), "Rounded rectangle")
         self.assertIn("(U)", rounded.toolTip())
         QTest.keyClick(design.canvas, Qt.Key.Key_U)
@@ -1608,6 +1608,57 @@ class TestQtDesignEditor(unittest.TestCase):
         self.assertFalse(rounded.isChecked())
         self.assertEqual(palette.active_label.text(), "Polygon")
         self.assertTrue(design.canvas.hasFocus())
+
+    def test_transform_tool_rotates_on_canvas_and_exposes_one_click_actions(self):
+        shapes = (editor_model.Shape("Rectangle", 50, 60, 20, 20),
+                  editor_model.Shape("Rectangle", 90, 80, 20, 20))
+        design = self.editor(editor_model.Project(279.4, 215.9, shapes))
+        design.resize(900, 640)
+        design.show()
+        self.app.processEvents()
+        canvas = design.canvas
+        QTest.keyClick(canvas, Qt.Key.Key_T)
+        self.assertEqual(design.tool.currentData(), "Transform")
+        self.assertEqual(design.inspector.currentIndex(), 1)
+        self.assertFalse(design.alignment_buttons["Align Left"].isEnabled())
+        design.select((0, 1))
+        self.assertTrue(design.alignment_buttons["Align Left"].isEnabled())
+        self.assertFalse(design.alignment_buttons["Space Horizontally"].isEnabled())
+        handle = canvas.rotation_handle()
+        grip = handle.positions()[1]
+        end = editor_model.rotate_point(grip, handle.center, 42)
+        start_view = canvas.mapFromScene(QPointF(*grip))
+        end_view = canvas.mapFromScene(QPointF(*end))
+
+        QTest.mousePress(canvas.viewport(), Qt.MouseButton.LeftButton, pos=start_view)
+        QTest.mouseMove(canvas.viewport(), end_view)
+        self.assertNotEqual(design.project.shapes, shapes)
+        self.assertEqual(design.history.current.shapes, shapes)
+        QTest.keyClick(canvas, Qt.Key.Key_Escape)
+        QTest.mouseRelease(canvas.viewport(), Qt.MouseButton.LeftButton, pos=end_view)
+        self.assertEqual(design.selection(), (0, 1))
+        self.assertEqual(design.project.shapes, shapes)
+
+        QTest.mousePress(canvas.viewport(), Qt.MouseButton.LeftButton, pos=start_view)
+        QTest.mouseMove(canvas.viewport(), end_view)
+        QTest.mouseRelease(canvas.viewport(), Qt.MouseButton.LeftButton, pos=start_view)
+        self.assertEqual(design.project.shapes, shapes)
+        self.assertFalse(design.history.past)
+
+        QTest.mousePress(canvas.viewport(), Qt.MouseButton.LeftButton, pos=start_view)
+        QTest.mouseRelease(canvas.viewport(), Qt.MouseButton.LeftButton,
+                           Qt.KeyboardModifier.ShiftModifier, end_view)
+        self.assertEqual([shape.rotation for shape in design.project.shapes], [45, 45])
+        self.assertEqual(len(design.history.past), 1)
+        self.assertAlmostEqual(sum(shape.x for shape in design.project.shapes) / 2, 70)
+        self.assertAlmostEqual(sum(shape.y for shape in design.project.shapes) / 2, 70)
+        design.undo()
+        self.assertEqual(design.project.shapes, shapes)
+        design.transform_buttons["left"].click()
+        self.assertEqual([shape.rotation for shape in design.project.shapes], [270, 270])
+        design.undo()
+        design.alignment_buttons["Align Left"].click()
+        self.assertEqual([shape.x for shape in design.project.shapes], [50, 50])
 
     def test_design_zoom_has_keyboard_shortcuts_scoped_to_the_editor(self):
         from PySide6.QtGui import QKeySequence

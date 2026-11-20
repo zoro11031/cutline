@@ -608,6 +608,15 @@ def design_divider(*, vertical=False):
     return divider
 
 
+def icon_outline(strokes):
+    outline = QPainterPath()
+    for first, *rest in strokes:
+        outline.moveTo(*first)
+        for point in rest:
+            outline.lineTo(*point)
+    return outline
+
+
 class DesignIconButton(QToolButton):
     def __init__(self, tool, *, checkable=False, action=None):
         super().__init__()
@@ -622,11 +631,7 @@ class DesignIconButton(QToolButton):
         self.setAccessibleDescription(tool.hint)
         self.setToolTip(action.toolTip() if action is not None else tool.tooltip)
         self.setFixedSize(34, 34)
-        self.outline = QPainterPath()
-        for first, *rest in tool.strokes:
-            self.outline.moveTo(*first)
-            for point in rest:
-                self.outline.lineTo(*point)
+        self.outline = icon_outline(tool.strokes)
 
     def paintEvent(self, _event):
         option = QStyleOptionToolButton()
