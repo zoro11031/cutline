@@ -3,12 +3,13 @@
 import threading
 
 from PySide6.QtCore import QEvent, QObject, QPointF, Qt, Signal, Slot
-from PySide6.QtGui import QColor, QIcon, QPalette, QWheelEvent
+from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPalette, QPen, QWheelEvent
 from PySide6.QtWidgets import (QAbstractScrollArea, QAbstractSpinBox, QApplication, QBoxLayout, QButtonGroup, QCheckBox,
-                               QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QLayout,
+                               QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLayout,
                                QLabel, QLineEdit, QMenuBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QStackedWidget, QStyle,
                                QTabBar, QToolButton, QVBoxLayout, QWidget)
 
+from .design_tools import TOOL_NAMES, TOOL_ROWS
 
 _WORKSPACE_STYLE = """
 QWidget#workspace { background: palette(window); }
@@ -64,6 +65,12 @@ QToolButton[role="workspaceTool"]:hover, QToolButton[role="workspaceTool"]:focus
     border-color: palette(highlight);
 }
 QToolButton[role="workspaceTool"]:disabled { background: @disabled_button; color: @disabled_text; }
+QToolButton[role="designTool"] {
+    background: palette(base); border: 2px solid transparent; border-radius: 6px;
+}
+QToolButton[role="designTool"]:hover { background: palette(alternate-base); }
+QToolButton[role="designTool"]:checked { background: palette(highlight); }
+QToolButton[role="designTool"]:focus { border-color: palette(button-text); }
 QPushButton[role="holder"]:checked {
     background: palette(highlight); color: @accent_text; border-radius: 5px;
 }
@@ -591,51 +598,70 @@ class Form(QFormLayout):
         self.addRow(row)
 
 
+class DesignToolButton(QToolButton):
+    def __init__(self, tool):
+        super().__init__()
+        self.setCheckable(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setProperty("role", "designTool")
+        self.setAccessibleName(tool.name)
+        self.setAccessibleDescription(f"Shortcut {tool.shortcut}. {tool.hint}")
+        self.setToolTip(tool.tooltip)
+        self.setFixedSize(36, 36)
+        self.outline = QPainterPath()
+        for first, *rest in tool.strokes:
+            self.outline.moveTo(*first)
+            for point in rest:
+                self.outline.lineTo(*point)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        palette = self.palette()
+        color = (_legible(palette.highlightedText().color(), palette.highlight().color())
+                 if self.isChecked() else palette.buttonText().color())
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.translate((self.width() - 24) / 2, (self.height() - 24) / 2)
+        painter.setPen(QPen(color, 1.7, Qt.PenStyle.SolidLine,
+                            Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        painter.drawPath(self.outline)
+        painter.end()
+
+
 class ToolStrip(QWidget):
-    """Vertical strip of exclusive tool buttons for the drawing workspace."""
+    """Compact palette of exclusive canvas modes."""
 
-    TOOL_SHORTCUTS = {
-        "Select": ("Select", "V"),
-        "Point Edit": ("Point Edit", "A"),
-        "Rectangle": ("Rectangle", "R"),
-        "Rounded Rectangle": ("Rounded Rect", "U"),
-        "Ellipse": ("Ellipse", "E"),
-        "Line": ("Line", "L"),
-        "Polygon": ("Polygon", "P"),
-        "Freehand": ("Freehand", "F"),
-    }
-
-    def __init__(self, tools, *, changed=None, parent=None):
-        super().__init__(parent)
-        self.tools = list(tools)
-        self._changed = changed
-        layout = QVBoxLayout(self)
+    def __init__(self, *, changed):
+        super().__init__()
+        self.setAccessibleName("Drawing tools")
+        layout = QGridLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
+        layout.setSpacing(4)
+        layout.setColumnStretch(3, 1)
         self.group = QButtonGroup(self)
-        self.group.setExclusive(True)
-        self.buttons: list[QPushButton] = []
-        for index, tool in enumerate(self.tools):
-            label, key = self.TOOL_SHORTCUTS.get(tool, (tool, ""))
-            btn_text = f"{label} ({key})" if key else label
-            btn = QPushButton(btn_text)
-            btn.setCheckable(True)
-            btn.setAutoDefault(False)
-            btn.setProperty("role", "tool-strip-button")
-            self.group.addButton(btn, index)
-            layout.addWidget(btn)
-            self.buttons.append(btn)
-        if self.buttons:
-            self.buttons[0].setChecked(True)
-        self.group.idClicked.connect(self._on_clicked)
+        self.buttons = []
+        for row, tools in zip((0, 2, 3), TOOL_ROWS):
+            for column, tool in enumerate(tools):
+                button = DesignToolButton(tool)
+                self.group.addButton(button, len(self.buttons))
+                layout.addWidget(button, row, column)
+                self.buttons.append(button)
+        divider = QFrame()
+        divider.setFrameShape(QFrame.Shape.HLine)
+        layout.addWidget(divider, 1, 0, 1, 3)
+        self.active_label = styled_label(TOOL_NAMES[0], role="caption")
+        layout.addWidget(self.active_label, 4, 0, 1, 4)
+        self.buttons[0].setChecked(True)
+        self.group.idToggled.connect(self._toggled)
+        self.group.idClicked.connect(lambda _index: changed())
+        self._changed = changed
 
-    def _on_clicked(self, index):
-        if self._changed:
-            self._changed()
+    def _toggled(self, index, checked):
+        if checked:
+            self.active_label.setText(TOOL_NAMES[index])
 
     def currentData(self):
-        idx = self.currentIndex()
-        return self.tools[idx] if 0 <= idx < len(self.tools) else None
+        return TOOL_NAMES[self.currentIndex()]
 
     def currentIndex(self):
         return self.group.checkedId()
@@ -643,8 +669,7 @@ class ToolStrip(QWidget):
     def setCurrentIndex(self, index):
         if 0 <= index < len(self.buttons):
             self.buttons[index].setChecked(True)
-            if self._changed:
-                self._changed()
+            self._changed()
 
     def setCurrentText(self, text):
         idx = self.findData(text)
@@ -653,14 +678,9 @@ class ToolStrip(QWidget):
 
     def findData(self, text):
         try:
-            return self.tools.index(text)
+            return TOOL_NAMES.index(text)
         except ValueError:
             return -1
-
-    def setToolTip(self, tip):
-        super().setToolTip(tip)
-        for btn in self.buttons:
-            btn.setToolTip(tip)
 
 
 class ResponsiveInspector(QWidget):
