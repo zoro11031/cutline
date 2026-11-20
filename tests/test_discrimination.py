@@ -19,7 +19,8 @@ cheap: nine sub-suites of a few tests each.
 import io
 import unittest
 
-from cut_proxies import corner_test, cutters, graphtec, job, regmarks, sheet, starting_guide, sticker_print, testcut, tooling, transport, verify
+from cut_proxies import (corner_test, cutters, editor_model, graphtec, job, regmarks, sheet, starting_guide,
+                         sticker_print, testcut, tooling, transport, verify)
 
 
 def _run(class_paths):
@@ -98,6 +99,16 @@ CASES = (
     (regmarks, "mask_hints", lambda *a, **k: [],
      "mask_hints never warns about a crowded card",
      ["tests.test_guards.TestMaskHintsFire"]),
+)
+
+CASES += tuple(
+    (editor_model, guard, lambda *_, answer=allowed: answer,
+     f"{label} always {'allows' if allowed else 'refuses'}",
+     ["tests.test_editor_model.TestScaleSelection"])
+    for guard, label in (("_valid_scale_factor", "scale factor guard"),
+                         ("_number", "scale coordinate and size range guard"),
+                         ("_valid_scaled_size", "scale minimum size guard"))
+    for allowed in (True, False)
 )
 
 CASES += tuple(

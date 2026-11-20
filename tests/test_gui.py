@@ -674,15 +674,15 @@ class TestDesignWorkspace(unittest.TestCase):
             self.assertIsInstance(button.get_child(), gui.Gtk.DrawingArea)
         self.assertEqual(palette.get_orientation(), gui.Gtk.Orientation.VERTICAL)
         no_modifiers = Gdk.ModifierType(0)
-        rounded = palette.buttons[design.tools.index('Rounded rectangle')]
-        self.assertIn('(U)', rounded.get_tooltip_text())
+        rounded = palette.button_for('Rounded rectangle')
         self.assertTrue(design.canvas_key(None, Gdk.KEY_u, 0, no_modifiers))
+        self.assertIn('(U)', rounded.get_tooltip_text())
         self.assertTrue(rounded.get_active())
         self.assertEqual(palette.active_label.get_label(), 'Rounded rectangle')
         design.add_button.emit('clicked')
         self.assertEqual(design.project.shapes[-1].kind, 'Rounded rectangle')
 
-        select = palette.buttons[0]
+        select = palette.slots['Select']
         select.emit('clicked')
         self.assertTrue(select.get_active())
         self.assertFalse(rounded.get_active())
@@ -693,6 +693,61 @@ class TestDesignWorkspace(unittest.TestCase):
         count = len(design.project.shapes)
         self.assertTrue(design.canvas_key(None, Gdk.KEY_Delete, 0, no_modifiers))
         self.assertEqual(len(design.project.shapes), count - 1)
+
+    def test_transform_flyout_scales_and_remembers_tool(self):
+        from gi.repository import Gdk
+
+        win = self.make_window()
+        win.present()
+        win.design_button.emit('clicked')
+        design = win.design
+        shape = editor_model.Shape('Rounded rectangle', 50, 60, 20, 30, radius=3)
+        design.commit((shape,), (0,))
+        palette = design.tool
+        design.option_snap.set_active(True)
+        self.assertTrue(design.snap.get_active())
+        design.snap.set_active(False)
+        self.assertFalse(design.option_snap.get_active())
+        palette.menu_buttons['Transform tools'].popup()
+        self.assertTrue(palette.menus['Transform tools'].get_visible())
+        palette.choices['Scale'].emit('clicked')
+        self.assertEqual(design.active_tool, 'Scale')
+        self.assertTrue(design.quick_transforms.get_visible())
+        self.assertFalse(design.option_snap.get_visible())
+        self.assertEqual(design.panel_switcher.get_selected(), 1)
+        palette.slots['Select'].emit('clicked')
+        palette.slots['Transform tools'].emit('clicked')
+        self.assertEqual(design.active_tool, 'Scale')
+        self.assertFalse(palette.menus['Transform tools'].get_visible())
+
+        gesture = mock.Mock()
+        gesture.get_current_event_state.return_value = Gdk.ModifierType(0)
+        depth = len(design.history.past)
+        with mock.patch.object(design.canvas, 'viewport', return_value=(0, 0, 2)):
+            design.drag_begin(gesture, 140, 180)
+            design.drag_update(gesture, 40, 60)
+            self.assertEqual(design.history.current.shapes, (shape,))
+            self.assertEqual(design.project.shapes[0].width, 40)
+            design.drag_end(gesture, 40, 60)
+        scaled = design.project.shapes[0]
+        self.assertEqual((scaled.x, scaled.y, scaled.width, scaled.height, scaled.radius), (50, 60, 40, 60, 6))
+        self.assertEqual(len(design.history.past), depth + 1)
+        design.undo_button.emit('clicked')
+        self.assertEqual(design.project.shapes, (shape,))
+        palette.choices['Rotate'].emit('clicked')
+        gesture.get_current_event_state.return_value = Gdk.ModifierType.SHIFT_MASK
+        with mock.patch.object(design.canvas, 'viewport', return_value=(0, 0, 2)):
+            design.drag_begin(gesture, 132, 134)
+            design.drag_end(gesture, 4, 28)
+        self.assertEqual(design.project.shapes[0].rotation, 90)
+        design.undo_button.emit('clicked')
+        self.assertEqual(design.project.shapes, (shape,))
+        design.menu_actions.lookup_action('panels-toggle').activate(None)
+        self.assertFalse(design.dock.get_visible())
+        self.assertFalse(palette.get_visible())
+        design.menu_actions.lookup_action('panels-toggle').activate(None)
+        self.assertTrue(design.dock.get_visible())
+        self.assertEqual(design.active_tool, 'Rotate')
 
     def test_transform_tool_previews_and_commits_snapped_rotation(self):
         from gi.repository import Gdk

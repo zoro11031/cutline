@@ -7,18 +7,21 @@ from functools import lru_cache
 from math import dist
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence, QPixmap, QTransform
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
-                               QFileDialog, QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QMenu, QMessageBox,
+                               QFileDialog, QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+                               QMenu, QMessageBox,
                                QPlainTextEdit, QSizePolicy, QSpinBox, QSplitter, QStackedWidget, QTabWidget, QToolButton,
                                QVBoxLayout, QWidget)
 
 from . import design_text, editor_model as model, geometry, graphtec, importer, regmarks, sticker_assets, sticker_print, sticker_trace, template
-from .design_tools import ALIGNMENT_ROWS, COMMAND_ICONS, TOOL_KEYS, TRANSFORM_ICONS, TURN_RIGHT, rotation_handle
+from .design_tools import (ALIGNMENT_ROWS, COMMAND_ICONS, OBJECT_ICONS, ROTATE_MODES, SCALE_MODES,
+                           TOOL_KEYS, TOOLS, TRANSFORM_ICONS, TRANSFORM_MODES, TURN_RIGHT, rotation_handle,
+                           scale_from_corner)
 from .qt_canvas import SheetView, ZoomControls, draw_contours, draw_feed_arrow, draw_marks, draw_paper, draw_path, pen, rect
 from .qt_controls import (AdaptiveActions, DesignIconButton, Page, ResponsiveInspector, Tasks, ToolStrip, bar, button,
-                          design_divider, icon_outline, set_choices, styled_label, workspace_header, workspace_layout,
+                          design_divider, design_icon, icon_outline, set_choices, styled_label, workspace_header, workspace_layout,
                           workspace_tools)
 
 DESIGN_FILTER = "Design projects (*.scc-template);;Cut templates (*.svg *.SVG *.dxf *.DXF *.studio3 *.STUDIO3)"
@@ -44,6 +47,7 @@ class Canvas(SheetView):
         self.draft = None
         self.active = ()
         self.rotation = None
+        self.scale_anchor = None
         self.angle = 0
         self.rotation_icon = icon_outline(TURN_RIGHT)
 
@@ -52,20 +56,31 @@ class Canvas(SheetView):
 
     def drawForeground(self, painter, area):
         super().drawForeground(painter, area)
-        if self.design.tool.currentData() != "Transform":
+        tool = self.design.tool.currentData()
+        if tool not in TRANSFORM_MODES:
             return
-        handle = self.rotation or self.rotation_handle()
+        handle = self.rotation_handle()
         if handle is None:
             return
         scale = self.transform().m11()
         outline = "#3271c8"
-        edge, grip = map(lambda point: QPointF(*point), handle.positions(self.angle))
-        center = QPointF(*handle.center)
         painter.save()
         painter.setPen(pen(outline, 1.3 / scale, dashed=True))
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRect(rect(handle.box) if self.rotation is None else
-                         rect(model.bounds(self.design.project.shapes[i] for i in self.active)))
+        painter.drawRect(rect(handle.box))
+        if tool in SCALE_MODES:
+            half = 3.5 / scale
+            painter.setPen(pen(outline, 1.3 / scale))
+            painter.setBrush(QColor("white"))
+            for x, y in handle.corners():
+                painter.drawRect(QRectF(x - half, y - half, 2 * half, 2 * half))
+        if tool in ROTATE_MODES:
+            self.paint_rotation(painter, self.rotation or handle, scale, outline)
+        painter.restore()
+
+    def paint_rotation(self, painter, handle, scale, outline):
+        edge, grip = (QPointF(*point) for point in handle.positions(self.angle))
+        center = QPointF(*handle.center)
         painter.setPen(pen(outline, 1.5 / scale))
         painter.drawLine(edge, grip)
         for dx, dy in ((4 / scale, 0), (0, 4 / scale)):
@@ -79,7 +94,6 @@ class Canvas(SheetView):
         painter.setPen(pen(outline, 1.8))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(self.rotation_icon)
-        painter.restore()
 
     def redraw(self):
         editor, scene = self.design, self.scene()
@@ -223,18 +237,30 @@ class Canvas(SheetView):
             self.redraw()
         elif tool == "Point Edit":
             self.begin_point_edit()
-        elif tool in ("Select", "Transform"):
-            handle = self.rotation_handle() if tool == "Transform" else None
-            if handle and handle.hit((self.start.x(), self.start.y())):
-                self.edit, self.rotation = "rotate", handle
-                self.setCursor(Qt.CursorShape.ClosedHandCursor)
-            else:
-                self.edit = "move" if self.select_at(self.start, shift) else "marquee"
-            self.active = editor.selection()
+        elif tool == "Select" or tool in TRANSFORM_MODES:
+            self.begin_selection(tool, shift)
         else:
             self.edit = "draw"
             self.freehand = [self.point(self.start)]
         event.accept()
+
+    def begin_selection(self, tool, shift):
+        point = (self.start.x(), self.start.y())
+        handle = self.rotation_handle() if tool in TRANSFORM_MODES else None
+        scale_anchor = handle.opposite_corner(point) if handle and tool in SCALE_MODES else None
+        if handle and tool in ROTATE_MODES and handle.hit(point):
+            self.edit, self.rotation = "rotate", handle
+        elif scale_anchor is not None:
+            self.edit, self.scale_anchor = "scale", scale_anchor
+        elif not self.select_at(self.start, shift and tool != "Rotate"):
+            self.edit = "marquee"
+        elif tool == "Rotate":
+            self.edit, self.rotation = "rotate", self.rotation_handle()
+        elif tool != "Scale":
+            self.edit = "move"
+        self.active = self.design.selection()
+        if self.edit in ("rotate", "scale"):
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
     def begin_point_edit(self):
         editor = self.design
@@ -264,13 +290,13 @@ class Canvas(SheetView):
     def update_from_pointer(self, event):
         position = event.position().toPoint()
         if (self.anchor - position).manhattanLength() >= 2 or (
-                self.rotation is not None and self.draft is not None):
+                self.edit in ("rotate", "scale") and self.draft is not None):
             self.update_drag(self.mapToScene(position), snap=bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier))
 
     def update_drag(self, point, *, snap=False):
         base = self.design.history.current.shapes
         delta = point - self.start
-        if self.edit == "rotate":
+        if self.edit == "rotate" and self.rotation:
             angle = self.rotation.angle((self.start.x(), self.start.y()), (point.x(), point.y()), snap=snap)
             if angle is not None:
                 try:
@@ -279,6 +305,12 @@ class Canvas(SheetView):
                     self.draft, self.angle = None, 0
                 else:
                     self.angle = angle
+        elif self.edit == "scale":
+            factor = scale_from_corner((self.start.x(), self.start.y()), (point.x(), point.y()), self.scale_anchor)
+            try:
+                self.draft = model.scale_selection(base, self.active, self.scale_anchor, factor)
+            except ValueError:
+                self.draft = None
         elif self.edit == "move" and self.active:
             anchor = base[self.active[0]]
             x, y = self.point(QPointF(anchor.x + delta.x(), anchor.y + delta.y()))
@@ -366,24 +398,25 @@ class Canvas(SheetView):
         self.design.add_shape(shape)
 
     def cancel(self):
-        if self.rotation is not None:
+        if self.edit in ("rotate", "scale"):
             self.unsetCursor()
         self.rotation, self.angle = None, 0
+        self.scale_anchor = None
         self.start = self.edit = self.anchor = self.marquee = self.draft = None
         self.freehand.clear()
 
     def keyPressEvent(self, event):
         editor = self.design
         if event.key() == Qt.Key.Key_Escape:
-            rotating = self.rotation is not None
+            transforming = self.edit in ("rotate", "scale")
             self.cancel()
             self.polygon.clear()
-            if rotating:
+            if transforming:
                 self.redraw()
             else:
                 editor.select(())
             return
-        if self.rotation is not None:
+        if self.edit in ("rotate", "scale"):
             return
         if editor.tool.currentData() == "Polygon" and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self.finish_polygon()
@@ -448,12 +481,13 @@ class Design(QWidget):
         self.canvas = Canvas(self)
         self.canvas.setMinimumWidth(220)
         self.zoom = ZoomControls(self.canvas, fit_button=self.icon_button("fit", self.canvas.fit))
-        tools.addWidget(self.zoom)
         body.addWidget(self.tools_bar)
 
         workspace = QHBoxLayout()
         workspace.setSpacing(6)
         self.tool = ToolStrip(changed=self.change_tool)
+        self.options_bar = self.tool_options_bar()
+        body.addWidget(self.options_bar)
         workspace.addWidget(self.tool)
         panes = QSplitter(Qt.Orientation.Horizontal)
         panes.setChildrenCollapsible(False)
@@ -475,7 +509,10 @@ class Design(QWidget):
             panel = Page()
             build(panel)
             self.inspector.addTab(panel.finish(), label)
-        dock = QSplitter(Qt.Orientation.Vertical)
+        self.option_snap.setChecked(self.snap.isChecked())
+        self.option_snap.toggled.connect(self.snap.setChecked)
+        self.snap.toggled.connect(self.option_snap.setChecked)
+        self.dock = dock = QSplitter(Qt.Orientation.Vertical)
         dock.setChildrenCollapsible(False)
         dock.setHandleWidth(6)
         dock.setMinimumWidth(240)
@@ -490,11 +527,10 @@ class Design(QWidget):
         self.build_design_menus((new, open_file, self.save_action, save_as, import_art))
 
         footer_bar, footer = bar(self)
-        footer.addWidget(self.tool.active_label)
-        footer.addWidget(design_divider(vertical=True))
         self.status = styled_label(role="body")
         self.status.setWordWrap(True)
         footer.addWidget(self.status, 1)
+        footer.addWidget(self.zoom)
         # As in Silhouette Studio, the Send switch sends the design; only a
         # sticker sheet has a step of its own, its Print & Cut export.
         self.review_button = button("Export Print && Cut…", self.export_stickers, primary=True)
@@ -515,6 +551,33 @@ class Design(QWidget):
         widget = DesignIconButton(COMMAND_ICONS[icon] if isinstance(icon, str) else icon)
         widget.clicked.connect(lambda _checked: callback())
         return widget
+
+    def tool_options_bar(self):
+        options, row = bar(self, (10, 0, 8, 0))
+        options.setObjectName("designToolOptions")
+        options.setAccessibleName("Tool options")
+        row.setSpacing(5)
+        row.addWidget(self.tool.active_label)
+        row.addWidget(design_divider(vertical=True))
+        self.option_snap = DesignIconButton(COMMAND_ICONS["snap"], checkable=True)
+        row.addWidget(self.option_snap)
+        self.quick_transforms = QWidget()
+        actions = QHBoxLayout(self.quick_transforms)
+        actions.setSpacing(2)
+        actions.setContentsMargins(0, 0, 0, 0)
+        self.quick_transform_buttons = {
+            name: self.icon_button(icon, lambda op=name: self.transform_objects(op))
+            for name, icon in TRANSFORM_ICONS.items()
+        }
+        for command in self.quick_transform_buttons.values():
+            actions.addWidget(command)
+        row.addWidget(self.quick_transforms)
+        self.quick_transforms.hide()
+        self.tool_hint = styled_label(TOOLS[0].hint, role="caption")
+        self.tool_hint.setToolTip(TOOLS[0].hint)
+        self.tool_hint.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        row.addWidget(self.tool_hint, 1)
+        return options
 
     def objects_panel(self):
         panel = QWidget()
@@ -542,6 +605,7 @@ class Design(QWidget):
             header.addWidget(control)
         layout.addLayout(header)
         self.objects = QListWidget()
+        self.objects.setIconSize(QSize(16, 16))
         self.objects.setAccessibleName("Object list")
         self.objects.setProperty("role", "designObjects")
         self.objects.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -618,6 +682,7 @@ class Design(QWidget):
     def transform_panel(self, page):
         page.body.setSpacing(6)
         orient = page.group("Rotate and flip")
+        self.orientation_group = orient.parentWidget()
         orient.setContentsMargins(12, 13, 12, 8)
         self.transform_buttons = {
             name: self.icon_button(icon, lambda operation=name: self.transform_objects(operation))
@@ -629,8 +694,8 @@ class Design(QWidget):
         angle.setToolTip("Enter an exact angle. Positive angles rotate clockwise. Use Transform (T) to drag on the canvas.")
         caption = styled_label("Angle (°)", role="caption")
         caption.setBuddy(angle)
-        orient.addRow(AdaptiveActions((self.transform_row(self.transform_buttons.values()),
-                                      self.transform_row((caption, angle)))))
+        self.panel_transform_actions = self.transform_row(self.transform_buttons.values())
+        orient.addRow(AdaptiveActions((self.panel_transform_actions, self.transform_row((caption, angle)))))
         self.fields = {"rotation": angle}
 
         form = page.group("Position and size (mm)")
@@ -753,6 +818,7 @@ class Design(QWidget):
             self.canvas.addAction(action)
 
         view = self.menu_bar.addMenu("&View")
+        view.addAction(self.command("Show or Hide Panels", self.toggle_panels, "F9"))
         zoom = view.addMenu("Zoom")
         for label, callback, keys in (("Zoom In", lambda: self.canvas.zoom_by(1.25), ("Ctrl+=", "Ctrl++")),
                                       ("Zoom Out", lambda: self.canvas.zoom_by(0.8), ("Ctrl+-",)),
@@ -820,6 +886,12 @@ class Design(QWidget):
         self.page_advanced.disclosure.setChecked(True)
         page = self.inspector.currentWidget()
         QTimer.singleShot(0, self, lambda: page.ensureWidgetVisible(field or self.page_advanced.disclosure))
+
+    def toggle_panels(self):
+        show = self.tool.isHidden()
+        for panel in (self.tool, self.options_bar, self.dock):
+            panel.setVisible(show)
+        self.canvas.setFocus()
 
     def rotate_page(self, clockwise):
         try:
@@ -1024,11 +1096,18 @@ class Design(QWidget):
     def refresh(self, selection):
         prev, self.loading = self.loading, True
         self.objects.clear()
-        for number, shape in enumerate(self.project.shapes, 1):
+        shapes = self.project.shapes
+        color = self.objects.palette().text().color()
+        icons = {kind: design_icon(OBJECT_ICONS.get(kind, COMMAND_ICONS["path"]), color)
+                 for kind in {shape.kind for shape in shapes}}
+        for number, shape in enumerate(shapes, 1):
             details = f" · Group {shape.group}" if shape.group else ""
             if shape.holder:
                 details += f" · Tool {shape.holder}"
-            self.objects.addItem(f"{number}. {model.object_name(shape)}{details}")
+            name = f"{number}. {model.object_name(shape)}{details}"
+            item = QListWidgetItem(icons[shape.kind], name)
+            item.setToolTip(name)
+            self.objects.addItem(item)
         self.object_list.setCurrentIndex(0 if self.objects.count() else 1)
         self.sync_page()
         self.loading = prev
@@ -1105,7 +1184,7 @@ class Design(QWidget):
         units = len(model.selected_units(shapes, indices))
         enough = units > 1
         self.group_button.setEnabled(enough)
-        for command in self.transform_buttons.values():
+        for command in (*self.transform_buttons.values(), *self.quick_transform_buttons.values()):
             command.setEnabled(bool(indices))
         for option, command in self.alignment_buttons.items():
             space = option.startswith("Space ")
@@ -1234,12 +1313,19 @@ class Design(QWidget):
         self.canvas.setFocus()
         self.canvas.cancel()
         self.canvas.polygon.clear()
-        tool = self.tool.currentData()
-        if tool in ("Select", "Point Edit", "Transform"):
+        tool = TOOLS[self.tool.currentIndex()]
+        transforming = tool.name in TRANSFORM_MODES
+        if tool.name in ("Select", "Point Edit") or transforming:
             self.canvas.unsetCursor()
         else:
             self.canvas.setCursor(Qt.CursorShape.CrossCursor)
-        if tool == "Transform":
+        self.option_snap.setVisible(tool.name not in ("Rotate", "Scale"))
+        self.quick_transforms.setVisible(transforming)
+        self.panel_transform_actions.setVisible(not transforming)
+        self.orientation_group.setTitle("Rotation" if transforming else "Rotate and flip")
+        self.tool_hint.setText(tool.hint)
+        self.tool_hint.setToolTip(tool.hint)
+        if transforming:
             self.inspector.setCurrentIndex(1)
         self.canvas.redraw()
 
