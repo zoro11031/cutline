@@ -19,6 +19,47 @@ def _encoded_png():
 _PNG = _encoded_png()
 
 
+class TestScaleSelection(unittest.TestCase):
+    def test_scales_selected_objects_about_the_anchor(self):
+        rounded = editor_model.Shape("Rounded rectangle", 20, 30, 40, 30, radius=5, rotation=30, group=1)
+        line = editor_model.Shape("Line", 80, 20, -10, 0, group=1)
+        other = editor_model.Shape("Ellipse", 30, 70)
+        shapes = (rounded, line, other)
+        scaled = editor_model.scale_selection(shapes, (0, 1), (10, 20), 2)
+        self.assertEqual(scaled, (replace(rounded, x=30, y=40, width=80, height=60, radius=10),
+                                  replace(line, x=150, width=-20), other))
+        self.assertIs(editor_model.scale_selection(shapes, (0, 1), (10, 20), 1), shapes)
+
+    def test_rejects_nonpositive_and_nonfinite_factors(self):
+        shapes = (editor_model.Shape("Rectangle", 10, 10, 20, 30),)
+        for factor in (0, -1, float("inf"), float("nan")):
+            with self.subTest(factor=factor):
+                with self.assertRaisesRegex(ValueError, "Drag away from the opposite corner"):
+                    editor_model.scale_selection(shapes, (0,), (0, 0), factor)
+
+    def test_editable_coordinate_and_size_limits(self):
+        limit = editor_model.SHAPE_LIMIT
+        shape = editor_model.Shape("Rounded rectangle", limit / 2, 10, limit / 2, 30, radius=5)
+        scaled, = editor_model.scale_selection((shape,), (0,), (0, 0), 2)
+        self.assertEqual((scaled.x, scaled.width), (limit, limit))
+
+        for field in ("x", "width"):
+            with self.subTest(field=field):
+                beyond = replace(shape, **{field: limit / 2 + 1})
+                with self.assertRaisesRegex(ValueError, "outside the editable size or coordinate range"):
+                    editor_model.scale_selection((beyond,), (0,), (0, 0), 2)
+
+    def test_minimum_dimensions_for_closed_shapes_and_lines(self):
+        rectangle = editor_model.Shape("Rectangle", 10, 10, 0.2, 20)
+        line = editor_model.Shape("Line", 10, 10, -0.2, 0)
+        for shape in (rectangle, line):
+            with self.subTest(kind=shape.kind):
+                scaled, = editor_model.scale_selection((shape,), (0,), (0, 0), 0.5)
+                self.assertEqual(abs(scaled.width), 0.1)
+                with self.assertRaisesRegex(ValueError, "too small to scale further"):
+                    editor_model.scale_selection((shape,), (0,), (0, 0), 0.25)
+
+
 class TestEditorModel(unittest.TestCase):
     def test_page_rotation_repositions_geometry_and_swaps_dimensions(self):
         shape = editor_model.Shape("Rectangle", 30, 40, 20, 10, holder=2, line_style="dashed")
