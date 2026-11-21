@@ -192,6 +192,8 @@ def rotate_page(project, clockwise):
 
 
 def transform_selection(shapes, indices, operation):
+    if operation in ("left", "right"):
+        return rotate_selection(shapes, indices, -90 if operation == "left" else 90)
     if not indices:
         return shapes
     area = bounds(shapes[i] for i in indices)
@@ -200,18 +202,67 @@ def transform_selection(shapes, indices, operation):
     for index in indices:
         shape = shapes[index]
         x, y = shape.x + shape.width / 2, shape.y + shape.height / 2
-        if operation == "left":
-            result[index] = _place_center(shape, cx + y - cy, cy - x + cx,
-                                          rotation=(shape.rotation - 90) % 360)
-        elif operation == "right":
-            result[index] = _place_center(shape, cx - y + cy, cy + x - cx,
-                                          rotation=(shape.rotation + 90) % 360)
-        elif operation == "horizontal":
+        if operation == "horizontal":
             result[index] = _place_center(shape, 2 * cx - x, y,
                                           rotation=-shape.rotation, flip_x=not shape.flip_x)
         elif operation == "vertical":
             result[index] = _place_center(shape, x, 2 * cy - y,
                                           rotation=-shape.rotation, flip_y=not shape.flip_y)
+    return tuple(result)
+
+
+def rotate_point(point, center, angle):
+    """Rotate paper coordinates clockwise around a fixed center."""
+    radians = math.radians(angle)
+    c, s = round(math.cos(radians), 15), round(math.sin(radians), 15)
+    cx, cy = center
+    dx, dy = point[0] - cx, point[1] - cy
+    return cx + c * dx - s * dy, cy + s * dx + c * dy
+
+
+def rotate_selection(shapes, indices, angle, *, center=None):
+    if not indices or not angle % 360:
+        return shapes
+    if center is None:
+        area = bounds(shapes[i] for i in indices)
+        center = (area.x + area.w / 2, area.y + area.h / 2)
+    result = list(shapes)
+    for index in indices:
+        shape = shapes[index]
+        point = (shape.x + shape.width / 2, shape.y + shape.height / 2)
+        result[index] = _place_center(shape, *rotate_point(point, center, angle),
+                                      rotation=(shape.rotation + angle) % 360)
+    return tuple(result)
+
+
+def _valid_scale_factor(factor):
+    return math.isfinite(factor) and factor > 0
+
+
+def _valid_scaled_size(kind, width, height):
+    return max(abs(width), abs(height)) >= 0.1 and (
+        kind in ("Line", "Path") or min(width, height) >= 0.1
+    )
+
+
+def scale_selection(shapes, indices, anchor, factor):
+    """Scale selected objects proportionally about a fixed paper coordinate."""
+    if not indices or factor == 1:
+        return shapes
+    if not _valid_scale_factor(factor):
+        raise ValueError("Drag away from the opposite corner to scale.")
+    cx, cy = anchor
+    result = list(shapes)
+    for index in indices:
+        shape = shapes[index]
+        x, y = cx + (shape.x - cx) * factor, cy + (shape.y - cy) * factor
+        width, height = shape.width * factor, shape.height * factor
+        radius = shape.radius * factor if shape.kind == "Rounded rectangle" else shape.radius
+        if not all(_number(v) for v in (x, y, width, height, radius)):
+            raise ValueError("This scale would place a shape outside the editable size or coordinate range.")
+        if not _valid_scaled_size(shape.kind, width, height):
+            raise ValueError("The shape is too small to scale further.")
+        result[index] = replace(shape, x=x, y=y, width=width, height=height, radius=radius)
     return tuple(result)
 
 
@@ -659,6 +710,74 @@ def move_vertex(shape, index, position):
     path = paths[contour]
     paths[contour] = replace(path, points=path.points[:vertex] + (position,) + path.points[vertex+1:])
     return styled_contours(paths, shape)
+
+
+def insert_vertex(shape, position, tolerance):
+    """Add a point to the outline edge nearest *position*, as Studio's edit
+    points do when a template outline needs more detail."""
+    if shape.kind not in POINT_EDIT_KINDS:
+        raise ValueError("Convert the object to a path before adding points.")
+    best = None
+    paths = list(shape.paths())
+    for contour, path in enumerate(paths):
+        points = path.points
+        count = len(points) if path.closed else len(points) - 1
+        for i in range(count):
+            a, b = points[i], points[(i + 1) % len(points)]
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            length = dx * dx + dy * dy
+            t = 0 if not length else max(0, min(1, ((position[0] - a[0]) * dx + (position[1] - a[1]) * dy) / length))
+            near = (a[0] + t * dx, a[1] + t * dy)
+            distance = math.dist(near, position)
+            if 0 < t < 1 and (best is None or distance < best[0]):
+                best = (distance, contour, i + 1, near)
+    if best is None or best[0] > tolerance:
+        raise ValueError("Double-click on the outline to add a point.")
+    _distance, contour, vertex, near = best
+    path = paths[contour]
+    paths[contour] = replace(path, points=path.points[:vertex] + (near,) + path.points[vertex:])
+    return styled_contours(paths, shape), (contour, vertex)
+
+
+def smooth_points(points, *, closed=True, steps=10):
+    """A Catmull-Rom curve through every placed point, flattened to a polyline.
+
+    The Curve tool's outline passes through each click, so a template traced
+    around a blank lands where the user clicked, between them it bends."""
+    points = tuple(points)
+    if len(points) < 3:
+        return points
+    count = len(points)
+    if closed:
+        at = lambda i: points[i % count]  # noqa: E731
+        segments = range(count)
+    else:
+        at = lambda i: points[max(0, min(count - 1, i))]  # noqa: E731
+        segments = range(count - 1)
+    curve = []
+    for i in segments:
+        p0, p1, p2, p3 = at(i - 1), at(i), at(i + 1), at(i + 2)
+        for step in range(steps):
+            t = step / steps
+            t2, t3 = t * t, t * t * t
+            curve.append(tuple(0.5 * (2 * p1[k] + (p2[k] - p0[k]) * t + (2 * p0[k] - 5 * p1[k] + 4 * p2[k] - p3[k]) * t2
+                                      + (3 * p1[k] - p0[k] - 3 * p2[k] + p3[k]) * t3) for k in (0, 1)))
+    if not closed:
+        curve.append(points[-1])
+    return tuple(curve)
+
+
+def paste(shapes, clipboard):
+    """Paste copied objects in place, giving their groups fresh numbers."""
+    groups = {}
+    next_group = _next_group(shapes)
+    pasted = []
+    for shape in clipboard:
+        group = shape.group
+        if group is not None:
+            group = groups.setdefault(group, next_group + len(groups))
+        pasted.append(replace(shape, group=group))
+    return tuple(shapes) + tuple(pasted)
 
 
 def load_project(path, legacy_registration=None):

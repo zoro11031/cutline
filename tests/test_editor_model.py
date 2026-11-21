@@ -19,6 +19,47 @@ def _encoded_png():
 _PNG = _encoded_png()
 
 
+class TestScaleSelection(unittest.TestCase):
+    def test_scales_selected_objects_about_the_anchor(self):
+        rounded = editor_model.Shape("Rounded rectangle", 20, 30, 40, 30, radius=5, rotation=30, group=1)
+        line = editor_model.Shape("Line", 80, 20, -10, 0, group=1)
+        other = editor_model.Shape("Ellipse", 30, 70)
+        shapes = (rounded, line, other)
+        scaled = editor_model.scale_selection(shapes, (0, 1), (10, 20), 2)
+        self.assertEqual(scaled, (replace(rounded, x=30, y=40, width=80, height=60, radius=10),
+                                  replace(line, x=150, width=-20), other))
+        self.assertIs(editor_model.scale_selection(shapes, (0, 1), (10, 20), 1), shapes)
+
+    def test_rejects_nonpositive_and_nonfinite_factors(self):
+        shapes = (editor_model.Shape("Rectangle", 10, 10, 20, 30),)
+        for factor in (0, -1, float("inf"), float("nan")):
+            with self.subTest(factor=factor):
+                with self.assertRaisesRegex(ValueError, "Drag away from the opposite corner"):
+                    editor_model.scale_selection(shapes, (0,), (0, 0), factor)
+
+    def test_editable_coordinate_and_size_limits(self):
+        limit = editor_model.SHAPE_LIMIT
+        shape = editor_model.Shape("Rounded rectangle", limit / 2, 10, limit / 2, 30, radius=5)
+        scaled, = editor_model.scale_selection((shape,), (0,), (0, 0), 2)
+        self.assertEqual((scaled.x, scaled.width), (limit, limit))
+
+        for field in ("x", "width"):
+            with self.subTest(field=field):
+                beyond = replace(shape, **{field: limit / 2 + 1})
+                with self.assertRaisesRegex(ValueError, "outside the editable size or coordinate range"):
+                    editor_model.scale_selection((beyond,), (0,), (0, 0), 2)
+
+    def test_minimum_dimensions_for_closed_shapes_and_lines(self):
+        rectangle = editor_model.Shape("Rectangle", 10, 10, 0.2, 20)
+        line = editor_model.Shape("Line", 10, 10, -0.2, 0)
+        for shape in (rectangle, line):
+            with self.subTest(kind=shape.kind):
+                scaled, = editor_model.scale_selection((shape,), (0,), (0, 0), 0.5)
+                self.assertEqual(abs(scaled.width), 0.1)
+                with self.assertRaisesRegex(ValueError, "too small to scale further"):
+                    editor_model.scale_selection((shape,), (0,), (0, 0), 0.25)
+
+
 class TestEditorModel(unittest.TestCase):
     def test_page_rotation_repositions_geometry_and_swaps_dimensions(self):
         shape = editor_model.Shape("Rectangle", 30, 40, 20, 10, holder=2, line_style="dashed")
@@ -343,3 +384,45 @@ class TestSendHandoff(unittest.TestCase):
         self.assertEqual(editor_model.send_handoff(flat, origin, None)[0], "invalid")
         sticker = replace(editor_model.Shape("Rectangle", 10, 10), sticker=object())
         self.assertEqual(editor_model.send_handoff(self.project(sticker), origin, None), ("stickers", None))
+
+
+class TestTemplateTracing(unittest.TestCase):
+    """The pieces of tracing a template around a real blank."""
+
+    square = editor_model.shape_from_path(
+        editor_model.template.CutPath(((0, 0), (10, 0), (10, 10), (0, 10)), closed=True))
+
+    def test_a_curve_passes_through_every_point_and_bends_between_them(self):
+        points = ((0, 0), (10, 0), (10, 10), (0, 10))
+        curve = editor_model.smooth_points(points)
+        for point in points:
+            self.assertIn(point, [tuple(round(v, 9) for v in p) for p in curve])
+        self.assertTrue(any(p[1] < 0 for p in curve), "a closed curve bulges past the polygon's edge")
+        self.assertEqual(editor_model.smooth_points(points[:2]), points[:2], "two points stay a line")
+        opened = editor_model.smooth_points(points, closed=False)
+        self.assertEqual((opened[0], opened[-1]), (points[0], points[-1]))
+
+    def test_a_point_is_added_on_the_nearest_edge_and_nowhere_else(self):
+        shape, (contour, vertex) = editor_model.insert_vertex(self.square, (4, 0.4), 1)
+        self.assertEqual((contour, vertex), (0, 1))
+        self.assertEqual(shape.paths()[0].points[1], (4, 0))
+        self.assertEqual(len(shape.paths()[0].points), 5)
+        # The closing edge counts too.
+        shape, (_contour, vertex) = editor_model.insert_vertex(self.square, (0.2, 6), 1)
+        self.assertEqual(vertex, 4)
+        self.assertEqual(shape.paths()[0].points[4], (0, 6))
+
+    def test_a_point_is_refused_away_from_the_outline_or_on_a_plain_shape(self):
+        with self.assertRaisesRegex(ValueError, "outline"):
+            editor_model.insert_vertex(self.square, (5, 5), 1)
+        with self.assertRaisesRegex(ValueError, "Convert"):
+            editor_model.insert_vertex(editor_model.Shape("Rectangle", 0, 0, 10, 10), (5, 0), 1)
+
+    def test_paste_keeps_place_and_renumbers_groups(self):
+        existing = (editor_model.Shape("Rectangle", group=1),)
+        copied = (editor_model.Shape("Ellipse", 7, 8, group=1), editor_model.Shape("Line", 9, 9, group=1),
+                  editor_model.Shape("Rectangle", 3, 3))
+        result = editor_model.paste(existing, copied)
+        self.assertEqual(result[0], existing[0])
+        self.assertEqual([(s.x, s.y) for s in result[1:]], [(7, 8), (9, 9), (3, 3)])
+        self.assertEqual([s.group for s in result[1:]], [2, 2, None])

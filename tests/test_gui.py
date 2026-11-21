@@ -402,7 +402,8 @@ class TestDesignWorkspace(unittest.TestCase):
         add = next(widget for widget in children(dialog) if isinstance(widget, gui.Gtk.Button) and
                    widget.get_label() == 'Add')
         add.emit('clicked')
-        self.assertEqual(design.text_button.get_label(), 'Edit Text…')
+        self.assertEqual(design.text_button.get_tooltip_text(), 'Edit Text…')
+        self.assertIsInstance(design.text_button.get_child(), gui.Gtk.DrawingArea)
         self.assertEqual(design.project.shapes[1].text.value, 'O')
         design.commit((design.project.shapes[0], replace(design.project.shapes[1], x=110, y=40)), (1,))
         with tempfile.TemporaryDirectory() as tmp:
@@ -658,6 +659,142 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertEqual(win.job.mat, 'cameo-12x12')
         self.assertEqual((win.job.marks.inset_mm, win.job.marks.length_mm), (14, 9))
         self.assertEqual(win.job.blocked, [])
+
+    def test_design_icon_palette_tracks_canvas_shortcuts_and_object_keys(self):
+        from gi.repository import Gdk
+
+        win = self.make_window()
+        win.design_button.emit('clicked')
+        design = win.design
+        palette = design.tool
+        for button, name in ((design.save_button, 'Save'), (design.undo_button, 'Undo'),
+                             (design.redo_button, 'Redo'), (design.add_button, 'Add Shape'),
+                             (design.text_button, 'Add Text…'), (design.trace_button, 'Trace and Bleed…')):
+            self.assertTrue(button.get_tooltip_text().startswith(name))
+            self.assertIsInstance(button.get_child(), gui.Gtk.DrawingArea)
+        self.assertEqual(palette.get_orientation(), gui.Gtk.Orientation.VERTICAL)
+        no_modifiers = Gdk.ModifierType(0)
+        rounded = palette.button_for('Rounded rectangle')
+        self.assertTrue(design.canvas_key(None, Gdk.KEY_u, 0, no_modifiers))
+        self.assertIn('(U)', rounded.get_tooltip_text())
+        self.assertTrue(rounded.get_active())
+        self.assertEqual(palette.active_label.get_label(), 'Rounded rectangle')
+        design.add_button.emit('clicked')
+        self.assertEqual(design.project.shapes[-1].kind, 'Rounded rectangle')
+
+        select = palette.slots['Select']
+        select.emit('clicked')
+        self.assertTrue(select.get_active())
+        self.assertFalse(rounded.get_active())
+        self.assertEqual(palette.active_label.get_label(), 'Select')
+        start = design.project.shapes[-1].x
+        self.assertTrue(design.canvas_key(None, Gdk.KEY_Right, 0, no_modifiers))
+        self.assertEqual(design.project.shapes[-1].x, start + 1)
+        count = len(design.project.shapes)
+        self.assertTrue(design.canvas_key(None, Gdk.KEY_Delete, 0, no_modifiers))
+        self.assertEqual(len(design.project.shapes), count - 1)
+
+    def test_transform_flyout_scales_and_remembers_tool(self):
+        from gi.repository import Gdk
+
+        win = self.make_window()
+        win.present()
+        win.design_button.emit('clicked')
+        design = win.design
+        shape = editor_model.Shape('Rounded rectangle', 50, 60, 20, 30, radius=3)
+        design.commit((shape,), (0,))
+        palette = design.tool
+        design.option_snap.set_active(True)
+        self.assertTrue(design.snap.get_active())
+        design.snap.set_active(False)
+        self.assertFalse(design.option_snap.get_active())
+        palette.menu_buttons['Transform tools'].popup()
+        self.assertTrue(palette.menus['Transform tools'].get_visible())
+        palette.choices['Scale'].emit('clicked')
+        self.assertEqual(design.active_tool, 'Scale')
+        self.assertTrue(design.quick_transforms.get_visible())
+        self.assertFalse(design.option_snap.get_visible())
+        self.assertEqual(design.panel_switcher.get_selected(), 1)
+        palette.slots['Select'].emit('clicked')
+        palette.slots['Transform tools'].emit('clicked')
+        self.assertEqual(design.active_tool, 'Scale')
+        self.assertFalse(palette.menus['Transform tools'].get_visible())
+
+        gesture = mock.Mock()
+        gesture.get_current_event_state.return_value = Gdk.ModifierType(0)
+        depth = len(design.history.past)
+        with mock.patch.object(design.canvas, 'viewport', return_value=(0, 0, 2)):
+            design.drag_begin(gesture, 140, 180)
+            design.drag_update(gesture, 40, 60)
+            self.assertEqual(design.history.current.shapes, (shape,))
+            self.assertEqual(design.project.shapes[0].width, 40)
+            design.drag_end(gesture, 40, 60)
+        scaled = design.project.shapes[0]
+        self.assertEqual((scaled.x, scaled.y, scaled.width, scaled.height, scaled.radius), (50, 60, 40, 60, 6))
+        self.assertEqual(len(design.history.past), depth + 1)
+        design.undo_button.emit('clicked')
+        self.assertEqual(design.project.shapes, (shape,))
+        palette.choices['Rotate'].emit('clicked')
+        gesture.get_current_event_state.return_value = Gdk.ModifierType.SHIFT_MASK
+        with mock.patch.object(design.canvas, 'viewport', return_value=(0, 0, 2)):
+            design.drag_begin(gesture, 132, 134)
+            design.drag_end(gesture, 4, 28)
+        self.assertEqual(design.project.shapes[0].rotation, 90)
+        design.undo_button.emit('clicked')
+        self.assertEqual(design.project.shapes, (shape,))
+        design.menu_actions.lookup_action('panels-toggle').activate(None)
+        self.assertFalse(design.dock.get_visible())
+        self.assertFalse(palette.get_visible())
+        design.menu_actions.lookup_action('panels-toggle').activate(None)
+        self.assertTrue(design.dock.get_visible())
+        self.assertEqual(design.active_tool, 'Rotate')
+
+    def test_transform_tool_previews_and_commits_snapped_rotation(self):
+        from gi.repository import Gdk
+        from cut_proxies.design_tools import rotation_handle
+
+        win = self.make_window()
+        win.design_button.emit('clicked')
+        design = win.design
+        shapes = (editor_model.Shape('Rectangle', 50, 60, 20, 20),
+                  editor_model.Shape('Rectangle', 90, 80, 20, 20))
+        design.commit(shapes, (0, 1))
+        self.assertTrue(design.canvas_key(None, Gdk.KEY_t, 0, Gdk.ModifierType(0)))
+        self.assertEqual(design.active_tool, 'Transform')
+        self.assertEqual(design.panel_switcher.get_selected(), 1)
+        self.assertTrue(design.alignment_buttons['Align Left'].get_sensitive())
+        self.assertFalse(design.alignment_buttons['Space Horizontally'].get_sensitive())
+        handle = rotation_handle(shapes, (0, 1), 2)
+        x, y = handle.positions()[1]
+        end = editor_model.rotate_point((x, y), handle.center, 42)
+        delta = (2 * (end[0] - x), 2 * (end[1] - y))
+        gesture = mock.Mock()
+        gesture.get_current_event_state.return_value = Gdk.ModifierType.SHIFT_MASK
+        depth = len(design.history.past)
+        with mock.patch.object(design.canvas, 'viewport', return_value=(0, 0, 2)):
+            design.drag_begin(gesture, 2*x, 2*y)
+            design.drag_update(gesture, *delta)
+            self.assertEqual([shape.rotation for shape in design.project.shapes], [45, 45])
+            self.assertEqual(design.history.current.shapes, shapes)
+            self.assertTrue(design.canvas_key(None, Gdk.KEY_Escape, 0, Gdk.ModifierType(0)))
+            self.assertEqual(design.project.shapes, shapes)
+            self.assertEqual(design.selected_indices(), (0, 1))
+            design.drag_begin(gesture, 2*x, 2*y)
+            design.drag_update(gesture, *delta)
+            design.drag_end(gesture, 0, 0)
+            self.assertEqual(design.project.shapes, shapes)
+            self.assertEqual(len(design.history.past), depth)
+            design.drag_begin(gesture, 2*x, 2*y)
+            design.drag_end(gesture, *delta)
+        self.assertEqual([shape.rotation for shape in design.project.shapes], [45, 45])
+        self.assertEqual(len(design.history.past), depth + 1)
+        design.undo_button.emit('clicked')
+        self.assertEqual(design.project.shapes, shapes)
+        design.transform_buttons['right'].emit('clicked')
+        self.assertEqual([shape.rotation for shape in design.project.shapes], [90, 90])
+        design.undo_button.emit('clicked')
+        design.alignment_buttons['Align Left'].emit('clicked')
+        self.assertEqual([shape.x for shape in design.project.shapes], [50, 50])
 
     def test_design_drawing_points_selection_and_replicate_enter_history(self):
         from cut_proxies.editor_model import Shape

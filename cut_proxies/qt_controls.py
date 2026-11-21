@@ -2,13 +2,15 @@
 
 import threading
 
-from PySide6.QtCore import QEvent, QObject, QPointF, Qt, Signal, Slot
-from PySide6.QtGui import QColor, QIcon, QPalette, QWheelEvent
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, Qt, QTimer, Signal, Slot
+from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap, QPolygonF, QWheelEvent
 from PySide6.QtWidgets import (QAbstractScrollArea, QAbstractSpinBox, QApplication, QBoxLayout, QButtonGroup, QCheckBox,
                                QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QLayout,
-                               QLabel, QLineEdit, QMenuBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QStackedWidget, QStyle,
-                               QTabBar, QToolButton, QVBoxLayout, QWidget)
+                               QLabel, QLineEdit, QMenu, QMenuBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QStackedWidget, QStyle,
+                               QStyleOptionToolButton, QStylePainter, QTabBar, QToolButton, QVBoxLayout, QWidget)
 
+from .design_tools import WORKSPACE_TOOL_GROUPS as TOOL_GROUPS, WORKSPACE_TOOL_NAMES as TOOL_NAMES, \
+    WORKSPACE_TOOLS as TOOLS
 
 _WORKSPACE_STYLE = """
 QWidget#workspace { background: palette(window); }
@@ -21,6 +23,7 @@ QFrame#workspaceBar {
     border-radius: 9px;
 }
 QFrame#workspaceTools { border-bottom: 1px solid palette(midlight); }
+QFrame#designToolOptions { background: palette(base); border: 1px solid palette(midlight); border-radius: 6px; }
 QScrollArea[role="settings"], QWidget[role="settingsPage"] { background: palette(window); }
 QTabWidget[role="settings"]::pane { border: 0; border-top: 1px solid palette(midlight); }
 QTabWidget[role="settings"] QTabBar::tab {
@@ -64,6 +67,25 @@ QToolButton[role="workspaceTool"]:hover, QToolButton[role="workspaceTool"]:focus
     border-color: palette(highlight);
 }
 QToolButton[role="workspaceTool"]:disabled { background: @disabled_button; color: @disabled_text; }
+QFrame#designToolRail { border-right: 1px solid palette(midlight); }
+QFrame[role="designDivider"] { background: palette(midlight); }
+QToolButton[role="designTool"] {
+    background: transparent; border: 2px solid transparent; border-radius: 6px;
+}
+QToolButton[role="designTool"]:hover { background: palette(alternate-base); }
+QToolButton[role="designTool"]:checked, QToolButton[role="designTool"]:pressed { background: palette(highlight); }
+QToolButton[role="designTool"]:focus { border-color: palette(button-text); }
+QToolButton[role="designTool"]::menu-indicator { image: none; }
+QFrame#designDocument { border: 1px solid palette(midlight); border-radius: 6px; }
+QTabBar[role="document"]::tab {
+    padding: 5px 14px; border: 0; border-bottom: 2px solid palette(highlight); background: palette(base);
+}
+QLabel[role="panelTitle"] { font-weight: 600; padding: 2px 0 4px 2px; }
+QListWidget[role="designObjects"] { border: 0; border-radius: 5px; }
+QListWidget[role="designObjects"]::item { padding: 4px 8px; border-radius: 4px; }
+QListWidget[role="designObjects"]::item:selected {
+    background: palette(highlight); color: @accent_text;
+}
 QPushButton[role="holder"]:checked {
     background: palette(highlight); color: @accent_text; border-radius: 5px;
 }
@@ -275,14 +297,6 @@ def workspace_tools(parent):
     surface, layout = bar(parent, (2, 0, 2, 0))
     surface.setObjectName("workspaceTools")
     return surface, layout
-
-
-def workspace_tool_button(action):
-    widget = QToolButton()
-    widget.setDefaultAction(action)
-    widget.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-    widget.setProperty("role", "workspaceTool")
-    return widget
 
 
 def workspace_header(parent, design, send, *, active):
@@ -591,60 +605,178 @@ class Form(QFormLayout):
         self.addRow(row)
 
 
-class ToolStrip(QWidget):
-    """Vertical strip of exclusive tool buttons for the drawing workspace."""
+def design_divider(*, vertical=False):
+    divider = QFrame()
+    divider.setProperty("role", "designDivider")
+    if vertical:
+        divider.setFixedSize(1, 22)
+    else:
+        divider.setFixedHeight(1)
+    return divider
 
-    TOOL_SHORTCUTS = {
-        "Select": ("Select", "V"),
-        "Point Edit": ("Point Edit", "A"),
-        "Rectangle": ("Rectangle", "R"),
-        "Rounded Rectangle": ("Rounded Rect", "U"),
-        "Ellipse": ("Ellipse", "E"),
-        "Line": ("Line", "L"),
-        "Polygon": ("Polygon", "P"),
-        "Freehand": ("Freehand", "F"),
-    }
 
-    def __init__(self, tools, *, changed=None, parent=None):
-        super().__init__(parent)
-        self.tools = list(tools)
-        self._changed = changed
+def icon_outline(strokes):
+    outline = QPainterPath()
+    for first, *rest in strokes:
+        outline.moveTo(*first)
+        for point in rest:
+            outline.lineTo(*point)
+    return outline
+
+
+def design_icon(tool, color, size=18):
+    pixmap = QPixmap(size * 2, size * 2)
+    pixmap.setDevicePixelRatio(2)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.scale(size / 24, size / 24)
+    painter.setPen(QPen(color, 1.7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+    painter.drawPath(icon_outline(tool.strokes))
+    painter.end()
+    return QIcon(pixmap)
+
+
+class DesignIconButton(QToolButton):
+    def __init__(self, tool, *, checkable=False, action=None):
+        super().__init__()
+        if action is not None:
+            self.setDefaultAction(action)
+        self.setCheckable(checkable)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setProperty("role", "designTool")
+        self.setFixedSize(34, 34)
+        self.flyout = False
+        self.set_tool(tool)
+        if action is not None:
+            self.setToolTip(action.toolTip())
+
+    def set_tool(self, tool):
+        self.setText(tool.name)
+        self.setAccessibleName(tool.name)
+        self.setAccessibleDescription(tool.hint)
+        self.setToolTip(tool.tooltip)
+        self.outline = icon_outline(tool.strokes)
+        self.update()
+
+    def paintEvent(self, _event):
+        option = QStyleOptionToolButton()
+        self.initStyleOption(option)
+        option.text = ""
+        painter = QStylePainter(self)
+        painter.drawComplexControl(QStyle.ComplexControl.CC_ToolButton, option)
+        palette = option.palette
+        color = (_legible(palette.highlightedText().color(), palette.highlight().color())
+                 if self.isChecked() or self.isDown() else palette.buttonText().color())
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.translate((self.width() - 24) / 2, (self.height() - 24) / 2)
+        painter.setPen(QPen(color, 1.7, Qt.PenStyle.SolidLine,
+                            Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        painter.drawPath(self.outline)
+        if self.flyout:
+            # Photoshop's mark for a tool with others behind it: a small
+            # filled triangle in the bottom-right corner.
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(color)
+            painter.drawPolygon(QPolygonF([QPointF(26.5, 26.5), QPointF(26.5, 22), QPointF(22, 26.5)]))
+        painter.end()
+
+
+class ToolStrip(QFrame):
+    """A toolbox with split buttons for groups of related tools."""
+
+    def __init__(self, *, changed):
+        super().__init__()
+        self.setAccessibleName("Design toolbox")
+        self.setObjectName("designToolRail")
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
+        layout.setContentsMargins(5, 0, 6, 0)
+        layout.setSpacing(3)
         self.group = QButtonGroup(self)
-        self.group.setExclusive(True)
-        self.buttons: list[QPushButton] = []
-        for index, tool in enumerate(self.tools):
-            label, key = self.TOOL_SHORTCUTS.get(tool, (tool, ""))
-            btn_text = f"{label} ({key})" if key else label
-            btn = QPushButton(btn_text)
-            btn.setCheckable(True)
-            btn.setAutoDefault(False)
-            btn.setProperty("role", "tool-strip-button")
-            self.group.addButton(btn, index)
-            layout.addWidget(btn)
-            self.buttons.append(btn)
-        if self.buttons:
-            self.buttons[0].setChecked(True)
-        self.group.idClicked.connect(self._on_clicked)
+        self.slots = {}
+        self.menus = {}
+        self.show_group = {}
+        self.choices = {}
+        self._buttons_by_tool = {}
+        self._last_choice = {}
+        self._index = 0
+        self._changed = changed
+        self.active_label = styled_label(TOOL_NAMES[0], role="heading")
+        for title, tools in TOOL_GROUPS:
+            if title in ("Shape tools", "Measure"):
+                layout.addWidget(design_divider())
+            primary = DesignIconButton(tools[0], checkable=True)
+            self.group.addButton(primary)
+            self.slots[title] = primary
+            self._last_choice[primary] = TOOL_NAMES.index(tools[0].name)
+            primary.clicked.connect(lambda _checked, button=primary: self.setCurrentIndex(self._last_choice[button]))
+            for tool in tools:
+                self._buttons_by_tool[tool.name] = primary
+            if len(tools) > 1:
+                self.add_flyout(title, primary, tools)
+            layout.addWidget(primary)
+        layout.addStretch(1)
+        self.slots["Select"].setChecked(True)
 
-    def _on_clicked(self, index):
-        if self._changed:
-            self._changed()
+    def add_flyout(self, title, primary, tools):
+        """Right-click, the menu key or a held press opens the group, as in Photoshop."""
+        menu = QMenu(primary)
+        menu.setAccessibleName(title)
+        self.menus[title] = menu
+        for tool in tools:
+            name = f"{tool.name}\t{tool.shortcut}" if tool.shortcut else tool.name
+            command = menu.addAction(name)
+            command.setCheckable(True)
+            command.setChecked(tool is tools[0])
+            command.triggered.connect(lambda _checked, name=tool.name: self.setCurrentText(name))
+            self.choices[tool.name] = command
+        menu.aboutToShow.connect(lambda: self.color_menu_icons(tools, menu.palette().text().color()))
+        primary.flyout = True
+        primary.setAccessibleDescription(f"{primary.accessibleDescription()} Right-click for more {title.lower()}.")
+        self.show_group[title] = show_menu = lambda: menu.popup(primary.mapToGlobal(QPoint(primary.width(), 0)))
+        primary.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        primary.customContextMenuRequested.connect(lambda _point: show_menu())
+        hold = QTimer(primary)
+        hold.setSingleShot(True)
+        hold.setInterval(450)
+        primary.pressed.connect(hold.start)
+        primary.released.connect(hold.stop)
+
+        def show_on_hold():
+            primary.setDown(False)
+            show_menu()
+
+        hold.timeout.connect(show_on_hold)
+
+    def color_menu_icons(self, tools, color):
+        for tool in tools:
+            self.choices[tool.name].setIcon(design_icon(tool, color))
+
+    def button_for(self, tool):
+        return self._buttons_by_tool[tool]
 
     def currentData(self):
-        idx = self.currentIndex()
-        return self.tools[idx] if 0 <= idx < len(self.tools) else None
+        return TOOL_NAMES[self.currentIndex()]
 
     def currentIndex(self):
-        return self.group.checkedId()
+        return self._index
 
     def setCurrentIndex(self, index):
-        if 0 <= index < len(self.buttons):
-            self.buttons[index].setChecked(True)
-            if self._changed:
-                self._changed()
+        if 0 <= index < len(TOOLS):
+            tool = TOOLS[index]
+            primary = self.button_for(tool.name)
+            last = self._last_choice[primary]
+            if last != index:
+                self.choices[TOOLS[last].name].setChecked(False)
+                primary.set_tool(tool)
+                self._last_choice[primary] = index
+            if tool.name in self.choices:
+                self.choices[tool.name].setChecked(True)
+            self._index = index
+            primary.setChecked(True)
+            self.active_label.setText(tool.name)
+            self._changed()
 
     def setCurrentText(self, text):
         idx = self.findData(text)
@@ -653,118 +785,6 @@ class ToolStrip(QWidget):
 
     def findData(self, text):
         try:
-            return self.tools.index(text)
+            return TOOL_NAMES.index(text)
         except ValueError:
             return -1
-
-    def setToolTip(self, tip):
-        super().setToolTip(tip)
-        for btn in self.buttons:
-            btn.setToolTip(tip)
-
-
-class ResponsiveInspector(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.setProperty("role", "settings")
-        self.setAccessibleName("Design properties")
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        header = QWidget()
-        header_layout = QVBoxLayout(header)
-        header_layout.setContentsMargins(4, 4, 4, 0)
-        header_layout.setSpacing(0)
-
-        self.tabs = QTabBar()
-        self.tabs.setDrawBase(False)
-        self.tabs.setExpanding(True)
-        self.tabs.currentChanged.connect(self._on_tab_changed)
-        header_layout.addWidget(self.tabs)
-
-        self.combo = QComboBox()
-        self.combo.setAccessibleName("Design properties section")
-        self.combo.currentIndexChanged.connect(self._on_combo_changed)
-        self.combo.hide()
-        header_layout.addWidget(self.combo)
-
-        layout.addWidget(header)
-
-        self.stack = QStackedWidget()
-        layout.addWidget(self.stack, 1)
-
-    def addTab(self, widget, label):
-        self.tabs.addTab(label)
-        self.combo.addItem(label)
-        self.stack.addWidget(widget)
-
-    def currentIndex(self):
-        return self.stack.currentIndex()
-
-    def setCurrentIndex(self, index):
-        self.stack.setCurrentIndex(index)
-        self.tabs.blockSignals(True)
-        self.tabs.setCurrentIndex(index)
-        self.tabs.blockSignals(False)
-        self.combo.blockSignals(True)
-        self.combo.setCurrentIndex(index)
-        self.combo.blockSignals(False)
-
-    def currentWidget(self):
-        return self.stack.currentWidget()
-
-    def count(self):
-        return self.stack.count()
-
-    def widget(self, index):
-        return self.stack.widget(index)
-
-    def setDocumentMode(self, enabled):
-        self.tabs.setDocumentMode(enabled)
-
-    def tabBar(self):
-        return self.tabs
-
-    def setUsesScrollButtons(self, enabled):
-        self.tabs.setUsesScrollButtons(enabled)
-
-    def _on_tab_changed(self, index):
-        self.setCurrentIndex(index)
-
-    def _on_combo_changed(self, index):
-        self.setCurrentIndex(index)
-
-    #: Hysteresis, so a width that sits exactly on the threshold cannot flip
-    #: between the two presentations on every resize.
-    SWITCH_MARGIN = 24
-
-    def natural_tab_width(self):
-        """What the tabs want, not what they were stretched to.
-
-        `setExpanding(True)` makes `tabRect` fill the bar, so measuring it
-        compares the bar against itself and always reads as too narrow.
-        """
-        return sum(self.tabs.tabSizeHint(i).width() for i in range(self.tabs.count()))
-
-    def wants_combo(self, width):
-        needed = self.natural_tab_width() + 16
-        if self.combo.isVisibleTo(self):
-            return width < needed + self.SWITCH_MARGIN
-        return width < needed
-
-    def apply_width(self, width):
-        narrow = self.wants_combo(width)
-        if narrow == self.combo.isVisibleTo(self):
-            return narrow
-        self.tabs.setVisible(not narrow)
-        self.combo.setVisible(narrow)
-        return narrow
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        self.apply_width(self.width())
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.apply_width(self.width())

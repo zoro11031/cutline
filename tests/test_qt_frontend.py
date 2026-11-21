@@ -1,6 +1,7 @@
 """Exercise the Qt frontend without a display or a hardware cutter."""
 
 import io
+import math
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -15,7 +16,8 @@ try:
     from PySide6.QtCore import QPoint, QPointF, Qt
     from PySide6.QtGui import QColor, QImage, QPalette, QWheelEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QFileDialog, QPlainTextEdit, QPushButton
+    from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QDialog, QDialogButtonBox, QFileDialog,
+                                   QInputDialog, QPlainTextEdit, QPushButton)
     from cut_proxies import qt_gui
 except ImportError:
     qt_gui = None
@@ -421,11 +423,37 @@ class TestQtFrontend(unittest.TestCase):
         design = window.design
         design_actions = design.menu_bar.actions()
         menus = {action.text().replace("&", ""): action.menu() for action in design_actions}
-        self.assertEqual(tuple(menus), ("File", "Edit", "View", "Panels", "Object"))
+        self.assertEqual(tuple(menus), ("File", "Edit", "View", "Object"))
         self.assertIn(design.save_action, menus["File"].actions())
         select_all = next(action for action in menus["Edit"].actions() if action.text() == "Select All")
         select_all.trigger()
         self.assertEqual(len(design.selection()), len(design.project.shapes))
+
+    def test_staged_passes_are_set_in_advanced_send_settings(self):
+        window = self.window
+        blade = window.blade
+        window.tabs.setCurrentIndex(window.tab("Send"))
+        window.send_advanced.disclosure.setChecked(True)
+        for key, value in (("passes", 8), ("force", 20), ("speed", 5)):
+            blade[key].setValue(value)
+        self.assertEqual(window.stage_note.text(), "Every pass uses Force and Speed.")
+        self.assertFalse(blade["light_force"].isVisibleTo(window))
+        self.assertEqual(window.job.action_groups, ())
+        blade["light_passes"].setValue(2)
+        self.assertTrue(blade["light_force"].isVisibleTo(window))
+        self.assertTrue(blade["light_speed"].isVisibleTo(window))
+        self.assertEqual(blade["light_force"].specialValueText(), "Same as Force")
+        blade["light_force"].setValue(10)
+        blade["light_speed"].setValue(3)
+        self.assertEqual(window.stage_note.text(), "First 2 passes at force 10, speed 3; then 6 at force 20, speed 5.")
+        self.assertEqual(window.job.blocked, [])
+        self.assertEqual([(g.settings.passes, g.settings.force, g.settings.speed) for g in window.job.action_groups],
+                         [(2, 10, 3), (6, 20, 5)])
+        blade["light_passes"].setValue(8)
+        self.assertIn("at least one full pass", window.stage_note.text())
+        self.assertIsNone(window.job, "an impossible staging builds no job")
+        blade["light_passes"].setValue(0)
+        self.assertEqual(window.job.action_groups, ())
 
     def test_wide_workspace_keeps_the_settings_pane_readable_and_resizable(self):
         window = self.window
@@ -534,8 +562,9 @@ class TestQtFrontend(unittest.TestCase):
         design = window.design
         design.commit_shapes((editor_model.Shape("Rectangle", 30, 40, holder=1),
                               editor_model.Shape("Line", 95, 40, holder=2)), (0,))
-        design.show_page_options()
-        self.assertTrue(design.page_advanced.disclosure.isChecked())
+        design.show_document()
+        self.assertEqual(design.selection(), ())
+        self.assertEqual(design.properties_title.text(), "Document")
         design.print_border.setChecked(True)
         self.assertTrue(design.print_border.isChecked())
         design.send_workspace.click()
@@ -1506,67 +1535,418 @@ class TestQtDesignEditor(unittest.TestCase):
         self.addCleanup(design.deleteLater)
         return design
 
-    def test_the_inspector_is_usable_at_every_supported_window_size(self):
+    def drag(self, canvas, start, end, modifiers=Qt.KeyboardModifier.NoModifier):
+        start, end = canvas.mapFromScene(QPointF(*start)), canvas.mapFromScene(QPointF(*end))
+        QTest.mousePress(canvas.viewport(), Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseMove(canvas.viewport(), end)
+        QTest.mouseRelease(canvas.viewport(), Qt.MouseButton.LeftButton, modifiers, end)
+
+    def click(self, canvas, point):
+        QTest.mouseClick(canvas.viewport(), Qt.MouseButton.LeftButton, pos=canvas.mapFromScene(QPointF(*point)))
+
+    def test_properties_follow_the_selection_like_photoshop(self):
+        shapes = (editor_model.Shape("Rectangle", 20, 20, 60, 40),
+                  editor_model.Shape("Ellipse", 100, 30, 40, 40),
+                  editor_model.Shape("Rounded rectangle", 40, 90, 30, 30, radius=4))
+        design = self.editor(editor_model.Project(279.4, 215.9, shapes))
+        design.resize(1100, 720)
+        design.show()
+        design.select(())
+        self.app.processEvents()
+
+        page, marks = design.document_groups
+        self.assertEqual(design.properties_title.text(), "Document")
+        self.assertTrue(page.isVisibleTo(design) and marks.isVisibleTo(design))
+        self.assertFalse(any(group.isVisibleTo(design) for group in design.object_groups))
+
+        design.select((2,))
+        self.assertEqual(design.properties_title.text(), "Rounded rectangle 30×30")
+        self.assertFalse(page.isVisibleTo(design))
+        self.assertTrue(all(group.isVisibleTo(design) for group in design.object_groups
+                            if group is not design.align_group))
+        self.assertFalse(design.align_group.isVisibleTo(design), "align needs two objects")
+        self.assertTrue(design.fields["radius"].isVisibleTo(design))
+        self.assertFalse(design.text_button.isVisibleTo(design))
+        self.assertFalse(design.trace_button.isVisibleTo(design))
+
+        design.select((0,))
+        self.assertFalse(design.fields["radius"].isVisibleTo(design), "only rounded rectangles have a radius")
+
+        # Several objects edit as one box instead of showing stale values.
+        design.select((0, 1))
+        self.assertEqual(design.properties_title.text(), "2 objects")
+        self.assertTrue(design.align_group.isVisibleTo(design))
+        self.assertEqual([design.fields[key].value() for key in ("x", "y", "width", "height")], [20, 20, 120, 50])
+        self.assertFalse(design.fields["rotation"].isEnabled())
+        design.fields["x"].setValue(30)
+        self.assertEqual([shape.x for shape in design.project.shapes[:2]], [30, 110])
+        design.fields["width"].setValue(240)
+        scaled = design.project.shapes[:2]
+        self.assertEqual((scaled[0].x, scaled[0].y), (30, 20))
+        self.assertAlmostEqual(scaled[0].width, 120)
+        self.assertAlmostEqual(scaled[1].height, 80)
+        self.assertEqual(design.project.shapes[2], shapes[2])
+
+        # The page's mark geometry shows only while registration is on.
+        design.select(())
+        design.register.setChecked(False)
+        self.assertFalse(design.inset.isVisibleTo(design))
+        design.register.setChecked(True)
+        self.assertTrue(design.inset.isVisibleTo(design))
+
+    def test_view_options_live_in_the_view_menu_and_redraw(self):
         design = self.editor()
-        design.resize(1200, 760)
+        menus = {action.text().replace("&", ""): action.menu() for action in design.menu_bar.actions()}
+        show = next(action.menu() for action in menus["View"].actions() if action.text() == "Show")
+        self.assertEqual([action.text() for action in show.actions()],
+                         ["Grid", "Rulers", "Cutting Mat", "Cut Border", "Print Border"])
+        self.assertIn(design.snap, menus["View"].actions())
+        with mock.patch.object(design.canvas, "redraw") as redraw:
+            design.show_grid.setChecked(False)
+            design.spacing.setValue(10)
+        self.assertEqual(redraw.call_count, 2)
+        grid = next(action for action in menus["View"].actions() if action.text() == "Grid and Guides…")
+        grid.trigger()
+        self.assertTrue(design.grid_dialog.isVisible())
+        design.grid_dialog.hide()
+        design.option_snap.click()
+        self.assertTrue(design.snap.isChecked())
+        design.snap.setChecked(False)
+        self.assertFalse(design.option_snap.isChecked())
+
+    def test_photoshop_toolbox_groups_tools_behind_corner_marks(self):
+        design = self.editor()
+        design.resize(720, 520)
         design.show()
         self.app.processEvents()
-        inspector = design.inspector
-        self.assertFalse(inspector.combo.isVisibleTo(inspector), "wide windows keep the tabs")
-        self.assertTrue(inspector.tabs.isVisibleTo(inspector))
+        palette = design.tool
+        self.assertEqual(list(palette.slots), ["Select", "Point Edit", "Shape tools", "Path tools", "Type", "Measure"])
+        self.assertEqual([title for title, button in palette.slots.items() if button.flyout],
+                         ["Shape tools", "Path tools"])
+        rounded = palette.button_for("Rounded rectangle")
+        self.assertEqual(rounded.accessibleName(), "Rectangle")
+        QTest.keyClick(design.canvas, Qt.Key.Key_U)
+        self.assertEqual(rounded.accessibleName(), "Rounded rectangle")
+        self.assertIn("(U)", rounded.toolTip())
+        self.assertTrue(rounded.isChecked())
+        self.assertEqual(palette.active_label.text(), "Rounded rectangle")
+        self.assertTrue(design.radius_option.isVisibleTo(design))
+        QTest.keyClick(design.canvas, Qt.Key.Key_V)
+        self.assertEqual(palette.currentData(), "Select")
+        self.assertFalse(design.draw_options.isVisibleTo(design))
+        QTest.keyClick(design.canvas, Qt.Key.Key_T)
+        self.assertEqual(palette.currentData(), "Type")
 
-        for width, height in ((850, 600), (720, 520)):
-            with self.subTest(size=(width, height)):
-                design.resize(width, height)
-                self.app.processEvents()
-                sections = [inspector.combo.itemText(i) for i in range(inspector.combo.count())]
-                self.assertEqual(sections, [inspector.tabs.tabText(i) for i in range(inspector.tabs.count())])
-                for index in range(inspector.count()):
-                    inspector.setCurrentIndex(index)
-                    self.app.processEvents()
-                    self.assertIs(inspector.currentWidget(), inspector.widget(index))
-                page = inspector.currentWidget()
-                if hasattr(page, "horizontalScrollBar"):
-                    self.assertFalse(page.horizontalScrollBar().isVisible(),
-                                     "a horizontal scrollbar hides inspector controls")
-                self.assertLessEqual(design.canvas.width(), design.width())
-                self.assertGreater(design.canvas.width(), 0)
+        palette.show_group["Path tools"]()
+        menu = palette.menus["Path tools"]
+        self.assertTrue(menu.isVisible())
+        self.assertEqual([action.text().split("\t")[0] for action in menu.actions()], ["Polygon", "Curve", "Freehand"])
+        menu.close()
+        palette.choices["Curve"].trigger()
+        self.assertTrue(palette.slots["Path tools"].isChecked())
+        self.assertEqual(palette.slots["Path tools"].accessibleName(), "Curve")
+        self.assertTrue(design.close_polygon.isVisibleTo(design))
+        palette.setCurrentText("Select")
+        palette.slots["Path tools"].click()
+        self.assertEqual(palette.currentData(), "Curve", "a group remembers its last tool")
+        self.assertTrue(design.canvas.hasFocus())
 
-        # One presentation at a time, and the narrow one is the combo.
-        design.resize(560, 520)
-        self.app.processEvents()
-        self.assertTrue(inspector.wants_combo(inspector.width()))
-        self.assertNotEqual(inspector.tabs.isVisibleTo(inspector), inspector.combo.isVisibleTo(inspector))
+        canvas = design.canvas.mapTo(design, QPoint())
+        dock = design.dock.mapTo(design, QPoint())
+        objects = design.objects.mapTo(design, QPoint())
+        self.assertLess(palette.mapTo(design, QPoint()).x(), canvas.x())
+        self.assertLess(canvas.x(), dock.x())
+        self.assertGreater(objects.y(), design.properties.mapTo(design, QPoint()).y())
+        self.assertFalse(hasattr(design, "tools_bar"), "commands live in the menus, not a second toolbar")
 
-    def test_the_inspector_measures_the_tabs_it_wants_not_the_ones_it_has(self):
+    def test_new_shapes_take_the_options_bar_settings(self):
         design = self.editor()
-        design.resize(1200, 760)
+        design.resize(900, 640)
         design.show()
         self.app.processEvents()
-        inspector = design.inspector
-        natural = inspector.natural_tab_width()
-        self.assertGreater(natural, 0)
-        self.assertFalse(inspector.wants_combo(natural + 64))
-        self.assertTrue(inspector.wants_combo(natural - 40))
+        design.tool.setCurrentText("Rounded rectangle")
+        design.new_action.setCurrentIndex(design.new_action.findData("Score"))
+        design.new_radius.setValue(6)
+        self.drag(design.canvas, (30, 30), (80, 70))
+        shape, = design.project.shapes
+        self.assertEqual((shape.kind, shape.action, shape.radius), ("Rounded rectangle", "Score", 6))
+        design.tool.setCurrentText("Ellipse")
+        design.new_action.setCurrentIndex(design.new_action.findData("Cut"))
+        self.drag(design.canvas, (100, 30), (130, 60))
+        self.assertEqual(design.project.shapes[1].action, "Cut")
 
-        # Hysteresis: a width on the threshold does not flip back and forth.
-        edge = natural + 16
-        inspector.apply_width(edge + 40)
-        self.assertFalse(inspector.combo.isVisibleTo(inspector))
-        self.assertFalse(inspector.wants_combo(edge + 1))
-        inspector.apply_width(natural - 60)
-        self.assertTrue(inspector.combo.isVisibleTo(inspector))
-        self.assertTrue(inspector.wants_combo(edge + 1), "the combo holds until there is room to spare")
-        self.assertFalse(inspector.wants_combo(edge + inspector.SWITCH_MARGIN + 1))
+    def test_select_scales_from_a_corner_and_rotates_with_the_grip(self):
+        shape = editor_model.Shape("Rounded rectangle", 50, 60, 20, 30, radius=3)
+        design = self.editor(editor_model.Project(279.4, 215.9, (shape,)))
+        design.resize(900, 640)
+        design.show()
+        self.app.processEvents()
+        palette, canvas = design.tool, design.canvas
+        self.assertEqual(palette.currentData(), "Select")
+        design.select((0,))
 
-    def test_add_shape_works_with_the_default_select_tool(self):
+        start = canvas.mapFromScene(QPointF(70, 90))
+        end = canvas.mapFromScene(QPointF(90, 120))
+        QTest.mousePress(canvas.viewport(), Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseMove(canvas.viewport(), end)
+        self.assertEqual(design.history.current.shapes, (shape,))
+        self.assertGreater(design.project.shapes[0].width, shape.width)
+        QTest.mouseRelease(canvas.viewport(), Qt.MouseButton.LeftButton, pos=end)
+        scaled = design.project.shapes[0]
+        self.assertEqual((scaled.x, scaled.y), (shape.x, shape.y))
+        self.assertAlmostEqual(scaled.width, 40, delta=1)
+        self.assertAlmostEqual(scaled.height, 60, delta=1)
+        self.assertAlmostEqual(scaled.radius, 6, delta=0.2)
+        self.assertEqual(len(design.history.past), 1)
+        design.undo()
+        self.assertEqual(design.project.shapes, (shape,))
+
+        # Dragging inside still moves, as with Photoshop's Move tool.
+        self.drag(canvas, (60, 75), (70, 85))
+        moved = design.project.shapes[0]
+        self.assertAlmostEqual(moved.x, 60, delta=0.5)
+        self.assertAlmostEqual(moved.y, 70, delta=0.5)
+        self.assertEqual((moved.width, moved.height), (shape.width, shape.height))
+        design.undo()
+
+        handle = canvas.rotation_handle()
+        grip = handle.positions()[1]
+        turned = editor_model.rotate_point(grip, handle.center, 88)
+        self.drag(canvas, grip, turned, Qt.KeyboardModifier.ShiftModifier)
+        self.assertEqual(design.project.shapes[0].rotation, 90)
+        design.undo()
+        self.assertEqual(design.project.shapes, (shape,))
+        QTest.keyClick(canvas, Qt.Key.Key_F9)
+        self.assertTrue(design.dock.isHidden())
+        self.assertTrue(palette.isHidden())
+        QTest.keyClick(canvas, Qt.Key.Key_F9)
+        self.assertTrue(design.dock.isVisibleTo(design))
+
+    def test_select_rotates_several_objects_and_escape_cancels(self):
+        shapes = (editor_model.Shape("Rectangle", 50, 60, 20, 20),
+                  editor_model.Shape("Rectangle", 90, 80, 20, 20))
+        design = self.editor(editor_model.Project(279.4, 215.9, shapes))
+        design.resize(900, 640)
+        design.show()
+        self.app.processEvents()
+        canvas = design.canvas
+        design.select((0,))
+        self.assertFalse(design.alignment_buttons["Align Left"].isEnabled())
+        design.select((0, 1))
+        self.assertTrue(design.alignment_buttons["Align Left"].isEnabled())
+        self.assertFalse(design.alignment_buttons["Space Horizontally"].isEnabled())
+        handle = canvas.rotation_handle()
+        grip = handle.positions()[1]
+        end = editor_model.rotate_point(grip, handle.center, 42)
+        start_view = canvas.mapFromScene(QPointF(*grip))
+        end_view = canvas.mapFromScene(QPointF(*end))
+
+        QTest.mousePress(canvas.viewport(), Qt.MouseButton.LeftButton, pos=start_view)
+        QTest.mouseMove(canvas.viewport(), end_view)
+        self.assertNotEqual(design.project.shapes, shapes)
+        self.assertEqual(design.history.current.shapes, shapes)
+        QTest.keyClick(canvas, Qt.Key.Key_Escape)
+        QTest.mouseRelease(canvas.viewport(), Qt.MouseButton.LeftButton, pos=end_view)
+        self.assertEqual(design.selection(), (0, 1))
+        self.assertEqual(design.project.shapes, shapes)
+
+        QTest.mousePress(canvas.viewport(), Qt.MouseButton.LeftButton, pos=start_view)
+        QTest.mouseMove(canvas.viewport(), end_view)
+        QTest.mouseRelease(canvas.viewport(), Qt.MouseButton.LeftButton, pos=start_view)
+        self.assertEqual(design.project.shapes, shapes)
+        self.assertFalse(design.history.past)
+
+        QTest.mousePress(canvas.viewport(), Qt.MouseButton.LeftButton, pos=start_view)
+        QTest.mouseRelease(canvas.viewport(), Qt.MouseButton.LeftButton,
+                           Qt.KeyboardModifier.ShiftModifier, end_view)
+        self.assertEqual([shape.rotation for shape in design.project.shapes], [45, 45])
+        self.assertEqual(len(design.history.past), 1)
+        self.assertAlmostEqual(sum(shape.x for shape in design.project.shapes) / 2, 70)
+        self.assertAlmostEqual(sum(shape.y for shape in design.project.shapes) / 2, 70)
+        design.undo()
+        self.assertEqual(design.project.shapes, shapes)
+        design.transform_buttons["left"].click()
+        self.assertEqual([shape.rotation for shape in design.project.shapes], [270, 270])
+        design.undo()
+        design.alignment_buttons["Align Left"].click()
+        self.assertEqual([shape.x for shape in design.project.shapes], [50, 50])
+
+    def test_curve_tool_traces_a_smooth_closed_outline_through_each_click(self):
         design = self.editor()
-        self.assertEqual(design.tool.currentData(), "Select")
-        design.add_default()
-        self.assertEqual([shape.kind for shape in design.project.shapes], ["Rectangle"])
-        design.tool.setCurrentIndex(design.tool.findData("Ellipse"))
-        design.add_default()
-        self.assertEqual([shape.kind for shape in design.project.shapes], ["Rectangle", "Ellipse"])
+        design.resize(900, 640)
+        design.show()
+        self.app.processEvents()
+        canvas = design.canvas
+        QTest.keyClick(canvas, Qt.Key.Key_C)
+        self.assertEqual(design.tool.currentData(), "Curve")
+        clicks = ((40, 40), (90, 35), (100, 80), (45, 90))
+        for point in clicks:
+            self.click(canvas, point)
+        self.assertFalse(design.project.shapes, "nothing is added until the outline is closed")
+        QTest.keyClick(canvas, Qt.Key.Key_Return)
+        outline, = design.project.shapes
+        self.assertEqual(outline.kind, "Path")
+        self.assertTrue(outline.closed)
+        points = outline.paths()[0].points
+        self.assertGreater(len(points), len(clicks), "a curve, not a polygon")
+        for click in clicks:
+            # Each click lands within a screen pixel of where it was aimed.
+            self.assertLess(min(math.dist(click, point) for point in points), 0.5)
+
+        # Two points cannot close an outline, and say so.
+        self.click(canvas, (150, 40))
+        self.click(canvas, (170, 40))
+        QTest.keyClick(canvas, Qt.Key.Key_Return)
+        self.assertEqual(len(design.project.shapes), 1)
+        self.assertIn("three or more points", design.status.text())
+
+    def test_point_edit_double_click_adds_a_point_on_the_outline_only(self):
+        square = editor_model.shape_from_path(
+            qt_gui.template.CutPath(((40, 40), (100, 40), (100, 100), (40, 100)), closed=True))
+        design = self.editor(editor_model.Project(279.4, 215.9, (square,)))
+        design.resize(900, 640)
+        design.show()
+        self.app.processEvents()
+        canvas = design.canvas
+        design.select((0,))
+        QTest.keyClick(canvas, Qt.Key.Key_A)
+        QTest.mouseDClick(canvas.viewport(), Qt.MouseButton.LeftButton,
+                          pos=canvas.mapFromScene(QPointF(70, 70)))
+        self.assertEqual(design.project.shapes, (square,), "the middle of the shape is not its outline")
+        self.assertIn("Double-click on the outline", design.status.text())
+        QTest.mouseDClick(canvas.viewport(), Qt.MouseButton.LeftButton,
+                          pos=canvas.mapFromScene(QPointF(70, 40.5)))
+        points = design.project.shapes[0].paths()[0].points
+        self.assertEqual(len(points), 5)
+        added = points[1]
+        self.assertAlmostEqual(added[0], 70, delta=0.5)
+        self.assertEqual(added[1], 40, "the new point lies on the edge, not where the pointer was")
+        design.undo()
+        self.assertEqual(design.project.shapes, (square,))
+
+    def test_measure_tool_scales_a_photo_to_a_known_length(self):
+        photo = editor_model.Shape("Rectangle", 20, 20, 100, 50)
+        other = editor_model.Shape("Rectangle", 150, 20, 10, 10)
+        design = self.editor(editor_model.Project(279.4, 215.9, (photo, other)))
+        design.resize(1100, 720)
+        design.show()
+        self.app.processEvents()
+        canvas = design.canvas
+        QTest.keyClick(canvas, Qt.Key.Key_I)
+        self.assertEqual(design.tool.currentData(), "Measure")
+        self.assertTrue(design.measure_options.isVisibleTo(design))
+        self.drag(canvas, (20, 30), (60, 30))
+        measured = design.measurement()[0]
+        self.assertAlmostEqual(measured, 40, delta=0.5)
+        self.assertEqual(design.measure_label.text(), f"{measured:.2f} mm at 0.0°")
+        design.select(())
+        self.assertFalse(design.scale_to_button.isEnabled(), "nothing selected to scale")
+        design.select((0,))
+        self.assertTrue(design.scale_to_button.isEnabled())
+        with mock.patch.object(QInputDialog, "getDouble", return_value=(30.0, True)):
+            design.scale_to_button.click()
+        factor = 30 / measured
+        start = design.canvas.measure[0]
+        scaled = design.project.shapes[0]
+        self.assertAlmostEqual(scaled.width, 100 * factor)
+        self.assertAlmostEqual(scaled.height, 50 * factor)
+        # Scaled about where the measurement started, so that point stays put.
+        self.assertAlmostEqual(scaled.x, start[0] + (20 - start[0]) * factor)
+        self.assertAlmostEqual(scaled.y, start[1] + (20 - start[1]) * factor)
+        self.assertEqual(design.project.shapes[1], other, "only the selection is scaled")
+        self.assertEqual(design.measure_label.text(), "30.00 mm at 0.0°")
+        QTest.keyClick(canvas, Qt.Key.Key_Escape)
+        self.assertEqual(design.measure_label.text(), "Drag across a known distance")
+
+    def test_copy_and_paste_carry_an_outline_into_a_new_design(self):
+        from cut_proxies import qt_design
+
+        self.addCleanup(setattr, qt_design, "_clipboard", qt_design._clipboard)
+        shapes = (editor_model.Shape("Rectangle", 20, 20, group=1), editor_model.Shape("Ellipse", 70, 20, group=1),
+                  editor_model.Shape("Line", 10, 100))
+        design = self.editor(editor_model.Project(279.4, 215.9, shapes))
+        design.select((0, 1))
+        design.copy_action.trigger()
+        design.replace_document(editor_model.Project(279.4, 215.9, (editor_model.Shape("Rectangle", 5, 5, group=1),)))
+        self.assertTrue(design.paste_action.isEnabled())
+        design.paste_action.trigger()
+        pasted = design.project.shapes[1:]
+        self.assertEqual([(shape.kind, shape.x, shape.y) for shape in pasted],
+                         [("Rectangle", 20, 20), ("Ellipse", 70, 20)], "pasted in place")
+        self.assertEqual({shape.group for shape in pasted}, {2}, "a pasted group gets a number of its own")
+        self.assertEqual(design.selection(), (1, 2))
+        design.cut_action.trigger()
+        self.assertEqual(len(design.project.shapes), 1)
+
+    def test_type_tool_places_text_where_clicked_and_edits_text_it_hits(self):
+        design = self.editor()
+        design.resize(900, 640)
+        design.show()
+        self.app.processEvents()
+        canvas = design.canvas
+        QTest.keyClick(canvas, Qt.Key.Key_T)
+        seen = []
+
+        def type_text(dialog):
+            seen.append(dialog.windowTitle())
+            dialog.findChild(QPlainTextEdit).setPlainText("A")
+            dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Ok).click()
+            return dialog.result()
+
+        with mock.patch.object(QDialog, "exec", type_text):
+            self.click(canvas, (60, 50))
+            text = design.project.shapes[0]
+            self.assertAlmostEqual(text.x, 60, delta=0.5)
+            self.assertAlmostEqual(text.y, 50, delta=0.5)
+            self.assertEqual(text.text.value, "A")
+            box = editor_model.bounds((text,))
+            self.click(canvas, (box.x + box.w / 2, box.y + box.h / 2))
+        self.assertEqual(seen, ["Add Text", "Edit Text"])
+        self.assertEqual(len(design.project.shapes), 1)
+
+    def test_a_pixscan_photo_is_placed_at_true_size_and_not_cut(self):
+        from tests.test_pixscan import photograph
+        from cut_proxies import pixscan
+
+        folder = TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        good = Path(folder.name) / "mat.png"
+        photograph(pixscan.MATS[2]).save(good)
+        blank = Path(folder.name) / "blank.png"
+        QImage(400, 300, QImage.Format.Format_RGB32).save(str(blank))
+        design = self.editor()
+        with mock.patch.object(QFileDialog, "getOpenFileName", return_value=(str(blank), "")):
+            design.import_pixscan()
+        self.assertEqual(design.project.shapes, ())
+        self.assertIn("No PixScan markers", design.status.text())
+        with mock.patch.object(QFileDialog, "getOpenFileName", return_value=(str(good), "")):
+            design.import_pixscan()
+        photo, = design.project.shapes
+        self.assertEqual((photo.kind, photo.width, photo.height, photo.action), ("Sticker", 275, 215, "None"))
+        self.assertEqual(design.selection(), (0,))
+        self.assertIn("PixScan mat 2", design.status.text())
+        self.assertIn("not known yet", design.status.text())
+
+    def test_replicate_is_a_dialog_that_remembers_its_values(self):
+        design = self.editor(editor_model.Project(279.4, 215.9, (editor_model.Shape("Rectangle", 10, 10, 20, 20),)))
+        design.select(())
+        with mock.patch.object(design, "message") as message:
+            design.replicate_dialog()
+        message.assert_called_once()
+
+        def fill(dialog):
+            spins = dialog.findChildren(QAbstractSpinBox)
+            spins[0].setValue(3)
+            spins[1].setValue(1)
+            spins[2].setValue(5)
+            dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Ok).click()
+            return dialog.result()
+
+        design.select((0,))
+        with mock.patch.object(QDialog, "exec", fill):
+            design.replicate_dialog()
+        self.assertEqual([shape.x for shape in design.project.shapes], [10, 35, 60])
+        self.assertEqual(design.replicate_settings[:3], (3, 1, 5))
 
     def test_design_zoom_has_keyboard_shortcuts_scoped_to_the_editor(self):
         from PySide6.QtGui import QKeySequence

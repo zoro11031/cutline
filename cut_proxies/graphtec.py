@@ -429,6 +429,13 @@ class CutSettings:
     interior_first: bool = False
     delicate_media: bool = False
     track_enhancing: bool = False
+    # Staged passes: the first `light_passes` of `passes` at a lighter force
+    # and speed (None keeps the full value), the rest at `force`/`speed`.
+    # No command of its own: job.build sends the stages as two setting
+    # blocks through plan_matrix, exactly as a grouped Send does.
+    light_passes: int = 0
+    light_force: int | None = None
+    light_speed: int | None = None
 
     @property
     def custom_toolpath(self) -> bool:
@@ -447,6 +454,7 @@ class CutSettings:
         elif out.depth is not None:
             out.depth = max(0, min(out.depth, 10))
         out.passes = max(1, min(self.passes, 10))
+        out.light_passes = max(0, min(self.light_passes, 9))
         if (self.path_order not in toolpath.PATH_ORDERS
                 or self.pass_order not in toolpath.PASS_ORDERS):
             raise ValueError("Unknown path or pass order.")

@@ -9,6 +9,7 @@ import cairo
 from gi.repository import Adw, Gdk, Gtk
 
 from . import editor_model
+from .design_tools import ROTATE_MODES, SCALE_MODES, TRANSFORM_MODES, TURN_RIGHT, rotation_handle
 
 
 @lru_cache(maxsize=4)
@@ -18,6 +19,14 @@ def _sticker_surface(png):
 
 def _rgb(value):
     return tuple(int(value[i:i+2], 16) / 255 for i in (1, 3, 5))
+
+
+def draw_strokes(context, strokes):
+    for first, *rest in strokes:
+        context.move_to(*first)
+        for point in rest:
+            context.line_to(*point)
+    context.stroke()
 
 
 def _grid(cr, width, height, spacing):
@@ -150,6 +159,7 @@ class DesignCanvas(Gtk.DrawingArea):
             self.draw_marks(cr, marks, scale)
 
         indices = editor.selected_indices()
+        mode = editor.active_tool
         for i, shape in enumerate(project.shapes):
             if shape.visible:
                 self.draw_shape(cr, shape, i in indices, scale)
@@ -159,6 +169,15 @@ class DesignCanvas(Gtk.DrawingArea):
             cr.set_source_rgba(0.16, 0.36, 0.73, 0.85)
             cr.set_line_width(1 / scale)
             cr.stroke()
+        if mode in TRANSFORM_MODES:
+            drag = editor.drag
+            handle = rotation_handle(project.shapes, indices, scale)
+            if handle:
+                if mode in SCALE_MODES:
+                    self.draw_scale_handles(cr, handle, scale)
+                if mode in ROTATE_MODES:
+                    self.draw_rotation_handle(cr, drag.rotation if drag and drag.rotation else handle,
+                                              drag.angle if drag else 0, scale)
         if editor.active_tool == 'Point Edit' and len(indices) == 1:
             shape = project.shapes[indices[0]]
             if shape.visible and shape.kind in editor_model.POINT_EDIT_KINDS:
@@ -178,6 +197,42 @@ class DesignCanvas(Gtk.DrawingArea):
             cr.fill_preserve()
             cr.set_source_rgba(0.12, 0.38, 0.75, 0.85)
             cr.stroke()
+
+    @staticmethod
+    def draw_scale_handles(cr, handle, scale):
+        half = 3.5 / scale
+        cr.set_line_width(1.3 / scale)
+        for x, y in handle.corners():
+            cr.rectangle(x - half, y - half, 2 * half, 2 * half)
+            cr.set_source_rgb(1, 1, 1)
+            cr.fill_preserve()
+            cr.set_source_rgb(0.20, 0.44, 0.78)
+            cr.stroke()
+
+    @staticmethod
+    def draw_rotation_handle(cr, handle, angle, scale):
+        edge, (x, y) = handle.positions(angle)
+        cx, cy = handle.center
+        tick = 4 / scale
+        color = (0.20, 0.44, 0.78)
+        cr.save()
+        cr.set_source_rgb(*color)
+        cr.set_line_width(1.5 / scale)
+        draw_strokes(cr, ((edge, (x, y)), ((cx - tick, cy), (cx + tick, cy)),
+                          ((cx, cy - tick), (cx, cy + tick))))
+        cr.arc(x, y, 10 / scale, 0, 2 * math.pi)
+        cr.set_source_rgb(1, 1, 1)
+        cr.fill_preserve()
+        cr.set_source_rgb(*color)
+        cr.stroke()
+        cr.translate(x, y)
+        cr.scale(0.75 / scale, 0.75 / scale)
+        cr.translate(-12, -12)
+        cr.set_line_width(1.8)
+        cr.set_line_cap(cairo.LINE_CAP_ROUND)
+        cr.set_line_join(cairo.LINE_JOIN_ROUND)
+        draw_strokes(cr, TURN_RIGHT)
+        cr.restore()
 
     @staticmethod
     def draw_mat(cr, width, height, scale):

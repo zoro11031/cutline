@@ -29,16 +29,19 @@ def workspace_tools(**properties):
     return Gtk.Box(spacing=8, **properties)
 
 
-def zoom_controls(zoom_by, fit):
+def zoom_controls(zoom_by, fit, *, fit_button=None):
     box = Gtk.Box(spacing=4)
     level = Gtk.Label(label="100%", width_chars=5)
     for label, tip, action in (("−", "Zoom out", lambda: zoom_by(0.8)),
-                               ("+", "Zoom in", lambda: zoom_by(1.25)),
-                               ("Fit", "Fit to view", fit)):
+                               ("+", "Zoom in", lambda: zoom_by(1.25))):
         widget = Gtk.Button(label=label, tooltip_text=tip)
         widget.connect("clicked", lambda _button, call=action: call())
         box.append(widget)
     box.insert_child_after(level, box.get_first_child())
+    if fit_button is None:
+        fit_button = Gtk.Button(label="Fit", tooltip_text="Fit to view")
+        fit_button.connect("clicked", lambda _button: fit())
+    box.append(fit_button)
     return box, level
 
 

@@ -158,7 +158,7 @@ class SheetView(QGraphicsView):
 
 
 class ZoomControls(QWidget):
-    def __init__(self, canvas):
+    def __init__(self, canvas, *, fit_button=None):
         super().__init__()
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
@@ -168,13 +168,15 @@ class ZoomControls(QWidget):
         self.level.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.level.setMinimumWidth(52)
         self.in_button = button("+", lambda: canvas.zoom_by(1.25))
-        self.fit_button = button("Fit", canvas.fit)
+        self.fit_button = fit_button if fit_button is not None else button("Fit", canvas.fit)
         for widget in (self.out_button, self.in_button):
             widget.setFixedWidth(30)
-        self.fit_button.setFixedWidth(49)
+            widget.setProperty("role", "workspaceTool")
+        if fit_button is None:
+            self.fit_button.setFixedWidth(49)
+            self.fit_button.setProperty("role", "workspaceTool")
         for widget, label in ((self.out_button, "Zoom out"), (self.in_button, "Zoom in"),
                               (self.fit_button, "Fit to view")):
-            widget.setProperty("role", "workspaceTool")
             widget.setAccessibleName(label)
             widget.setToolTip(label)
         for widget in (self.out_button, self.level, self.in_button, self.fit_button):

@@ -200,6 +200,10 @@ def advanced_cut_args(p):
                    help="reverse the direction on every second pass")
     p.add_argument("--overcut-mm", type=float, metavar="MM",
                    help="seam overcut on closed contours")
+    p.add_argument("--light-passes", type=int, metavar="N",
+                   help="cut the first N of --passes at --light-force/--light-speed, the rest at full settings")
+    p.add_argument("--light-force", type=int, metavar="F", help="force for the light first passes")
+    p.add_argument("--light-speed", type=int, metavar="S", help="speed for the light first passes")
 
 
 def advanced_settings(args):
@@ -207,7 +211,7 @@ def advanced_settings(args):
                ("holder", "acceleration", "blade_diameter_mm", "lift_head",
                 "sharpen_corners", "corner_start_mm", "corner_end_mm", "path_order",
                 "pass_order", "alternate_direction", "overcut_mm", "interior_first",
-                "delicate_media", "track_enhancing")
+                "delicate_media", "track_enhancing", "light_passes", "light_force", "light_speed")
                if getattr(args, key, None) is not None}
     if options.get("acceleration") == -1:
         options["acceleration"] = None

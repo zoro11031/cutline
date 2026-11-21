@@ -1,6 +1,7 @@
 """Help shared by the native desktop frontends."""
 
-BLADE_VALUE_TEXT = {"depth": "Manual", "acceleration": "Auto"}
+BLADE_VALUE_TEXT = {"depth": "Manual", "acceleration": "Auto", "light_passes": "Off",
+                    "light_force": "Same as Force", "light_speed": "Same as Speed"}
 
 CONTROL_HELP = {
     "force": "How hard the tool presses.",
@@ -20,6 +21,10 @@ CONTROL_HELP = {
     "interior_first": "Cut holes before the outside edge.",
     "delicate_media": "Change the cut order to help keep thin material in place.",
     "overcut_mm": "Overlap the start and end of a closed cut.",
+    "light_passes": "How many of the passes go first at the light force and speed. "
+                    "The rest use Force and Speed. Passes is still the total.",
+    "light_force": "Force for the light first passes, to ease through a top film before full force.",
+    "light_speed": "Speed for the light first passes.",
     "registration": "Use printed marks to line up the cut.",
     "auto_search": "Let the cutter find the first mark on its own.",
     "mark_inset_mm": "Distance from the paper edge to the marks.",

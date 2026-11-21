@@ -40,7 +40,12 @@ BLADE_NUMBERS = (
     ("corner_start_mm", "Start Extension (mm)", 0, 0.9, 0.1, 1),
     ("corner_end_mm", "End Extension (mm)", 0, 0.9, 0.1, 1),
     ("overcut_mm", "Seam Overcut (mm)", 0, 1000, 0.1, 2),
+    ("light_passes", "Light first passes", 0, 9, 1, 0),
+    ("light_force", "Light pass force", -1, 40, 1, 0),
+    ("light_speed", "Light pass speed", -1, 30, 1, 0),
 )
+# Staged passes: the first passes lighter, the rest at full settings.
+STAGE_NUMBERS = ("light_passes", "light_force", "light_speed")
 BLADE_SWITCHES = (
     ("lift_head", "Lift head"), ("sharpen_corners", "Line Segment Overcut"), ("track_enhancing", "Track Enhancing"),
     ("interior_first", "Sort Interior Contours First"), ("delicate_media", "Delicate Media Path"),
@@ -370,9 +375,18 @@ class Window(QMainWindow):
     def add_advanced_cut_settings(self, advanced):
         blade_details = advanced.group("Blade details")
         for key, label, lo, hi, step, decimals in BLADE_NUMBERS:
-            if key not in self.blade:
+            if key not in self.blade and key not in STAGE_NUMBERS:
                 self.blade[key] = blade_details.number(label, lo, lo, hi, step, decimals, self.rebuild)
         self.blade["lift_head"] = blade_details.check("Lift head", changed=self.rebuild)
+        staged = advanced.group("Staged passes")
+        self.staged_form = staged
+        for key, label, lo, hi, step, decimals in BLADE_NUMBERS:
+            if key in STAGE_NUMBERS:
+                self.blade[key] = staged.number(label, lo, lo, hi, step, decimals, self.update_stages,
+                                                special_text=BLADE_VALUE_TEXT[key])
+                self.blade[key].setToolTip(CONTROL_HELP[key])
+        self.stage_note = staged.note()
+        self.update_stages(rebuild=False)
         path_settings = advanced.group("Cut paths")
         for key, label, choices in BLADE_CHOICES:
             self.blade[key] = path_settings.choice(label, choices, changed=self.rebuild)
@@ -922,7 +936,7 @@ class Window(QMainWindow):
         values = {key: self.blade[key].value() for key, *_ in BLADE_NUMBERS}
         values.update({key: self.blade[key].isChecked() for key, _ in BLADE_SWITCHES})
         values.update({key: self.blade[key].currentData() for key, _, _ in BLADE_CHOICES})
-        for name in ("depth", "acceleration"):
+        for name in ("depth", "acceleration", "light_force", "light_speed"):
             if values[name] < 0:
                 values[name] = None
         return values
@@ -1057,6 +1071,30 @@ class Window(QMainWindow):
             else "Already using the generated layout."
         )
 
+    def update_stages(self, rebuild=True):
+        """Show the light pass settings only while light passes are on, and
+        spell out what the blade will do."""
+        if not hasattr(self, "stage_note"):
+            return
+        count = self.blade["light_passes"].value()
+        for key in ("light_force", "light_speed"):
+            self.staged_form.setRowVisible(self.blade[key], count > 0)
+        total, force, speed = (self.blade[key].value() for key in ("passes", "force", "speed"))
+        light_force = self.blade["light_force"].value()
+        light_speed = self.blade["light_speed"].value()
+        light_force = force if light_force < 0 else light_force
+        light_speed = speed if light_speed < 0 else light_speed
+        if not count:
+            text = "Every pass uses Force and Speed."
+        elif count >= total:
+            text = f"Set Passes above {count} so at least one full pass follows the light ones."
+        else:
+            text = (f"First {count} {'pass' if count == 1 else 'passes'} at force {light_force}, speed {light_speed}; "
+                    f"then {total - count} at force {force}, speed {speed}.")
+        self.stage_note.setText(text)
+        if rebuild:
+            self.rebuild()
+
     def rebuild(self):
         if self.loading:
             return
@@ -1065,6 +1103,7 @@ class Window(QMainWindow):
             return
         self.restore_holder()
         self.update_enabled_fields()
+        self.update_stages(rebuild=False)
         self.correct_detected_depth()
         previous = self.job
         self.job = None
