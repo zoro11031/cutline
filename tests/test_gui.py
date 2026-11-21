@@ -5,7 +5,7 @@ from pathlib import Path
 import unittest
 import types
 from unittest import mock
-from cut_proxies import config, corner_test, graphtec, importer, job, presets, starting_guide
+from cut_proxies import config, corner_test, editor_model, graphtec, importer, job, presets, starting_guide
 from tests.test_vector_editing import compound_project
 from tests.test_sticker_print import make_image
 
@@ -87,7 +87,7 @@ class TestDesignWorkspace(unittest.TestCase):
         design = win.design
         self.assertIs(win.workspaces.get_visible_child(), design.view)
         design.commit((), ())
-        self.assertFalse(design.review.get_sensitive())
+        self.assertFalse(design.review.get_visible())
         self.assertTrue(design.send_workspace.get_sensitive())
         design.send_workspace.emit('clicked')
         self.assertEqual(win.stack.get_visible_child_name(), 'cut')
@@ -100,6 +100,76 @@ class TestDesignWorkspace(unittest.TestCase):
             win.close_design()
         self.assertEqual(win.workspaces.get_visible_child_name(), 'tools')
         self.assertIsNone(win.design)
+
+    def test_workspace_switch_exposes_the_current_workspace_as_pressed(self):
+        win = self.make_window()
+        self.assertIsInstance(win.send_workspace, gui.Gtk.ToggleButton)
+        self.assertTrue(win.send_workspace.get_active())
+        self.assertFalse(win.design_button.get_active())
+        win.send_workspace.emit('clicked')
+        self.assertTrue(win.send_workspace.get_active(), 'clicking the current workspace keeps it current')
+        win.design_button.emit('clicked')
+        design = win.design
+        self.assertTrue(design.design_workspace.get_active())
+        self.assertFalse(design.send_workspace.get_active())
+        design.send_workspace.emit('clicked')
+        self.assertFalse(win.design_button.get_active(), "Send's Design button must not stay pressed")
+        self.assertTrue(win.send_workspace.get_active())
+        self.assertFalse(design.send_workspace.get_active())
+
+    @staticmethod
+    def shortcuts(controller):
+        return {controller.get_item(i).get_trigger().to_string(): controller.get_item(i).get_action().to_string()
+                for i in range(controller.get_n_items())}
+
+    def test_send_workspace_has_keyboard_shortcuts(self):
+        win = self.make_window()
+        keys = self.shortcuts(win.send_shortcuts)
+        self.assertEqual(win.send_shortcuts.get_widget(), win.workspaces.get_child_by_name('tools'))
+        for trigger, page in (('<Control>1', 'layout'), ('<Control>2', 'sheet'), ('<Control>3', 'cut')):
+            action = keys[trigger].removeprefix('action(').removesuffix(')')
+            win.workspaces.activate_action(action)
+            self.assertEqual(win.stack.get_visible_child_name(), page, trigger)
+        self.assertIn('open-artwork', keys['<Control>o'])
+        self.assertIn('open-print', keys['<Shift><Control>o'])
+        self.assertIn('design', keys['<Control>F1'])
+        levels = []
+        win.preview.connect('zoom-changed', lambda _preview, value: levels.append(value))
+        for trigger in ('<Control>equal|<Control>plus', '<Control>minus', '<Control>0'):
+            win.workspaces.activate_action(keys[trigger].removeprefix('action(').removesuffix(')'))
+        self.assertEqual(len(levels), 3)
+        # Nothing that moves the cutter is one keystroke away: these are all of them.
+        self.assertEqual(sorted(a.removeprefix('action(workspace.').removesuffix(')') for a in keys.values()),
+                         ['cut', 'design', 'fit-preview', 'layout', 'open-artwork', 'open-print',
+                          'sheet', 'zoom-in', 'zoom-out'])
+
+    def test_add_shape_works_with_the_default_select_tool(self):
+        from cut_proxies import editor_model
+
+        win = self.make_window()
+        win.on_edit_template()
+        design = win.design
+        design.history = editor_model.History(editor_model.Project(215.9, 279.4))
+        design.refresh_objects()
+        self.assertEqual(design.active_tool, 'Select')
+        self.assertTrue(design.add_button.get_sensitive())
+        design.add_button.emit('clicked')
+        self.assertEqual([s.kind for s in design.project.shapes], ['Rectangle'])
+        design.tool.set_selected(design.tools.index('Ellipse'))
+        design.add_button.emit('clicked')
+        self.assertEqual([s.kind for s in design.project.shapes], ['Rectangle', 'Ellipse'])
+
+    def test_design_zoom_has_keyboard_shortcuts(self):
+        win = self.make_window()
+        win.on_edit_template()
+        design = win.design
+        keys = self.shortcuts(design.shortcuts)
+        start = design.canvas.zoom
+        design.view.activate_action(keys['<Control>equal|<Control>plus'].removeprefix('action(').removesuffix(')'))
+        self.assertGreater(design.canvas.zoom, start)
+        design.view.activate_action(keys['<Control>minus'].removeprefix('action(').removesuffix(')'))
+        design.view.activate_action(keys['<Control>0'].removeprefix('action(').removesuffix(')'))
+        self.assertEqual(design.canvas.zoom, 1.0)
 
     def test_file_menu_changes_pages_only_after_opening_the_print_file(self):
         win = self.make_window()
@@ -121,56 +191,86 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertEqual(win.pdf_path, Path('/tmp/print.pdf'))
         measure.assert_called_once()
 
-    def test_apply_material_opens_the_cut_settings_with_the_selected_values(self):
+    def select_material(self, win, name):
+        model = win.r_preset.get_model()
+        win.r_preset.set_selected([model.get_string(i) for i in range(model.get_n_items())].index(name))
+
+    def test_choosing_a_material_applies_it_and_saving_updates_that_material(self):
         with tempfile.TemporaryDirectory() as folder, \
              mock.patch.object(config, "CONFIG_DIR", Path(folder)), \
              mock.patch.object(presets, "factory_presets", return_value={}):
             win = self.make_window()
-            win.stack.set_visible_child_name("materials")
+            pages = win.stack.get_pages()
+            self.assertEqual([pages.get_item(i).get_name() for i in range(pages.get_n_items())],
+                             ['layout', 'sheet', 'cut'])
             presets.save_blade_settings(presets.STARTING_NAME, new_name="Sample", force=16,
                                         speed=5, depth=None, passes=2)
             win.refresh_preset_choices()
             win._load_materials()
-            self.assertEqual(win._text(win.r_material), presets.STARTING_NAME)
-            win.r_material.set_selected(0)
-            self.assertEqual(win._text(win.r_material), "Sample")
-            self.assertFalse(win.save_preset_btn.get_sensitive())
             self.assertEqual(win.job.settings.force, 25)
-            self.assertIn("Manual / off", win.preset_note.get_subtitle())
-            self.assertTrue(win.apply_material_button.get_sensitive())
-            win.apply_material_button.emit("clicked")
-            self.assertEqual(win.stack.get_visible_child_name(), "cut")
-            self.assertEqual(win._text(win.r_preset), "Sample")
+            self.assertIn("Card Maker guide", win.material_note.get_label())
+            self.select_material(win, "Sample")
             self.assertEqual(win.job.settings.force, 16)
             self.assertTrue(win.save_preset_btn.get_sensitive())
+            win.r_force.set_value(18)
+            win.on_save_blade_preset()
+            self.assertEqual(presets.get("Sample").cut_settings().force, 18)
+            win.on_save_blade_preset(new_name="Copy of Sample")
+            self.assertEqual(win._text(win.r_preset), "Copy of Sample")
+            self.assertEqual(win.job.preset.name, "Copy of Sample")
 
-    def test_material_presets_page_selection_and_delete_state(self):
+    def test_delete_acts_on_the_chosen_material_and_only_custom_ones(self):
         win = self.make_window()
-        win.stack.set_visible_child_name('materials')
         win._load_materials()
-        self.assertTrue(win.r_material.get_model().get_n_items() > 0)
-        self.assertFalse(win.delete_preset_btn.get_sensitive())
+        self.assertFalse(win.delete_preset_btn.get_sensitive(), "built-in presets cannot be deleted")
 
         with tempfile.TemporaryDirectory() as folder, \
              mock.patch.object(presets, "user_dir", return_value=Path(folder)):
             custom = presets.save_blade_settings(
                 presets.STARTING_NAME, force=18, speed=10, depth=2, passes=1,
                 new_name="Custom GTK Test")
-            win.r_force.set_value(28)
+            win.refresh_preset_choices()
             win._load_materials()
-            model = win.r_material.get_model()
-            names = [model.get_string(i) for i in range(model.get_n_items())]
-            self.assertIn("Custom GTK Test", names)
-            win.r_material.set_selected(names.index("Custom GTK Test"))
+            self.select_material(win, "Custom GTK Test")
+            self.assertEqual(win.job.settings.force, 18)
             self.assertTrue(win.delete_preset_btn.get_sensitive())
-            self.assertEqual(win.preset_note.get_title(), "Custom GTK Test")
+            self.assertIn("Custom GTK Test", win.delete_preset_btn.get_label())
 
             with mock.patch("gi.repository.Adw.AlertDialog.present",
                             lambda dialog, parent: dialog.emit("response", "delete")):
                 win.on_delete_selected_preset()
             self.assertFalse(custom.exists())
+            self.assertEqual(win._text(win.r_preset), presets.STARTING_NAME)
             self.assertFalse(win.delete_preset_btn.get_sensitive())
-            self.assertEqual(win.job.settings.force, 28)
+
+    def test_a_running_job_locks_the_material_and_its_library(self):
+        win = self.make_window()
+        with tempfile.TemporaryDirectory() as folder, \
+             mock.patch.object(presets, "user_dir", return_value=Path(folder)):
+            custom = presets.save_blade_settings(presets.STARTING_NAME, force=18, speed=10, depth=2,
+                                                 passes=1, new_name="Locked GTK Test")
+            win.refresh_preset_choices()
+            win._load_materials()
+            self.select_material(win, "Locked GTK Test")
+            self.assertTrue(all(b.get_sensitive() for b in win.material_buttons()),
+                            "idle: every material action is available")
+
+            win._sending = True
+            win.lock_job_controls(True)
+            self.assertFalse(win.r_preset.get_sensitive())
+            self.assertFalse(any(b.get_sensitive() for b in win.material_buttons()))
+            with mock.patch("gi.repository.Adw.AlertDialog.present",
+                            lambda dialog, parent: dialog.emit("response", "delete")), \
+                 mock.patch.object(presets, "save_blade_settings") as save:
+                win.on_delete_selected_preset()
+                win.on_save_blade_preset()
+                win.on_restore_default_materials()
+            save.assert_not_called()
+            self.assertTrue(custom.exists(), "a running job's material is not deleted")
+
+            win._sending = False
+            win.lock_job_controls(False)
+            self.assertTrue(all(b.get_sensitive() for b in win.material_buttons()), "unlocked again")
 
     def test_send_editors_update_the_job_from_the_same_controls(self):
         win = self.make_window()
@@ -185,9 +285,10 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertEqual(win.job.settings.force, 22)
         win.r_track.set_active(False)
         self.assertFalse(win.job.settings.track_enhancing)
-        materials = win.stack.get_child_by_name("materials")
-        self.assertFalse(win.r_force.is_ancestor(materials))
-        self.assertFalse(win.r_preset.is_ancestor(materials))
+        cut_job = win.stack.get_child_by_name("cut")
+        win.send_advanced.set_expanded(True)  # a collapsed expander detaches its child
+        for widget in (win.r_preset, win.save_preset_btn, win.delete_preset_btn, win.r_force):
+            self.assertTrue(widget.is_ancestor(cut_job), "material choice and saving live on Cut Job")
 
     def test_published_template_is_selected_in_layout_and_can_be_cleared(self):
         from cut_proxies import layout_presets
@@ -311,7 +412,7 @@ class TestDesignWorkspace(unittest.TestCase):
             with mock.patch.object(design, 'file_dialog', side_effect=lambda _title, opened, **_: opened(path)):
                 design.open_project(None)
         self.assertEqual(design.project, reopened)
-        design.review.emit('clicked')
+        design.send_workspace.emit('clicked')
         self.assertFalse(win.job.blocked)
         self.assertCountEqual(win.job.paths, reopened.artwork().paths)
         self.assertEqual(len(win.job.paths), 4)
@@ -443,7 +544,7 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertTrue(design.page_advanced.get_expanded())
         design.menu_actions.lookup_action('print-border').activate(None)
         self.assertTrue(design.print_border.get_active())
-        design.review.emit('clicked')
+        design.send_workspace.emit('clicked')
         self.assertFalse(win.job.blocked)
         self.assertEqual([(group.settings.holder, group.settings.force) for group in win.job.action_groups],
                          [(1, 28), (2, 12)])
@@ -551,7 +652,7 @@ class TestDesignWorkspace(unittest.TestCase):
         design.mark_length.set_value(9)
         self.assertEqual(design.mat_size, (304.8, 304.8))
         self.assertEqual(design.cut_border.x, 14)
-        design.review.emit('clicked')
+        design.send_workspace.emit('clicked')
         self.assertEqual(win.stack.get_visible_child_name(), 'cut')
         self.assertEqual((win.job.grid.sheet_w_mm, win.job.grid.sheet_h_mm), (150, 180))
         self.assertEqual(win.job.mat, 'cameo-12x12')
@@ -605,11 +706,12 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertTrue(win.cut_button.get_visible())
         win.on_edit_template()
         design = win.design
-        design.review.emit('clicked')
+        design.commit((replace(design.project.shapes[0], x=40),), (0,))
+        design.send_workspace.emit('clicked')
         self.assertTrue(win.cut_button.get_sensitive())
         win.on_edit_template()
         design.commit((replace(design.project.shapes[0], x=45),), (0,))
-        design.send_workspace.emit('clicked')
+        win.leave_design()
         self.assertEqual(win.stack.get_visible_child_name(), 'cut')
         self.assertEqual(win.review_send.get_label(), 'Review Design')
         self.assertFalse(win.cut_button.get_sensitive())
@@ -618,8 +720,61 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertIs(win.design, design)
         self.assertEqual(design.project.shapes[0].x, 45)
         self.assertTrue(design.dirty)
-        design.review.emit('clicked')
+        design.send_workspace.emit('clicked')
         self.assertTrue(win.cut_button.get_sensitive())
+
+    def test_switching_to_send_sends_the_edited_design_like_studio(self):
+        win = self.make_window()
+        generated = len(win.job.paths)
+        win.on_edit_template()
+        design = win.design
+        design.send_workspace.emit('clicked')
+        self.assertEqual(len(win.job.paths), generated, "a design only looked at leaves Send alone")
+        win.on_edit_template()
+        cut = editor_model.Shape("Rectangle", 30, 40)
+        score = editor_model.Shape("Line", 80, 40, action="Score")
+        design.commit((cut, score), (0, 1))
+        design.send_workspace.emit('clicked')
+        self.assertEqual(win.workspaces.get_visible_child_name(), 'tools')
+        self.assertEqual(win.stack.get_visible_child_name(), 'cut')
+        self.assertEqual(len(win.job.paths), 2)
+        groups = [key for key, *_ in win._send_rows]
+        self.assertEqual(sorted(groups), ["Cut", "Score"], "mixed actions get their own groups")
+        self.assertNotIn("design", win.send_status.get_label().lower())
+
+    def test_newly_opened_send_artwork_is_not_replaced_by_an_older_design(self):
+        win = self.make_window()
+        win.on_edit_template()
+        win.design.commit((editor_model.Shape("Rectangle", 30, 40),), (0,))
+        win.design.send_workspace.emit('clicked')
+        self.assertEqual(len(win.job.paths), 1)
+        win.on_clear_artwork()
+        generated = len(win.job.paths)
+        self.assertGreater(generated, 1)
+        win.on_edit_template()
+        win.design.send_workspace.emit('clicked')
+        self.assertEqual(len(win.job.paths), generated)
+
+    def test_an_unusable_design_stays_in_design_with_the_reason(self):
+        win = self.make_window()
+        win.on_edit_template()
+        design = win.design
+        with mock.patch.object(editor_model, "send_handoff",
+                               return_value=("invalid", "Draw or resize the paths before sending.")):
+            design.send_workspace.emit('clicked')
+        self.assertIs(win.workspaces.get_visible_child(), design.view)
+        self.assertIn("resize the paths", design.status.get_text())
+
+    def test_send_refuses_a_design_edit_it_has_not_used(self):
+        win = self.make_window()
+        win.on_edit_template()
+        design = win.design
+        design.commit((editor_model.Shape("Rectangle", 30, 40),), (0,))
+        design.send_workspace.emit('clicked')
+        self.assertNotIn("has not used", win.send_status.get_label())
+        design.commit((editor_model.Shape("Ellipse", 30, 40),), (0,))  # edited without switching
+        win.update_send_actions()
+        self.assertIn("has not used", win.send_status.get_label())
 
     def test_save_updates_the_open_project_without_opening_the_picker(self):
         from cut_proxies.editor_model import load_project
@@ -809,7 +964,8 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertTrue(win.tuning)
         self.assertEqual(win.guide.spot, spot)
 
-        win.edit_settings_btn.emit("clicked")
+        self.assertFalse(win.preset_actions.get_visible(), "the guide saves its own presets")
+        win.open_cut_settings()
         self.assertTrue(win.tuning)
         win.open_send_workspace()
         self.assertTrue(win.tuning)
@@ -864,12 +1020,12 @@ class TestDesignWorkspace(unittest.TestCase):
 
     def test_workspace_toggle_and_matched_zip_restrictions(self):
         win = self.make_window()
-        win.stack.set_visible_child_name("materials")
-        self.assertEqual(win.stack.get_visible_child_name(), "materials")
+        win.stack.set_visible_child_name("sheet")
+        self.assertEqual(win.stack.get_visible_child_name(), "sheet")
         win.design_button.emit('clicked')
         self.assertIsNotNone(win.design)
         win.leave_design()
-        self.assertEqual(win.stack.get_visible_child_name(), "materials")
+        self.assertEqual(win.stack.get_visible_child_name(), "sheet")
 
         # Matched ZIP locked dialog
         win.pdf_bundle = mock.MagicMock()

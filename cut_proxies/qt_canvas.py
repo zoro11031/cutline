@@ -232,7 +232,7 @@ class Preview(SheetView):
         image = not self.pdf.isNull() and (self.mode != "Cut paths" or job is None)
         if not job and not image:
             self.set_page_bounds(QRectF(0, 0, 250, 160))
-            text = scene.addSimpleText("Choose a layout or open cut artwork")
+            text = scene.addSimpleText("Choose a layout or open a cut template")
             text.setBrush(self.palette().windowText().color())
             text.setPos(self.page_bounds.center() - text.boundingRect().center())
             if self.fitted:
@@ -309,8 +309,16 @@ class Preview(SheetView):
             skipped = set(job.skip)
             for index, box in enumerate(job.grid.cards):
                 if index not in skipped:
-                    tint = QColor(234, 157, 60, 51) if index in crowded else QColor(48, 126, 165, 18)
-                    scene.addRect(rect(box), QPen(Qt.PenStyle.NoPen), QBrush(tint))
+                    if index in crowded:
+                        tint = QColor(234, 157, 60, 51)
+                        if self.colorblind:
+                            scene.addRect(rect(box), QPen(QColor(181, 87, 19), 0.4, Qt.PenStyle.DashLine),
+                                          QBrush(tint, Qt.BrushStyle.DiagCrossPattern))
+                        else:
+                            scene.addRect(rect(box), QPen(Qt.PenStyle.NoPen), QBrush(tint))
+                    else:
+                        tint = QColor(48, 126, 165, 18)
+                        scene.addRect(rect(box), QPen(Qt.PenStyle.NoPen), QBrush(tint))
         if job.registration:
             draw_marks(scene, job.marks, ink=not image)
             crosshair(scene, *job.marks.origin_mm, "#ad561b", 2.2)

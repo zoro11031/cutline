@@ -108,9 +108,10 @@ class TestQtFrontend(unittest.TestCase):
         self.assertEqual(window.job.settings.passes, 3)
         window.blade["track_enhancing"].setChecked(False)
         self.assertFalse(window.job.settings.track_enhancing)
-        materials = window.tabs.widget(window.tab("Materials"))
-        self.assertFalse(materials.isAncestorOf(window.controls["preset"]))
-        self.assertFalse(materials.isAncestorOf(window.blade["force"]))
+        cut_job = window.tabs.widget(window.tab("Send"))
+        for widget in (window.controls["preset"], window.material_note, window.save_preset_btn,
+                       window.delete_preset_btn, window.blade["force"]):
+            self.assertTrue(cut_job.isAncestorOf(widget), "material choice and saving live on Cut Job")
 
     def test_published_template_is_selected_in_layout_and_can_be_cleared(self):
         window = self.window
@@ -223,7 +224,7 @@ class TestQtFrontend(unittest.TestCase):
         with mock.patch.object(QFileDialog, "getOpenFileName", return_value=(str(path), "")):
             design.open_project()
         self.assertEqual(design.project, reopened)
-        design.review_button.click()
+        design.send_workspace.click()
         self.assertFalse(window.job.blocked)
         self.assertCountEqual(window.job.paths, reopened.artwork().paths)
         self.assertEqual(len(window.job.paths), 4)
@@ -235,7 +236,7 @@ class TestQtFrontend(unittest.TestCase):
         window.open_design()
         design = window.design
         design.commit_shapes((), ())
-        self.assertFalse(design.review_button.isEnabled())
+        self.assertTrue(design.review_button.isHidden())
         self.assertTrue(design.send_workspace.isEnabled())
         self.assertIs(design.menu_bar.parentWidget(), design.send_workspace.parentWidget().parentWidget())
         design.send_workspace.click()
@@ -245,6 +246,67 @@ class TestQtFrontend(unittest.TestCase):
         window.design_button.click()
         self.assertIs(window.workspaces.currentWidget(), design)
         self.assertFalse(design.project.shapes)
+
+    def test_workspace_switch_exposes_the_current_workspace_as_checked(self):
+        window = self.window
+        self.assertTrue(window.send_workspace.isCheckable())
+        self.assertTrue(window.send_workspace.isChecked())
+        self.assertFalse(window.design_button.isChecked())
+        window.send_workspace.click()
+        self.assertTrue(window.send_workspace.isChecked(), "clicking the current workspace keeps it current")
+        window.design_button.click()
+        design = window.design
+        self.assertTrue(design.design_workspace.isChecked())
+        self.assertFalse(design.send_workspace.isChecked())
+        design.send_workspace.click()
+        self.assertFalse(window.design_button.isChecked(), "Send's Design button must not stay pressed")
+        self.assertTrue(window.send_workspace.isChecked())
+        self.assertFalse(design.send_workspace.isChecked())
+
+    def test_cut_groups_appear_only_for_a_grouped_send(self):
+        window = self.window
+        window.tabs.setCurrentIndex(window.tab("Send"))
+        window.refresh_send()
+        self.assertTrue(window.group_box.isHidden(), "no artwork: the empty Cut groups box stays hidden")
+        window.open_design()
+        design = window.design
+        design.commit_shapes((editor_model.Shape("Rectangle", 30, 40),
+                              editor_model.Shape("Line", 80, 40, action="Score")), (0, 1))
+        window.review_design(design.project, editor_model.ALL_ACTIONS)
+        window.refresh_send()
+        self.assertFalse(window.group_box.isHidden(), "grouped artwork shows its groups")
+
+    def send_shortcut(self, keys):
+        from PySide6.QtGui import QKeySequence
+        wanted = QKeySequence(keys)
+        found = [action for action in self.window.send_view.actions() if wanted in action.shortcuts()]
+        self.assertEqual(len(found), 1, keys)
+        self.assertEqual(found[0].shortcutContext(), qt_gui.Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        return found[0]
+
+    def test_send_workspace_has_keyboard_shortcuts_scoped_to_itself(self):
+        window = self.window
+        for keys, page in (("Ctrl+1", "Layout"), ("Ctrl+2", "Sheet"), ("Ctrl+3", "Send")):
+            self.send_shortcut(keys).trigger()
+            self.assertEqual(window.tabs.currentIndex(), window.tab(page), keys)
+        with mock.patch.object(qt_gui.QFileDialog, "getOpenFileName", return_value=("", "")) as artwork:
+            self.send_shortcut("Ctrl+O").trigger()
+        artwork.assert_called_once()
+        with mock.patch.object(window, "select_open", return_value=None) as sheet:
+            self.send_shortcut("Ctrl+Shift+O").trigger()
+        sheet.assert_called_once()
+        levels = []
+        window.preview.zoom_changed.connect(levels.append)
+        self.send_shortcut("Ctrl+=").trigger()
+        self.send_shortcut("Ctrl+-").trigger()
+        self.send_shortcut("Ctrl+0").trigger()
+        self.assertEqual(len(levels), 3)
+        self.send_shortcut("Ctrl+F1").trigger()
+        self.assertIs(window.workspaces.currentWidget(), window.design)
+        # Nothing that moves the cutter is one keystroke away: these are all of them.
+        self.assertEqual(sorted(action.text() for action in window.send_view.actions()),
+                         ["Cut Job", "Edit in Design", "Fit Preview", "Layout",
+                          "Open Cut Template…", "Open PDF or ZIP…", "Sheet", "Zoom In", "Zoom Out"])
 
     def test_file_menu_changes_pages_only_after_opening_the_print_file(self):
         window = self.window
@@ -263,34 +325,31 @@ class TestQtFrontend(unittest.TestCase):
         self.assertEqual(window.pdf, path)
         measure.assert_called_once()
 
-    def test_apply_material_opens_the_cut_settings_with_the_selected_values(self):
+    def test_choosing_a_material_applies_it_and_saving_updates_that_material(self):
         window = self.window
-        window.tabs.setCurrentIndex(window.tab("Materials"))
         with mock.patch.object(presets, "factory_presets", return_value={}):
             presets.save_blade_settings(presets.STARTING_NAME, new_name="Sample", force=16,
                                         speed=5, depth=None, passes=2)
             window.refresh_preset_choices()
             window.load_materials()
-            self.assertEqual(window.material.currentData(), presets.STARTING_NAME)
-            window.material.setCurrentIndex(window.material.findData("Sample"))
-            self.assertFalse(window.save_preset_btn.isEnabled())
             self.assertEqual(window.job.settings.force, 25)
-            self.assertIn("Manual / off", window.provenance.text())
-            self.assertTrue(window.apply_material_button.isEnabled())
-            window.apply_material_button.click()
-            self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
-            self.assertEqual(window.choice("preset"), "Sample")
+            self.assertIn("Card Maker guide", window.material_note.text())
+            window.select("preset", "Sample")
             self.assertEqual(window.job.settings.force, 16)
             self.assertTrue(window.save_preset_btn.isEnabled())
+            window.blade["force"].setValue(18)
+            window.save_preset()
+            self.assertEqual(presets.get("Sample").cut_settings().force, 18)
             window.save_preset("Copy of Sample")
-            self.assertEqual(window.material.currentData(), "Copy of Sample")
+            self.assertEqual(window.choice("preset"), "Copy of Sample")
             self.assertEqual(window.job.preset.name, "Copy of Sample")
 
-    def test_material_preset_actions_fit_the_compact_panel(self):
+    def test_material_actions_fit_the_compact_panel(self):
         window = self.window
         window.resize(850, 600)
         window.show()
-        window.tabs.setCurrentIndex(window.tab("Materials"))
+        window.tabs.setCurrentIndex(window.tab("Send"))
+        window.send_advanced.disclosure.setChecked(True)
         self.app.processEvents()
         page = window.tabs.currentWidget()
         self.assertEqual(page.horizontalScrollBar().maximum(), 0)
@@ -301,34 +360,31 @@ class TestQtFrontend(unittest.TestCase):
         window.resize(720, 520)
         QTest.qWait(30)
         self.assertEqual(page.horizontalScrollBar().maximum(), 0)
-        for button in page.findChildren(QPushButton):
+        for button in (window.save_preset_btn, window.save_new_preset_btn, window.delete_preset_btn,
+                       window.import_csv_btn, window.import_folder_btn, window.restore_materials_btn):
             self.assertGreaterEqual(button.width(), button.minimumSizeHint().width(), button.text())
 
-    def test_material_presets_page_selection_and_delete_state(self):
+    def test_delete_acts_on_the_chosen_material_and_only_custom_ones(self):
         window = self.window
-        window.tabs.setCurrentIndex(window.tab("Materials"))
         window.load_materials()
-        self.assertTrue(window.material.count() > 0)
-        self.assertIn("Blade Depth", window.provenance.text())
-        self.assertFalse(window.delete_preset_btn.isEnabled())
+        self.assertFalse(window.delete_preset_btn.isEnabled(), "built-in presets cannot be deleted")
 
         with TemporaryDirectory() as folder, \
              mock.patch.object(presets, "user_dir", return_value=Path(folder)):
             custom = presets.save_blade_settings(
                 presets.STARTING_NAME, force=18, speed=10, depth=2, passes=1,
                 new_name="Custom Qt Test")
-            window.blade["force"].setValue(28)
+            window.refresh_preset_choices()
             window.load_materials()
-            index = window.material.findData("Custom Qt Test")
-            self.assertGreaterEqual(index, 0)
-            window.material.setCurrentIndex(index)
+            window.select("preset", "Custom Qt Test")
+            self.assertEqual(window.job.settings.force, 18)
             self.assertTrue(window.delete_preset_btn.isEnabled())
-            self.assertIn("Custom Qt Test", window.provenance.text())
+            self.assertIn("Custom Qt Test", window.delete_preset_btn.text())
             with mock.patch.object(qt_gui.QMessageBox, "question", return_value=qt_gui.QMessageBox.StandardButton.Yes):
                 window.delete_selected_preset()
             self.assertFalse(custom.exists())
+            self.assertEqual(window.choice("preset"), presets.STARTING_NAME)
             self.assertFalse(window.delete_preset_btn.isEnabled())
-            self.assertEqual(window.job.settings.force, 28)
 
     def test_manual_depth_fits_with_a_large_font(self):
         window = self.window
@@ -482,7 +538,7 @@ class TestQtFrontend(unittest.TestCase):
         self.assertTrue(design.page_advanced.disclosure.isChecked())
         design.print_border.setChecked(True)
         self.assertTrue(design.print_border.isChecked())
-        design.review_button.click()
+        design.send_workspace.click()
         self.assertFalse(window.job.blocked)
         self.assertEqual([(group.settings.holder, group.settings.force) for group in window.job.action_groups],
                          [(1, 28), (2, 12)])
@@ -518,30 +574,61 @@ class TestQtFrontend(unittest.TestCase):
         with mock.patch.object(QFileDialog, "getSaveFileName", return_value=(str(target), "")):
             self.assertTrue(design.save())
         self.assertEqual(editor_model.load_project(target), design.project)
-        design.review_button.click()
+        design.send_workspace.click()
         self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
         self.assertEqual(len(window.job.paths), 1)
         self.assertFalse(window.job.blocked)
 
-    def test_grouped_send_and_pending_design_are_preserved(self):
+    def test_switching_to_send_sends_the_edited_design_like_studio(self):
         window = self.window
+        generated = len(window.job.paths)
         window.open_design()
         design = window.design
+        design.send_workspace.click()
+        self.assertEqual(len(window.job.paths), generated, "a design only looked at leaves Send alone")
+        window.open_design()
         cut = editor_model.Shape("Rectangle", 30, 40)
         score = editor_model.Shape("Line", 80, 40, action="Score")
         design.commit_shapes((cut, score), (0, 1))
-        window.review_design(design.project, editor_model.ALL_ACTIONS)
-        groups = window.group_rows
-        groups["Cut"][0].setChecked(True)
-        groups["Score"][0].setChecked(True)
-        self.assertEqual([g.key for g in window.job.action_groups], ["Cut", "Score"])
-        self.assertFalse(window.job.blocked)
-        checked = window.job
-        design.commit_shapes((cut,), (0,))
         design.send_workspace.click()
+        self.assertEqual(window.workspaces.currentIndex(), 0)
         self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
-        self.assertEqual(window.review_tab(), "Design")
-        self.assertIn("latest edits", window.send_refusal(checked, window.connection()))
+        self.assertEqual(len(window.job.paths), 2)
+        self.assertEqual(sorted(window.group_rows), ["Cut", "Score"], "mixed actions get their own groups")
+        self.assertNotIn("design", window.send_refusal(window.job, window.connection()).lower())
+
+    def test_newly_opened_send_artwork_is_not_replaced_by_an_older_design(self):
+        window = self.window
+        window.open_design()
+        window.design.commit_shapes((editor_model.Shape("Rectangle", 30, 40),), (0,))
+        window.design.send_workspace.click()
+        self.assertEqual(len(window.job.paths), 1)
+        window.reset_artwork()
+        generated = len(window.job.paths)
+        self.assertGreater(generated, 1)
+        window.open_design()
+        window.design.send_workspace.click()
+        self.assertEqual(len(window.job.paths), generated)
+
+    def test_an_unusable_design_stays_in_design_with_the_reason(self):
+        window = self.window
+        window.open_design()
+        design = window.design
+        with mock.patch.object(qt_gui.editor_model, "send_handoff",
+                               return_value=("invalid", "Draw or resize the paths before sending.")):
+            design.send_workspace.click()
+        self.assertIs(window.workspaces.currentWidget(), design)
+        self.assertIn("resize the paths", design.status.text())
+
+    def test_send_refuses_a_design_edit_it_has_not_used(self):
+        window = self.window
+        window.open_design()
+        design = window.design
+        design.commit_shapes((editor_model.Shape("Rectangle", 30, 40),), (0,))
+        design.send_workspace.click()
+        self.assertEqual(window.send_refusal(window.job, window.connection()), "")
+        design.commit_shapes((editor_model.Shape("Ellipse", 30, 40),), (0,))  # edited without switching
+        self.assertIn("has not used", window.send_refusal(window.job, window.connection()))
 
     def test_send_rechecks_the_connection_and_only_passes_checked_steps(self):
         window = self.window
@@ -594,7 +681,7 @@ class TestQtFrontend(unittest.TestCase):
     def test_corner_test_sends_only_one_square_and_leaves_the_layout_in_place(self):
         window = self.window
         self.assertEqual(tuple(window.tabs.tabText(i) for i in range(window.tabs.count())),
-                         ("Layout", "Sheet", "Material Presets", "Cut Job"))
+                         ("Layout", "Sheet", "Cut Job"))
         window.blade["passes"].setValue(4)
         plan = window.job
         sample = corner_test.build(plan, bleed_mm=window.controls["bleed_mm"].value())
@@ -624,8 +711,7 @@ class TestQtFrontend(unittest.TestCase):
             window.choose_material_csv()
         self.assertEqual(materials.find_condition_csv().read_bytes(), source.read_bytes())
         self.assertGreaterEqual(window.controls["preset"].findData("Sample vinyl"), 0)
-        window.material.setCurrentIndex(window.material.findData("Sample vinyl"))
-        window.apply_material()
+        window.select("preset", "Sample vinyl")
         self.assertEqual([window.blade[field].value() for field in ("force", "speed", "depth")], [16, 8, 3])
 
         invalid = self.config_path / "unusable.csv"
@@ -802,12 +888,12 @@ class TestQtFrontend(unittest.TestCase):
 
     def test_qt_workspace_toggle_and_matched_zip_restrictions(self):
         window = self.window
-        window.tabs.setCurrentIndex(window.tab("Materials"))
-        self.assertEqual(window.tabs.currentIndex(), window.tab("Materials"))
+        window.tabs.setCurrentIndex(window.tab("Sheet"))
+        self.assertEqual(window.tabs.currentIndex(), window.tab("Sheet"))
         window.open_design()
         self.assertIsNotNone(window.design)
         window.leave_design()
-        self.assertEqual(window.tabs.currentIndex(), window.tab("Materials"))
+        self.assertEqual(window.tabs.currentIndex(), window.tab("Sheet"))
 
         # Matched ZIP locked dialog
         window.bundle = mock.MagicMock()
@@ -884,7 +970,8 @@ class TestQtFrontend(unittest.TestCase):
         self.assertTrue(window.tuning)
         self.assertEqual(window.guide.spot, spot)
 
-        window.edit_settings_btn.click()
+        self.assertFalse(window.preset_actions.isVisibleTo(window), "the guide saves its own presets")
+        window.open_cut_settings()
         self.assertTrue(window.tuning)
         window.open_send_workspace()
         self.assertTrue(window.tuning)
@@ -1143,18 +1230,39 @@ class TestQtFrontend(unittest.TestCase):
         self.assertTrue(window.controls["mark_inset_mm"].isEnabled())
         self.assertTrue(window.skip.isEnabled())
 
-    def test_a_running_job_refuses_a_material_preset_change(self):
+    def test_a_running_job_locks_the_material_and_its_library(self):
         window = self.window
-        window.blade["force"].setValue(25)
-        window.rebuild()
-        window.active_job = window.job
-        window.update_enabled_fields()
-        with mock.patch.object(window, "message") as message, \
-             mock.patch.object(window, "load_preset") as load:
-            window.apply_material()
-        load.assert_not_called()
-        self.assertIn("running", message.call_args.args[0])
-        self.assertEqual(window.blade["force"].value(), 25)
+        with TemporaryDirectory() as folder, \
+             mock.patch.object(presets, "user_dir", return_value=Path(folder)):
+            custom = presets.save_blade_settings(presets.STARTING_NAME, force=18, speed=10, depth=2,
+                                                 passes=1, new_name="Locked Qt Test")
+            window.refresh_preset_choices()
+            window.load_materials()
+            window.select("preset", "Locked Qt Test")
+            window.update_enabled_fields()
+            idle = [b.isEnabled() for b in window.material_buttons()]
+            self.assertTrue(all(idle), "idle: every material action is available")
+            self.assertTrue(window.controls["preset"].isEnabled())
+
+            window.active_job = window.job
+            window.update_enabled_fields()
+            self.assertFalse(window.controls["preset"].isEnabled())
+            self.assertFalse(any(b.isEnabled() for b in window.material_buttons()))
+            with mock.patch.object(window, "message") as message, \
+                 mock.patch.object(window, "load_preset") as load, \
+                 mock.patch.object(qt_gui.QMessageBox, "question",
+                                   return_value=qt_gui.QMessageBox.StandardButton.Yes):
+                window.delete_selected_preset()
+                window.save_preset()
+                window.restore_materials()
+            load.assert_not_called()
+            self.assertTrue(custom.exists(), "a running job's material is not deleted")
+            self.assertEqual(message.call_count, 3)
+            self.assertIn("running", message.call_args.args[0])
+
+            window.active_job = None
+            window.update_enabled_fields()
+            self.assertTrue(all(b.isEnabled() for b in window.material_buttons()), "unlocked again")
 
     def test_the_holder_tabs_name_the_detected_tool_and_depth_follows_it(self):
         window = self.window
@@ -1450,6 +1558,27 @@ class TestQtDesignEditor(unittest.TestCase):
         self.assertTrue(inspector.combo.isVisibleTo(inspector))
         self.assertTrue(inspector.wants_combo(edge + 1), "the combo holds until there is room to spare")
         self.assertFalse(inspector.wants_combo(edge + inspector.SWITCH_MARGIN + 1))
+
+    def test_add_shape_works_with_the_default_select_tool(self):
+        design = self.editor()
+        self.assertEqual(design.tool.currentData(), "Select")
+        design.add_default()
+        self.assertEqual([shape.kind for shape in design.project.shapes], ["Rectangle"])
+        design.tool.setCurrentIndex(design.tool.findData("Ellipse"))
+        design.add_default()
+        self.assertEqual([shape.kind for shape in design.project.shapes], ["Rectangle", "Ellipse"])
+
+    def test_design_zoom_has_keyboard_shortcuts_scoped_to_the_editor(self):
+        from PySide6.QtGui import QKeySequence
+        design = self.editor()
+        levels = []
+        design.canvas.zoom_changed.connect(levels.append)
+        for keys in ("Ctrl+=", "Ctrl+-", "Ctrl+0"):
+            found = [a for a in design.actions() if QKeySequence(keys) in a.shortcuts()]
+            self.assertEqual(len(found), 1, keys)
+            self.assertEqual(found[0].shortcutContext(), qt_gui.Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            found[0].trigger()
+        self.assertEqual(len(levels), 3)
 
     def test_a_long_checkbox_label_wraps_instead_of_being_clipped(self):
         design = self.editor()

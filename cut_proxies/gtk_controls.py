@@ -1,6 +1,6 @@
 """Small native controls shared by the GTK workspaces."""
 
-from gi.repository import Adw, Gdk, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 
 def workspace_header(design, send, *, active):
@@ -9,9 +9,14 @@ def workspace_header(design, send, *, active):
     switch = Gtk.Box(spacing=4)
     buttons = []
     for name, callback in (("Design", design), ("Send", send)):
-        button = Gtk.Button(label=name)
+        # A toggle, so assistive technology hears which workspace is current.
+        # Each workspace has its own header, so its state never changes:
+        # a click switches workspace and the press is put back afterwards.
+        current = name == active
+        button = Gtk.ToggleButton(label=name, active=current)
         button.connect("clicked", callback)
-        if name == active:
+        button.connect("clicked", lambda widget, keep=current: widget.set_active(keep))
+        if current:
             button.add_css_class("suggested-action")
             button.update_property([Gtk.AccessibleProperty.DESCRIPTION], ["Current workspace"])
         switch.append(button)
@@ -67,3 +72,11 @@ def disclosure(parent, title="Advanced Options"):
     toggle.set_child(body)
     parent.append(toggle)
     return body, toggle
+
+
+def menu_item(label, action, shortcut=None):
+    """A menu entry that shows its keyboard shortcut, as Qt's menus do."""
+    item = Gio.MenuItem.new(label, action)
+    if shortcut:
+        item.set_attribute_value("accel", GLib.Variant.new_string(shortcut.split("|")[0]))
+    return item

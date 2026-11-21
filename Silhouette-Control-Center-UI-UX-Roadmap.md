@@ -52,6 +52,8 @@ Scope covers the Qt and GTK desktop frontends. The roadmap follows the audit of 
 
 **Done when.** At 850×600, opening Cut Job shows the entry point for material testing without scrolling through blade settings. From Material Presets, one action lands on the editable controls. Editing a job and saving a preset have distinct labels and predictable effects.
 
+**Superseded 2026-11-20.** A design critique found five entry points for one decision (the Material Presets tab with its own picker and Apply, its Current Cut Settings card, the Material choice on Cut Job, Dial In a Material, Settings → Cut Settings). The Material Presets tab is gone. The Material choice on Cut Job is the only picker and shows where the preset comes from. **Update Preset** and **Save as New…** sit after the values, and deleting, importing and restoring presets live under **Cut Job → Advanced Options → Material library**. Every material action is locked while a job runs, in both front ends.
+
 ## Phase 3 · Fix compact layout, legibility, and styling
 
 ### 7. Make the Qt Design inspector fit small windows

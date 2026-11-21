@@ -32,7 +32,7 @@ CONTROL_HELP = {
 }
 
 SETUP_STEPS = (
-    "1. Draw in Design, open cut artwork in Layout, or open a ProxyPress ZIP in Sheet.\n\n"
+    "1. Draw in Design, open a cut template in Layout, or open a ProxyPress ZIP in Sheet.\n\n"
     "2. In Send, connect your cutter and choose a material. Use Dial In a Material to try a scrap.\n\n"
     "3. Cutting a print? Check the PDF in Sheet and test the printed marks in Send."
 )

@@ -13,6 +13,7 @@ import tempfile
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+import traceback
 from cut_proxies import gui, layout_presets, sheet, template
 from gi.repository import Gio, GLib, Gtk
 
@@ -24,8 +25,10 @@ results = {'checks': [], 'screenshots': [], 'capture_errors': []}
 app = gui.Application()
 app.set_application_id('org.printing.SilhouetteControlCenter.Audit')
 app.set_flags(Gio.ApplicationFlags.NON_UNIQUE)
-pages = iter(('layout', 'sheet', 'blade', 'cut'))
+pages = iter(('layout', 'sheet', 'cut'))
 failed = []
+cameo4 = next(d for d in gui.graphtec.DEVICES if d.name == 'Silhouette Cameo 4')
+fake_usb = [(cameo4, '/dev/usb/lp0', (1, 2))]
 
 
 def capture(window, name):
@@ -53,8 +56,8 @@ def next_page():
             return False
         window.stack.set_visible_child_name(name)
         GLib.timeout_add(250, snapshot_page, name)
-    except Exception as error:
-        failed.append(str(error))
+    except Exception:
+        failed.append(traceback.format_exc())
         app.quit()
     return False
 
@@ -69,6 +72,9 @@ def snapshot_page(name):
 def audit():
     try:
         window = app.get_active_window()
+        window.refresh_usb()
+        window._checking_status = False
+        window.update_send_actions()
         assert window.job is not None and not window.job.blocked
         assert window.cut_button.get_sensitive()
         results['checks'].append('Initial preview builds and verifies')
@@ -138,8 +144,8 @@ def audit():
             assert image.getpixel((int(50 * 100 / 25.4), int(50 * 100 / 25.4)))[2] > 150
             results['checks'].append('Full-colour PDF artwork renders behind paths at its physical page dimensions')
         GLib.idle_add(next_page)
-    except Exception as error:
-        failed.append(str(error))
+    except Exception:
+        failed.append(traceback.format_exc())
         app.quit()
     return False
 
@@ -150,7 +156,8 @@ def start(*_):
 
 app.connect('activate', start)
 GLib.timeout_add_seconds(25, lambda: (failed.append('audit timed out'), app.quit(), False)[-1])
-with mock.patch.object(gui.transport, 'open_transport', side_effect=AssertionError('USB prohibited during UI audit')):
+with mock.patch.object(gui.transport, 'open_transport', side_effect=AssertionError('USB prohibited during UI audit')), \
+     mock.patch.object(gui.transport, 'usb_endpoints', return_value=fake_usb):
     app.run([])
 results['failures'] = failed
 (args.output / 'report.json').write_text(json.dumps(results, indent=2) + '\n')

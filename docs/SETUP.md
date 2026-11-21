@@ -196,9 +196,9 @@ an editable `.scc-template` project. Choose **Send** to review the cut.
 
 Open artwork and choose **Send → Advanced Options → Send by**. **Standard** uses the current
 cut settings. **Line**, **Fill**, and **Layer** let you choose which groups
-to cut and set a material, holder, and order for each one. In Design,
-**All actions** gives Cut and Score their own groups. Use **Object → Tool
-Holder** to assign selected shapes to a holder before reviewing in Send.
+to cut and set a material, holder, and order for each one. A design with both
+Cut and Score lines gives each its own group when you switch to Send. Use
+**Object → Tool Holder** to assign selected shapes to a holder before switching.
 
 ```sh
 silhouette-control-center import design.svg --list-groups line

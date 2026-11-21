@@ -11,6 +11,15 @@ from .sticker_assets import Sticker
 
 
 KINDS = ("Rectangle", "Rounded rectangle", "Ellipse", "Line")
+
+
+def shape_to_add(tool):
+    """What Add Shape places: the chosen shape tool's shape, or a rectangle
+    when the tool is not a shape tool, so the button always does something."""
+    return tool if tool in KINDS else "Rectangle"
+
+
+ADD_SHAPE_TIP = "Add the shape tool's shape, or a rectangle, at the centre of the page."
 ACTIONS = ("Cut", "Score", "None")
 LINE_STYLES = {"solid": "Solid", "dashed": "Dashed", "dotted": "Dotted"}
 ALL_ACTIONS = "All actions"
@@ -446,7 +455,7 @@ def artwork(shapes, width, height, action="Cut"):
 def holder_defaults(drawing):
     labels = set(actions.HOLDER_SETTINGS.values())
     groups = actions.group_paths(drawing.paths, "layer")
-    if any(key.rsplit(" / ", 1)[-1] in labels for key in groups):
+    if len(groups) > 1 or any(key.rsplit(" / ", 1)[-1] in labels for key in groups):
         return {key: (True, label if (label := key.rsplit(" / ", 1)[-1]) in labels else actions.CURRENT_SETTINGS,
                       None, position)
                 for position, key in enumerate(groups, 1)}
@@ -479,6 +488,39 @@ class Project:
 
     def artwork(self, action="Cut"):
         return artwork(self.shapes, self.width, self.height, action)
+
+
+def send_action(shapes):
+    """The actions a design carries to Send: Cut, Score, or both."""
+    present = {shape.action for shape in shapes if shape.visible and shape.action in ACTIONS[:2]}
+    if len(present) > 1:
+        return ALL_ACTIONS
+    return present.pop() if present else None
+
+
+def send_handoff(project, origin, applied):
+    """What switching to Send does with the design, as Silhouette Studio's
+    SEND tab does: Send cuts the design. A design left as it was opened, or
+    already in Send, changes nothing, and neither does one with nothing to
+    cut, so a look at Design never replaces Send's artwork.
+
+    Returns (verdict, action): "apply", "keep", "empty", "stickers" (those
+    go through Export Print & Cut) or "invalid" (refused, with the reason
+    as the second item)."""
+    if project == applied or (applied is None and project == origin):
+        return "keep", None
+    if any(shape.visible and shape.sticker for shape in project.shapes):
+        return "stickers", None
+    action = send_action(project.shapes)
+    if action is None:
+        return "empty", None
+    try:
+        drawing = project.artwork(action)
+    except ValueError as error:
+        return "invalid", str(error)
+    if not drawing.paths or any(path.length_mm() <= 0 for path in drawing.paths):
+        return "invalid", "Draw or resize the paths before sending."
+    return "apply", action
 
 
 class History:
@@ -716,4 +758,32 @@ def read_project(path, width, height):
     if (project.width, project.height) != (width, height):
         raise ValueError("Select the project's sheet size and orientation first.")
     return project.shapes
+
+
+def object_name(shape: Shape) -> str:
+    """Format an informative human-readable name for an object by kind and size."""
+    kind_labels = {
+        "Rounded Rectangle": "Rounded rect",
+        "Rectangle": "Rectangle",
+        "Ellipse": "Ellipse",
+        "Polygon": "Polygon",
+        "Line": "Line",
+        "Compound": "Compound path",
+        "Path": "Path",
+        "Sticker": "Sticker",
+        "Text": "Text",
+    }
+    label = kind_labels.get(shape.kind, shape.kind)
+    w = abs(shape.width)
+    h = abs(shape.height)
+    if shape.kind == "Line":
+        length = round((w * w + h * h) ** 0.5, 1)
+        dim = f"{length:g} mm"
+    elif shape.kind == "Text" and shape.text and getattr(shape.text, "text", ""):
+        snippet = shape.text.text.strip().split("\n")[0][:12]
+        dim = f"‘{snippet}’"
+    else:
+        dim = f"{round(w, 1):g}×{round(h, 1):g}"
+    return f"{label} {dim}"
+
 

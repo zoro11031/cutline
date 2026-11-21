@@ -21,7 +21,7 @@ If you have both frontends installed, choose one with
 
 Open **Setup Guide** in either app for a quick walkthrough. For your first cut:
 
-1. Draw in **Design**, open SVG, DXF, or Studio3 cut artwork in **Layout**,
+1. Draw in **Design**, open an SVG, DXF, or Studio3 cut template in **Layout**,
    or open a ProxyPress ZIP in **Sheet**.
 2. Open **Send** and choose your connection, material, and tool holder.
    Try **Dial In a Material** with a scrap of the same material.
@@ -65,10 +65,11 @@ In **File**, **Open** loads a project, SVG, DXF, or supported Studio3 file.
 | Replicate | Make rows and columns of the selection. |
 | Line and Fill | Set colors and pick Cut, Score, or None. |
 
-Use the **Design / Send** switch to move between workspaces while keeping your
-draft open. Choose **Review in Send** to apply the design to the cut job.
-Choose **All actions** to give Cut and Score their own settings, then review
-them in **Cut Job** before sending them to the cutter.
+Use the **Design / Send** switch to move between workspaces, as in Silhouette
+Studio. Switching to **Send** sends the design you edited: a design with both
+Cut and Score lines gives each its own group in **Cut Job**. A design you only
+opened to look at leaves Send's artwork as it was. Sticker sheets go through
+**Export Print & Cut** instead.
 
 Use **Edit** to undo, redo, duplicate, or delete objects. Use **View** for
 zoom, page rotation, grid, snapping, and borders. Set your

@@ -304,3 +304,42 @@ class TestEditorModel(unittest.TestCase):
                     target.write_text(json.dumps(dict(legacy, guides=guides)))
                     with self.assertRaisesRegex(ValueError, 'Invalid template guides'):
                         editor_model.load_project(target)
+
+
+class TestSendHandoff(unittest.TestCase):
+    """Switching to Send uses the design, as Silhouette Studio's SEND tab does."""
+
+    def project(self, *shapes):
+        return editor_model.Project(279.4, 215.9, shapes)
+
+    def test_an_edited_design_is_sent_with_the_actions_it_holds(self):
+        origin = self.project(editor_model.Shape("Rectangle", 10, 10))
+        cut = self.project(editor_model.Shape("Rectangle", 10, 10), editor_model.Shape("Ellipse", 80, 10))
+        self.assertEqual(editor_model.send_handoff(cut, origin, None), ("apply", "Cut"))
+        score = self.project(editor_model.Shape("Line", 10, 10, action="Score"))
+        self.assertEqual(editor_model.send_handoff(score, origin, None), ("apply", "Score"))
+        both = self.project(editor_model.Shape("Rectangle", 10, 10),
+                            editor_model.Shape("Line", 80, 10, action="Score"))
+        self.assertEqual(editor_model.send_handoff(both, origin, None), ("apply", editor_model.ALL_ACTIONS))
+
+    def test_an_untouched_or_already_sent_design_leaves_send_alone(self):
+        origin = self.project(editor_model.Shape("Rectangle", 10, 10))
+        self.assertEqual(editor_model.send_handoff(origin, origin, None), ("keep", None))
+        edited = self.project(editor_model.Shape("Ellipse", 10, 10))
+        self.assertEqual(editor_model.send_handoff(edited, origin, edited), ("keep", None))
+        # Undoing back to the opened design after sending an edit is itself an edit.
+        self.assertEqual(editor_model.send_handoff(origin, origin, edited), ("apply", "Cut"))
+
+    def test_a_design_with_nothing_to_cut_keeps_send_s_artwork(self):
+        origin = self.project(editor_model.Shape("Rectangle", 10, 10))
+        hidden = self.project(editor_model.Shape("Rectangle", 10, 10, visible=False),
+                              editor_model.Shape("Ellipse", 50, 10, action="None"))
+        self.assertEqual(editor_model.send_handoff(self.project(), origin, None), ("empty", None))
+        self.assertEqual(editor_model.send_handoff(hidden, origin, None), ("empty", None))
+
+    def test_unusable_paths_are_refused_and_stickers_go_through_print_and_cut(self):
+        origin = self.project(editor_model.Shape("Rectangle", 10, 10))
+        flat = self.project(editor_model.Shape("Rectangle", 10, 10, 0, 0))
+        self.assertEqual(editor_model.send_handoff(flat, origin, None)[0], "invalid")
+        sticker = replace(editor_model.Shape("Rectangle", 10, 10), sticker=object())
+        self.assertEqual(editor_model.send_handoff(self.project(sticker), origin, None), ("stickers", None))
