@@ -2,7 +2,7 @@ import pathlib
 import tempfile
 import unittest
 
-from cut_proxies import importer, job, verify
+from cutline import importer, job, verify
 
 
 class TestImportedPaths(unittest.TestCase):

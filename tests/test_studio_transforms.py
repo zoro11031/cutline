@@ -5,7 +5,7 @@ import io
 import math
 import unittest
 
-from cut_proxies import editor_model as model, transforms
+from cutline import editor_model as model, transforms
 
 try:
     from PIL import Image, ImageDraw
@@ -161,7 +161,7 @@ class TestModifyAndOffset(unittest.TestCase):
 @unittest.skipIf(Image is None, "Pillow is needed to trace images")
 class TestTrace(unittest.TestCase):
     def image(self):
-        from cut_proxies import sticker_assets
+        from cutline import sticker_assets
 
         picture = Image.new("RGBA", (200, 100), (255, 255, 255, 255))
         draw = ImageDraw.Draw(picture)
@@ -174,7 +174,7 @@ class TestTrace(unittest.TestCase):
                            sticker=sticker_assets.Sticker(base64.b64encode(data.getvalue()).decode(), "t.png"))
 
     def test_trace_styles_and_area(self):
-        from cut_proxies import sticker_trace
+        from cutline import sticker_trace
 
         shape = self.image()
         image, traced = sticker_trace.trace_shapes(shape, style="Trace")

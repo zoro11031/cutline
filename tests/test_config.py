@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from cut_proxies import cli, config, job, materials, presets, verify
+from cutline import cli, config, job, materials, presets, verify
 
 
 class TestConfig(unittest.TestCase):
@@ -215,3 +215,60 @@ class TestCutterDivisions(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestOldFoldersMoveForward(unittest.TestCase):
+    """Settings saved under the old name are moved once, never overwritten."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name)
+        self.old, self.new = self.root / "cut-proxies", self.root / "cutline"
+
+    def test_the_old_folder_moves_when_the_new_one_does_not_exist(self):
+        self.old.mkdir()
+        (self.old / "settings.json").write_text("{}")
+        self.assertEqual(config._moved_forward(self.new, self.old), self.new)
+        self.assertEqual((self.new / "settings.json").read_text(), "{}")
+        self.assertFalse(self.old.exists())
+
+    def test_an_existing_new_folder_is_kept_and_the_old_one_left_alone(self):
+        self.old.mkdir()
+        (self.old / "settings.json").write_text("old")
+        self.new.mkdir()
+        (self.new / "settings.json").write_text("new")
+        self.assertEqual(config._moved_forward(self.new, self.old), self.new)
+        self.assertEqual((self.new / "settings.json").read_text(), "new")
+        self.assertEqual((self.old / "settings.json").read_text(), "old")
+
+    def test_nothing_to_move_gives_the_new_folder(self):
+        self.assertEqual(config._moved_forward(self.new, self.old), self.new)
+        self.assertFalse(self.new.exists())
+
+
+
+class TestEarlierEngineName(unittest.TestCase):
+    def test_a_saved_proxypress_engine_reads_back_as_the_centred_grid(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(config, "CONFIG_DIR", Path(tmp)):
+            config.save_settings({"engine": "proxypress", "sheet": "A4"})
+            self.assertEqual(config.load_settings(), {"engine": "centered", "sheet": "A4"})
+            config.save_settings({"engine": "scm"})
+            self.assertEqual(config.load_settings(), {"engine": "scm"})
+
+
+class TestEarlierNamesSettle(unittest.TestCase):
+    def test_the_first_earlier_folder_found_moves_forward(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root, self.old = Path(folder.name), Path(folder.name) / "cut-proxies"
+        self.old.mkdir()
+        newer = self.root / "kerf"
+        newer.mkdir()
+        (newer / "settings.json").write_text("kerf")
+        target = self.root / "cutline"
+        self.assertEqual(config._settled(target, newer, self.old), target)
+        self.assertEqual((target / "settings.json").read_text(), "kerf")
+        self.assertFalse(newer.exists())
+        self.assertTrue(self.old.exists(), "the older folder is left alone once one has moved")
+

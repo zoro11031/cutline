@@ -85,7 +85,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='appimage-build-', dir=out) as work:
         work = pathlib.Path(work)
-        app = work / 'SilhouetteControlCenter.AppDir'
+        app = work / 'Cutline.AppDir'
         install(app)
         lib = app / 'usr/lib'
         sources = set()
@@ -216,21 +216,21 @@ def main():
             'pyusb_bundled': (site / 'usb').exists(),
             'pyusb_wheel_sha256': digest if args.pyusb_wheel else None,
         }
-        (app / 'usr/share/doc/silhouette-control-center/bundle.json').write_text(json.dumps(manifest, indent=2) + '\n')
+        (app / 'usr/share/doc/cutline/bundle.json').write_text(json.dumps(manifest, indent=2) + '\n')
         copy(ROOT / 'packaging/AppRun', app / 'AppRun')
         (app / 'AppRun').chmod(0o755)
-        desktop = app / 'org.printing.SilhouetteControlCenter.desktop'
-        copy(ROOT / 'share/cut-proxies.desktop', desktop)
-        copy(ROOT / 'share/icons/cut-proxies.svg', app / 'org.printing.SilhouetteControlCenter.svg')
-        (app / '.DirIcon').symlink_to('org.printing.SilhouetteControlCenter.svg')
+        desktop = app / 'io.github.zoro11031.Cutline.desktop'
+        copy(ROOT / 'share/cutline.desktop', desktop)
+        copy(ROOT / 'share/icons/cutline.svg', app / 'io.github.zoro11031.Cutline.svg')
+        (app / '.DirIcon').symlink_to('io.github.zoro11031.Cutline.svg')
         run('desktop-file-validate', str(desktop))
         run(str(app / 'AppRun'), 'cut', '--dry-run', stdout=subprocess.DEVNULL)
         payload = work / 'payload.squashfs'
         run('mksquashfs', str(app), str(payload), '-noappend', '-comp', 'zstd',
             '-no-progress', '-all-root', '-processors', '4')
         version = {}
-        exec((ROOT / 'cut_proxies/__init__.py').read_text(), version)
-        image = out / ('SilhouetteControlCenter-' + version['__version__'] + '-x86_64.AppImage')
+        exec((ROOT / 'cutline/__init__.py').read_text(), version)
+        image = out / ('Cutline-' + version['__version__'] + '-x86_64.AppImage')
         with image.open('wb') as stream:
             stream.write(runtime.read_bytes())
             with payload.open('rb') as data:

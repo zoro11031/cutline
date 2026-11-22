@@ -10,8 +10,8 @@ up with anything, and no other test here is worth reading.
 import math
 import unittest
 
-from cut_proxies import geometry
-from cut_proxies.geometry import LayoutImpossible, ProxyPressSettings
+from cutline import geometry
+from cutline.geometry import LayoutImpossible, CenteredGridSettings
 
 
 class TestPublishedLayouts(unittest.TestCase):
@@ -89,7 +89,7 @@ class TestCardBounds(unittest.TestCase):
                                    delta=0.05)
 
     def test_reading_order(self):
-        # Left to right, then top to bottom: the order Proxy Press fills
+        # Left to right, then top to bottom: the order a print layout fills
         # slots, so card n in the template is card n on the sheet.
         for r in range(self.grid.rows):
             for c in range(self.grid.cols - 1):
@@ -143,16 +143,16 @@ class TestCardNames(unittest.TestCase):
         self.assertIn("standard", str(ctx.exception))
 
 
-class TestProxyPressLayout(unittest.TestCase):
-    """Against Proxy Press's own layout(), transcribed from proxy-press.html."""
+class TestCenteredLayout(unittest.TestCase):
+    """The grid centred on the whole sheet, against hand-worked layouts."""
 
     def test_letter_landscape_nine_up_rotated(self):
         # Its Silhouette preset: Letter landscape, no bleed, no gap. With
         # cards turned on their side, 3x3 fits, which is what that preset is
         # for.
-        s = ProxyPressSettings(bleed_mm=0.0, gap_mm=0.0, margin_mm=4.0,
+        s = CenteredGridSettings(bleed_mm=0.0, gap_mm=0.0, margin_mm=4.0,
                                rotation="auto")
-        g = geometry.proxypress_layout("Letter", portrait=False, settings=s)
+        g = geometry.centered_layout("Letter", portrait=False, settings=s)
         self.assertEqual((g.cols, g.rows), (3, 3))
         self.assertEqual(g.count, 9)
         # Rotated: the face presented is 88 wide by 63 tall.
@@ -160,30 +160,30 @@ class TestProxyPressLayout(unittest.TestCase):
         self.assertAlmostEqual(g.card.height_mm, 63.0)
 
     def test_grid_is_centred_on_the_whole_sheet(self):
-        s = ProxyPressSettings(margin_mm=4.0)
-        g = geometry.proxypress_layout("Letter", False, s)
+        s = CenteredGridSettings(margin_mm=4.0)
+        g = geometry.centered_layout("Letter", False, s)
         b = g.bounds
         self.assertAlmostEqual(b.x, g.sheet_w_mm - b.x2, places=6)
         self.assertAlmostEqual(b.y, g.sheet_h_mm - b.y2, places=6)
 
     def test_bleed_insets_the_face_within_its_slot(self):
-        s = ProxyPressSettings(bleed_mm=1.0, gap_mm=0.0, margin_mm=4.0,
+        s = CenteredGridSettings(bleed_mm=1.0, gap_mm=0.0, margin_mm=4.0,
                                rotation="upright")
-        g = geometry.proxypress_layout("Letter", False, s)
+        g = geometry.centered_layout("Letter", False, s)
         # Adjacent faces are 2 * bleed apart when the gap is zero.
         row0 = g.cards[:g.cols]
         for a, b in zip(row0, row0[1:]):
             self.assertAlmostEqual(b.x - a.x2, 2.0, places=6)
 
     def test_explicit_cols_and_rows_are_honoured(self):
-        s = ProxyPressSettings(cols=2, rows=2, rotation="upright")
-        g = geometry.proxypress_layout("Letter", False, s)
+        s = CenteredGridSettings(cols=2, rows=2, rotation="upright")
+        g = geometry.centered_layout("Letter", False, s)
         self.assertEqual((g.cols, g.rows), (2, 2))
 
     def test_the_current_cameo_setup_is_eight_up(self):
-        from cut_proxies import config
-        g = geometry.proxypress_layout(
-            "Letter", False, config.PROXYPRESS_8UP)
+        from cutline import config
+        g = geometry.centered_layout(
+            "Letter", False, config.CARD_SHEET_8UP)
         self.assertEqual((g.cols, g.rows), (4, 2))
         self.assertAlmostEqual(g.card.radius_mm, 3.2)
         scm = geometry.scm_layout("Letter", "standard", False, 10.0)
@@ -192,10 +192,10 @@ class TestProxyPressLayout(unittest.TestCase):
 
     def test_the_two_engines_disagree_and_say_so(self):
         a = geometry.scm_layout("Letter", "standard", False, 10.0)
-        b = geometry.proxypress_layout(
-            "Letter", False, ProxyPressSettings(margin_mm=4.0))
+        b = geometry.centered_layout(
+            "Letter", False, CenteredGridSettings(margin_mm=4.0))
         self.assertEqual(a.engine, "scm")
-        self.assertEqual(b.engine, "proxypress")
+        self.assertEqual(b.engine, "centered")
         # Same sheet, different grids: this is why a template records which
         # engine produced it.
         self.assertNotEqual((a.cols, a.rows), (b.cols, b.rows))

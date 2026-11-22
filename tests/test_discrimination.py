@@ -10,16 +10,15 @@ notice each time. A check that can only answer one way then fails at least
 one direction, and a check wired to a constant fails both.
 
 This runs the other test classes in-process, which is unusual, but the
-alternative is a one-off script run once by hand — and the whole argument
-of `docs/FINDINGS.md` section 18 is that a proving run which does not
-happen alongside the thing it certifies is not evidence about it. It is
+alternative is a one-off script run once by hand, and a proving run which
+does not happen alongside the thing it certifies is not evidence about it. It is
 cheap: nine sub-suites of a few tests each.
 """
 
 import io
 import unittest
 
-from cut_proxies import (actions, corner_test, pixscan, cutters, editor_model, graphtec, job, regmarks, sheet, starting_guide,
+from cutline import (actions, config, corner_test, pixscan, cutters, editor_model, graphtec, job, regmarks, sheet, starting_guide,
                          sticker_print, testcut, tooling, transport, verify)
 
 
@@ -206,9 +205,9 @@ def _reject_bundle_page_count(*args, **kwargs):
 
 CASES += (
     (sheet, "measure", _ignore_bundle_page_count, "every bundle PDF page count accepted",
-     ["tests.test_proxypress_bundle.BundleRules.test_pdf_page_count_must_match_the_full_bundle_mapping"]),
+     ["tests.test_print_bundle.BundleRules.test_pdf_page_count_must_match_the_full_bundle_mapping"]),
     (sheet, "measure", _reject_bundle_page_count, "every bundle PDF page count refused",
-     ["tests.test_proxypress_bundle.BundleRules.test_pdf_page_count_must_match_the_full_bundle_mapping"]),
+     ["tests.test_print_bundle.BundleRules.test_pdf_page_count_must_match_the_full_bundle_mapping"]),
     (job, "cutting_mat_errors", lambda *a: [], "every explicit cutting mat accepted",
      ["tests.test_send.TestMediaHandling.test_compatible_portrait_mat_allows_matching_sheet_and_refuses_wrong_size"]),
     (job, "cutting_mat_errors", lambda *a: ["wrong mat"], "every explicit cutting mat refused",
@@ -248,10 +247,18 @@ CASES += (
     (editor_model.TextSpec, "styled", property(lambda _spec: True),
      "plain text forced to project version 6",
      ["tests.test_text_style.TestTextProjectVersion"]),
+    (starting_guide, "pass_runs", lambda log: ((log[0], len(log)),) if log else (),
+     "every tested spot read as one setting", ["tests.test_starting_guide.TestPassLog"]),
+    (starting_guide, "pass_runs", lambda log: tuple((entry, 1) for entry in log),
+     "every tested spot read as mixed settings", ["tests.test_starting_guide.TestPassLog"]),
+    (config, "_moved_forward", lambda new, old: new, "old settings never moved forward",
+     ["tests.test_config.TestOldFoldersMoveForward"]),
+    (config, "_moved_forward", lambda new, old: old, "settings always left in the old folder",
+     ["tests.test_config.TestOldFoldersMoveForward"]),
 )
 
 try:
-    from cut_proxies import gui
+    from cutline import gui
 except ImportError:
     gui = None
 if gui is not None:
@@ -273,7 +280,7 @@ if gui is not None:
     )
 
 try:
-    from cut_proxies import qt_gui
+    from cutline import qt_gui
 except ImportError:
     qt_gui = None
 if qt_gui is not None:

@@ -10,7 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from cut_proxies import geometry, importer, regmarks  # noqa: E402
+from cutline import geometry, importer, regmarks  # noqa: E402
 
 CARDS = {'standard': 'Standard', 'poker': 'Poker', 'japanese': 'Japanese',
          'bridge': 'Bridge', 'catan': 'Catan', 'tarot': 'Tarot'}
@@ -53,7 +53,7 @@ def main():
     for paper, paper_name in (('letter', 'Letter'), ('a4', 'A4')):
         rows.extend(derive(source, layouts, paper, paper_name, card, False) for card in CARDS)
         rows.append(derive(source, layouts, paper, paper_name, 'standard', True))
-    output = ROOT / 'cut_proxies' / 'assets' / 'scm'
+    output = ROOT / 'cutline' / 'assets' / 'scm'
     output.mkdir(parents=True, exist_ok=True)
     (output / 'LICENSE.txt').write_bytes((source / 'LICENSE.md').read_bytes())
     entries = ',\n'.join(json.dumps(row, separators=(',', ':')) for row in rows)

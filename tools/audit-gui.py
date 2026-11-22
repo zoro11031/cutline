@@ -14,7 +14,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import traceback
-from cut_proxies import gui, layout_presets, sheet, template
+from cutline import gui, layout_presets, sheet, template
 from gi.repository import Gio, GLib, Gtk
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -23,7 +23,7 @@ args = parser.parse_args()
 args.output.mkdir(parents=True, exist_ok=True)
 results = {'checks': [], 'screenshots': [], 'capture_errors': []}
 app = gui.Application()
-app.set_application_id('org.printing.SilhouetteControlCenter.Audit')
+app.set_application_id('io.github.zoro11031.Cutline.Audit')
 app.set_flags(Gio.ApplicationFlags.NON_UNIQUE)
 pages = iter(('layout', 'sheet', 'cut'))
 failed = []
@@ -78,7 +78,7 @@ def audit():
         assert window.job is not None and not window.job.blocked
         assert window.cut_button.get_sensitive()
         results['checks'].append('Initial preview builds and verifies')
-        assert window.get_title() == 'Silhouette Control Center'
+        assert window.get_title() == 'Cutline'
         assert Gtk.Window.get_default_icon_name() == gui.APP_ID
         icon_theme = Gtk.IconTheme.get_for_display(window.get_display())
         assert icon_theme.has_icon(gui.APP_ID)

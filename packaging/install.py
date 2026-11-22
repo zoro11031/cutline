@@ -10,32 +10,29 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 def install(dest, prefix="/usr"):
     dest = pathlib.Path(dest)
     relative = pathlib.Path(prefix).relative_to('/')
-    lib = dest / relative / 'lib/cut-proxies'
+    lib = dest / relative / 'lib/cutline'
     lib.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(ROOT / 'cut_proxies', lib / 'cut_proxies',
+    shutil.copytree(ROOT / 'cutline', lib / 'cutline',
                     ignore=shutil.ignore_patterns('__pycache__', '*.pyc'),
                     dirs_exist_ok=True)
     launcher = lib / 'launcher.py'
-    launcher.write_text('from cut_proxies.cli import main\nraise SystemExit(main())\n')
-    binary = dest / relative / 'bin/silhouette-control-center'
+    launcher.write_text('from cutline.cli import main\nraise SystemExit(main())\n')
+    binary = dest / relative / 'bin/cutline'
     binary.parent.mkdir(parents=True, exist_ok=True)
     binary.write_text('#!/usr/bin/python3\nimport sys\n'
-                      f'sys.path.insert(0, {str(pathlib.Path(prefix) / "lib/cut-proxies")!r})\n'
-                      'from cut_proxies.cli import main\nraise SystemExit(main())\n')
+                      f'sys.path.insert(0, {str(pathlib.Path(prefix) / "lib/cutline")!r})\n'
+                      'from cutline.cli import main\nraise SystemExit(main())\n')
     binary.chmod(0o755)
-    (binary.parent / 'cut-proxies').symlink_to('silhouette-control-center')
     for source, target in (
-        ('share/cut-proxies.desktop', 'usr/share/applications/org.printing.SilhouetteControlCenter.desktop'),
-        ('share/icons/cut-proxies.svg', 'usr/share/icons/hicolor/scalable/apps/org.printing.SilhouetteControlCenter.svg'),
-        ('README.md', 'usr/share/doc/silhouette-control-center/README.md'),
-        ('docs/SETUP.md', 'usr/share/doc/silhouette-control-center/SETUP.md'),
-        ('docs/FINDINGS.md', 'usr/share/doc/silhouette-control-center/FINDINGS.md'),
+        ('share/cutline.desktop', 'usr/share/applications/io.github.zoro11031.Cutline.desktop'),
+        ('share/icons/cutline.svg', 'usr/share/icons/hicolor/scalable/apps/io.github.zoro11031.Cutline.svg'),
+        ('README.md', 'usr/share/doc/cutline/README.md'),
     ):
         target = dest / relative / target.removeprefix("usr/")
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / source, target)
     if (ROOT / 'LICENSE').is_file():
-        target = dest / relative / 'share/licenses/cut-proxies/LICENSE'
+        target = dest / relative / 'share/licenses/cutline/LICENSE'
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / 'LICENSE', target)
 

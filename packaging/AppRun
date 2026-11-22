@@ -4,12 +4,12 @@ APPDIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 export PYTHONHOME="$APPDIR/usr"
 export PYTHONNOUSERSITE=1
 export PYTHONDONTWRITEBYTECODE=1
-export PYTHONPATH="$APPDIR/usr/lib/cut-proxies"
+export PYTHONPATH="$APPDIR/usr/lib/cutline"
 for site in "$APPDIR"/usr/lib/python*/site-packages; do
     if [ -d "$site" ]; then export PYTHONPATH="$PYTHONPATH:$site"; fi
 done
 unset LD_LIBRARY_PATH
-export CUT_PROXIES_LIBUSB="$APPDIR/usr/lib/libusb-1.0.so.0"
+export CUTLINE_LIBUSB="$APPDIR/usr/lib/libusb-1.0.so.0"
 export GI_TYPELIB_PATH="$APPDIR/usr/lib/girepository-1.0"
 export XDG_DATA_DIRS="$APPDIR/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 export GSETTINGS_SCHEMA_DIR="$APPDIR/usr/share/glib-2.0/schemas"
@@ -21,4 +21,4 @@ export PATH="$APPDIR/usr/bin:$PATH"
 # LD_LIBRARY_PATH: host tools must use their own libraries.
 exec "$APPDIR/usr/lib/ld-linux-x86-64.so.2" \
   --library-path "$APPDIR/usr/lib" "$APPDIR/usr/bin/python3" \
-  "$APPDIR/usr/lib/cut-proxies/launcher.py" "$@"
+  "$APPDIR/usr/lib/cutline/launcher.py" "$@"

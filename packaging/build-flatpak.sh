@@ -3,9 +3,9 @@
 set -eu
 root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 output=${1:-"$root/out/packages"}
-id=org.printing.SilhouetteControlCenter
+id=io.github.zoro11031.Cutline
 branch=50
-version=$(sed -n 's/^__version__ = "\([^"]*\)"/\1/p' "$root/cut_proxies/__init__.py")
+version=$(sed -n 's/^__version__ = "\([^"]*\)"/\1/p' "$root/cutline/__init__.py")
 mkdir -p "$output"
 output=$(cd "$output" && pwd)
 work=$(mktemp -d)
@@ -71,9 +71,9 @@ flatpak build $build_network --bind-mount=/run/build/scc="$work/src" "$work/buil
 cat > "$work/build/files/bin/launch-silhouette" <<'LAUNCH'
 #!/bin/sh
 export PYTHONPATH=/app/lib/python
-export CUT_PROXIES_CONFIG="${XDG_CONFIG_HOME}/cut-proxies"
+export CUTLINE_CONFIG="${XDG_CONFIG_HOME}/cutline"
 if [ "$#" -eq 0 ]; then set -- gui; fi
-exec /app/bin/silhouette-control-center "$@"
+exec /app/bin/cutline "$@"
 LAUNCH
 chmod +x "$work/build/files/bin/launch-silhouette"
 sed -i 's/^Exec=.*/Exec=launch-silhouette gui/' "$work/build/files/share/applications/$id.desktop"
@@ -84,4 +84,4 @@ flatpak build-finish "$work/build" --command=launch-silhouette \
     --filesystem=xdg-documents --filesystem=xdg-download
 flatpak build-export "$work/repo" "$work/build"
 flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
-    "$work/repo" "$output/SilhouetteControlCenter-$version-x86_64.flatpak" "$id"
+    "$work/repo" "$output/Cutline-$version-x86_64.flatpak" "$id"

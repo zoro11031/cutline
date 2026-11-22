@@ -10,8 +10,8 @@ a real built stream and measuring the cards back out of it.
 
 import unittest
 
-from cut_proxies import geometry, graphtec, job as job_mod, regmarks, template
-from cut_proxies.graphtec import CutSettings
+from cutline import geometry, graphtec, job as job_mod, regmarks, template
+from cutline.graphtec import CutSettings
 
 
 class TestUnits(unittest.TestCase):
@@ -159,7 +159,7 @@ class TestWholeChain(unittest.TestCase):
                          f"blocked: {self.job.blocked}")
 
     def test_every_decoded_card_measures_its_nominal_size(self):
-        from cut_proxies import verify
+        from cutline import verify
         d = verify.decode(self.job.stream)
         self.assertEqual(len(d.paths), self.job.grid.count)
         for i, box in enumerate(d.path_bboxes()):
@@ -168,7 +168,7 @@ class TestWholeChain(unittest.TestCase):
                 self.assertAlmostEqual(box.h, 88.0, delta=0.1)
 
     def test_decoded_positions_match_the_grid_once_the_origin_is_added_back(self):
-        from cut_proxies import verify
+        from cutline import verify
         d = verify.decode(self.job.stream)
         ox, oy = self.job.marks.origin_mm
         for i, (rect, box) in enumerate(zip(self.job.grid.cards,
@@ -178,7 +178,7 @@ class TestWholeChain(unittest.TestCase):
                 self.assertAlmostEqual(box.y + oy, rect.y, delta=0.1)
 
     def test_nothing_is_cut_outside_the_registered_area(self):
-        from cut_proxies import verify
+        from cutline import verify
         d = verify.decode(self.job.stream)
         mk = self.job.marks
         for p in d.paths:
@@ -189,7 +189,7 @@ class TestWholeChain(unittest.TestCase):
                 self.assertLessEqual(y, mk.reg_length_mm + 0.05)
 
     def test_all_paths_are_closed_loops(self):
-        from cut_proxies import verify
+        from cutline import verify
         d = verify.decode(self.job.stream)
         self.assertEqual(len(d.closed_paths), self.job.grid.count)
 

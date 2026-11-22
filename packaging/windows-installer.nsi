@@ -5,8 +5,8 @@ SetCompressor /SOLID zlib
 !include "MUI2.nsh"
 !include "x64.nsh"
 
-!define APP_NAME "Silhouette Control Center"
-!define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\SilhouetteControlCenter"
+!define APP_NAME "Cutline"
+!define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Cutline"
 
 Name "${APP_NAME}"
 OutFile "${INSTALLER}"
@@ -17,7 +17,7 @@ VIAddVersionKey "ProductName" "${APP_NAME}"
 VIAddVersionKey "FileDescription" "${APP_NAME} Setup"
 VIAddVersionKey "FileVersion" "${APP_VERSION}"
 VIAddVersionKey "ProductVersion" "${APP_VERSION}"
-VIAddVersionKey "LegalCopyright" "Silhouette Control Center contributors"
+VIAddVersionKey "LegalCopyright" "Cutline contributors"
 
 !define MUI_ABORTWARNING
 !insertmacro MUI_PAGE_WELCOME
@@ -29,7 +29,7 @@ VIAddVersionKey "LegalCopyright" "Silhouette Control Center contributors"
 
 Function .onInit
   ${IfNot} ${RunningX64}
-    MessageBox MB_ICONSTOP "Silhouette Control Center requires 64-bit Windows." /SD IDOK
+    MessageBox MB_ICONSTOP "Cutline requires 64-bit Windows." /SD IDOK
     SetErrorLevel 1
     Quit
   ${EndIf}
@@ -37,7 +37,7 @@ Function .onInit
   SetRegView 64
 FunctionEnd
 
-Section "Silhouette Control Center"
+Section "Cutline"
   SetOutPath "$INSTDIR\app"
   File /r "${PAYLOAD}/*"
 

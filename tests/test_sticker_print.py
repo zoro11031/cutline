@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import unittest
 
-from cut_proxies import bundle, editor_model, job, regmarks, sheet, sticker_print, sticker_trace
+from cutline import bundle, editor_model, job, regmarks, sheet, sticker_print, sticker_trace
 
 
 def make_image(path):

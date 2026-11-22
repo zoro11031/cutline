@@ -4,10 +4,9 @@ __pycache__/
 *.svg.bak
 guest-staging/
 
-# Agent instructions and artifacts
-AGENTS.md
-REVERSE_ENGINEERING_BRIEF.md
-docs/REVERSE_ENGINEERING.md
-docs/STUDIO_WORKSPACE_PLAN.md
-docs/UI_FUNCTIONALITY_AUDIT.md
-
+# Notes, plans and agent instructions stay local; README.md is the only
+# committed Markdown.
+*.md
+!/README.md
+.impeccable/
+.claude/

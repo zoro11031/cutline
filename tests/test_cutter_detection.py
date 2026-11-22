@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from cut_proxies import ble, config, cutters, graphtec, materials, presets, rfcomm, transport
+from cutline import ble, config, cutters, graphtec, materials, presets, rfcomm, transport
 
 
 class TestExactEndpoint(unittest.TestCase):

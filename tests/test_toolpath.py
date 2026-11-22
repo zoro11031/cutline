@@ -2,7 +2,7 @@ import math
 import tempfile
 import unittest
 
-from cut_proxies import graphtec, importer, job, template, toolpath, verify
+from cutline import graphtec, importer, job, template, toolpath, verify
 
 SQUARE = template.CutPath(((20, 20), (30, 20), (30, 30), (20, 30)), closed=True)
 LINE = template.CutPath(((50, 25), (65, 26), (55, 31)), closed=False)

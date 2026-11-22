@@ -5,12 +5,12 @@ from pathlib import Path
 import unittest
 import types
 from unittest import mock
-from cut_proxies import config, corner_test, editor_model, graphtec, importer, job, presets, starting_guide
+from cutline import config, corner_test, editor_model, graphtec, importer, job, presets, starting_guide
 from tests.test_vector_editing import compound_project
 from tests.test_sticker_print import make_image
 
 try:
-    from cut_proxies import gui
+    from cutline import gui
 except ImportError:
     gui = None
 
@@ -144,7 +144,7 @@ class TestDesignWorkspace(unittest.TestCase):
                           'sheet', 'zoom-in', 'zoom-out'])
 
     def test_add_shape_works_with_the_default_select_tool(self):
-        from cut_proxies import editor_model
+        from cutline import editor_model
 
         win = self.make_window()
         win.on_edit_template()
@@ -291,7 +291,7 @@ class TestDesignWorkspace(unittest.TestCase):
             self.assertTrue(widget.is_ancestor(cut_job), "material choice and saving live on Cut Job")
 
     def test_published_template_is_selected_in_layout_and_can_be_cleared(self):
-        from cut_proxies import layout_presets
+        from cutline import layout_presets
 
         win = self.make_window()
         position = tuple(layout_presets.available()).index('scm-a4-standard-borderless') + 1
@@ -306,7 +306,7 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertTrue(win.r_card.get_sensitive())
 
     def test_sticker_workspace_traces_exports_and_loads_paired_geometry(self):
-        from cut_proxies import editor_model
+        from cutline import editor_model
 
         win = self.make_window()
         win.present()
@@ -377,7 +377,7 @@ class TestDesignWorkspace(unittest.TestCase):
                 self.assertGreater(scroll.get_value(), 0)
 
     def test_compound_and_text_reopen_and_review_as_verified_contours(self):
-        from cut_proxies import editor_model
+        from cutline import editor_model
         from dataclasses import replace
 
         win = self.make_window()
@@ -462,7 +462,7 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertEqual(win._connection_mode(), "bluetooth")
 
     def test_invalid_bundle_row_can_be_left_without_switching_to_a_generated_cut(self):
-        from cut_proxies.editor_model import Project, Shape
+        from cutline.editor_model import Project, Shape
 
         win = self.make_window()
         self.assertFalse(win.use_generated.get_sensitive())
@@ -517,7 +517,7 @@ class TestDesignWorkspace(unittest.TestCase):
             self.assertEqual(win.job.settings.holder, 2)
 
     def test_advanced_controls_and_tool_profiles_are_independent(self):
-        from cut_proxies.editor_model import Shape
+        from cutline.editor_model import Shape
 
         win = self.make_window()
         win.send_workspace.emit('clicked')
@@ -565,7 +565,7 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertNotIn("select a cutter", win.guide_status.get_subtitle())
 
     def test_material_guide_shape_and_size_controls_move_to_fresh_stock(self):
-        from cut_proxies import testcut
+        from cutline import testcut
 
         win = self.make_window()
         win.open_material_guide()
@@ -639,7 +639,7 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertEqual(win.job.settings.force, 28)
 
     def test_design_page_setup_preserves_custom_page_mat_and_marks_in_send(self):
-        from cut_proxies.editor_model import Shape
+        from cutline.editor_model import Shape
 
         win = self.make_window()
         win.design_button.emit('clicked')
@@ -751,7 +751,7 @@ class TestDesignWorkspace(unittest.TestCase):
 
     def test_transform_tool_previews_and_commits_snapped_rotation(self):
         from gi.repository import Gdk
-        from cut_proxies.design_tools import rotation_handle
+        from cutline.design_tools import rotation_handle
 
         win = self.make_window()
         win.design_button.emit('clicked')
@@ -797,7 +797,7 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertEqual([shape.x for shape in design.project.shapes], [50, 50])
 
     def test_design_drawing_points_selection_and_replicate_enter_history(self):
-        from cut_proxies.editor_model import Shape
+        from cutline.editor_model import Shape
         from gi.repository import Gdk
 
         win = self.make_window()
@@ -914,7 +914,7 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertIn("has not used", win.send_status.get_label())
 
     def test_save_updates_the_open_project_without_opening_the_picker(self):
-        from cut_proxies.editor_model import load_project
+        from cutline.editor_model import load_project
 
         win = self.make_window()
         win.on_edit_template()
@@ -1007,6 +1007,18 @@ class TestDesignWorkspace(unittest.TestCase):
             win._cut_response(None, 'cut', checked, old_connection)
             self.assertEqual(open_transport.call_count, 0)
             self.assertIn('connection changed', warning.call_args.args[0])
+
+    def test_the_app_reopens_on_the_material_used_last(self):
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(config, "CONFIG_DIR", Path(folder)):
+            win = self.make_window()
+            model = win.r_preset.get_model()
+            names = [model.get_string(i) for i in range(model.get_n_items())]
+            other = next(name for name in names if name != config.DEFAULT_PRESET)
+            win.r_preset.set_selected(names.index(other))
+            self.assertEqual(config.load_settings()["last_preset"], other)
+            self.assertEqual(win._text(self.make_window().r_preset), other)
+            config.save_settings(dict(config.load_settings(), last_preset="A material since deleted"))
+            self.assertEqual(win._text(self.make_window().r_preset), config.DEFAULT_PRESET)
 
     def test_starting_guide_applies_settings_and_keeps_its_own_pass_count(self):
         win = self.make_window()
@@ -1253,7 +1265,7 @@ class TestDesignWorkspace(unittest.TestCase):
         matched = mock.Mock()
         matched.near_marks.return_value = ("bottom-left L",)
         matched.mat_placement.return_value = "Align with the top-left of the mat grid."
-        from cut_proxies.transport import RegistrationFailed
+        from cutline.transport import RegistrationFailed
         with mock.patch.object(gui.Adw, 'AlertDialog') as dialog:
             win.show_registration_failure(str(RegistrationFailed()), win.job, matched,
                                           {"sheet": 2, "frontPage": 3}, report, "auto", 14.51)
@@ -1293,16 +1305,16 @@ class TestDesignWorkspace(unittest.TestCase):
             dialog.save.call_args.args[2](dialog, mock.Mock())
             self.assertEqual(output.read_bytes()[:13], b'silhouette05;')
 
-    @unittest.skipUnless(os.environ.get('PROXYPRESS_BUNDLE_DIR'), 'generate a ProxyPress bundle first')
+    @unittest.skipUnless(os.environ.get('CUTLINE_CARD_BUNDLE_DIR'), 'generate a card print bundle first')
     def test_selecting_a_real_zip_opens_its_paths_and_exports_its_cut_file(self):
-        self.verify_bundle_export(Path(os.environ['PROXYPRESS_BUNDLE_DIR']) / 'letter-landscape-8.zip', True)
+        self.verify_bundle_export(Path(os.environ['CUTLINE_CARD_BUNDLE_DIR']) / 'letter-landscape-8.zip', True)
 
-    @unittest.skipUnless(os.environ.get('PROXYPRESS_LEGACY_BUNDLE'), 'supply a legacy print-and-cut ZIP first')
+    @unittest.skipUnless(os.environ.get('CUTLINE_LEGACY_BUNDLE'), 'supply a legacy print-and-cut ZIP first')
     def test_legacy_zip_exports_the_paired_cut_file(self):
-        self.verify_bundle_export(Path(os.environ['PROXYPRESS_LEGACY_BUNDLE']), False)
+        self.verify_bundle_export(Path(os.environ['CUTLINE_LEGACY_BUNDLE']), False)
 
     def test_standalone_pdf_registration_check_gates_hardware_actions_in_gtk(self):
-        from cut_proxies import sheet
+        from cutline import sheet
         win = self.make_window()
         win.pdf_path = Path("test_sheet.pdf")
         win.r_register.set_active(True)
@@ -1380,7 +1392,7 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertTrue(win.scan_button.get_sensitive())
 
     def test_a_send_locks_the_settings_and_every_ending_unlocks_them(self):
-        from cut_proxies import transport
+        from cutline import transport
 
         win = self.make_window()
         win.r_force.set_value(25)
@@ -1604,7 +1616,7 @@ class TestDesignWorkspace(unittest.TestCase):
             win.active_job = None
 
     def test_active_and_paused_job_details_and_control_states_in_gtk(self):
-        from cut_proxies import transport
+        from cutline import transport
         win = self.make_window()
         win.r_force.set_value(25)
         win.rebuild()
@@ -1718,7 +1730,7 @@ class TestOpenDialogs(unittest.TestCase):
                                        _job_locked=False, _sending=False)
         window.load_artwork_file = types.MethodType(gui.Window.load_artwork_file, window)
         with mock.patch.object(gui.Gtk, 'FileDialog') as dialog, \
-             mock.patch('cut_proxies.importer.load', side_effect=ValueError('bad file')):
+             mock.patch('cutline.importer.load', side_effect=ValueError('bad file')):
             gui.Window.on_open_artwork(window)
             callback = dialog.return_value.open.call_args.args[2]
             dialog.return_value.open_finish.return_value.get_path.return_value = '/tmp/invalid.svg'
@@ -1745,7 +1757,7 @@ class TestOpenDialogs(unittest.TestCase):
         window.set_artwork.assert_called_once_with(artwork, "multipage.svg · Page 2")
 
     def test_group_assignments_keep_explicit_order_and_omit_disabled_rows(self):
-        from cut_proxies import actions
+        from cutline import actions
 
         def row(key, active, preset, holder, order):
             enabled = mock.Mock()

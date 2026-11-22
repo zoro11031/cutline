@@ -4,14 +4,14 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from cut_proxies import importer, job, layout_presets
+from cutline import importer, job, layout_presets
 
 
 class ImportedPage(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        cases = json.loads((Path(__file__).parent / 'fixtures/proxypress-geometry.json').read_text())
+        cases = json.loads((Path(__file__).parent / 'fixtures/card-sheet-geometry.json').read_text())
         path = Path(self.tmp.name) / 'sheet.svg'
         path.write_text(cases[0]['svgs'][0])
         self.art = importer.load(path)
@@ -55,7 +55,7 @@ class ImportedPage(unittest.TestCase):
 
     def test_cli_refuses_before_opening_transport(self):
         from unittest.mock import patch
-        from cut_proxies import cli
+        from cutline import cli
         with patch.object(cli.transport, 'open_transport') as transport, \
              patch.object(cli, 'say'), \
              patch.object(cli, 'ask_yes', return_value=False):

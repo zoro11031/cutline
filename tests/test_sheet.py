@@ -23,8 +23,8 @@ import pathlib
 import unittest
 from unittest.mock import patch
 
-from cut_proxies import geometry, regmarks, sheet
-from cut_proxies.geometry import Rect
+from cutline import geometry, regmarks, sheet
+from cutline.geometry import Rect
 
 try:
     from PIL import Image, ImageDraw
@@ -48,7 +48,7 @@ def fill(img, rect: Rect):
 @unittest.skipUnless(HAVE_PIL, "Pillow is not installed")
 class TestInkBlobs(unittest.TestCase):
 
-    def test_card_maker_stroked_and_proxypress_filled_squares_share_an_anchor(self):
+    def test_card_maker_stroked_and_filled_squares_share_an_anchor(self):
         mk = regmarks.marks(60, 60)
         for stroke in (False, True):
             for shift in (0, 1):
@@ -170,7 +170,7 @@ class TestEndToEnd(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from cut_proxies import template
+        from cutline import template
         cls.grid = geometry.scm_layout("Letter", "standard", False, 10.0)
         cls.mk = regmarks.for_grid(cls.grid, inset_mm=10.0)
         paths = template.cut_paths(cls.grid)
@@ -178,7 +178,7 @@ class TestEndToEnd(unittest.TestCase):
                                        proof=True)
         cls.cutonly = template.write_svg(None, cls.grid, paths, mk=cls.mk,
                                          proof=False)
-        cls.tmp = tempfile.TemporaryDirectory(prefix="cut-proxies-sheet-test.")
+        cls.tmp = tempfile.TemporaryDirectory(prefix="cutline-sheet-test.")
         cls.dir = pathlib.Path(cls.tmp.name)
 
     @classmethod
@@ -212,7 +212,7 @@ class TestEndToEnd(unittest.TestCase):
 
     def test_a_sheet_with_no_marks_says_so(self):
         # The cut-only file: card outlines, no registration marks. This is
-        # a Proxy Press export with its Silhouette option switched off.
+        # a card sheet exported with its registration marks switched off.
         r = self._measure(self.cutonly, "nomarks")
         problems = r.problems(self.grid.sheet_w_mm, self.grid.sheet_h_mm)
         self.assertTrue(problems)
@@ -251,7 +251,7 @@ class TestEndToEnd(unittest.TestCase):
             r.problems(self.grid.sheet_w_mm, self.grid.sheet_h_mm))
         self.assertIn("correctable", r.diagnosis())
         # And it should report roughly the offset that was applied, so the
-        # number can be handed to `cut-proxies calibrate`.
+        # number can be handed to `cutline calibrate`.
         dxs = [m.delta_mm[0] for m in r.found]
         dys = [m.delta_mm[1] for m in r.found]
         self.assertAlmostEqual(sum(dxs) / len(dxs), 1.5, delta=0.2)

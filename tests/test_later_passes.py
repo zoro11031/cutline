@@ -1,6 +1,6 @@
 """Every pass must retain each card's position and size."""
 import unittest
-from cut_proxies import job, verify
+from cutline import job, verify
 
 
 class LaterPasses(unittest.TestCase):

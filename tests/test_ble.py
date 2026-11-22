@@ -3,7 +3,7 @@ import threading
 import unittest
 from unittest import mock
 
-from cut_proxies import ble, bluetooth, graphtec, transport
+from cutline import ble, bluetooth, graphtec, transport
 
 
 class TestBle(unittest.TestCase):

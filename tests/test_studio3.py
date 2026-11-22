@@ -4,7 +4,7 @@ What these tests can and cannot establish: they prove the geometry read out of
 Card Maker's own templates is the geometry those templates were built with,
 and that a rewrite moves exactly the cards and nothing else. They prove
 nothing about what Silhouette Studio does with the result, because there is no
-Studio on this machine. Section 29 of docs/FINDINGS.md keeps the two apart.
+Studio on this machine.
 """
 
 import pathlib
@@ -12,7 +12,7 @@ import struct
 import tempfile
 import unittest
 
-from cut_proxies import cli, importer, job, studio3
+from cutline import cli, importer, job, studio3
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "studio3"
 
@@ -278,13 +278,13 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TestArmLengthMatchesWhatProxyPressPrints(unittest.TestCase):
+class TestArmLengthMatchesTheCardSheet(unittest.TestCase):
     def test_stock_landscape_jobs_use_active_arm_from_native_template(self):
-        from cut_proxies import job
+        from cutline import job
         for paper, base in (("Letter", "letter-standard-v6"), ("A4", "a4-standard-v5")):
             with self.subTest(paper=paper):
                 arm = struct.unpack_from("<f", load(base), 1137)[0]
-                built = job.build(sheet=paper, engine="proxypress")
+                built = job.build(sheet=paper, engine="centered")
                 self.assertAlmostEqual(built.marks.length_mm, arm, places=3)
                 self.assertFalse(built.blocked)
 

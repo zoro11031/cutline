@@ -10,9 +10,9 @@ import tempfile
 import unittest
 import pathlib
 
-from cut_proxies import (geometry, graphtec, importer, job as job_mod, regmarks,
+from cutline import (geometry, graphtec, importer, job as job_mod, regmarks,
                          template, verify)
-from cut_proxies.graphtec import CutSettings
+from cutline.graphtec import CutSettings
 
 
 class TestExportUsesCheckedGeometry(unittest.TestCase):
@@ -170,41 +170,35 @@ class TestJobBuilding(unittest.TestCase):
                           preset_name="Plain paper test")
         self.assertTrue(any("cutter" in b.lower() for b in j.blocked))
 
-    def test_the_proxypress_engine_is_the_eight_up_sheet(self):
+    def test_the_centered_engine_is_the_eight_up_sheet(self):
         """What this workflow actually prints.
 
-        Proxy Press's own b-cameo preset fits four cards: a 16 mm margin
-        keeps the grid clear of the marks by brute force and costs half
-        the sheet. `cut-proxies proxypress` gives the settings for eight
-        on the same paper, and this engine assumes them.
+        A 16 mm margin would keep the grid clear of the marks by brute
+        force and cost half the sheet. `cutline print-settings` gives the
+        settings for eight on the same paper, and this engine assumes them.
         """
-        j = job_mod.build(engine="proxypress", preset_name="Plain paper test")
+        j = job_mod.build(engine="centered", preset_name="Plain paper test")
         self.assertEqual((j.grid.cols, j.grid.rows), (4, 2))
         self.assertEqual(j.grid.count, 8)
         self.assertFalse(j.grid.portrait)
 
-    def test_the_proxypress_engine_uses_card_maker_mark_geometry(self):
-        """Not Proxy Press's old defaults.
-
-        It used to draw a fourth mark in the bottom-right, belonging to
-        neither Silhouette pattern, on a 0.5 mm line - the machine's thin
-        limit, read off dark stock. It has a pattern setting now and this
-        workflow sets it to three at 1.0 mm.
-        """
-        j = job_mod.build(engine="proxypress", preset_name="Plain paper test")
+    def test_the_centered_engine_uses_card_maker_mark_geometry(self):
+        """Three standard marks at 1.0 mm, not a fourth mark on a 0.5 mm
+        line - the machine's thin limit, read off dark stock."""
+        j = job_mod.build(engine="centered", preset_name="Plain paper test")
         self.assertEqual(j.marks.pattern, regmarks.THREE)
         self.assertAlmostEqual(j.marks.thickness_mm, 1.0)
         self.assertAlmostEqual(j.marks.inset_mm, 10.0)
 
-    def test_proxypress_has_no_separate_legacy_pattern(self):
+    def test_centered_has_no_separate_legacy_pattern(self):
         with self.assertRaisesRegex(ValueError, 'unknown pattern'):
-            job_mod.build(engine="proxypress", pattern='proxypress')
+            job_mod.build(engine="centered", pattern='centered')
 
     def test_both_engines_put_the_cards_in_the_same_place(self):
-        """The seamless bit: a sheet from Proxy Press and a template from
+        """The seamless bit: a centred card sheet and a template from
         the Card Maker layout have to be the same sheet."""
         a = job_mod.build(engine="scm", preset_name="Plain paper test")
-        b = job_mod.build(engine="proxypress", preset_name="Plain paper test")
+        b = job_mod.build(engine="centered", preset_name="Plain paper test")
         self.assertEqual(len(a.grid.cards), len(b.grid.cards))
         worst = max(max(abs(p.x - q.x), abs(p.y - q.y))
                     for p, q in zip(a.grid.cards, b.grid.cards))
@@ -330,14 +324,14 @@ class TestVerificationRefuses(unittest.TestCase):
 class TestPresets(unittest.TestCase):
 
     def test_every_preset_declares_where_its_numbers_came_from(self):
-        from cut_proxies import presets
+        from cutline import presets
         for name, p in presets.all_presets().items():
             with self.subTest(preset=name):
                 self.assertIn(p.origin, ("silhouette", "guide", "recovered",
                                          "derived", "measured"))
 
     def test_default_presets_are_the_starting_point_and_factory_materials(self):
-        from cut_proxies import presets
+        from cutline import presets
         bundled = dict(presets.BUILTIN_BY_NAME)
         bundled.update((preset.name, preset) for _, preset in presets._read_presets(presets.bundled_dir()))
         self.assertEqual({name for name, preset in bundled.items() if preset.origin != "silhouette"},
@@ -346,7 +340,7 @@ class TestPresets(unittest.TestCase):
         self.assertEqual(set(bundled), {presets.STARTING_NAME})
 
     def test_presets_build_valid_cut_settings(self):
-        from cut_proxies import presets
+        from cutline import presets
         dev = graphtec.device_by_name("Silhouette Cameo 4")
         for name, p in presets.all_presets().items():
             with self.subTest(preset=name):
@@ -355,7 +349,7 @@ class TestPresets(unittest.TestCase):
                 self.assertGreaterEqual(s.passes, 1)
 
     def test_the_card_presets_use_more_passes_than_the_paper_one(self):
-        from cut_proxies import presets
+        from cutline import presets
         card = presets.get("330 gsm black-core").cut_settings()
         paper = presets.get("Plain paper test").cut_settings()
         self.assertGreater(card.passes, paper.passes)
@@ -365,7 +359,7 @@ class TestPresets(unittest.TestCase):
         # Silhouette's own database never exceeds 10; the community guide
         # uses 25 on a Cameo 5. Both are allowed to exist here - what is not
         # allowed is a speed the machine cannot take at all.
-        from cut_proxies import presets
+        from cutline import presets
         for name, p in presets.all_presets().items():
             with self.subTest(preset=name):
                 self.assertGreaterEqual(p.settings.get("speed", 1), 1)
@@ -376,7 +370,7 @@ class TestPresets(unittest.TestCase):
         # runs where a Studio installation has been read. When it does run it
         # is the strongest check in the file: an `origin: silhouette` preset
         # must be what the vendor actually ships, not a remembered number.
-        from cut_proxies import materials, presets
+        from cutline import materials, presets
         try:
             table = materials.by_name()
         except (FileNotFoundError, ValueError) as exc:
@@ -402,7 +396,7 @@ class TestPresets(unittest.TestCase):
     def test_the_pen_has_no_blade_offset_in_the_vendor_file(self):
         # The one place the vendor's data confirms a recovered protocol
         # value: FC is 0 for the pen and 18 for every blade.
-        from cut_proxies import materials
+        from cutline import materials
         try:
             table = materials.by_name()
         except (FileNotFoundError, ValueError) as exc:
@@ -414,7 +408,7 @@ class TestPresets(unittest.TestCase):
                                    places=3)
 
     def test_a_guide_preset_matches_the_published_starting_point(self):
-        from cut_proxies import presets
+        from cutline import presets
         s = presets.get("Cameo 4 starting point").settings
         self.assertEqual((s["force"], s["speed"], s["depth"], s["passes"]),
                          (25, 25, 7, 1))
@@ -423,7 +417,7 @@ class TestPresets(unittest.TestCase):
                          (25, 25, 7, 1))
 
     def test_card_maker_reference_preset_matches_guide(self):
-        from cut_proxies import presets
+        from cutline import presets
         ref = presets.get("Card Maker reference (cardstock + laminate)")
         self.assertEqual((ref.settings["force"], ref.settings["speed"],
                           ref.settings["depth"], ref.settings["passes"]),

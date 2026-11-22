@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from cut_proxies import editor_model as model, library
+from cutline import editor_model as model, library
 
 
 class TestLibrary(unittest.TestCase):

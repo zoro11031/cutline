@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from cut_proxies import actions, cli, editor_model, graphtec, importer, job, presets, transport, verify
-from cut_proxies.holder_settings import HolderSettings
+from cutline import actions, cli, editor_model, graphtec, importer, job, presets, transport, verify
+from cutline.holder_settings import HolderSettings
 
 
 ART = """<svg xmlns="http://www.w3.org/2000/svg"

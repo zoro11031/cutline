@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest import mock
 
-from cut_proxies import cli, corner_test, editor_model, job, materials, path_edit, presets, sticker_trace, transport
+from cutline import cli, corner_test, editor_model, job, materials, path_edit, presets, sticker_trace, transport
 from tests.test_vector_editing import compound_project
 from tests.test_sticker_print import make_image
 
@@ -18,7 +18,7 @@ try:
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QDialog, QDialogButtonBox, QFileDialog,
                                    QInputDialog, QMenu, QPlainTextEdit, QPushButton)
-    from cut_proxies import qt_gui
+    from cutline import qt_gui
 except ImportError:
     qt_gui = None
 
@@ -187,7 +187,7 @@ class TestQtFrontend(unittest.TestCase):
 
     def test_workspace_uses_readable_text_on_disabled_and_accent_buttons(self):
         import re
-        from cut_proxies.qt_controls import _contrast, workspace_style
+        from cutline.qt_controls import _contrast, workspace_style
 
         for background, text in (("#f5f5f5", "#202020"), ("#222629", "#eeeeee")):
             palette = QPalette()
@@ -200,6 +200,22 @@ class TestQtFrontend(unittest.TestCase):
             accent = re.search(r'background: palette\(highlight\); color: (#[0-9a-f]+)', style)
             self.assertGreaterEqual(_contrast(*(QColor(color) for color in disabled.groups())), 4.5)
             self.assertGreaterEqual(_contrast(QColor(accent[1]), QColor("#38afe0")), 4.5)
+
+    def test_checkbox_outlines_stand_out_in_light_and_dark_themes(self):
+        import re
+        from cutline.qt_controls import _contrast, workspace_style
+
+        # The second pair is the dark theme where unchecked boxes disappeared:
+        # the theme's mid colour sat almost on the panel.
+        for base, text, mid in (("#ffffff", "#202020", "#b8b8b8"), ("#1e2124", "#eeeeee", "#2a2e32")):
+            palette = QPalette()
+            palette.setColor(QPalette.ColorRole.Base, QColor(base))
+            palette.setColor(QPalette.ColorRole.Text, QColor(text))
+            palette.setColor(QPalette.ColorRole.Mid, QColor(mid))
+            style = workspace_style(palette)
+            edge = re.search(r"QCheckBox::indicator:unchecked \{[^}]*border: 1px solid (#[0-9a-f]+)", style)
+            self.assertIsNotNone(edge, "the outline is a computed colour, not palette(mid)")
+            self.assertGreaterEqual(_contrast(QColor(edge[1]), QColor(base)), 3)
 
     def test_compound_and_text_reopen_and_review_as_verified_contours(self):
         window = self.window
@@ -426,17 +442,88 @@ class TestQtFrontend(unittest.TestCase):
         select_all.trigger()
         self.assertEqual(len(design.selection()), len(design.project.shapes))
 
-    def test_staged_passes_are_set_in_advanced_send_settings(self):
+    def test_the_app_reopens_on_the_material_used_last(self):
+        window = self.window
+        names = [window.controls["preset"].itemData(i) for i in range(window.controls["preset"].count())]
+        other = next(name for name in names if name != qt_gui.config.DEFAULT_PRESET)
+        window.select("preset", other)
+        self.assertEqual(qt_gui.config.load_settings()["last_preset"], other)
+        with mock.patch.object(window, "detect_tools"):
+            reopened = qt_gui.Window()
+        self.assertEqual(reopened.choice("preset"), other)
+        self.assertEqual(reopened.blade["force"].value(),
+                         presets.get(other, reopened.choice("cutter")).cut_settings().force)
+        reopened.close()
+
+        qt_gui.config.save_settings(dict(qt_gui.config.load_settings(), last_preset="A material since deleted"))
+        fresh = qt_gui.Window()
+        self.assertEqual(fresh.choice("preset"), qt_gui.config.DEFAULT_PRESET)
+        fresh.close()
+
+    def test_the_material_test_compares_two_settings_and_hides_pass_counts(self):
         window = self.window
         blade = window.blade
         window.tabs.setCurrentIndex(window.tab("Send"))
-        window.send_advanced.disclosure.setChecked(True)
+        self.assertTrue(window.stage_toggle.isVisibleTo(window))
+        blade["force"].setValue(10)
+        window.open_material_guide()
+        # One pass at a time, and force, speed and depth live in A and B.
+        for hidden in (blade["passes"], window.stage_toggle, blade["force"], blade["speed"]):
+            self.assertFalse(hidden.isVisibleTo(window))
+        a, b = window.guide_headers["A"], window.guide_headers["B"]
+        self.assertEqual((a.text(), b.text()), ("Cut Settings A", "Cut Settings B"))
+        self.assertTrue(a.isChecked(), "A opens with the test")
+        self.assertEqual(window.guide_fields["A"]["force"].value(), 10, "both start from Cut Settings")
+        self.assertEqual(window.guide_fields["B"]["force"].value(), 10)
+
+        # Each opens and closes on its own; both can be open.
+        b.setChecked(True)
+        self.assertTrue(a.isChecked() and b.isChecked())
+        self.assertTrue(window.guide_bodies["B"].isVisibleTo(window))
+        a.setChecked(False)
+        self.assertFalse(window.guide_bodies["A"].isVisibleTo(window))
+        self.assertTrue(window.guide_bodies["B"].isVisibleTo(window))
+
+        # The dropdown by Cut One Pass picks which one cuts.
+        window.guide_fields["B"]["force"].setValue(28)
+        self.assertEqual(blade["force"].value(), 10, "editing B leaves the chosen A alone")
+        self.assertEqual(window.guide_pass_name, "A")
+        window.guide_slot_choice.setCurrentIndex(window.guide_slot_choice.findData("B"))
+        self.assertEqual(window.guide_pass_name, "B")
+        self.assertEqual(blade["force"].value(), 28)
+        window.guide_fields["B"]["force"].setValue(30)
+        self.assertEqual(blade["force"].value(), 30)
+        window.guide_slot_choice.setCurrentIndex(window.guide_slot_choice.findData("A"))
+        self.assertEqual(blade["force"].value(), 10)
+
+        window.guide_apply.click()
+        self.assertEqual(window.guide_fields["A"]["force"].value(), blade["force"].value(),
+                         "starting settings land in the chosen setting")
+
+        window.back_to_send.click()
+        for shown in (blade["passes"], window.stage_toggle, blade["force"]):
+            self.assertTrue(shown.isVisibleTo(window))
+
+    def test_staged_passes_open_from_a_box_under_passes(self):
+        window = self.window
+        blade = window.blade
+        window.tabs.setCurrentIndex(window.tab("Send"))
+        self.assertFalse(window.send_advanced.disclosure.isChecked(), "no need to open Advanced Options")
+        self.assertTrue(window.stage_toggle.isVisibleTo(window))
+        self.assertFalse(window.stage_toggle.isChecked())
+        self.assertFalse(blade["light_passes"].isVisibleTo(window))
+        # Turning it on starts at one light pass and leaves room for a full one.
+        window.stage_toggle.setChecked(True)
+        self.assertEqual((blade["light_passes"].value(), blade["passes"].value()), (1, 2))
+        self.assertTrue(blade["light_passes"].isVisibleTo(window))
+        window.stage_toggle.setChecked(False)
+        self.assertEqual(blade["light_passes"].value(), 0)
+        self.assertFalse(blade["light_force"].isVisibleTo(window))
         for key, value in (("passes", 8), ("force", 20), ("speed", 5)):
             blade[key].setValue(value)
-        self.assertEqual(window.stage_note.text(), "Every pass uses Force and Speed.")
-        self.assertFalse(blade["light_force"].isVisibleTo(window))
         self.assertEqual(window.job.action_groups, ())
         blade["light_passes"].setValue(2)
+        self.assertTrue(window.stage_toggle.isChecked(), "the box follows the light pass count")
         self.assertTrue(blade["light_force"].isVisibleTo(window))
         self.assertTrue(blade["light_speed"].isVisibleTo(window))
         self.assertEqual(blade["light_force"].specialValueText(), "Same as Force")
@@ -451,6 +538,7 @@ class TestQtFrontend(unittest.TestCase):
         self.assertIsNone(window.job, "an impossible staging builds no job")
         blade["light_passes"].setValue(0)
         self.assertEqual(window.job.action_groups, ())
+        self.assertFalse(window.stage_toggle.isChecked())
 
     def test_wide_workspace_keeps_the_settings_pane_readable_and_resizable(self):
         window = self.window
@@ -889,8 +977,9 @@ class TestQtFrontend(unittest.TestCase):
         self.assertEqual(window.guide.spot, 2)
         self.assertEqual(window.guide_spot_selector.value(), 2)
 
-        window.guide_edit.click()
-        self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
+        self.assertFalse(window.material_guide.isVisibleTo(window), "no way back into a test already open")
+        window.back_to_send.click()
+        self.assertTrue(window.material_guide.isVisibleTo(window))
         self.assertEqual(window.material_guide.text(), "Resume Material Test")
         window.material_guide.click()
         self.assertTrue(window.tuning)
@@ -918,7 +1007,7 @@ class TestQtFrontend(unittest.TestCase):
 
         # Matched ZIP locked dialog
         window.bundle = mock.MagicMock()
-        with mock.patch("cut_proxies.qt_gui.QMessageBox") as msg_cls:
+        with mock.patch("cutline.qt_gui.QMessageBox") as msg_cls:
             box = msg_cls.return_value
             action_btn = mock.MagicMock()
             box.addButton.side_effect = lambda text, role: action_btn if text == "Open Sheet" else mock.MagicMock()
@@ -928,7 +1017,7 @@ class TestQtFrontend(unittest.TestCase):
             self.assertEqual(window.tabs.currentIndex(), window.tab("Sheet"))
 
     def test_footer_actions_carry_their_roles_and_warnings_stay_readable(self):
-        from cut_proxies import qt_controls
+        from cutline import qt_controls
 
         window = self.window
         roles = {"send_button": "primary", "review_button": "primary", "back_to_send": "primary",
@@ -976,7 +1065,7 @@ class TestQtFrontend(unittest.TestCase):
         spot = window.guide.spot
         self.assertEqual(spot, 2)
 
-        window.guide_edit.click()
+        window.open_cut_settings()
         self.assertTrue(window.tuning, "editing cut settings closed the material test")
         self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
         self.assertTrue(window.settings_box.isVisibleTo(window))
@@ -1010,7 +1099,7 @@ class TestQtFrontend(unittest.TestCase):
 
         selector.setValue(4)
         self.assertEqual(window.guide.spot, 4)
-        self.assertIn("Untouched stock", window.guide_spot_status.text())
+        self.assertIn("Spot 4 · Untouched stock", window.guide_status.text())
 
         selector.setValue(1)
         self.assertEqual(window.guide.spot, 1)
@@ -1069,7 +1158,7 @@ class TestQtFrontend(unittest.TestCase):
         self.assertGreater(len(set(bytes(image.constBits()))), 15)
 
     def test_standalone_pdf_registration_check_gates_hardware_actions_in_qt(self):
-        from cut_proxies import sheet
+        from cutline import sheet
         window = self.window
         window.pdf = Path("test_sheet.pdf")
         window.controls["registration"].setChecked(True)
@@ -1172,7 +1261,7 @@ class TestQtFrontend(unittest.TestCase):
         self.assertEqual(window.review_tab(), "Sheet")
 
     def test_a_passed_check_survives_blade_edits_and_a_late_result_cannot_authorize_it(self):
-        from cut_proxies import sheet
+        from cutline import sheet
 
         window = self.window
         window.pdf = Path("print.pdf")
@@ -1514,7 +1603,7 @@ class TestQtDesignEditor(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def editor(self, project=None):
-        from cut_proxies import qt_design
+        from cutline import qt_design
 
         folder = TemporaryDirectory()
         self.addCleanup(folder.cleanup)
@@ -2168,7 +2257,7 @@ class TestQtDesignEditor(unittest.TestCase):
         self.assertEqual(design.measure_label.text(), "Drag across a known distance")
 
     def test_copy_and_paste_carry_an_outline_into_a_new_design(self):
-        from cut_proxies import qt_design
+        from cutline import qt_design
 
         self.addCleanup(setattr, qt_design, "_clipboard", qt_design._clipboard)
         shapes = (editor_model.Shape("Rectangle", 20, 20, group=1), editor_model.Shape("Ellipse", 70, 20, group=1),
@@ -2220,7 +2309,7 @@ class TestQtDesignEditor(unittest.TestCase):
         self.assertEqual(design.project.shapes[0].text.value, "AB")
 
     def test_text_style_panel_restyles_text_and_sets_it_on_a_path(self):
-        from cut_proxies import design_text
+        from cutline import design_text
 
         if "DejaVu Sans" not in design_text.installed_families():
             self.skipTest("test font DejaVu Sans is not installed")
@@ -2255,7 +2344,7 @@ class TestQtDesignEditor(unittest.TestCase):
 
     def test_a_pixscan_photo_is_placed_at_true_size_and_not_cut(self):
         from tests.test_pixscan import photograph
-        from cut_proxies import pixscan
+        from cutline import pixscan
 
         folder = TemporaryDirectory()
         self.addCleanup(folder.cleanup)

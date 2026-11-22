@@ -1,11 +1,11 @@
 #!/bin/sh
-# Install cut-proxies for the current user: the command, the launcher entry
+# Install cutline for the current user: the command, the launcher entry
 # and the icons.
 #
 # Three names have to agree or the window gets a generic placeholder icon
 # in the taskbar, which is the usual way this goes wrong:
 #
-#   * the GApplication id in cut_proxies/gui.py  (APP_ID)
+#   * the GApplication id in cutline/gui.py  (APP_ID)
 #   * the basename of the installed .desktop file
 #   * the basename of the installed icon
 #
@@ -17,7 +17,7 @@
 #   ./install.sh --uninstall   remove
 set -e
 
-APP_ID=org.printing.SilhouetteControlCenter
+APP_ID=io.github.zoro11031.Cutline
 HERE=$(cd "$(dirname "$0")" && pwd)
 
 BIN="${HOME}/.local/bin"
@@ -31,8 +31,17 @@ PNG_SIZES="16 22 24 32 48 64 128 256"
 
 say() { printf '  %s\n' "$*"; }
 
+# What earlier versions installed under their old name, removed on every run.
+rm -f "${BIN}/silhouette-control-center" "${BIN}/cut-proxies" "${BIN}/kerf"
+for OLD_ID in org.printing.SilhouetteControlCenter io.github.zoro11031.Kerf; do
+    rm -f "${APPS}/${OLD_ID}.desktop" "${ICONS}/scalable/apps/${OLD_ID}.svg"
+    for s in ${PNG_SIZES}; do
+        rm -f "${ICONS}/${s}x${s}/apps/${OLD_ID}.png"
+    done
+done
+
 if [ "$1" = "--uninstall" ]; then
-    rm -f "${BIN}/silhouette-control-center" "${BIN}/cut-proxies" "${APPS}/${APP_ID}.desktop" \
+    rm -f "${BIN}/cutline" "${APPS}/${APP_ID}.desktop" \
           "${ICONS}/scalable/apps/${APP_ID}.svg"
     for s in ${PNG_SIZES}; do
         rm -f "${ICONS}/${s}x${s}/apps/${APP_ID}.png"
@@ -45,9 +54,8 @@ fi
 
 # 1. the command
 mkdir -p "${BIN}"
-ln -sf "${HERE}/bin/cut-proxies" "${BIN}/cut-proxies"
-ln -sf "${HERE}/bin/silhouette-control-center" "${BIN}/silhouette-control-center"
-say "command   ${BIN}/silhouette-control-center"
+ln -sf "${HERE}/bin/cutline" "${BIN}/cutline"
+say "command   ${BIN}/cutline"
 
 case ":${PATH}:" in
     *":${BIN}:"*) ;;
@@ -56,7 +64,7 @@ esac
 
 # 2. the scalable icon
 mkdir -p "${ICONS}/scalable/apps"
-cp "${HERE}/share/icons/cut-proxies.svg" \
+cp "${HERE}/share/icons/cutline.svg" \
    "${ICONS}/scalable/apps/${APP_ID}.svg"
 say "icon      ${ICONS}/scalable/apps/${APP_ID}.svg"
 
@@ -72,11 +80,11 @@ if [ -n "${RASTER}" ]; then
         mkdir -p "${ICONS}/${s}x${s}/apps"
         if [ "${RASTER}" = "rsvg-convert" ]; then
             rsvg-convert -w "$s" -h "$s" \
-                "${HERE}/share/icons/cut-proxies.svg" \
+                "${HERE}/share/icons/cutline.svg" \
                 -o "${ICONS}/${s}x${s}/apps/${APP_ID}.png"
         else
             magick -background none \
-                "${HERE}/share/icons/cut-proxies.svg" \
+                "${HERE}/share/icons/cutline.svg" \
                 -resize "${s}x${s}" \
                 "${ICONS}/${s}x${s}/apps/${APP_ID}.png"
         fi
@@ -89,8 +97,8 @@ fi
 
 # 4. the launcher entry, with an absolute Exec so it works off PATH too
 mkdir -p "${APPS}"
-sed "s|^Exec=.*|Exec=${HERE}/bin/silhouette-control-center gui|" \
-    "${HERE}/share/cut-proxies.desktop" > "${APPS}/${APP_ID}.desktop"
+sed "s|^Exec=.*|Exec=${HERE}/bin/cutline gui|" \
+    "${HERE}/share/cutline.desktop" > "${APPS}/${APP_ID}.desktop"
 chmod 644 "${APPS}/${APP_ID}.desktop"
 say "launcher  ${APPS}/${APP_ID}.desktop"
 
@@ -105,7 +113,7 @@ update-desktop-database "${APPS}" 2>/dev/null || true
 gtk-update-icon-cache -qtf "${ICONS}" 2>/dev/null || true
 
 # 5. say whether the three names actually agree, rather than assuming
-GUI_ID=$(sed -n 's/^APP_ID *= *"\(.*\)"/\1/p' "${HERE}/cut_proxies/gui.py")
+GUI_ID=$(sed -n 's/^APP_ID *= *"\(.*\)"/\1/p' "${HERE}/cutline/gui.py")
 WM=$(sed -n 's/^StartupWMClass=//p' "${APPS}/${APP_ID}.desktop")
 echo
 if [ "${GUI_ID}" = "${APP_ID}" ] && [ "${WM}" = "${APP_ID}" ]; then
@@ -119,4 +127,4 @@ else
     exit 1
 fi
 echo
-say "Run it:  silhouette-control-center gui (or find 'Silhouette Control Center' in your launcher)"
+say "Run it:  cutline gui (or find 'Cutline' in your launcher)"

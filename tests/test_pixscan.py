@@ -3,14 +3,14 @@
 The photos here are synthetic: `pixscan.render` draws the recovered bars,
 which are then tilted, rotated and blurred. That proves the detector reads
 the geometry it was given; it does not prove a real mat looks like the
-drawing (FINDINGS section 38)."""
+drawing."""
 
 import base64
 import dataclasses
 import io
 import unittest
 
-from cut_proxies import pixscan
+from cutline import pixscan
 
 try:
     from PIL import Image, ImageDraw, ImageFilter

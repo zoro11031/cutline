@@ -4,7 +4,7 @@ import types
 import unittest
 from unittest import mock
 
-from cut_proxies import graphtec, job, transport
+from cutline import graphtec, job, transport
 
 
 class TestUsbTransfers(unittest.TestCase):

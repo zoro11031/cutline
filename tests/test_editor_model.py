@@ -4,7 +4,7 @@ import pathlib
 import tempfile
 import unittest
 
-from cut_proxies import actions, editor_model, job, regmarks, sticker_assets
+from cutline import actions, editor_model, job, regmarks, sticker_assets
 from tests.test_sticker_print import make_image
 
 

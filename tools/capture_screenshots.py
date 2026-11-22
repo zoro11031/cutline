@@ -1,100 +1,122 @@
 #!/usr/bin/env python3
-"""Capture up-to-date screenshots of the desktop workspace for the README."""
+"""Capture the README screenshots from the Qt app, offscreen.
 
+Runs against a scratch settings folder and a simulated Cameo 4, so the
+pictures do not depend on this machine's presets and no cutter is opened.
+"""
+
+import dataclasses
 import io
 import os
 import pathlib
 import subprocess
 import sys
 import tempfile
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+_scratch = tempfile.TemporaryDirectory()
+os.environ["CUTLINE_CONFIG"] = str(pathlib.Path(_scratch.name) / "config")
+os.environ["CUTLINE_TEMPLATES"] = str(pathlib.Path(_scratch.name) / "templates")
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from PySide6.QtWidgets import QApplication
-from cut_proxies import qt_gui, template, sheet
+from PySide6.QtWidgets import QApplication  # noqa: E402
+
+from cutline import design_text, editor_model, graphtec, qt_gui, sheet, template, transport  # noqa: E402
+
 SCREENSHOTS_DIR = ROOT / "screenshots"
-SCREENSHOTS_DIR.mkdir(exist_ok=True)
+SIZE = (1280, 800)
+
+
+def _window():
+    window = qt_gui.Window()
+    window.resize(*SIZE)
+    with mock.patch.object(window, "detect_tools"):
+        window.refresh_usb()
+    window.show()
+    return window
+
+
+def _save(app, widget, name):
+    app.processEvents()
+    widget.grab().save(str(SCREENSHOTS_DIR / name))
+    print(f"Captured screenshots/{name}")
+
+
+def _gift_tags(project):
+    """A sheet of rounded gift tags, each with a hole and a name on it."""
+    shapes = []
+    names = ("Mira", "Theo", "June", "Arlo", "Wren", "Otis")
+    for i, name in enumerate(names):
+        x, y = 30 + (i % 3) * 78, 40 + (i // 3) * 72
+        shapes.append(editor_model.Shape("Rounded rectangle", x, y, 64, 56, radius=8))
+        shapes.append(editor_model.Shape("Ellipse", x + 28, y + 6, 8, 8, action="Cut"))
+        try:
+            text = design_text.shape(editor_model.TextSpec(name, "DejaVu Sans", 10, bold=True), 0, 0)
+        except ValueError:
+            continue
+        shapes.append(dataclasses.replace(text, x=x + (64 - text.width) / 2, y=y + 24))
+    return dataclasses.replace(project, shapes=tuple(shapes))
 
 
 def capture_all():
+    SCREENSHOTS_DIR.mkdir(exist_ok=True)
     app = QApplication.instance() or QApplication([])
-
-    # 1. Main Send workspace
-    win = qt_gui.Window()
-    win.resize(1200, 800)
-    win.tabs.setCurrentIndex(win.tab("Send"))
-    win.show()
-    app.processEvents()
-    pix = win.grab()
-    pix.save(str(SCREENSHOTS_DIR / "send-workspace.png"))
-    print("Captured screenshots/send-workspace.png")
-
-    # 2. Design workspace
-    win_design = qt_gui.Window()
-    win_design.resize(1200, 800)
-    win_design.open_design()
-    win_design.show()
-    app.processEvents()
-    pix = win_design.grab()
-    pix.save(str(SCREENSHOTS_DIR / "design-workspace.png"))
-    print("Captured screenshots/design-workspace.png")
-
-    # 3. Sheet verification / Print alignment
-    win_sheet = qt_gui.Window()
-    win_sheet.resize(1200, 800)
-    with tempfile.TemporaryDirectory() as temp:
-        proof_svg = pathlib.Path(temp) / "proof.svg"
-        pdf_path = pathlib.Path(temp) / "proof.pdf"
-        j = win_sheet.job
-        cards_svg = ""
-        for c in j.grid.cards:
-            x, y, w, h = c.x, c.y, c.w, c.h
-            cards_svg += (
-                f'<rect x="{x+1:.2f}" y="{y+1:.2f}" width="{w-2:.2f}" height="{h-2:.2f}" '
-                f'rx="3" fill="#1c3144" stroke="#a0b2c6" stroke-width="0.5"/>'
-                f'<rect x="{x+4:.2f}" y="{y+4:.2f}" width="{w-8:.2f}" height="{h*0.48:.2f}" '
-                f'rx="2" fill="#2a5078"/>'
-                f'<text x="{x+7:.2f}" y="{y+13:.2f}" font-size="4.5" fill="#ffffff" '
-                f'font-family="sans-serif" font-weight="bold">Proxy Card</text>'
-                f'<rect x="{x+4:.2f}" y="{y+4+h*0.52:.2f}" width="{w-8:.2f}" height="{h*0.38:.2f}" '
-                f'rx="2" fill="#f4f6f8" stroke="#a0b2c6" stroke-width="0.3"/>'
-            )
-        svg = template.write_svg(None, j.grid, j.paths, mk=j.marks, proof=True)
-        svg = svg.replace('<g id="cut"', f'<g id="artwork">{cards_svg}</g><g id="cut"')
-        proof_svg.write_text(svg)
-        subprocess.run(
-            ["rsvg-convert", "-f", "pdf", "-o", str(pdf_path), str(proof_svg)],
-            check=True,
-        )
-        img = sheet.render(pdf_path, dpi=150, colour=True)
-        rep = sheet.measure(pdf_path, j.marks, dpi=150, image=img)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-
-        win_sheet.tabs.setCurrentIndex(win_sheet.tab("Sheet"))
-        win_sheet.preview.show_pdf(buf.getvalue(), (j.grid.sheet_w_mm, j.grid.sheet_h_mm), rep)
-        win_sheet.show()
+    device = graphtec.device_by_name("Silhouette Cameo 4")
+    with mock.patch.object(transport, "usb_endpoints", return_value=[(device, "", (1, 2))]), \
+            mock.patch.object(transport, "open_transport", side_effect=transport.NotFound("screenshot")):
+        # 1. Design, with a sheet of gift tags and the Text Style panel open.
+        win = _window()
+        win.open_design()
+        design = win.design
+        design.replace_document(_gift_tags(design.project))
+        texts = [i for i, shape in enumerate(design.project.shapes) if shape.text]
+        if texts:
+            design.select(())
+            design.dock.open("text")
         app.processEvents()
-        pix = win_sheet.grab()
-        pix.save(str(SCREENSHOTS_DIR / "sheet-alignment.png"))
-        print("Captured screenshots/sheet-alignment.png")
+        design.canvas.fit()
+        _save(app, win, "design-workspace.png")
 
-    # 4. Dial In a Material / Guided test cut
-    win_guide = qt_gui.Window()
-    win_guide.resize(1200, 800)
-    win_guide.show()
-    win_guide.open_material_guide()
-    # Scroll to guide_box
-    scroll = win_guide.tabs.widget(win_guide.tab("Send"))
-    if hasattr(scroll, "verticalScrollBar"):
-        scroll.verticalScrollBar().setValue(win_guide.guide_box.y() - 12)
-    app.processEvents()
-    pix = win_guide.grab()
-    pix.save(str(SCREENSHOTS_DIR / "material-guide.png"))
-    print("Captured screenshots/material-guide.png")
+        # 2. Send, with the default card sheet ready to check and cut.
+        win = _window()
+        win.tabs.setCurrentIndex(win.tab("Send"))
+        _save(app, win, "send-workspace.png")
+
+        # 3. Sheet: a printed sheet's marks measured against the template.
+        win = _window()
+        with tempfile.TemporaryDirectory() as temp:
+            proof_svg = pathlib.Path(temp) / "proof.svg"
+            pdf_path = pathlib.Path(temp) / "proof.pdf"
+            job = win.job
+            art = ""
+            for c in job.grid.cards:
+                art += (f'<rect x="{c.x + 1:.2f}" y="{c.y + 1:.2f}" width="{c.w - 2:.2f}" '
+                        f'height="{c.h - 2:.2f}" rx="3" fill="#264653"/>'
+                        f'<rect x="{c.x + 5:.2f}" y="{c.y + 5:.2f}" width="{c.w - 10:.2f}" '
+                        f'height="{c.h * 0.5:.2f}" rx="2" fill="#e9c46a"/>'
+                        f'<rect x="{c.x + 5:.2f}" y="{c.y + 8 + c.h * 0.5:.2f}" width="{c.w - 10:.2f}" '
+                        f'height="{c.h * 0.32:.2f}" rx="2" fill="#f4f1de"/>')
+            svg = template.write_svg(None, job.grid, job.paths, mk=job.marks, proof=True)
+            proof_svg.write_text(svg.replace('<g id="cut"', f'<g id="artwork">{art}</g><g id="cut"'))
+            subprocess.run(["rsvg-convert", "-f", "pdf", "-o", str(pdf_path), str(proof_svg)], check=True)
+            image = sheet.render(pdf_path, dpi=150, colour=True)
+            report = sheet.measure(pdf_path, job.marks, dpi=150, image=image)
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG")
+            win.tabs.setCurrentIndex(win.tab("Sheet"))
+            win.preview.show_pdf(buffer.getvalue(), (job.grid.sheet_w_mm, job.grid.sheet_h_mm), report)
+            _save(app, win, "sheet-alignment.png")
+
+        # 4. Dial In a Material.
+        win = _window()
+        win.open_material_guide()
+        scroll = win.tabs.widget(win.tab("Send"))
+        if hasattr(scroll, "verticalScrollBar"):
+            scroll.verticalScrollBar().setValue(win.guide_box.y() - 12)
+        _save(app, win, "material-guide.png")
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ import pathlib
 import tempfile
 import unittest
 
-from cut_proxies import editor_model as model, path_edit
+from cutline import editor_model as model, path_edit
 
 
 def outline(shape):

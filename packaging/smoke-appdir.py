@@ -20,7 +20,7 @@ env.update(PYTHONHOME=str(base / 'usr'), PYTHONNOUSERSITE='1',
            XDG_DATA_DIRS=str(base / 'usr/share') + ':/usr/local/share:/usr/share',
            PATH=str(base / 'usr/bin') + ':' + os.environ['PATH'], GSK_RENDERER='cairo')
 env['PYTHONPATH'] = os.pathsep.join(str(path) for path in base.glob('usr/lib/python*/site-packages'))
-env['CUT_PROXIES_LIBUSB'] = str(base / 'usr/lib/libusb-1.0.so.0')
+env['CUTLINE_LIBUSB'] = str(base / 'usr/lib/libusb-1.0.so.0')
 env['SCC_SMOKE_USB_INIT'] = '0' if args.skip_usb_init else '1'
 env.pop('LD_LIBRARY_PATH', None)
 command = [str(base / 'usr/lib/ld-linux-x86-64.so.2'), '--library-path',
@@ -28,15 +28,15 @@ command = [str(base / 'usr/lib/ld-linux-x86-64.so.2'), '--library-path',
 code = r'''
 import ctypes, os, pathlib, sys, tempfile
 base = pathlib.Path(sys.prefix).parent
-sys.path.insert(0, str(base / 'usr/lib/cut-proxies'))
+sys.path.insert(0, str(base / 'usr/lib/cutline'))
 import gi, cairo, PIL, usb.core, usb.backend.libusb1
-from cut_proxies import transport
-assert ctypes.CDLL(os.environ['CUT_PROXIES_LIBUSB']).libusb_get_version
+from cutline import transport
+assert ctypes.CDLL(os.environ['CUTLINE_LIBUSB']).libusb_get_version
 if os.environ['SCC_SMOKE_USB_INIT'] == '1':
     assert transport._bundled_usb_backend() is not None, 'could not initialize bundled libusb'
 for module in (gi, cairo, PIL, usb.core):
     assert pathlib.Path(module.__file__).is_relative_to(base), module.__file__
-from cut_proxies import job, sheet, template
+from cutline import job, sheet, template
 j = job.build()
 assert not j.blocked and not j.liveness_failures
 with tempfile.TemporaryDirectory() as temp:
@@ -55,8 +55,8 @@ subprocess.run(command + ['-c', code], env=env, check=True, timeout=30)
 if args.gui:
     gui_code = r'''
 import pathlib, sys
-sys.path.insert(0, str(pathlib.Path(sys.prefix) / 'lib/cut-proxies'))
-from cut_proxies import gui
+sys.path.insert(0, str(pathlib.Path(sys.prefix) / 'lib/cutline'))
+from cutline import gui
 from gi.repository import Gio, GLib
 app = gui.Application()
 app.set_flags(Gio.ApplicationFlags.NON_UNIQUE)

@@ -15,8 +15,8 @@ import pathlib
 import tempfile
 import unittest
 
-from cut_proxies import geometry, importer, job as job_mod, template
-from cut_proxies.importer import ImportError_
+from cutline import geometry, importer, job as job_mod, template
+from cutline.importer import ImportError_
 
 
 def svg(body, w="100mm", h="100mm", viewbox="0 0 100 100", extra=""):

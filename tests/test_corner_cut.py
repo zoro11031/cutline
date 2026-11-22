@@ -1,7 +1,7 @@
 import unittest
 
-from cut_proxies import corner_test, graphtec, importer, job, regmarks, template, verify
-from cut_proxies.geometry import Rect
+from cutline import corner_test, graphtec, importer, job, regmarks, template, verify
+from cutline.geometry import Rect
 
 
 def rectangle(x, y, width, height):

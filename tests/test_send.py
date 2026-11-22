@@ -4,10 +4,10 @@ import types
 import unittest
 from unittest import mock
 
-from cut_proxies import cli, graphtec, job, verify
+from cutline import cli, graphtec, job, verify
 
 try:
-    from cut_proxies import gui
+    from cutline import gui
 except ImportError:
     gui = None
 

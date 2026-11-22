@@ -16,9 +16,9 @@ These tests use fake transports to exercise failure paths without USB.
 import unittest
 from unittest import mock
 
-from cut_proxies import (geometry, graphtec, job as job_mod, regmarks,
+from cutline import (geometry, graphtec, job as job_mod, regmarks,
                          template, transport)
-from cut_proxies.graphtec import CutSettings, Step
+from cutline.graphtec import CutSettings, Step
 
 
 # --------------------------------------------------------------------------
@@ -285,7 +285,7 @@ class TestJobRefusalFires(unittest.TestCase):
         self.assertEqual(j.blocked, [])
 
     def test_imported_cross_mode_blocks(self):
-        from cut_proxies import importer
+        from cutline import importer
         art = importer.Imported(
             paths=(template.CutPath(((20, 20), (83, 20), (83, 108), (20, 108)), True),),
             width_mm=63.0, height_mm=88.0, source='test', scale_note='1:1')
@@ -312,7 +312,7 @@ class TestVerifierLiveness(unittest.TestCase):
 
     def setUp(self):
         self.job = job_mod.build(preset_name="Plain paper test")
-        from cut_proxies import verify
+        from cutline import verify
         self.verify = verify
         self.args = (self.job.grid, self.job.marks, self.job.settings,
                      self.job.device, self.job.mode)
@@ -511,7 +511,7 @@ class TestVerifierLiveness(unittest.TestCase):
 
     def test_an_unregistered_job_sends_no_scan_commands(self):
         j = job_mod.build(preset_name="Plain paper test", registration=False)
-        from cut_proxies import verify
+        from cutline import verify
         d = verify.decode(j.stream)
         self.assertIsNone(d.scan_command)
         self.assertFalse(d.preamble_present)
@@ -526,7 +526,7 @@ class TestEveryForceIsChecked(unittest.TestCase):
     """The hole a liveness probe found on its first run."""
 
     def test_a_wrong_force_anywhere_in_the_stream_is_caught(self):
-        from cut_proxies import verify
+        from cutline import verify
         job = job_mod.build(preset_name="Plain paper test")
         # The Cameo 4 dialect sends the pressure twice. Corrupting only the
         # first used to pass, because the check read only the last.
@@ -539,7 +539,7 @@ class TestEveryForceIsChecked(unittest.TestCase):
                             for r in rows))
 
     def test_the_decoder_records_every_force_not_just_the_last(self):
-        from cut_proxies import verify
+        from cutline import verify
         job = job_mod.build(preset_name="Plain paper test")
         d = verify.decode(job.stream)
         self.assertGreater(len(d.forces), 1)

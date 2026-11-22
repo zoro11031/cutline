@@ -21,7 +21,7 @@ class SvgFidelity(unittest.TestCase):
             self.assertAlmostEqual(((x-70)/3)**2 + ((y-18)/8)**2, 1, places=5)
 
     def test_slice_and_nested_viewport_are_refused(self):
-        from cut_proxies.importer import ImportError_
+        from cutline.importer import ImportError_
         for body, extra in [('<rect width="50" height="50"/>', 'preserveAspectRatio="xMidYMid slice"'),
                             ('<svg x="30" viewBox="0 0 10 10"><rect width="5" height="5"/></svg>', '')]:
             with self.subTest(body=body), self.assertRaises(ImportError_):
@@ -29,7 +29,7 @@ class SvgFidelity(unittest.TestCase):
 
     def test_group_scale_preserves_curve_tolerance_in_millimetres(self):
         import math
-        from cut_proxies.template import CHORD_TOLERANCE_MM
+        from cutline.template import CHORD_TOLERANCE_MM
         path = load_text(svg('<g transform="scale(20)"><circle cx="2" cy="2" r="1"/></g>')).paths[0]
         points = list(path.points) + [path.points[0]]
         sag = max(20 - math.hypot((a[0]+b[0])/2-40, (a[1]+b[1])/2-40)

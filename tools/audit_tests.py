@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Find tests that pass without asserting anything.
 
-A sibling session's audit of print options reported four as broken and two
+An earlier audit of print options reported four as broken and two
 of them were not: its test input was a single-page PDF, so the page-range
 and page-set checks could not have had an effect either way. A green that
 covers no path — the same failure as a probe that never fires, arriving

@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from cut_proxies import corner_test, graphtec, importer, job
+from cutline import corner_test, graphtec, importer, job
 
 
 class TestInkscapeImport(unittest.TestCase):

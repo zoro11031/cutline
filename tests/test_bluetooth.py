@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-from cut_proxies import bluetooth, cli, graphtec, rfcomm, transport
+from cutline import bluetooth, cli, graphtec, rfcomm, transport
 
 
 class TestIdentity(unittest.TestCase):

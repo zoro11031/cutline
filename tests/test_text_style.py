@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from cut_proxies import design_text, editor_model as model
+from cutline import design_text, editor_model as model
 
 FAMILY = "DejaVu Sans"
 

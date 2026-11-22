@@ -1,6 +1,6 @@
 import unittest
 from unittest import mock
-from cut_proxies import confirmation, geometry, graphtec, job, presets
+from cutline import confirmation, geometry, graphtec, job, presets
 
 
 class TestConfirmation(unittest.TestCase):

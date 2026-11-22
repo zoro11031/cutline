@@ -8,7 +8,7 @@ everything is in the wrong place by a constant offset.
 
 import unittest
 
-from cut_proxies import geometry, regmarks
+from cutline import geometry, regmarks
 
 
 class TestMarkPlacement(unittest.TestCase):
@@ -45,7 +45,7 @@ class TestMarkPlacement(unittest.TestCase):
     def test_only_standard_patterns_are_offered(self):
         self.assertEqual(regmarks.PATTERNS, ('three', 'four'))
         with self.assertRaisesRegex(ValueError, 'unknown pattern'):
-            regmarks.marks(279.4, 215.9, pattern='proxypress')
+            regmarks.marks(279.4, 215.9, pattern='centered')
 
     def test_arms_run_inward_and_are_shortened_by_half_the_line_width(self):
         tr = next(e for e in self.mk.ells if e.corner_x > 100)
@@ -120,7 +120,7 @@ class TestClearance(unittest.TestCase):
 
         `Grid.max_mark_length_mm` is a per-engine estimate and only the
         Card Maker engine computes it the way the corner rule works; the
-        Proxy Press engine's version put 11.2 mm arms on top of four cards
+        centred-grid engine's version put 11.2 mm arms on top of four cards
         on an eight-up sheet. The arm is now the longest that actually
         clears with one card gap to spare.
         """
@@ -157,17 +157,17 @@ class TestClearance(unittest.TestCase):
                 self.assertAlmostEqual(mk.length_mm, published, delta=0.3)
 
     def test_both_engines_choose_the_same_arm_for_the_same_sheet(self):
-        """The Proxy Press and Card Maker eight-up grids are the same
+        """The centred and Card Maker eight-up grids are the same
         grid to within rounding, so they must get the same marks."""
-        from cut_proxies import config
+        from cutline import config
         for sheet in ("Letter", "A4"):
             with self.subTest(sheet=sheet):
                 a = regmarks.for_grid(
                     geometry.scm_layout(sheet, "standard", False, 10.0),
                     inset_mm=10.0)
                 b = regmarks.for_grid(
-                    geometry.proxypress_layout(sheet, False,
-                                               config.PROXYPRESS_8UP),
+                    geometry.centered_layout(sheet, False,
+                                               config.CARD_SHEET_8UP),
                     inset_mm=10.0, pattern=regmarks.THREE)
                 self.assertAlmostEqual(a.length_mm, b.length_mm, places=2)
 

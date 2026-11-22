@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Cutline
+GenericName=Cutter Design and Print & Cut
+Comment=Design, print and cut with Silhouette cutters
+Exec=cutline gui
+Icon=io.github.zoro11031.Cutline
+Terminal=false
+Categories=Graphics;
+Keywords=silhouette;cameo;cutter;vinyl;sticker;print and cut;registration;
+StartupNotify=true
+StartupWMClass=io.github.zoro11031.Cutline

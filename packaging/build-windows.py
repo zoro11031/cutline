@@ -119,7 +119,7 @@ def build(cache, output):
     with ThreadPoolExecutor(max_workers=8) as pool:
         archives = list(pool.map(lambda item: download(cache, MSYS2 + item[0], item[1]), packages.items()))
     with TemporaryDirectory(prefix="scc-windows-") as stage:
-        app = Path(stage) / "Silhouette Control Center"
+        app = Path(stage) / "Cutline"
         app.mkdir()
         with ZipFile(python_zip) as embedded:
             embedded.extractall(app)
@@ -130,7 +130,7 @@ def build(cache, output):
                 wheel.extractall(app / "Lib/site-packages")
         for archive in archives:
             unpack_native(archive, app / "native")
-        shutil.copytree(ROOT / "cut_proxies", app / "cut_proxies", ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copytree(ROOT / "cutline", app / "cutline", ignore=shutil.ignore_patterns("__pycache__"))
         shutil.copy2(ROOT / "packaging/windows-launcher.py", app / "launcher.py")
         shutil.copy2(ROOT / "LICENSE", app / "LICENSE")
         shutil.copy2(ROOT / "packaging/windows-readme.txt", app / "Start Here.txt")
@@ -139,9 +139,9 @@ def build(cache, output):
             "pypi_wheels": {wheel.name: sha256(wheel) for wheel in wheels},
             "msys2_ucrt64_packages": packages,
         }, indent=2) + "\n")
-        version = re.search(r'^__version__ = "(.*?)"', (ROOT / "cut_proxies/__init__.py").read_text(),
+        version = re.search(r'^__version__ = "(.*?)"', (ROOT / "cutline/__init__.py").read_text(),
                             re.M).group(1)
-        filename = f"SilhouetteControlCenter-{version}-Windows-x86_64-Setup.exe"
+        filename = f"Cutline-{version}-Windows-x86_64-Setup.exe"
         # Publish the completed installer only after makensis succeeds.
         with TemporaryDirectory(prefix="windows-setup-", dir=output) as folder:
             installer = Path(folder) / filename

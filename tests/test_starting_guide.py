@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from cut_proxies import graphtec, job, sheet, starting_guide, testcut, transport, verify
+from cutline import graphtec, job, sheet, starting_guide, testcut, transport, verify
 
 
 class TestStartingGuide(unittest.TestCase):
@@ -165,7 +165,7 @@ class TestStartingGuide(unittest.TestCase):
         second = self.prepare().sheet.cells[0].rect
         self.assertEqual((second.x, second.y), (35, first.y))
         self.assertEqual(self.guide.history[0].rect, first)
-        self.assertEqual(self.guide.history_text(), "Spot 1 · 2 passes")
+        self.assertEqual(self.guide.history_text(), "Spot 1 · 2 passes · Force 25 · Speed 25 · Depth 7")
         self.guide.spot = 10
         next_row = self.prepare().sheet.cells[0].rect
         self.assertEqual(next_row.x, first.x)
@@ -445,3 +445,98 @@ class TestStartingGuide(unittest.TestCase):
         self.assertTrue(self.guide.settings_differ(dict(self.options, force=10)))
         self.assertTrue(self.guide.settings_differ(dict(self.options, speed=5)))
         self.assertTrue(self.guide.settings_differ(dict(self.options, depth=2)))
+
+
+class TestPassLog(unittest.TestCase):
+    """Each confirmed pass keeps the settings it was cut with."""
+
+    def setUp(self):
+        self.guide = starting_guide.Guide()
+        self.options = {
+            "cutter": "Silhouette Cameo 4", "sheet": "Letter", "mat": "cameo-12x12",
+            "offset_mm": (0, 0), "force": 10, "speed": 3, "depth": 7,
+            "blade_options": {"blade_diameter_mm": 0.9},
+        }
+
+    def cut(self, times=1, **changes):
+        self.options.update(changes)
+        for _ in range(times):
+            self.guide.record(self.guide.prepare(("auto", None), self.options, None))
+
+    def test_one_setting_reuses_it_and_names_it_once(self):
+        self.cut(2)
+        self.assertEqual(self.guide.pass_log, (starting_guide.PassSettings(10, 3, 7),) * 2)
+        self.assertEqual(self.guide.history_text(), "Spot 1 · 2 passes · Force 10 · Speed 3 · Depth 7")
+        settings = self.guide.tested_settings
+        self.assertEqual((settings.force, settings.passes, settings.light_passes), (10, 2, 0))
+
+    def test_light_passes_then_full_come_back_as_staged_passes(self):
+        self.cut(2)
+        self.cut(1, force=25, speed=8)
+        self.assertEqual(self.guide.history_text(),
+                         "Spot 1 · 3 passes: 2 at Force 10 · Speed 3 · Depth 7, then 1 at Force 25 · Speed 8 · Depth 7")
+        self.assertIn("2 at Force 10", self.guide.status())
+        settings = self.guide.tested_settings
+        self.assertEqual((settings.passes, settings.force, settings.speed), (3, 25, 8))
+        self.assertEqual((settings.light_passes, settings.light_force, settings.light_speed), (2, 10, 3))
+        self.assertEqual(self.guide.mixed_reason, "")
+
+    def test_settings_that_staged_passes_cannot_repeat_give_none_and_a_reason(self):
+        self.cut(1)
+        self.cut(1, force=20)
+        self.cut(1, force=30)
+        self.assertIsNone(self.guide.tested_settings, "three settings")
+        self.assertIn("more than two settings", self.guide.mixed_reason)
+        self.guide.next_spot()
+        self.cut(1, force=10, depth=7)
+        self.cut(1, force=20, depth=8)
+        self.assertIsNone(self.guide.tested_settings, "depth changed between the runs")
+
+    def test_the_log_follows_its_spot_and_survives_reopening(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "marked.json"
+            self.guide = starting_guide.Guide(path)
+            self.guide.registered = True
+            self.options["blade_options"] = {"blade_diameter_mm": 0.9}
+            connection = ("auto", (1, 2))
+            for force in (10, 25):
+                self.options["force"] = force
+                self.guide.record(self.guide.prepare(connection, self.options, None))
+            first = self.guide.pass_log
+            self.guide.next_spot()
+            self.assertEqual(self.guide.pass_log, ())
+            self.options["force"] = 15
+            self.guide.record(self.guide.prepare(connection, self.options, None))
+            self.guide.persist()
+
+            reopened = starting_guide.Guide(path)
+            self.assertEqual(reopened.pass_log, (starting_guide.PassSettings(15, 3, 7),))
+            reopened.select_spot(1)
+            self.assertEqual(reopened.pass_log, first)
+            self.assertEqual(reopened.tested_settings.light_force, 10)
+
+    def test_history_saved_before_the_log_still_opens_and_counts(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "marked.json"
+            self.guide = starting_guide.Guide(path)
+            self.guide.registered = True
+            self.guide.record(self.guide.prepare(("auto", (1, 2)), self.options, None))
+            self.guide.persist()
+            data = json.loads(path.read_text())
+            del data["pass_log"]
+            path.write_text(json.dumps(data))
+            reopened = starting_guide.Guide(path)
+            self.assertEqual((reopened.completed, reopened.pass_log), (1, ()))
+            self.assertEqual(reopened.tested_settings.passes, 1, "an older file falls back to the count")
+
+    def test_setting_names_show_once_a_spot_uses_two(self):
+        settings = self.guide.prepare(("auto", None), self.options, None)
+        self.guide.record(settings, name="A")
+        self.guide.record(settings, name="A")
+        self.assertEqual(self.guide.history_text(), "Spot 1 · 2 passes · Force 10 · Speed 3 · Depth 7")
+        self.options["force"] = 25
+        self.guide.record(self.guide.prepare(("auto", None), self.options, None), name="B")
+        self.assertEqual(self.guide.history_text(), "Spot 1 · 3 passes: 2 at A: Force 10 · Speed 3 · Depth 7, "
+                                                    "then 1 at B: Force 25 · Speed 3 · Depth 7")
+        self.assertEqual(self.guide.tested_settings.light_passes, 2)
+

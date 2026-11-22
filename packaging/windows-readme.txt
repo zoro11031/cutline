@@ -1,7 +1,7 @@
-Silhouette Control Center for 64-bit Windows
+Cutline for 64-bit Windows
 
-Open Silhouette Control Center from the Start menu. Python and Qt are included.
-Settings and presets are stored in %LOCALAPPDATA%\Silhouette Control Center.
+Open Cutline from the Start menu. Python and Qt are included.
+Settings and presets are stored in %LOCALAPPDATA%\Cutline.
 You can remove the app from Windows Settings under Installed apps.
 
 For command-line diagnostics, open a terminal in this folder and run:

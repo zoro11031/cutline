@@ -2,7 +2,7 @@
 
 import unittest
 
-from cut_proxies import graphtec, tooling
+from cutline import graphtec, tooling
 
 
 CAMEO4 = graphtec.device_by_name("Silhouette Cameo 4")

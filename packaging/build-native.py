@@ -21,16 +21,19 @@ def main():
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
     version = {}
-    exec((ROOT / 'cut_proxies/__init__.py').read_text(), version)
-    name = 'silhouette-control-center-' + version['__version__']
+    exec((ROOT / 'cutline/__init__.py').read_text(), version)
+    name = 'cutline-' + version['__version__']
     archive = out / (name + '.tar.gz')
     # Explicit allowlist: no guest files, credentials, build outputs, .git,
     # proprietary condition.csv or native Studio documents enter the archive.
     with tarfile.open(archive, 'w:gz') as tar:
-        for entry in ('cut_proxies', 'bin', 'share', 'docs', 'packaging',
+        for entry in ('cutline', 'bin', 'share', 'docs', 'packaging',
                       'tests', 'tools', 'run-tests.sh', 'README.md'):
             def clean(info):
                 if '__pycache__' in pathlib.PurePosixPath(info.name).parts or info.name.endswith('.pyc'):
+                    return None
+                # Local notes are not shipped; README.md is the only published Markdown.
+                if info.name.endswith('.md') and info.name != name + '/README.md':
                     return None
                 info.uid = info.gid = 0
                 info.uname = info.gname = ''
@@ -53,7 +56,7 @@ def main():
     shutil.copy2(archive, rpm / 'SOURCES' / archive.name)
     run('rpmbuild', '-ba', '--nodeps', '--define', '_topdir ' + str(rpm),
         '--define', '_tmppath ' + str(rpm / 'tmp'),
-        str(ROOT / 'packaging/cut-proxies.spec'))
+        str(ROOT / 'packaging/cutline.spec'))
     for package in (rpm / 'RPMS').rglob('*.rpm'):
         shutil.copy2(package, out / package.name)
     for package in (rpm / 'SRPMS').glob('*.rpm'):

@@ -10,9 +10,9 @@ import dataclasses
 import unittest
 from unittest import mock
 
-from cut_proxies import (geometry, graphtec, job as job_mod, presets,
+from cutline import (geometry, graphtec, job as job_mod, presets,
                          testcut, verify)
-from cut_proxies.graphtec import CutSettings
+from cutline.graphtec import CutSettings
 
 
 def cameo4():
