@@ -2,12 +2,13 @@
 
 import threading
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap, QPolygonF, QWheelEvent
 from PySide6.QtWidgets import (QAbstractScrollArea, QAbstractSpinBox, QApplication, QBoxLayout, QButtonGroup, QCheckBox,
                                QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QLayout,
                                QLabel, QLineEdit, QMenu, QMenuBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QStackedWidget, QStyle,
-                               QStyleOptionToolButton, QStylePainter, QTabBar, QToolButton, QVBoxLayout, QWidget)
+                               QStyleOptionToolButton, QStylePainter, QTabBar, QToolButton, QVBoxLayout, QWidget,
+                               QWidgetAction)
 
 from .design_tools import WORKSPACE_TOOL_GROUPS as TOOL_GROUPS, WORKSPACE_TOOL_NAMES as TOOL_NAMES, \
     WORKSPACE_TOOLS as TOOLS
@@ -81,6 +82,17 @@ QTabBar[role="document"]::tab {
     padding: 5px 14px; border: 0; border-bottom: 2px solid palette(highlight); background: palette(base);
 }
 QLabel[role="panelTitle"] { font-weight: 600; padding: 2px 0 4px 2px; }
+QFrame#designDock { border-left: 1px solid palette(midlight); }
+QFrame#panelStrip { border-left: 1px solid palette(midlight); background: palette(window); }
+QFrame[role="dockPanel"] { border-bottom: 1px solid palette(midlight); }
+QToolButton[role="dockHeader"] {
+    border: 0; padding: 3px 6px; font-weight: 600; background: palette(button); text-align: left;
+}
+QToolButton[role="dockHeader"]:hover { background: palette(alternate-base); }
+QLabel[role="dockSection"] { font-size: 11px; font-weight: 600; padding-top: 3px; }
+QWidget[role="dockBody"] QAbstractSpinBox, QWidget[role="dockBody"] QComboBox,
+QWidget[role="dockBody"] QLineEdit, QWidget[role="dockBody"] QPushButton { min-height: 22px; }
+QWidget[role="dockBody"] QPushButton { padding: 2px 8px; }
 QListWidget[role="designObjects"] { border: 0; border-radius: 5px; }
 QListWidget[role="designObjects"]::item { padding: 4px 8px; border-radius: 4px; }
 QListWidget[role="designObjects"]::item:selected {
@@ -638,14 +650,14 @@ def design_icon(tool, color, size=18):
 
 
 class DesignIconButton(QToolButton):
-    def __init__(self, tool, *, checkable=False, action=None):
+    def __init__(self, tool, *, checkable=False, action=None, size=34):
         super().__init__()
         if action is not None:
             self.setDefaultAction(action)
         self.setCheckable(checkable)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setProperty("role", "designTool")
-        self.setFixedSize(34, 34)
+        self.setFixedSize(size, size)
         self.flyout = False
         self.set_tool(tool)
         if action is not None:
@@ -669,7 +681,9 @@ class DesignIconButton(QToolButton):
         color = (_legible(palette.highlightedText().color(), palette.highlight().color())
                  if self.isChecked() or self.isDown() else palette.buttonText().color())
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.translate((self.width() - 24) / 2, (self.height() - 24) / 2)
+        scale = min(1.0, (self.width() - 6) / 24)
+        painter.translate((self.width() - 24 * scale) / 2, (self.height() - 24 * scale) / 2)
+        painter.scale(scale, scale)
         painter.setPen(QPen(color, 1.7, Qt.PenStyle.SolidLine,
                             Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
         painter.drawPath(self.outline)
@@ -678,7 +692,7 @@ class DesignIconButton(QToolButton):
             # filled triangle in the bottom-right corner.
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(color)
-            painter.drawPolygon(QPolygonF([QPointF(26.5, 26.5), QPointF(26.5, 22), QPointF(22, 26.5)]))
+            painter.drawPolygon(QPolygonF([QPointF(25.5, 25.5), QPointF(25.5, 21), QPointF(21, 25.5)]))
         painter.end()
 
 
@@ -691,8 +705,8 @@ class ToolStrip(QFrame):
         self.setObjectName("designToolRail")
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 0, 6, 0)
-        layout.setSpacing(3)
+        layout.setContentsMargins(3, 0, 4, 0)
+        layout.setSpacing(1)
         self.group = QButtonGroup(self)
         self.slots = {}
         self.menus = {}
@@ -704,9 +718,9 @@ class ToolStrip(QFrame):
         self._changed = changed
         self.active_label = styled_label(TOOL_NAMES[0], role="heading")
         for title, tools in TOOL_GROUPS:
-            if title in ("Shape tools", "Measure"):
+            if title in ("Shape tools", "Cut tools", "View tools"):
                 layout.addWidget(design_divider())
-            primary = DesignIconButton(tools[0], checkable=True)
+            primary = DesignIconButton(tools[0], checkable=True, size=30)
             self.group.addButton(primary)
             self.slots[title] = primary
             self._last_choice[primary] = TOOL_NAMES.index(tools[0].name)
@@ -788,3 +802,206 @@ class ToolStrip(QFrame):
             return TOOL_NAMES.index(text)
         except ValueError:
             return -1
+
+
+class DockPanel(QFrame):
+    """One Photoshop-style panel: a thin title bar that collapses a dense body."""
+
+    def __init__(self, key, title, parent=None):
+        super().__init__(parent)
+        self.key = key
+        self.setProperty("role", "dockPanel")
+        self.setAccessibleName(title)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.header = QToolButton(text=title, checkable=True, checked=True, arrowType=Qt.ArrowType.DownArrow,
+                                  toolButtonStyle=Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.header.setProperty("role", "dockHeader")
+        self.header.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.header.toggled.connect(self.set_expanded)
+        outer.addWidget(self.header)
+        self.body = QWidget()
+        self.body.setProperty("role", "dockBody")
+        self.layout_ = QVBoxLayout(self.body)
+        self.layout_.setContentsMargins(8, 4, 8, 8)
+        self.layout_.setSpacing(4)
+        outer.addWidget(self.body)
+
+    def set_expanded(self, expanded):
+        self.body.setVisible(expanded)
+        self.header.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        if self.header.isChecked() != expanded:
+            self.header.setChecked(expanded)
+
+    def form(self, title=None):
+        """A dense form, optionally under a small section caption."""
+        if title:
+            caption = styled_label(title, role="dockSection")
+            self.layout_.addWidget(caption)
+        holder = QWidget()
+        form = Form(holder)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setVerticalSpacing(3)
+        form.setHorizontalSpacing(8)
+        self.layout_.addWidget(holder)
+        return form
+
+    def row(self, *widgets, stretch=True):
+        holder = QWidget()
+        row = QHBoxLayout(holder)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(3)
+        for widget in widgets:
+            row.addWidget(widget)
+        if stretch:
+            row.addStretch()
+        self.layout_.addWidget(holder)
+        return holder
+
+
+class PanelDock(QFrame):
+    """Panels stacked in a scrolling column, opened from an icon strip on the
+    outer edge, as Photoshop's and GIMP's docks are."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("designDock")
+        self.panels = {}
+        self.toggles = {}
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        self.column = QWidget()
+        self.stack = QVBoxLayout(self.column)
+        self.stack.setContentsMargins(0, 0, 0, 0)
+        self.stack.setSpacing(0)
+        self.stack.addStretch(1)
+        self.scroll = QScrollArea()
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setWidget(self.column)
+        row.addWidget(self.scroll, 1)
+        strip = QFrame()
+        strip.setObjectName("panelStrip")
+        strip.setAccessibleName("Panels")
+        self.strip = QVBoxLayout(strip)
+        self.strip.setContentsMargins(3, 4, 3, 4)
+        self.strip.setSpacing(2)
+        self.strip.addStretch(1)
+        row.addWidget(strip)
+
+    def add(self, key, title, icon, *, shown=True):
+        panel = DockPanel(key, title)
+        self.panels[key] = panel
+        self.stack.insertWidget(self.stack.count() - 1, panel)
+        toggle = DesignIconButton(icon, checkable=True, size=30)
+        toggle.setAccessibleName(f"{title} panel")
+        toggle.setToolTip(title)
+        toggle.setChecked(shown)
+        toggle.toggled.connect(lambda on, key=key: self.set_shown(key, on))
+        self.toggles[key] = toggle
+        self.strip.insertWidget(self.strip.count() - 1, toggle)
+        panel.setVisible(shown)
+        return panel
+
+    def set_shown(self, key, shown):
+        panel = self.panels[key]
+        panel.setVisible(shown)
+        if self.toggles[key].isChecked() != shown:
+            self.toggles[key].setChecked(shown)
+
+    def open(self, key):
+        """Show a panel expanded and scroll it into view."""
+        self.set_shown(key, True)
+        self.panels[key].set_expanded(True)
+        QTimer.singleShot(0, self, lambda: self.scroll.ensureWidgetVisible(self.panels[key], 0, 0))
+
+    def shown(self):
+        return [key for key, panel in self.panels.items() if not panel.isHidden()]
+
+
+# Studio's basic colour menu, a plain palette that reads on screen and in print.
+BASIC_COLORS = ("#000000", "#595959", "#a6a6a6", "#ffffff", "#d0202e", "#f26b1d", "#f7c600", "#3fa34d",
+                "#1f6f3a", "#1f8fd1", "#244b9a", "#6b3fa0", "#d23c8f", "#8b5a2b", "#00a99d", "#e0313f")
+
+
+class ColorSwatch(QToolButton):
+    """A colour well: the current colour (hatched when clear) with Studio's
+    basic colours, Clear, Pick from Canvas and More Colors in its menu."""
+
+    picked = Signal(str)
+    pick_from_canvas = Signal()
+
+    def __init__(self, label):
+        super().__init__()
+        self.label = label
+        self.color, self.mixed = "", False
+        self.setAccessibleName(label)
+        self.setToolTip(label)
+        self.setFixedSize(52, 24)
+        self.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(self)
+        grid_holder = QWidget()
+        grid = QHBoxLayout(grid_holder)
+        grid.setContentsMargins(6, 6, 6, 6)
+        grid.setSpacing(3)
+        columns = [QVBoxLayout() for _ in range(8)]
+        for column in columns:
+            column.setSpacing(3)
+            grid.addLayout(column)
+        self.swatches = {}
+        for i, value in enumerate(("", *BASIC_COLORS[:15])):
+            swatch = QToolButton()
+            swatch.setFixedSize(20, 20)
+            swatch.setAccessibleName(value or "Clear")
+            swatch.setToolTip(value or "Clear")
+            swatch.setStyleSheet(f"background: {value}; border: 1px solid palette(mid);" if value else
+                                 "background: qlineargradient(x1:0, y1:1, x2:1, y2:0, stop:0.45 white, "
+                                 "stop:0.5 #d0202e, stop:0.55 white); border: 1px solid palette(mid);")
+            swatch.clicked.connect(lambda _checked=False, value=value: (menu.close(), self.choose(value)))
+            self.swatches[value] = swatch
+            columns[i % 8].addWidget(swatch)
+        holder = QWidgetAction(menu)
+        holder.setDefaultWidget(grid_holder)
+        menu.addAction(holder)
+        menu.addSeparator()
+        menu.addAction("Pick from Canvas", self.pick_from_canvas.emit)
+        menu.addAction("More Colors…", self.more)
+        self.setMenu(menu)
+
+    def choose(self, value):
+        self.set_color(value)
+        self.picked.emit(value)
+
+    def more(self):
+        from PySide6.QtWidgets import QColorDialog
+
+        chosen = QColorDialog.getColor(QColor(self.color or "#313945"), self, self.label)
+        if chosen.isValid():
+            self.choose(chosen.name())
+
+    def set_color(self, value, mixed=False):
+        self.color, self.mixed = value or "", mixed
+        self.setAccessibleDescription("Mixed" if mixed else value or "Clear")
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        well = QRectF(5, 5, self.width() - 18, self.height() - 10)
+        painter.setPen(QPen(self.palette().mid().color(), 1))
+        if self.mixed:
+            painter.setBrush(self.palette().base())
+            painter.drawRect(well)
+            painter.drawText(well, Qt.AlignmentFlag.AlignCenter, "…")
+        elif self.color:
+            painter.setBrush(QColor(self.color))
+            painter.drawRect(well)
+        else:
+            painter.setBrush(QColor("white"))
+            painter.drawRect(well)
+            painter.setPen(QPen(QColor("#d0202e"), 1.4))
+            painter.drawLine(well.bottomLeft(), well.topRight())
+        painter.end()

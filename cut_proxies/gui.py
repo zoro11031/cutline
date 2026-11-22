@@ -2837,7 +2837,7 @@ class Window(Adw.ApplicationWindow):
                 self.guide_spot_selector.set_value(self.guide.spot)
             differ = state.completed > 0 and state.settings_differ(self.options())
             self.guide_spot_status.set_title(
-                f"{state.spot_status} · Settings changed (move to fresh spot)" if differ else state.spot_status)
+                f"{state.spot_status} · Settings changed" if differ else state.spot_status)
         self.guide_history.set_subtitle(state.history_text() or "Completed passes appear here.")
         self.guide_outcome.set_sensitive(not busy)
         self.guide_outcome.set_selected(tuple(starting_guide.OUTCOMES).index(state.outcome))
@@ -2991,39 +2991,11 @@ class Window(Adw.ApplicationWindow):
 
         dialog.save(self, None, chosen)
 
-    FRESH_SPOT_REASON = ("A second pass at different settings cuts over the first, so the "
-                         "square no longer shows what one setting does. Move to untouched "
-                         "stock, or pick the spot to test on.")
-
-    def offer_fresh_spot(self):
-        """Settings changed on a spot that has already been cut: offer a choice."""
-        dialog = Adw.AlertDialog(
-            heading="Use a Fresh Test Spot?",
-            body="These cut settings differ from the ones this spot was cut with.\n\n"
-                 + self.FRESH_SPOT_REASON)
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("choose", "Choose Spot…")
-        dialog.add_response("next", "Use Next Spot")
-        dialog.set_response_appearance("next", Adw.ResponseAppearance.SUGGESTED)
-        dialog.set_default_response("next")
-        dialog.set_close_response("cancel")
-        dialog.connect("response", self._fresh_spot_response)
-        dialog.present(self)
-
-    def _fresh_spot_response(self, _dialog, response):
-        if response == "next":
-            self.on_guide_next()
-        elif response == "choose":
-            self.guide_spot_selector.grab_focus()
-
     def guide_proposal(self):
         return self.guide.prepare(self._connection(), self.options(), self.job)
 
     def on_guide_pass(self, *_args):
         if self._sending or self._checking_status or not self.guide.can_cut:
-            return
-        if self.guide.completed > 0 and self.guide.settings_differ(self.options()):
-            self.offer_fresh_spot()
             return
         try:
             trial = self.guide_proposal()
@@ -3044,9 +3016,6 @@ class Window(Adw.ApplicationWindow):
 
     def _guide_pass_response(self, _dialog, response, trial):
         if response != "cut" or self._sending or self._checking_status or not self.guide.can_cut:
-            return
-        if self.guide.completed > 0 and self.guide.settings_differ(self.options()):
-            self.offer_fresh_spot()
             return
         try:
             current = self.guide_proposal()

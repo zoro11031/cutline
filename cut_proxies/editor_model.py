@@ -31,20 +31,46 @@ SHAPE_LIMIT = 1000
 _COLOR = re.compile(r"#[0-9a-fA-F]{6}")
 MULTI_CONTOUR_KINDS = ("Compound", "Text", "Sticker")
 POINT_EDIT_KINDS = ("Line", "Path", "Compound")
-PATH_OPERATIONS = ("Make Compound Path", "Release Compound Path", "Weld", "Subtract", "Intersect")
+PATH_OPERATIONS = ("Weld", "Subtract", "Subtract All", "Intersect", "Divide", "Crop",
+                   "Make Compound Path", "Release Compound Path")
 
 
 @dataclass(frozen=True)
 class TextSpec:
+    """Text as Silhouette Studio's Text Style panel describes it (manual chapter 05)."""
+
     value: str
     family: str
     size_mm: float
+    bold: bool = False
+    italic: bool = False
+    align: str = "left"             # left, center or right, for wrapped or multi-line text
+    char_spacing: float = 100.0     # percent; 100 is the font's own spacing
+    line_spacing: float = 100.0     # percent
+    wrap_mm: float = 0.0            # text box width; 0 keeps each line on one line
+    path: tuple = ()                # Text to Path: the guide line's points on the page
+    path_offset: float = 0.0        # mm above (+) or below (-) the guide line
+    path_start: float = 0.0         # mm along the guide line where the text begins
+
+    @property
+    def styled(self):
+        """Whether anything beyond the original font, size and text is used."""
+        return self != TextSpec(self.value, self.family, self.size_mm)
+
+
+TEXT_ALIGNMENTS = ("left", "center", "right")
 
 
 def valid_text(spec):
     return (isinstance(spec.value, str) and 1 <= len(spec.value) <= 2048 and bool(spec.value.strip())
             and "\0" not in spec.value and isinstance(spec.family, str) and 1 <= len(spec.family) <= 200
-            and "\0" not in spec.family and _number(spec.size_mm, 1, 100))
+            and "\0" not in spec.family and _number(spec.size_mm, 1, 100)
+            and type(spec.bold) is bool and type(spec.italic) is bool and spec.align in TEXT_ALIGNMENTS
+            and _number(spec.char_spacing, 10, 500) and _number(spec.line_spacing, 10, 500)
+            and _number(spec.wrap_mm, 0, SHAPE_LIMIT) and _number(spec.path_offset, -100, 100)
+            and _number(spec.path_start, 0, 10 * SHAPE_LIMIT) and isinstance(spec.path, tuple)
+            and (not spec.path or (2 <= len(spec.path) <= 4096 and all(
+                isinstance(p, tuple) and len(p) == 2 and all(_number(v) for v in p) for p in spec.path))))
 
 
 @dataclass(frozen=True)
@@ -72,6 +98,10 @@ class Shape:
     text: TextSpec | None = None
     sticker: Sticker | None = None
     layer: str = ""
+    # Bezier handles for a Path, one entry per point: () for a plain corner,
+    # or (in handle, out handle, smooth) in the same 0..1 frame as `points`
+    # (handles may lie outside it). Empty for every other kind.
+    handles: tuple = ()
 
     def paths(self):
         if self.kind not in MULTI_CONTOUR_KINDS:
@@ -84,8 +114,7 @@ class Shape:
             raise ValueError("Use paths() to retrieve every contour of a compound object.")
         rect = geometry.Rect(self.x, self.y, self.width, self.height)
         if self.kind == "Path":
-            points = tuple((self.x + x * self.width, self.y + y * self.height)
-                           for x, y in self.points)
+            points = self._flattened_points()
         elif self.kind == "Line":
             points = ((rect.x, rect.y), (rect.x2, rect.y2))
         elif self.kind == "Ellipse":
@@ -100,6 +129,46 @@ class Shape:
             points = template.rounded_rect_points(rect, radius)
         closed = self.closed if self.kind == "Path" else self.kind != "Line"
         return self._cut_path(points, closed)
+
+    def local_point(self, point):
+        """A page point in the shape's own unrotated, unflipped frame."""
+        if not (self.rotation or self.flip_x or self.flip_y):
+            return point
+        cx, cy = self.x + self.width / 2, self.y + self.height / 2
+        r = math.radians(-self.rotation)
+        c, s = math.cos(r), math.sin(r)
+        dx, dy = point[0] - cx, point[1] - cy
+        lx, ly = c * dx - s * dy, s * dx + c * dy
+        fx, fy = (-1 if self.flip_x else 1), (-1 if self.flip_y else 1)
+        return cx + fx * lx, cy + fy * ly
+
+    def _flattened_points(self):
+        """A Path's points on the page, with any curved segments flattened."""
+        place = lambda p: (self.x + p[0] * self.width, self.y + p[1] * self.height)  # noqa: E731
+        anchors = [place(p) for p in self.points]
+        if not self.handles:
+            return tuple(anchors)
+        count = len(anchors)
+        out = [anchors[0]]
+        segments = count if self.closed else count - 1
+        for i in range(segments):
+            j = (i + 1) % count
+            a, b = anchors[i], anchors[j]
+            first, second = self.handles[i], self.handles[j]
+            c1 = place(first[1]) if first else a
+            c2 = place(second[0]) if second else b
+            if c1 == a and c2 == b:
+                out.append(b)
+                continue
+            steps = max(8, min(64, round((math.dist(a, c1) + math.dist(c1, c2) + math.dist(c2, b)) / 0.4)))
+            for step in range(1, steps + 1):
+                t = step / steps
+                u = 1 - t
+                out.append(tuple(u ** 3 * a[k] + 3 * u * u * t * c1[k] + 3 * u * t * t * c2[k] + t ** 3 * b[k]
+                                 for k in (0, 1)))
+        if self.closed and len(out) > 1 and out[-1] == out[0]:
+            out.pop()
+        return tuple(out)
 
     def frame(self):
         """Transformed image frame in top-left, top-right, bottom-right, bottom-left order."""
@@ -296,10 +365,10 @@ def _simplify_path(path):
     return replace(path, points=points)
 
 
-def offset_shape(shape, distance):
+def offset_shape(shape, distance, join="corner"):
     if not math.isfinite(distance) or not distance:
         raise ValueError("Enter a nonzero offset distance.")
-    result = vector_regions.modify("Offset", (_closed_contours(shape),), distance=distance)
+    result = vector_regions.modify("Offset", (_closed_contours(shape),), distance=distance, join=join)
     if not result:
         raise ValueError("This inset is too large and leaves no cut area.")
     return replace(styled_contours(tuple(template.CutPath(ring, True) for ring in result), shape), group=None)
@@ -342,6 +411,8 @@ def modify_selection(shapes, indices, operation):
         if any(shapes[i].sticker for i in indices):
             raise ValueError("Convert sticker outlines to paths before combining them with other objects.")
         selected = tuple(_closed_contours(shapes[i]) for i in indices)
+        if operation in ("Divide", "Subtract All", "Crop"):
+            return _split_operation(shapes, indices, operation, selected)
         if operation == "Make Compound Path":
             rings = vector_regions.outlines(tuple(ring for contours in selected for ring in contours), nonzero=False)
         else:
@@ -353,6 +424,66 @@ def modify_selection(shapes, indices, operation):
         replacement = (replace(result, group=None),)
     remaining = tuple(shape for i, shape in enumerate(shapes) if i not in indices)
     return remaining[:start] + replacement + remaining[start:], range(start, start + len(replacement))
+
+
+def _pieces(polygons, style):
+    """Polygons as shapes in a source shape's style: one ring a path, more a compound."""
+    out = []
+    for rings in polygons:
+        rings = tuple(ring for ring in rings if len(set(ring)) >= 3)
+        if rings:
+            paths = tuple(template.CutPath(ring, True) for ring in rings)
+            out.append(replace(styled_contours(paths, style, compound=len(rings) > 1), group=None))
+    return out
+
+
+def _split_operation(shapes, indices, operation, selected):
+    if operation == "Divide":
+        if len(indices) > 8:
+            raise ValueError("Divide works on up to eight objects at once.")
+        replacement = []
+        for owner, polygons in vector_regions.divide(selected):
+            replacement.extend(_pieces(polygons, shapes[indices[owner]]))
+    elif operation == "Crop":
+        replacement = _pieces(vector_regions.crop(selected), shapes[indices[0]])
+    else:
+        results = vector_regions.subtract_all(selected)
+        replacement = [piece for index, polygons in zip(indices, results) for piece in _pieces(polygons, shapes[index])]
+    if not replacement:
+        raise ValueError("This operation leaves no cut area. Adjust the selected objects.")
+    start = indices[0]
+    remaining = tuple(shape for i, shape in enumerate(shapes) if i not in indices)
+    return remaining[:start] + tuple(replacement) + remaining[start:], range(start, start + len(replacement))
+
+
+def detach_lines(shapes, indices):
+    """Studio's Detach Lines: a filled shape becomes its fill (printed, not cut)
+    and its outline (cut), as two objects."""
+    filled = [i for i in indices if shapes[i].fill and shapes[i].closed]
+    if not filled:
+        raise ValueError("Detach Lines needs a selected shape with a fill.")
+    out, made = [], []
+    for index, shape in enumerate(shapes):
+        if index in filled:
+            out.append(replace(shape, stroke="", line_width_mm=0.0, action="None", group=None))
+            made.append(len(out))
+            out.append(replace(shape, fill="", group=None))
+        else:
+            out.append(shape)
+    return tuple(out), tuple(made)
+
+
+def simplified_points(points, tolerance, *, closed=False):
+    """Douglas-Peucker on a drawn line; a closed one keeps at least three points."""
+    points = tuple(points)
+    if len(points) < 3:
+        return points
+    if closed:
+        split = max(range(1, len(points)), key=lambda i: math.dist(points[0], points[i]))
+        first = _simplify_line(points[:split + 1], tolerance)
+        second = _simplify_line(points[split:] + points[:1], tolerance)
+        return tuple(first[:-1] + second[:-1])
+    return tuple(_simplify_line(points, tolerance))
 
 
 def _simplify_line(points, tolerance):
@@ -606,6 +737,8 @@ def project_version(project):
         version = 4
     if any(shape.layer for shape in project.shapes) or project.guides:
         version = 5
+    if any(shape.handles or (shape.text and shape.text.styled) for shape in project.shapes):
+        version = 6
     return version
 
 
@@ -614,7 +747,8 @@ def project_document(project):
     for shape in project.shapes:
         fields = asdict(shape)
         for name, default in (("holder", None), ("line_style", "solid"), ("line_width_mm", 0.0),
-                              ("text", None), ("contours", ()), ("sticker", None), ("layer", "")):
+                              ("text", None), ("contours", ()), ("sticker", None), ("layer", ""),
+                              ("handles", ())):
             if fields[name] == default:
                 del fields[name]
         objects.append(fields)
@@ -780,9 +914,51 @@ def paste(shapes, clipboard):
     return tuple(shapes) + tuple(pasted)
 
 
+def erase(shapes, indices, stroke, radius):
+    """Erase a brush stroke from the chosen shapes. A closed shape keeps its
+    style in every piece left; a piece with holes becomes a compound path."""
+    chosen = [i for i in indices if shapes[i].visible and not shapes[i].sticker]
+    inputs = [(all(path.closed for path in shapes[i].paths()), tuple(path.points for path in shapes[i].paths()))
+              for i in chosen]
+    results = dict(zip(chosen, vector_regions.erase(inputs, stroke, radius)))
+    out, changed = [], False
+    for index, shape in enumerate(shapes):
+        result = results.get(index)
+        if result is None:
+            out.append(shape)
+            continue
+        changed = True
+        closed = all(path.closed for path in shape.paths())
+        for piece in result:
+            if closed:
+                paths = tuple(template.CutPath(ring, True) for ring in piece)
+                out.append(replace(styled_contours(paths, shape, compound=len(piece) > 1), group=shape.group))
+            elif len(set(piece)) >= 2:
+                out.append(replace(styled_contours((template.CutPath(piece, False),), shape), group=shape.group))
+    return tuple(out), changed
+
+
+def _valid_handles(handles, count):
+    """Stored handles as tuples, or None if they are not a handle per point."""
+    if not isinstance(handles, (list, tuple)) or len(handles) != count:
+        return None
+    out = []
+    for entry in handles:
+        if not entry:
+            out.append(())
+            continue
+        if not isinstance(entry, (list, tuple)) or len(entry) != 3 or type(entry[2]) is not bool:
+            return None
+        pair = tuple(tuple(point) for point in entry[:2])
+        if not all(len(point) == 2 and all(_number(v, -10, 11) for v in point) for point in pair):
+            return None
+        out.append((*pair, entry[2]))
+    return tuple(out)
+
+
 def load_project(path, legacy_registration=None):
     document = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(document, dict) or document.get("version") not in (1, 2, 3, 4, 5):
+    if not isinstance(document, dict) or document.get("version") not in (1, 2, 3, 4, 5, 6):
         raise ValueError("Unsupported template project version.")
     page = document.get("page_mm")
     if not isinstance(page, list) or len(page) != 2 or not all(_number(v, 1) for v in page):
@@ -819,7 +995,8 @@ def load_project(path, legacy_registration=None):
         try:
             fields = {"kind", "x", "y", "width", "height", "radius"} if legacy else Shape.__dataclass_fields__.keys()
             required = fields if legacy else fields - {"stroke", "fill", "group", "holder", "line_style",
-                                                        "line_width_mm", "contours", "text", "sticker", "layer"}
+                                                        "line_width_mm", "contours", "text", "sticker", "layer",
+                                                        "handles"}
             if not isinstance(item, dict) or not required <= item.keys() <= fields:
                 raise TypeError("incomplete shape")
             shape = Shape(**item)
@@ -843,9 +1020,11 @@ def load_project(path, legacy_registration=None):
                 points = tuple(tuple(p) for p in shape.points)
                 valid = (valid and len(points) >= 2 and min(shape.width, shape.height) >= 0 and
                          all(len(p) == 2 and all(_number(v, 0, 1) for v in p) for p in points))
-                shape = replace(shape, points=points)
+                handles = _valid_handles(shape.handles, len(points)) if shape.handles else ()
+                valid = valid and (not shape.handles or (handles is not None and document["version"] >= 6))
+                shape = replace(shape, points=points, handles=handles or ())
             else:
-                valid = (valid and not shape.points and
+                valid = (valid and not shape.points and not shape.handles and
                          (shape.kind == "Line" or min(shape.width, shape.height) >= 0.1))
                 shape = replace(shape, points=())
             if shape.kind in MULTI_CONTOUR_KINDS:
@@ -853,7 +1032,13 @@ def load_project(path, legacy_registration=None):
                 valid = (valid and shape.closed and (bool(rings) or shape.kind == "Sticker") and all(
                     len(set(ring)) >= 3 and all(len(point) == 2 and all(_number(v, 0, 1) for v in point)
                                                 for point in ring) for ring in rings))
-                spec = TextSpec(**shape.text) if shape.kind == "Text" else None
+                if shape.kind == "Text":
+                    fields = dict(shape.text)
+                    fields["path"] = tuple(tuple(point) for point in fields.get("path", ()))
+                    spec = TextSpec(**fields)
+                    valid = valid and (not spec.styled or document["version"] >= 6)
+                else:
+                    spec = None
                 valid = valid and (valid_text(spec) if spec else shape.text is None)
                 shape = replace(shape, contours=rings, text=spec)
             else:

@@ -348,10 +348,15 @@ class Guide:
         if self.trial:
             if options["blade_options"].get("holder", 1) != self.trial.settings.holder:
                 raise ValueError("Switch back to the tested tool holder or use a fresh spot.")
-            if self.settings_differ(options):
-                raise ValueError("The cut settings changed. Use a fresh spot.")
             track = options["blade_options"].get("track_enhancing", False)
-            return replace(self.trial, track_enhancing=track) if track != self.trial.track_enhancing else self.trial
+            if not self.settings_differ(options):
+                return replace(self.trial, track_enhancing=track) if track != self.trial.track_enhancing else self.trial
+            device = graphtec.device_by_name(options["cutter"])
+            shape = self.trial.sheet.shape
+            settings = self._pass_settings(device, options, shape)
+            rect = self.trial.sheet.cells[0].rect
+            return self.build_trial(device, settings, self.trial.placement, _connection_key(connection),
+                                    shape, track, rect)
         device = graphtec.device_by_name(options["cutter"])
         shape = shape or self.shape
         settings = self._pass_settings(device, options, shape)

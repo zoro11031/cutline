@@ -1032,38 +1032,30 @@ class TestDesignWorkspace(unittest.TestCase):
             response(None, 'cut', proposal)
             self.assertTrue(win.guide_send.get_sensitive())
             win.guide_send.emit('clicked')
-        dialog.assert_called_once()
-        self.assertEqual(fake.run.call_args_list, [mock.call(trial.sheet.steps, wait_done=True)] * 2)
-        self.assertIn('2 completed passes', win.guide_status.get_title())
-        self.assertTrue(win.guide_use.get_sensitive())
-        with mock.patch.object(win, 'offer_tested_preset') as prompt:
-            win.guide_use.emit('clicked')
-        prompt.assert_called_once()
-        self.assertEqual(win.r_passes.get_value(), 2)
+            self.assertEqual(fake.run.call_args_list, [mock.call(trial.sheet.steps, wait_done=True)] * 2)
+            self.assertIn('2 completed passes', win.guide_status.get_title())
+            self.assertTrue(win.guide_use.get_sensitive())
+            with mock.patch.object(win, 'offer_tested_preset') as prompt:
+                win.guide_use.emit('clicked')
+            prompt.assert_called_once()
+            self.assertEqual(win.r_passes.get_value(), 2)
 
-        # Settings differ on an already-cut spot: offer a fresh one, cut nothing.
-        win.guide_spot_selector.set_value(1)
-        self.assertEqual(win.guide.spot, 1)
-        win.r_force.set_value(win.r_force.get_value() + 5)
-        sent = len(fake.run.call_args_list)
-        with mock.patch.object(win, 'offer_fresh_spot') as offer:
+            # Settings differ on an already-cut spot: updates status and repeats with new settings.
+            win.guide_spot_selector.set_value(1)
+            self.assertEqual(win.guide.spot, 1)
+            win.r_force.set_value(win.r_force.get_value() + 5)
+            self.assertIn('Settings changed', win.guide_spot_status.get_title())
+            sent = len(fake.run.call_args_list)
             win.guide_send.emit('clicked')
-        offer.assert_called_once()
-        self.assertEqual(len(fake.run.call_args_list), sent)
-        self.assertEqual(win.guide.spot, 1)
-        self.assertIn('Settings changed', win.guide_spot_status.get_title())
-
-        # The offer's own answers: move on, or stay put.
-        win._fresh_spot_response(None, 'cancel')
-        self.assertEqual(win.guide.spot, 1)
-        win._fresh_spot_response(None, 'next')
-        self.assertEqual(win.guide.spot, 2)
-        win.guide_spot_selector.set_value(1)
+            self.assertEqual(len(fake.run.call_args_list), sent + 1)
+            self.assertEqual(win.guide.spot, 1)
+            self.assertEqual(win.guide.completed, 3)
+        dialog.assert_called_once()
 
         win.guide_next.emit('clicked')
         self.assertEqual(win.guide.spot, 2)
-        self.assertIn('Spot 1 · 2 passes', win.guide_history.get_subtitle())
-        self.assertEqual(win.preview.test_spots[0].passes, 2)
+        self.assertIn('Spot 1 · 3 passes', win.guide_history.get_subtitle())
+        self.assertEqual(win.preview.test_spots[0].passes, 3)
 
     def test_footer_actions_carry_their_roles_and_the_status_wraps_in_gtk(self):
         win = self.make_window()

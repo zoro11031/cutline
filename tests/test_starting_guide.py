@@ -46,12 +46,15 @@ class TestStartingGuide(unittest.TestCase):
         self.assertEqual(trial.sheet.steps[-1].data, graphtec.frame(graphtec.return_to_start_commands(self.device)))
         self.guide.record(trial)
         self.assertIs(self.prepare(offset_mm=(2, -1)), trial)
-        with self.assertRaisesRegex(ValueError, "settings changed"):
-            self.prepare(force=32)
+        modified = self.prepare(force=32)
+        self.assertEqual(modified.settings.force, 32)
+        self.assertEqual(modified.sheet.cells[0].rect, trial.sheet.cells[0].rect)
+        self.assertEqual(modified.placement, trial.placement)
         with self.assertRaisesRegex(ValueError, "tool holder"):
             self.prepare(blade_options={"holder": 2})
-        self.guide.record(trial)
+        self.guide.record(modified)
         self.assertEqual(self.guide.tested_settings.passes, 2)
+        self.assertEqual(self.guide.tested_settings.force, 32)
         self.assertEqual(trial.settings.passes, 1)
 
     def test_next_spot_uses_fresh_geometry_with_different_shape_and_settings(self):
@@ -305,8 +308,9 @@ class TestStartingGuide(unittest.TestCase):
         self.assertTrue(self.guide.settings_differ(dict(self.options, speed=5)))
         self.assertTrue(self.guide.settings_differ(dict(
             self.options, blade_options=dict(self.options["blade_options"], blade_diameter_mm=0.45))))
-        with self.assertRaisesRegex(ValueError, "settings changed"):
-            self.prepare(blade_options=dict(self.options["blade_options"], acceleration=1))
+        changed = self.prepare(blade_options=dict(self.options["blade_options"], acceleration=1))
+        self.assertEqual(changed.settings.acceleration, 1)
+        self.assertEqual(changed.sheet.cells[0].rect, first.sheet.cells[0].rect)
         self.assertEqual(self.prepare(), first)
 
         self.guide.select_spot(2)

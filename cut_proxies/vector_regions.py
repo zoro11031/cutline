@@ -1,7 +1,7 @@
 """Filled path operations in millimetres, using the GEOS C API."""
 
 from contextlib import ExitStack
-from ctypes import CDLL, POINTER, byref, c_char_p, c_double, c_int, c_uint, c_void_p, cast
+from ctypes import CDLL, POINTER, byref, c_byte, c_char_p, c_double, c_int, c_uint, c_void_p, cast
 from functools import lru_cache
 import json
 import math
@@ -48,6 +48,7 @@ def _library():
             "GEOSDifference": (pointer, pointer, pointer, pointer),
             "GEOSIntersection": (pointer, pointer, pointer, pointer),
             "GEOSBufferWithStyle": (pointer, pointer, pointer, c_double, c_int, c_int, c_int, c_double),
+            "GEOSIntersects": (c_byte, pointer, pointer, pointer),
         }
         for name, (result, *arguments) in signatures.items():
             function = getattr(lib, f"{name}_r")
@@ -154,7 +155,7 @@ def outlines(paths, *, nonzero=True):
         return _contours(context.write(context.region(paths, nonzero=nonzero)))
 
 
-def modify(operation, shapes, *, distance=0):
+def modify(operation, shapes, *, distance=0, join="corner"):
     with ExitStack() as stack:
         context = _RegionContext(stack)
         regions = [context.region(contours) for contours in shapes]
@@ -165,7 +166,8 @@ def modify(operation, shapes, *, distance=0):
             collection = context.geom("GEOSGeoJSONReader_readGeometry", context.reader, data)
             result = context.geom("GEOSUnaryUnion", collection)
         elif operation == "Offset":
-            result = context.geom("GEOSBufferWithStyle", regions[0], distance, 8, 1, 2, 5.0)
+            # GEOS join styles: 1 round, 2 mitre. Studio's Offset offers Corner and Round.
+            result = context.geom("GEOSBufferWithStyle", regions[0], distance, 8, 1, 1 if join == "round" else 2, 5.0)
         else:
             function = {"Subtract": "GEOSDifference", "Intersect": "GEOSIntersection"}[operation]
             result = regions[0]
@@ -220,3 +222,102 @@ def slice_contours(paths, p1, p2):
         if len(pieces) >= 2:
             return tuple(pieces)
         return ()
+
+
+def _polygons(data):
+    kind = data["type"]
+    if kind == "GeometryCollection":
+        return tuple(polygon for part in data["geometries"] for polygon in _polygons(part))
+    if kind == "MultiPolygon":
+        return tuple(tuple(tuple(map(tuple, ring[:-1])) for ring in polygon if ring) for polygon in data["coordinates"])
+    if kind == "Polygon":
+        return (tuple(tuple(map(tuple, ring[:-1])) for ring in data["coordinates"] if ring),)
+    return ()
+
+
+def _lines(data):
+    kind = data["type"]
+    if kind == "GeometryCollection":
+        return tuple(line for part in data["geometries"] for line in _lines(part))
+    if kind == "MultiLineString":
+        return tuple(tuple(map(tuple, line)) for line in data["coordinates"] if len(line) >= 2)
+    if kind == "LineString":
+        return (tuple(map(tuple, data["coordinates"])),) if len(data["coordinates"]) >= 2 else ()
+    return ()
+
+
+def erase(shapes, stroke, radius):
+    """Studio's Eraser: remove a round brush dragged along `stroke` from each shape.
+
+    `shapes` is a sequence of (closed, contours). Returns one entry per shape:
+    None where the brush missed it, otherwise the polygons left (each a tuple
+    of rings) for a closed shape, or the line pieces left for an open one."""
+    if not math.isfinite(radius) or radius <= 0:
+        raise ValueError("Set an eraser size above zero.")
+    stroke = [tuple(point) for point in stroke]
+    if len(stroke) == 1:
+        stroke.append((stroke[0][0] + 1e-6, stroke[0][1]))
+    with ExitStack() as stack:
+        context = _RegionContext(stack)
+        brush = context.geom("GEOSBufferWithStyle", context.read("LineString", [list(p) for p in stroke]),
+                             radius, 8, 1, 1, 5.0)
+        out = []
+        for closed, contours in shapes:
+            geometry = (context.region(contours) if closed
+                        else context.read("MultiLineString", [[list(p) for p in line] for line in contours]))
+            if context.call("GEOSIntersects", geometry, brush) != 1:
+                out.append(None)
+                continue
+            left = context.write(context.geom("GEOSDifference", geometry, brush))
+            out.append(_polygons(left) if closed else _lines(left))
+        return out
+
+
+def _point_inside(context, face, region):
+    with ExitStack() as stack:
+        point = context.geom("GEOSPointOnSurface", face, stack=stack)
+        return context.call("GEOSIntersects", region, point) == 1
+
+
+def divide(shapes):
+    """Studio's Divide: every area the outlines cut each other into, as its own piece."""
+    with ExitStack() as stack:
+        context = _RegionContext(stack)
+        regions = [context.region(contours) for contours in shapes]
+        rings = [list(map(list, _closed(points))) for contours in shapes for points in contours]
+        noded = context.geom("GEOSUnaryUnion", context.read("MultiLineString", rings))
+        faces = context.geom("GEOSPolygonize", (c_void_p * 1)(noded), 1)
+        pieces = []
+        for i in range(context.call("GEOSGetNumGeometries", faces)):
+            face = context.call("GEOSGetGeometryN", faces, i)
+            owners = [k for k, region in enumerate(regions) if _point_inside(context, face, region)]
+            if owners:
+                pieces.append((owners[-1], _polygons(context.write(face))))
+        return pieces
+
+
+def subtract_all(shapes):
+    """Studio's Subtract All: each shape loses whatever lies in front of it.
+    `shapes` are back to front; returns the polygons left of each."""
+    with ExitStack() as stack:
+        context = _RegionContext(stack)
+        regions = [context.region(contours) for contours in shapes]
+        out = []
+        for i, region in enumerate(regions):
+            result = region
+            for front in regions[i + 1:]:
+                result = context.geom("GEOSDifference", result, front)
+            out.append(_polygons(context.write(result)))
+        return out
+
+
+def crop(shapes):
+    """Studio's Crop: keep only the areas that at least two shapes share, once."""
+    with ExitStack() as stack:
+        context = _RegionContext(stack)
+        regions = [context.region(contours) for contours in shapes]
+        shared = [context.write(context.geom("GEOSIntersection", first, second))
+                  for i, first in enumerate(regions) for second in regions[i + 1:]]
+        data = json.dumps({"type": "GeometryCollection", "geometries": shared}).encode()
+        union = context.geom("GEOSUnaryUnion", context.geom("GEOSGeoJSONReader_readGeometry", context.reader, data))
+        return _polygons(context.write(union))

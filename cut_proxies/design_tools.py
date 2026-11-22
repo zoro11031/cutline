@@ -140,33 +140,66 @@ SELECT_TOOL = Tool("Select", "V", "Click to select and drag to move. Drag a corn
                    _tool("Select").strokes)
 TYPE_TOOL = Tool("Type", "T", "Click to place text, or click text to edit it.",
                  COMMAND_ICONS["text"].strokes)
-POINT_EDIT_TOOL = Tool("Point Edit", "A", "Drag a point to move it. Double-click the outline to add a point.",
+POINT_EDIT_TOOL = Tool("Point Edit", "A", "Drag a point or a blue handle. Click the outline to add a point. "
+                       "Right-click a point for Delete, Break Path, Corner, Smooth, Make Flat and Make Curve.",
                        _tool("Point Edit").strokes)
-# For tracing a template around a real blank, as Silhouette School's
-# PixScan template tutorial does with Studio's Draw a Curve tool.
-CURVE_TOOL = Tool("Curve", "C", "Click to place points; the outline curves smoothly through them. "
-                  "Click the first point or press Enter to close it.",
+LINE_TOOL = Tool(LINE, "L", "Drag to draw a line. Hold Shift for 45° steps.", _tool(LINE).strokes)
+RECT_TOOL = Tool(RECTANGLE, "R", "Drag to draw a rectangle. Shift draws a square; Alt draws from the center.",
+                 _tool(RECTANGLE).strokes)
+ROUNDED_TOOL = Tool(ROUNDED_RECTANGLE, "U", "Drag to draw a rounded rectangle. Shift draws a square; "
+                    "Alt draws from the center.", _tool(ROUNDED_RECTANGLE).strokes)
+ELLIPSE_TOOL = Tool(ELLIPSE, "E", "Drag to draw an ellipse. Shift draws a circle; Alt draws from the center.",
+                    _tool(ELLIPSE).strokes)
+REGULAR_POLYGON_TOOL = Tool("Regular Polygon", "G", "Drag to draw a polygon with the number of sides in the "
+                            "options bar. Shift keeps it regular; Alt draws from the center.",
+                            (((12, 3), (20.6, 9.2), (17.3, 19.3), (6.7, 19.3), (3.4, 9.2), (12, 3)),))
+POLYGON_TOOL = Tool("Polygon", "P", "Click to place points. Double-click to stop; click the first point to close. "
+                    "Shift keeps segments at 45° steps.", _tool("Polygon").strokes)
+CURVE_TOOL = Tool("Curve", "C", "Click to place points; the line curves smoothly through them. Double-click to "
+                  "stop; click the first point to close.",
                   (((4, 18), (6, 11), (10, 6), (15, 6), (18, 10), (17, 15), (20, 19)),
                    ((3, 17), (5, 17), (5, 19), (3, 19), (3, 17)),
                    ((19, 18), (21, 18), (21, 20), (19, 20), (19, 18))))
-# Photoshop's Ruler tool: measure a known distance, then scale to it, which
-# is how a photo of a blank is brought to its real size.
-MEASURE_TOOL = Tool("Measure", "I", "Drag across a distance you know. Then scale the selection so it matches.",
+ARC_TOOL = Tool("Arc", "", "Drag from one end of the arc to the other.",
+                (((4, 20), (4, 15), (5.5, 10), (8.5, 6.5), (13, 4.5), (20, 4)),))
+FREEHAND_TOOL = Tool("Freehand", "F", "Drag to draw. End where you started to close the shape.",
+                     _tool("Freehand").strokes)
+SMOOTH_FREEHAND_TOOL = Tool("Smooth Freehand", "", "Drag to draw a smooth line with no sharp angles. "
+                            "End where you started to close the shape.",
+                            (((4, 17), (7, 9), (11, 12), (14, 6), (19, 9)), ((15, 15), (20, 20))))
+KNIFE_TOOL = Tool("Knife", "K", "Drag a straight cut across shapes to split them into separate pieces.",
+                  (((4, 20), (17, 7), (20, 4), (21, 8), (8, 21), (4, 20)),))
+ERASER_TOOL = Tool("Eraser", "X", "Drag over shapes to erase parts of them. Set the size in the options bar.",
+                   (((7, 20), (3, 16), (14, 5), (20, 11), (11, 20), (7, 20)), ((8, 11), (14, 17))))
+EYEDROPPER_TOOL = Tool("Eyedropper", "I", "Click a shape to copy its cut action, line and fill to the selection.",
+                       (((14, 6), (18, 2.5), (21.5, 6), (18, 10), (14, 6)),
+                        ((15, 7), (5.5, 16.5), (4, 20), (7.5, 18.5), (17, 9))))
+MEASURE_TOOL = Tool("Measure", "M", "Drag across a distance you know. Then scale the selection so it matches.",
                     (((3, 16), (16, 3), (21, 8), (8, 21), (3, 16)),
                      ((7, 12), (9, 14)), ((10, 9), (13, 12)), ((13, 6), (15, 8))))
+HAND_TOOL = Tool("Hand", "H", "Drag to scroll the page. Hold Space with any tool to do the same.",
+                 (((8, 13), (8, 5), (10, 4), (11, 5), (11, 11), (11, 3), (13, 2), (14, 3), (14, 11), (14, 4),
+                   (16, 3.5), (17, 5), (17, 12), (17, 7), (19, 6.5), (20, 8), (20, 15), (17, 20), (11, 21),
+                   (7, 18), (4, 13), (5, 11), (8, 13)),))
+ZOOM_TOOL = Tool("Zoom", "Z", "Click to zoom in; Alt-click to zoom out.",
+                 (((15, 15), (21, 21)), ((10, 3), (14.9, 5.1), (17, 10), (14.9, 14.9), (10, 17), (5.1, 14.9),
+                   (3, 10), (5.1, 5.1), (10, 3)), ((7, 10), (13, 10)), ((10, 7), (10, 13))))
 WORKSPACE_TOOL_GROUPS = (
     ("Select", (SELECT_TOOL,)),
     ("Point Edit", (POINT_EDIT_TOOL,)),
-    ("Shape tools", tuple(_tool(name) for name in KINDS)),
-    ("Path tools", (_tool("Polygon"), CURVE_TOOL, _tool("Freehand"))),
+    ("Shape tools", (RECT_TOOL, ROUNDED_TOOL, ELLIPSE_TOOL, REGULAR_POLYGON_TOOL, LINE_TOOL)),
+    ("Path tools", (POLYGON_TOOL, CURVE_TOOL, ARC_TOOL, FREEHAND_TOOL, SMOOTH_FREEHAND_TOOL)),
     ("Type", (TYPE_TOOL,)),
-    ("Measure", (MEASURE_TOOL,)),
+    ("Cut tools", (KNIFE_TOOL, ERASER_TOOL)),
+    ("Sample tools", (EYEDROPPER_TOOL, MEASURE_TOOL)),
+    ("View tools", (HAND_TOOL, ZOOM_TOOL)),
 )
 CLICK_PATH_TOOLS = ("Polygon", "Curve")
 WORKSPACE_TOOLS = tuple(tool for _title, group in WORKSPACE_TOOL_GROUPS for tool in group)
 WORKSPACE_TOOL_NAMES = tuple(tool.name for tool in WORKSPACE_TOOLS)
 WORKSPACE_KEYS = {ord(tool.shortcut): index for index, tool in enumerate(WORKSPACE_TOOLS) if tool.shortcut}
-DRAWING_TOOLS = (*KINDS, "Polygon", "Curve", "Freehand", "Type")
+DRAWING_TOOLS = (*KINDS, "Regular Polygon", "Polygon", "Curve", "Arc", "Freehand", "Smooth Freehand", "Type")
+DRAG_SHAPE_TOOLS = (*KINDS, "Regular Polygon", "Arc")
 
 OBJECT_ICONS = {tool.name: tool for tool in TOOLS if tool.name in (*KINDS, "Polygon")}
 OBJECT_ICONS.update(Path=COMMAND_ICONS["path"], Compound=COMMAND_ICONS["group"],
@@ -218,6 +251,22 @@ class RotationHandle:
         box = self.box
         return ((box.x, box.y), (box.x2, box.y), (box.x2, box.y2), (box.x, box.y2))
 
+    def sides(self):
+        box = self.box
+        return ((box.x + box.w / 2, box.y), (box.x2, box.y + box.h / 2),
+                (box.x + box.w / 2, box.y2), (box.x, box.y + box.h / 2))
+
+    def side_at(self, point):
+        """(anchor, axis) for dragging a side handle: the opposite side stays
+        put and the box stretches along one axis only."""
+        box = self.box
+        opposite = ((box.x, box.y2), (box.x, box.y), (box.x, box.y), (box.x2, box.y))
+        axes = (1, 0, 1, 0)
+        for (x, y), anchor, axis in zip(self.sides(), opposite, axes):
+            if math.dist(point, (x, y)) <= 8 / self.scale and (box.h if axis else box.w) >= 4 / self.scale:
+                return anchor, axis
+        return None
+
     def opposite_corner(self, point):
         corners = self.corners()
         index = min(range(4), key=lambda i: math.dist(point, corners[i]))
@@ -247,3 +296,40 @@ def rotation_handle(shapes, indices, scale):
     if any(shapes[i].visible for i in indices):
         return RotationHandle(bounds(shapes[i] for i in indices), scale)
     return None
+
+
+# Panel icons for the dock's strip, one per Silhouette Studio panel.
+def _box(x1, y1, x2, y2):
+    return ((x1, y1), (x2, y1), (x2, y2), (x1, y2), (x1, y1))
+
+
+PANEL_ICONS = {
+    "page": Tool("Page Setup", "", "Page size, cutting mat and registration marks.",
+                 (((6, 3), (15, 3), (19, 7), (19, 21), (6, 21), (6, 3)), ((15, 3), (15, 7), (19, 7)))),
+    "transform": Tool("Transform", "", "Move, rotate, scale and shear the selection.",
+                      (_box(5, 5, 19, 19), ((3, 12), (9, 12)), ((15, 12), (21, 12)), ((12, 3), (12, 9)),
+                       ((12, 15), (12, 21)))),
+    "align": Tool("Align", "", "Align and space selected objects.",
+                  (((4, 3), (4, 21)), _box(7, 6, 17, 10), _box(7, 14, 20, 18))),
+    "replicate": Tool("Replicate", "", "Copies in rows, columns, rotations or a full page.",
+                      (_box(3, 3, 10, 10), _box(14, 3, 21, 10), _box(3, 14, 10, 21), _box(14, 14, 21, 21))),
+    "modify": Tool("Modify", "", "Weld, subtract, intersect, divide and crop overlapping shapes.",
+                   (_box(3, 3, 14, 14), _box(10, 10, 21, 21))),
+    "offset": Tool("Offset", "", "Outline or inset a shape at a distance.",
+                   (_box(8, 8, 16, 16), _box(4, 4, 20, 20))),
+    "trace": Tool("Trace", "", "Make cut lines from a placed image.",
+                  (((4, 9), (4, 4), (9, 4)), ((15, 4), (20, 4), (20, 9)), ((20, 15), (20, 20), (15, 20)),
+                   ((9, 20), (4, 20), (4, 15)), ((8, 16), (11, 9), (14, 13), (16, 11), (17, 16), (8, 16)))),
+    "text": Tool("Text Style", "", "Font, size, spacing and alignment of text.",
+                 (((5, 5), (19, 5)), ((12, 5), (12, 19)), ((8, 19), (16, 19)))),
+    "line": Tool("Line and Fill", "", "Cut action, line color and style, and fill.",
+                 (((4, 20), (20, 4)), _box(12, 13, 20, 21))),
+    "grid": Tool("Grid", "", "Grid, snapping, rulers and crosshairs.",
+                 (_box(3, 3, 21, 21), ((9, 3), (9, 21)), ((15, 3), (15, 21)), ((3, 9), (21, 9)), ((3, 15), (21, 15)))),
+    "nesting": Tool("Nesting", "", "Pack shapes into the cut area or a border to save material.",
+                    (_box(3, 3, 21, 21), _box(5, 5, 12, 10), _box(13, 5, 19, 13), _box(5, 12, 11, 19),
+                     _box(13, 15, 19, 19))),
+    "objects": Tool("Objects", "", "Every object in the design, front to back.",
+                    (((4, 8), (12, 4), (20, 8), (12, 12), (4, 8)), ((4, 12), (12, 16), (20, 12)),
+                     ((4, 16), (12, 20), (20, 16)))),
+}

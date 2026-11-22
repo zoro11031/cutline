@@ -1948,7 +1948,7 @@ class Window(QMainWindow):
             self.guide_spot_selector.setValue(state.spot)
             self.guide_spot_selector.blockSignals(blocked)
             differ = state.completed > 0 and state.settings_differ(self.job_options())
-            status_text = f"{state.spot_status} · Settings changed (move to fresh spot)" if differ else state.spot_status
+            status_text = f"{state.spot_status} · Settings changed" if differ else state.spot_status
             self.guide_spot_status.setText(status_text)
         self.material_guide.setText("Resume Material Test" if state.has_tests else "Dial In a Material…")
         if self.tuning:
@@ -2125,37 +2125,8 @@ class Window(QMainWindow):
             self.update_guide()
             self.update_tuning_preview()
 
-    FRESH_SPOT_REASON = ("A second pass at different settings cuts over the first, so the "
-                         "square no longer shows what one setting does. Move to untouched "
-                         "stock, or pick the spot to test on.")
-
-    def fresh_spot_choice(self):
-        """Ask whether to move on. Returns "next", "choose" or "" for cancel."""
-        dialog = QMessageBox(self)
-        dialog.setWindowTitle("Use a Fresh Test Spot?")
-        dialog.setText("These cut settings differ from the ones this spot was cut with.")
-        dialog.setInformativeText(self.FRESH_SPOT_REASON)
-        use_next = dialog.addButton("Use Next Spot", QMessageBox.ButtonRole.AcceptRole)
-        choose = dialog.addButton("Choose Spot…", QMessageBox.ButtonRole.ActionRole)
-        dialog.addButton(QMessageBox.StandardButton.Cancel)
-        dialog.exec()
-        clicked = dialog.clickedButton()
-        return "next" if clicked is use_next else "choose" if clicked is choose else ""
-
-    def offer_fresh_spot(self):
-        """Settings changed on a spot that has already been cut: offer a choice."""
-        choice = self.fresh_spot_choice()
-        if choice == "next":
-            self.guide_next.click()
-        elif choice == "choose":
-            self.guide_spot_selector.setFocus()
-            self.guide_spot_selector.selectAll()
-
     def confirm_guide_pass(self):
         if self.busy or not self.guide.can_cut:
-            return
-        if self.guide.completed > 0 and self.guide.settings_differ(self.job_options()):
-            self.offer_fresh_spot()
             return
         try:
             trial = self.guide.prepare(self.connection(), self.job_options(), self.job)
