@@ -331,6 +331,9 @@ class TestGuardsDiscriminate(unittest.TestCase):
                 finally:
                     setattr(module, attr, real)
                 broken = len(result.failures) + len(result.errors)
+                if result.testsRun and len(result.skipped) == result.testsRun:
+                    # Its tests need a toolkit this machine lacks; they say why.
+                    self.skipTest(f"{description}: every test that checks it was skipped here")
                 self.assertGreater(
                     result.testsRun, 0,
                     f"no tests ran for {description}; the class path is "

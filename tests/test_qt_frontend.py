@@ -1764,7 +1764,9 @@ class TestQtDesignEditor(unittest.TestCase):
         self.addCleanup(design.deleteLater)
         return design
 
-    def drag(self, canvas, start, end, modifiers=Qt.KeyboardModifier.NoModifier):
+    def drag(self, canvas, start, end, modifiers=None):
+        if modifiers is None:
+            modifiers = Qt.KeyboardModifier.NoModifier
         start, end = canvas.mapFromScene(QPointF(*start)), canvas.mapFromScene(QPointF(*end))
         QTest.mousePress(canvas.viewport(), Qt.MouseButton.LeftButton, pos=start)
         QTest.mouseMove(canvas.viewport(), end)

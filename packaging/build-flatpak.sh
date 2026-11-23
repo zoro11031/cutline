@@ -40,11 +40,11 @@ build_network=
 if [ "${SCC_FLATPAK_BUILD_SHARE_NETWORK:-0}" = 1 ]; then
     build_network=--share=network
 fi
-sdk_python=$(flatpak build $build_network "$work/build" python3 -c \
-    'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-python3 -m pip download --dest "$work/src/wheels" --python-version "$sdk_python" \
-    --implementation cp --platform manylinux_2_28_x86_64 --platform manylinux2014_x86_64 \
-    --only-binary=:all: --no-deps \
+# Download wheels with the SDK's own pip, so they match the SDK's interpreter
+# and the build host needs no pip of its own.
+mkdir -p "$work/src/wheels"
+flatpak build --share=network --bind-mount=/run/build/scc="$work/src" "$work/build" \
+    python3 -m pip download --dest /run/build/scc/wheels --only-binary=:all: --no-deps \
     Pillow==13.0.0 pyusb==1.3.1 bleak==3.1.0 dbus-fast==5.2.0
 flatpak build $build_network --bind-mount=/run/build/scc="$work/src" "$work/build" \
     sh -ec 'python3 -m pip install --no-index --no-deps --no-compile --target=/app/lib/python \

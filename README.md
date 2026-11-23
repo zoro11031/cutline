@@ -3,7 +3,8 @@
 Design, print and cut with your Silhouette cutter on Linux.
 
 Cutline lets you draw or import a design, print it with registration marks, and
-send it to a Silhouette Cameo over USB, all without Silhouette Studio.
+send it to a Silhouette Cameo over USB or Bluetooth, all without Silhouette
+Studio.
 Before the cutter moves, Cutline reads the job back and checks every cut line
 lands where it should. If something is off, it tells you and doesn't send.
 
@@ -19,7 +20,8 @@ lands where it should. If something is off, it tells you and doesn't send.
 - **Open what you already have.** SVG, DXF, Silhouette `.studio3` files,
   Inkscape Silhouette layouts and Silhouette Card Maker templates.
 - **Find the right blade settings.** Cut a small test shape, check it, and
-  repeat until it's clean. Cutline remembers what worked.
+  repeat until it's clean. Compare two settings side by side, and Cutline
+  remembers what worked.
 - **Cut cards and stickers in bulk.** Ready-made Letter and A4 layouts for
   trading cards, plus sticker sheets from your own artwork.
 
@@ -27,19 +29,24 @@ lands where it should. If something is off, it tells you and doesn't send.
 
 ## Install
 
-Download the latest AppImage or Flatpak from the
-[Releases page](https://github.com/zoro11031/silhouette-cameo-linux/releases),
-then run the installer that comes with it:
+Download from the [Releases page](https://github.com/zoro11031/cutline/releases):
+
+| System | Download |
+|---|---|
+| Any Linux | The AppImage or Flatpak, plus `install-cutline.sh` |
+| Fedora | The `.noarch.rpm`: `sudo dnf install ./cutline-*.noarch.rpm` |
+| Arch | The `.pkg.tar.zst`: `sudo pacman -U ./cutline-*.pkg.tar.zst` |
+| Windows (experimental) | `Cutline-*-Setup.exe`, which lets you choose the Qt or GTK window |
+
+For the AppImage or Flatpak, run the installer next to it:
 
 ```sh
-sh install-silverblue.sh --appimage    # or --flatpak
-sh install-silverblue.sh --udev        # once: lets Cutline talk to the cutter over USB
+sh install-cutline.sh --appimage    # or --flatpak
+sh install-cutline.sh --udev        # once: lets Cutline talk to the cutter over USB
 ```
 
 Cutline appears in your application menu. Plug the cutter in after the second
 step.
-
-Arch users can build the package in `packaging/aur/`.
 
 ## Your first cut
 
@@ -55,6 +62,12 @@ the real cut.
 
 ![Checking a printed sheet's registration marks](screenshots/sheet-alignment.png)
 
+New material? **Dial In a Material** cuts one small shape at a time on a
+scrap, so you can repeat a pass until it separates, or try other settings on
+a fresh spot.
+
+![Dialling in a material on a test sheet](screenshots/material-guide.png)
+
 ## Tips
 
 - **Cards near the corner marks** can confuse the cutter's scan. Cutline points
@@ -67,17 +80,16 @@ the real cut.
   and pick `condition.csv` from a Silhouette Studio installation.
 - **Two tools at once.** Assign shapes to **Tool Holder 1** or **2** under
   **Object → Tool Holder**, and Cutline sends each to the right one.
-- **Something went wrong?** **Help → Troubleshoot a Cut** has checks for
-  marks that won't scan, foil glare, angled or misplaced cuts, rough edges,
-  a chipped coating, leftover fibers, a skipping carriage, Track Enhancing and
-  laminate, each with a button to the controls it refers to. For coated, core
-  and foil stock, try **Lighter first passes** under Passes. It is adapted from the Silhouette Card Maker
-  [cutting guide](https://alan-cha.github.io/silhouette-card-maker/tutorial/guide/)
-  and [troubleshooting](https://alan-cha.github.io/silhouette-card-maker/tutorial/troubleshooting/) pages.
+- **Coated, core or foil stock chipping?** Turn on **Lighter first passes**
+  under Passes: a few gentle passes through the coating, then full ones.
+- **Something went wrong?** **Help → Troubleshoot a Cut** walks through
+  scans, glare, misplaced cuts, rough edges, Track Enhancing and laminate,
+  with a button to the right controls. It builds on the Silhouette Card Maker
+  [troubleshooting guide](https://alan-cha.github.io/silhouette-card-maker/tutorial/troubleshooting/).
 
 ## Supported cutters
 
-Built and tested with a Silhouette Cameo 4 over USB. Cutline also knows the
+Built and tested with a Silhouette Cameo 4 over USB and Bluetooth. Cutline also knows the
 other Cameo models (1 to 5, including Plus, Pro and Alpha) and the Portrait 1
 to 4, but those have not been tried on real hardware.
 
@@ -93,6 +105,8 @@ Bluetooth has not been tried yet. Bluetooth LE is experimental.
 The [documentation](docs/README.md) explains how Cutline builds and checks
 each job, and how what it knows about Silhouette's cutters and Silhouette
 Studio was worked out.
+[Studio parity](docs/studio-parity.md) lists Silhouette Studio's features
+beside Cutline's, each marked working, partial or missing.
 
 ---
 

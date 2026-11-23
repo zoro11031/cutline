@@ -49,7 +49,7 @@ SETUP_STEPS = (
 # https://alan-cha.github.io/silhouette-card-maker/tutorial/guide/
 # https://alan-cha.github.io/silhouette-card-maker/tutorial/troubleshooting/
 # The coated, core and foil stock advice is reported by other users, not measured
-# here: see docs/how-it-works/materials.md, "Staged passes on coated, core and foil stock".
+# here: see docs/how-it-works.md, "Materials and presets".
 # Each entry is (advice, action); the action opens the controls the advice refers to.
 OPEN_SHEET = "Open Sheet"
 DIAL_IN = "Dial In a Material"

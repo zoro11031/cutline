@@ -1,6 +1,10 @@
 # Status and open questions
 
-Where every claim stands, as of 2026-11-22.
+Where every claim stands, as of 2026-11-23. **Verified** means measured, or
+checked against a published reference or a capture of Studio. **Untested**
+means the bytes are checked but no cutter has done it yet. Details are in
+[How Cutline works](how-it-works.md) and
+[How Silhouette Studio was studied](studying-studio.md).
 
 ## Verified
 
@@ -48,8 +52,8 @@ bytes are checked, but no cutter has done them yet:
 - **Every preset except Silhouette's own** has not been cut. The speed scale
   is disputed (Silhouette's table never exceeds 10; the Card Maker guide uses
   25 on a Cameo 5).
-- **Staged passes**: stream-verified; the benefit on laminated stock is a
-  user's report.
+- **Staged passes**: stream-verified; the benefit on laminated, core and foil
+  stock is users' reports.
 - **The test sheet and the calibration offset**: stream-verified only.
 - **Tool codes other than 0, 1, 2, 4 and 255** are names from
   inkscape-silhouette's table, not replies seen here.

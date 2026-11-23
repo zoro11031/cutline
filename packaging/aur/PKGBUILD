@@ -1,13 +1,13 @@
 # Upload the generated source tarball to the GitHub release and declare
 # the upstream license before publishing to the AUR.
 pkgname=cutline
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc='Design, print and cut with Silhouette cutters'
 replaces=('silhouette-control-center')
 conflicts=('silhouette-control-center')
 arch=('any')
-url='https://github.com/zoro11031/silhouette-linux'
+url='https://github.com/zoro11031/cutline'
 license=('LicenseRef-Unknown')
 depends=('python>=3.10' 'pyside6>=6.4' 'python-pillow' 'poppler' 'geos>=3.10' 'pango')
 optdepends=('python-gobject: GTK fallback frontend'

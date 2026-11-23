@@ -36,6 +36,9 @@ def _window():
     with mock.patch.object(window, "detect_tools"):
         window.refresh_usb()
     window.show()
+    QApplication.processEvents()
+    if window.job is None:
+        window.rebuild()
     return window
 
 
@@ -69,7 +72,8 @@ def capture_all():
             mock.patch.object(transport, "open_transport", side_effect=transport.NotFound("screenshot")):
         # 1. Design, with a sheet of gift tags and the Text Style panel open.
         win = _window()
-        win.open_design()
+        with mock.patch.object(win, "message", side_effect=RuntimeError):
+            win.open_design()
         design = win.design
         design.replace_document(_gift_tags(design.project))
         texts = [i for i, shape in enumerate(design.project.shapes) if shape.text]
