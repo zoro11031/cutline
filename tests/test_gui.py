@@ -5,7 +5,7 @@ from pathlib import Path
 import unittest
 import types
 from unittest import mock
-from cutline import config, corner_test, editor_model, graphtec, importer, job, presets, starting_guide
+from cutline import config, corner_test, cutters, editor_model, graphtec, importer, job, presets, starting_guide
 from tests.test_vector_editing import compound_project
 from tests.test_sticker_print import make_image
 
@@ -45,14 +45,18 @@ class TestDesignWorkspace(unittest.TestCase):
                                     side_effect=gui.transport.NotFound("offline test"))
         offline.start()
         self.addCleanup(offline.stop)
-        with mock.patch.object(win, "detect_tools"):
+        # Nor may a background refresh reach the radio (an LE scan, an inquiry).
+        radio = mock.patch.object(cutters, "wireless_choices", return_value={})
+        radio.start()
+        self.addCleanup(radio.stop)
+        with mock.patch.object(win, "on_refresh_status"):
             win.refresh_usb()
         return win
 
     def test_multiple_usb_cutters_require_an_endpoint_choice(self):
         win = self.make_window()
         device = graphtec.device_by_name("Silhouette Cameo 4")
-        with mock.patch.object(win, "detect_tools"), mock.patch.object(gui.transport, "usb_endpoints",
+        with mock.patch.object(win, "on_refresh_status"), mock.patch.object(gui.transport, "usb_endpoints",
                                return_value=[(device, "", (1, 2)), (device, "", (1, 3))]):
             win.refresh_usb()
             self.assertIsNone(win._connection()[1])
@@ -60,6 +64,113 @@ class TestDesignWorkspace(unittest.TestCase):
             win.r_bluetooth.set_selected(2)
             self.assertEqual(win._connection()[1], (1, 3))
             self.assertTrue(win.cut_button.get_sensitive())
+
+    def test_scan_for_cutters_is_offered_while_no_cutter_is_found(self):
+        # As in Silhouette Studio: with no cutter, the status row offers a
+        # scan, shows it running, and says what to try when it finds nothing.
+        win = self.make_window()
+        device = graphtec.device_by_name("Silhouette Cameo 4")
+        classic = ("bluetooth", "01:23:45:AB:CD:EF")
+        with mock.patch.object(win, "on_refresh_status"), \
+             mock.patch.object(gui.transport, "usb_endpoints", return_value=[]):
+            win._wireless_choices = {}
+            win.refresh_usb()
+            self.assertTrue(win.scan_cutters_button.get_visible())
+            self.assertTrue(win.scan_cutters_button.get_sensitive())
+            self.assertFalse(win.refresh_cutters_button.get_visible())
+            self.assertEqual(win.connection_status.get_subtitle(), cutters.NO_CUTTER_TEXT)
+            with mock.patch.object(gui.threading, "Thread") as thread:
+                win.scan_cutters_button.emit("clicked")
+            self.assertEqual(thread.return_value.start.call_count, 1)
+            self.assertFalse(win.scan_cutters_button.get_sensitive())
+            self.assertEqual(win.connection_status.get_subtitle(), cutters.SCANNING_TEXT)
+            win._wireless_done({})
+            self.assertTrue(win.scan_cutters_button.get_visible())
+            self.assertTrue(win.scan_cutters_button.get_sensitive())
+            self.assertEqual(win.connection_status.get_subtitle(), cutters.NO_CUTTER_TEXT)
+            win._wireless_done({classic: "CAMEO 4-1234 · Bluetooth Classic · 01:23:45:AB:CD:EF"})
+            self.assertFalse(win.scan_cutters_button.get_visible())
+            self.assertTrue(win.refresh_cutters_button.get_visible())
+            self.assertEqual(win._connection(), classic)
+        with mock.patch.object(win, "on_refresh_status"):
+            win._wireless_done({})
+            win.refresh_usb()
+        self.assertFalse(win.scan_cutters_button.get_visible())  # the USB cutter is back
+        self.assertEqual(win._connection()[1], (1, 2))
+        self.assertIsNotNone(device)
+
+    def test_only_scan_and_refresh_cutters_search_for_unpaired_cutters(self):
+        win = self.make_window()
+        with mock.patch.object(gui.threading, "Thread") as thread, \
+             mock.patch.object(gui.GLib, "idle_add"), \
+             mock.patch.object(cutters, "wireless_choices", return_value={}) as choices:
+            win.refresh_wireless()                           # the 30 s timer
+            thread.call_args.kwargs["target"]()
+            self.assertEqual(choices.call_args, mock.call(search=False))
+            win.refresh_wireless(search=True)                # asked for while the refresh runs
+            self.assertEqual(thread.call_count, 1)
+            win._wireless_done({})
+            self.assertEqual(thread.call_count, 2)           # queued, not dropped
+            thread.call_args.kwargs["target"]()
+            self.assertEqual(choices.call_args, mock.call(search=True))
+            win._wireless_done({})
+            win.refresh_cutters_button.emit("clicked")       # Refresh Cutters
+            thread.call_args.kwargs["target"]()
+            self.assertEqual(choices.call_args, mock.call(search=True))
+
+    def test_choosing_a_cutter_reads_its_status_and_pairs_an_unpaired_one(self):
+        # As in Studio: selecting a cutter reads it, and pairs one the search found.
+        win = self.make_window()
+        classic = ("bluetooth", "AA:BB:CC:00:11:22")
+        listing = {classic: "CAMEO 4-1234 · Bluetooth Classic · AA:BB:CC:00:11:22"}
+        for unpaired in (True, False):
+            with self.subTest(unpaired=unpaired), \
+                 mock.patch.object(gui.transport, "usb_endpoints", return_value=[]), \
+                 mock.patch.object(cutters, "unpaired", side_effect=lambda e, u=unpaired: u and e == classic), \
+                 mock.patch.object(win, "detect_tools") as detect, \
+                 mock.patch.object(gui.threading, "Thread") as thread:
+                win._wireless_done({})
+                detect.reset_mock()
+                thread.reset_mock()
+                win._wireless_done(listing)
+                self.assertEqual(win._connection(), classic)
+                self.assertEqual(win.connection_status.get_subtitle(),
+                                 "Pairing with CAMEO 4-1234…" if unpaired else "Checking…")
+                self.assertEqual(detect.call_count, 0)
+                self.assertEqual(thread.call_count, 1)   # the status read, which pairs first
+                win._checking_status = False
+
+    def test_a_listed_cutter_that_does_not_answer_is_not_shown_as_available(self):
+        # A paired cutter is listed even when it is switched off.
+        win = self.make_window()
+        classic = ("bluetooth", "AA:BB:CC:00:11:22")
+        listing = {classic: "CAMEO 4-1234 · Bluetooth Classic · AA:BB:CC:00:11:22"}
+        for answers in (True, False):
+            cutter = mock.MagicMock()
+            cutter.status_and_tools.return_value = ("unloaded", None)
+            cutter.firmware_version.return_value = "1.20"
+            cutter.device = graphtec.device_by_name("Silhouette Cameo 4")
+            link = mock.MagicMock()
+            link.__enter__.return_value = cutter
+            if not answers:
+                link.__enter__.side_effect = gui.transport.NotFound("No cutter detected at AA:BB:CC:00:11:22.")
+
+            def run_now(target, daemon):
+                return mock.Mock(start=target)
+
+            with self.subTest(answers=answers), \
+                 mock.patch.object(gui.transport, "usb_endpoints", return_value=[]), \
+                 mock.patch.object(cutters, "open_link", return_value=link), \
+                 mock.patch.object(gui.GLib, "idle_add", side_effect=lambda f, *a: f(*a)), \
+                 mock.patch.object(gui.threading, "Thread", side_effect=run_now):
+                win._wireless_done({})
+                win._wireless_done(listing)
+                text = win.connection_status.get_subtitle()
+                self.assertNotEqual(text, listing[classic])
+                if answers:
+                    self.assertEqual(text, "Silhouette Cameo 4 · unloaded · 1.20")
+                else:
+                    self.assertEqual(text, cutters.NOT_DETECTED_TEXT)
 
     def test_refresh_keeps_an_explicit_cutter_and_does_not_switch_on_disconnect(self):
         win = self.make_window()
@@ -559,7 +670,7 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertFalse(win.guide_send.get_sensitive())
         self.assertIn("select a cutter", win.guide_status.get_subtitle())
 
-        with mock.patch.object(win, "detect_tools"):
+        with mock.patch.object(win, "on_refresh_status"):
             win.r_bluetooth.set_selected(1)
         self.assertTrue(win.guide_send.get_sensitive())
         self.assertNotIn("select a cutter", win.guide_status.get_subtitle())

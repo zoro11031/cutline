@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest import mock
 
-from cutline import cli, corner_test, editor_model, job, materials, path_edit, presets, sticker_trace, transport
+from cutline import cli, corner_test, cutters, editor_model, job, materials, path_edit, presets, sticker_trace, transport
 from tests.test_vector_editing import compound_project
 from tests.test_sticker_print import make_image
 
@@ -47,15 +47,19 @@ class TestQtFrontend(unittest.TestCase):
                                     side_effect=transport.NotFound("offline test"))
         offline.start()
         self.addCleanup(offline.stop)
+        # Nor may a background refresh reach the radio (an LE scan, an inquiry).
+        radio = mock.patch.object(cutters, "wireless_choices", return_value={})
+        radio.start()
+        self.addCleanup(radio.stop)
         self.window = qt_gui.Window()
-        with mock.patch.object(self.window, "detect_tools"):
+        with mock.patch.object(self.window, "check_device"):
             self.window.refresh_usb()
         self.addCleanup(self.window.deleteLater)
 
     def test_multiple_usb_cutters_require_an_endpoint_choice(self):
         window = self.window
         device = qt_gui.graphtec.device_by_name("Silhouette Cameo 4")
-        with mock.patch.object(window, "detect_tools"), mock.patch.object(transport, "usb_endpoints",
+        with mock.patch.object(window, "check_device"), mock.patch.object(transport, "usb_endpoints",
                                return_value=[(device, "", (1, 2)), (device, "", (1, 3))]):
             window.refresh_usb()
             self.assertIsNone(window.connection()[1])
@@ -64,11 +68,121 @@ class TestQtFrontend(unittest.TestCase):
             self.assertEqual(window.connection()[1], (1, 3))
             self.assertTrue(window.send_button.isEnabled())
 
+    def test_scan_for_cutters_is_offered_while_no_cutter_is_found(self):
+        window = self.window
+        classic = ("bluetooth", "01:23:45:AB:CD:EF")
+        with mock.patch.object(window, "check_device"), \
+             mock.patch.object(transport, "usb_endpoints", return_value=[]):
+            window.wireless_choices = {}
+            window.refresh_usb()
+            self.assertFalse(window.scan_cutters.isHidden())
+            self.assertTrue(window.scan_cutters.isEnabled())
+            self.assertTrue(window.discover.isHidden())
+            self.assertEqual(window.connection_status.text(), cutters.NO_CUTTER_TEXT)
+            with mock.patch.object(window.tasks, "run") as run:
+                window.scan_cutters.click()
+            self.assertEqual(run.call_count, 1)
+            self.assertFalse(window.scan_cutters.isEnabled())
+            self.assertEqual(window.connection_status.text(), cutters.SCANNING_TEXT)
+            window._wireless_done({}, None)
+            self.assertFalse(window.scan_cutters.isHidden())
+            self.assertTrue(window.scan_cutters.isEnabled())
+            self.assertEqual(window.connection_status.text(), cutters.NO_CUTTER_TEXT)
+            window._wireless_done({classic: "CAMEO 4-1234 · Bluetooth Classic · 01:23:45:AB:CD:EF"}, None)
+            self.assertTrue(window.scan_cutters.isHidden())
+            self.assertFalse(window.discover.isHidden())
+            self.assertEqual(window.connection()[:2], classic)
+        with mock.patch.object(window, "check_device"):
+            window._wireless_done({}, None)
+            window.refresh_usb()
+        self.assertTrue(window.scan_cutters.isHidden())  # the USB cutter is back
+        self.assertEqual(window.connection()[1], (1, 2))
+
+    def test_only_scan_and_refresh_cutters_search_for_unpaired_cutters(self):
+        window = self.window
+        with mock.patch.object(window.tasks, "run") as run, \
+             mock.patch.object(cutters, "wireless_choices", return_value={}) as choices:
+            window.refresh_wireless()                        # the 30 s timer
+            run.call_args.args[0]()
+            self.assertEqual(choices.call_args, mock.call(search=False))
+            window.refresh_wireless(search=True)             # asked for while the refresh runs
+            self.assertEqual(run.call_count, 1)
+            window._wireless_done({}, None)
+            self.assertEqual(run.call_count, 2)              # queued, not dropped
+            run.call_args.args[0]()
+            self.assertEqual(choices.call_args, mock.call(search=True))
+            window._wireless_done({}, None)
+            window.find_cutters()                            # Refresh Cutters
+            run.call_args.args[0]()
+            self.assertEqual(choices.call_args, mock.call(search=True))
+
+    def test_choosing_a_cutter_reads_its_status_and_pairs_an_unpaired_one(self):
+        # As in Studio: selecting a cutter reads it, and pairs one the search found.
+        window = self.window
+        classic = ("bluetooth", "AA:BB:CC:00:11:22")
+        listing = {classic: "CAMEO 4-1234 · Bluetooth Classic · AA:BB:CC:00:11:22"}
+        for unpaired in (True, False):
+            with self.subTest(unpaired=unpaired), \
+                 mock.patch.object(transport, "usb_endpoints", return_value=[]), \
+                 mock.patch.object(cutters, "unpaired", side_effect=lambda e, u=unpaired: u and e == classic), \
+                 mock.patch.object(window, "detect_tools") as detect, \
+                 mock.patch.object(window.tasks, "run") as run:
+                window._wireless_done({}, None)
+                detect.reset_mock()
+                run.reset_mock()
+                window._wireless_done(listing, None)
+                self.assertEqual(window.connection()[:2], classic)
+                self.assertEqual(window.connection_status.text(),
+                                 "Pairing with CAMEO 4-1234…" if unpaired else "Reading cutter status…")
+                self.assertEqual(detect.call_count, 0)
+                self.assertEqual(run.call_count, 1)          # the status read, which pairs first
+                window.busy = False
+
+    def test_a_listed_cutter_that_does_not_answer_is_not_called_connected(self):
+        # A paired cutter is listed even when it is switched off.
+        window = self.window
+        classic = ("bluetooth", "AA:BB:CC:00:11:22")
+        listing = {classic: "CAMEO 4-1234 · Bluetooth Classic · AA:BB:CC:00:11:22"}
+        for answers in (True, False):
+            cutter = mock.MagicMock()
+            cutter.status_and_tools.return_value = ("unloaded", None)
+            cutter.firmware_version.return_value = "1.20"
+            cutter.device = qt_gui.graphtec.device_by_name("Silhouette Cameo 4")
+            link = mock.MagicMock()
+            link.__enter__.return_value = cutter
+            if not answers:
+                link.__enter__.side_effect = transport.NotFound("No cutter detected at AA:BB:CC:00:11:22.")
+            with self.subTest(answers=answers), \
+                 mock.patch.object(transport, "usb_endpoints", return_value=[]), \
+                 mock.patch.object(window, "open_link", return_value=link), \
+                 mock.patch.object(window.tasks, "run", side_effect=self._run_now):
+                window._wireless_done({}, None)
+                window._wireless_done(listing, None)
+                text = window.connection_status.text()
+                self.assertNotIn("Connected", text)
+                if answers:
+                    self.assertEqual(text, "Silhouette Cameo 4 · unloaded · 1.20")
+                else:
+                    self.assertEqual(text, cutters.NOT_DETECTED_TEXT)
+
+    @staticmethod
+    def _run_now(work, done):
+        try:
+            value = work()
+        except Exception as error:
+            return done(None, error)
+        return done(value, None)
+
+    def test_check_status_button_reads_status(self):
+        with mock.patch.object(self.window.tasks, "run"):
+            self.window.refresh_cutter.click()
+        self.assertEqual(self.window.connection_status.text(), "Reading cutter status…")
+
     def test_refresh_keeps_an_explicit_cutter_and_does_not_switch_on_disconnect(self):
         window = self.window
         device = qt_gui.graphtec.device_by_name("Silhouette Cameo 4")
         first, other = (1, 2), (1, 3)
-        with mock.patch.object(window, "detect_tools"), mock.patch.object(transport, "usb_endpoints") as detect:
+        with mock.patch.object(window, "check_device"), mock.patch.object(transport, "usb_endpoints") as detect:
             detect.return_value = [(device, "", first), (device, "", other)]
             window.refresh_usb()
             window.detected.setCurrentIndex(window.detected.findData(first))
@@ -448,7 +562,7 @@ class TestQtFrontend(unittest.TestCase):
         other = next(name for name in names if name != qt_gui.config.DEFAULT_PRESET)
         window.select("preset", other)
         self.assertEqual(qt_gui.config.load_settings()["last_preset"], other)
-        with mock.patch.object(window, "detect_tools"):
+        with mock.patch.object(window, "check_device"):
             reopened = qt_gui.Window()
         self.assertEqual(reopened.choice("preset"), other)
         self.assertEqual(reopened.blade["force"].value(),
@@ -935,7 +1049,7 @@ class TestQtFrontend(unittest.TestCase):
         self.assertFalse(window.guide_send.isEnabled())
         self.assertIn("select a cutter", window.guide_status.text())
 
-        with mock.patch.object(window, "detect_tools"):
+        with mock.patch.object(window, "check_device"):
             window.detected.setCurrentIndex(window.detected.findData((1, 2)))
         self.assertTrue(window.guide_send.isEnabled())
         self.assertNotIn("select a cutter", window.guide_status.text())

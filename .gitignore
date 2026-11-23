@@ -4,9 +4,12 @@ __pycache__/
 *.svg.bak
 guest-staging/
 
-# Notes, plans and agent instructions stay local; README.md is the only
-# committed Markdown.
+# Notes, plans and agent instructions stay local. The committed Markdown is
+# README.md and the documentation under docs/.
 *.md
 !/README.md
+!/docs/**/
+!/docs/**/*.md
+notes/
 .impeccable/
 .claude/

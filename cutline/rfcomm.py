@@ -9,7 +9,7 @@ import time
 
 from . import graphtec
 from .bluetooth import Candidate, confirm_firmware, select_candidate
-from .transport import Transport, TransportError
+from .transport import NotFound, Transport, TransportError
 
 DEFAULT_CHANNEL = 1
 # Silhouette Studio 5.0.556.1, captured on 2026-11-21: the Cameo 4 took
@@ -26,11 +26,35 @@ OPEN_ATTEMPTS = 2
 CONNECT_ATTEMPTS = 10
 CONNECT_RETRY_DELAY_S = 3
 _LINK_STILL_CLOSING = {errno.EBUSY, errno.EHOSTDOWN}
+# Measured 2026-11-23 with the cutter switched off (the radio cannot tell that
+# from out of range or Bluetooth off): every connect failed with
+# EHOSTDOWN after 5.13-5.15 s, the Classic page timeout (5.12 s). An EHOSTDOWN
+# that took that long means nothing answered the page, not a closing link.
+PAGE_TIMEOUT_S = 4.5
+PAGE_ATTEMPTS = 2
+LINK_RESET_SETTLE_S = 3
+
+
+# Studio's search, read from BluetoothIO.dll and seen live on 2026-11-21: a
+# Classic inquiry of 10 x 1.28 s = 12.8 s, which also returns paired devices.
+INQUIRY_S = 13
+# Measured 2026-11-22 on a Cameo 4 with BlueZ 5.88: Device1.Pair bonded it by
+# Secure Simple Pairing (Just Works) in about 5 s, with no prompt on either side.
+PAIR_TIMEOUT_S = 60
 
 
 class ReplyTimeout(TransportError):
     """No reply arrived in time."""
+
+
+class LinkDropped(TransportError):
+    """The cutter or BlueZ ended the session."""
+
+
+_DROPPED = {errno.ECONNABORTED, errno.ECONNRESET, errno.ENOTCONN}
 _ADDRESS = re.compile(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", re.I)
+# bluetoothctl colours some lines even when its output is not a terminal.
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def available():
@@ -40,9 +64,47 @@ def available():
 def _run(args):
     try:
         options = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)} if sys.platform == "win32" else {}
-        return subprocess.run(args, capture_output=True, text=True, timeout=5, **options).stdout
+        return _ANSI.sub("", subprocess.run(args, capture_output=True, text=True, timeout=5, **options).stdout)
     except (OSError, subprocess.TimeoutExpired):
         return ""
+
+
+def _call(args, timeout):
+    """Run a slow BlueZ command (an inquiry, a pairing): (status, stdout, stderr)."""
+    try:
+        done = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        return done.returncode, _ANSI.sub("", done.stdout), _ANSI.sub("", done.stderr)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return None, "", str(exc)
+
+
+def _info(address):
+    return _run(["bluetoothctl", "info", address]).lower().replace("br/edr.", "bredr.")
+
+
+def _flag(details, name):
+    for key in (f"bredr.{name}", name):
+        if found := re.search(rf"^\s*{re.escape(key)}:\s*(yes|no)\b", details, re.M):
+            return found[1] == "yes"
+    return None
+
+
+def _bonded(details):
+    """BlueZ 5.66+ reports Bonded apart from Paired: a plain RFCOMM connect to
+    an unpaired Cameo 4 pairs it but keeps no key (seen 2026-11-22)."""
+    if "not available" in details.split("\n", 1)[0]:
+        return False
+    found = _flag(details, "bonded")
+    return _flag(details, "paired") if found is None else found
+
+
+def bonded(address):
+    """Whether BlueZ keeps a key for this device: True, False, or None when
+    that cannot be told (no BlueZ, or not Linux)."""
+    if not sys.platform.startswith("linux"):
+        return None
+    details = _info(address)
+    return _bonded(details) if details.strip() else None
 
 
 def paired_candidates(*, connected=False):
@@ -73,7 +135,63 @@ def paired_candidates(*, connected=False):
                 yield Candidate(":".join(mac[i:i + 2] for i in range(0, 12, 2)), name.strip())
 
 
+def nearby_candidates():
+    """Cutters a Classic inquiry hears that BlueZ keeps no key for (Linux).
+    BlueZ forgets such a device about 30 s after the search ends."""
+    if not sys.platform.startswith("linux"):
+        return []
+    _call(["bluetoothctl", "--timeout", str(INQUIRY_S), "scan", "bredr"], INQUIRY_S + 10)
+    found = []
+    for line in _run(["bluetoothctl", "devices"]).splitlines():
+        tag, _, rest = line.strip().partition(" ")
+        address, _, name = rest.partition(" ")
+        if tag != "Device" or not _ADDRESS.fullmatch(address) or not name:
+            continue
+        record = Candidate(address.upper(), name.strip())
+        if record.catalog_name is None:
+            continue
+        details = _info(address)
+        # The cutter's LE record shares its name; it has a random address and
+        # no Class of Device, which only a Classic inquiry reports.
+        if "(random)" in details.split("\n", 1)[0] or "class:" not in details:
+            continue
+        if _bonded(details) is False:
+            found.append(record)
+    return found
+
+
+def _device_path(address):
+    suffix = "/dev_" + address.upper().replace(":", "_")
+    return next((line.strip() for line in _run(["busctl", "--list", "tree", "org.bluez"]).splitlines()
+                 if line.strip().endswith(suffix)), None)
+
+
+def pair(address):
+    """Bond with a cutter through BlueZ, as Windows did when Studio selected
+    one (Secure Simple Pairing, Just Works). Linux only."""
+    address = address.upper()
+    if not sys.platform.startswith("linux"):
+        raise TransportError(f"{address} is not paired. Pair it in the system's Bluetooth settings, "
+                             "then try again.")
+    path = _device_path(address)
+    if path is None:
+        nearby_candidates()   # forgotten since the search, or never heard: listen again
+        path = _device_path(address)
+    if path is None:
+        raise NotFound(f"No cutter detected at {address}.")
+    status, _, error = _call(["busctl", f"--timeout={PAIR_TIMEOUT_S}", "call", "org.bluez", path,
+                              "org.bluez.Device1", "Pair"], PAIR_TIMEOUT_S + 5)
+    reason = error.strip().removeprefix("Call failed:").strip()
+    if status == 0 or reason.replace(" ", "") == "AlreadyExists":
+        return
+    if reason.replace(" ", "").lower() == "pagetimeout":   # nothing answered
+        raise NotFound(f"No cutter detected at {address}.")
+    raise TransportError(f"Could not pair with {address}. {reason or 'BlueZ did not answer.'}")
+
+
 def _inquiry():
+    if sys.platform.startswith("linux"):
+        return nearby_candidates()
     try:
         import bluetooth as pybluez
         return [Candidate(address.upper(), name or "") for address, name in
@@ -118,11 +236,23 @@ class ClassicTransport(Transport):
         self._socket = None
         self._buffer = bytearray()
         try:
+            if bonded(self.identifier) is False:
+                pair(self.identifier)
             version = self._open_session(channel)
             self.device = confirm_firmware(version, device, known.model if known else None,
                                            allow_unknown=allow_unknown)
         except OSError as exc:
             self.close()
+            if exc.errno == errno.EHOSTDOWN:
+                # Nothing answered: the cutter may be off, out of range, or have
+                # its Bluetooth off. Say what was seen, not a guess at why.
+                raise NotFound(f"No cutter detected at {self.identifier}.") from exc
+            if exc.errno == errno.EBUSY:
+                # Still busy after every retry: another connection holds the
+                # cutter. A Cutline window keeps its link open between actions.
+                raise TransportError(
+                    f"{self.identifier} is in use by another Bluetooth connection, such as a Cutline "
+                    "window or Silhouette Studio. Close it, or wait a few minutes, then try again.") from exc
             raise TransportError(f"Could not connect to {self.identifier} on RFCOMM channel {channel}. "
                                  f"Check that the cutter is paired. {exc}") from exc
         except BaseException:
@@ -137,6 +267,16 @@ class ClassicTransport(Transport):
                 self._firmware = self.query_text(graphtec.QUERY_FIRMWARE_VERSION,
                                                  timeout_ms=FIRST_REPLY_TIMEOUT_MS)
                 return self._firmware
+            except LinkDropped:
+                # Seen 2026-11-22 just after pairing: BlueZ drops the ACL it
+                # paired on a few seconds later, taking a new session with it.
+                self.close()
+                self._buffer.clear()
+                if session == OPEN_ATTEMPTS:
+                    raise TransportError(
+                        f"{self.identifier} dropped the Bluetooth connection as it opened. "
+                        "Try again.") from None
+                time.sleep(LINK_RESET_SETTLE_S)
             except ReplyTimeout:
                 self.close()
                 self._buffer.clear()
@@ -144,29 +284,60 @@ class ClassicTransport(Transport):
                     raise TransportError(
                         f"{self.identifier} accepted the Bluetooth connection but did not answer. "
                         "Turn the cutter off and on, then try again.") from None
+                # This session was the cutter's only connection (another one
+                # would have refused ours with EBUSY), so drop the stalled
+                # link rather than wait ~20 s for the cutter to free it.
+                self._reset_link()
 
     def _connect(self, channel):
         """Open the RFCOMM link, retrying only while a previous link closes.
         Each attempt uses a new socket: a socket whose connect failed cannot
         be connected again."""
+        reset = False
+        unanswered = 0
         for attempt in range(1, CONNECT_ATTEMPTS + 1):
             self._socket = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
             self._socket.settimeout(CONNECT_TIMEOUT_S)
+            started = time.monotonic()
             try:
                 self._socket.connect((self.identifier, channel))
                 return
             except OSError as exc:
                 self.close()
+                timed_out = isinstance(exc, TimeoutError) or exc.errno == errno.ETIMEDOUT
+                # Nothing answered the page: retrying for the ~30 s a closing
+                # link needs would only keep the window waiting.
+                if exc.errno == errno.EHOSTDOWN and time.monotonic() - started >= PAGE_TIMEOUT_S:
+                    unanswered += 1
+                    if unanswered == PAGE_ATTEMPTS:
+                        raise
+                # A timeout with nothing sent is an orphaned kernel session;
+                # one reset clears it. EBUSY is never reset: it can be another
+                # program's live connection, perhaps mid-cut.
+                if timed_out and not reset and self._reset_link():
+                    reset = True
+                    continue
                 if exc.errno not in _LINK_STILL_CLOSING or attempt == CONNECT_ATTEMPTS:
                     raise
                 time.sleep(CONNECT_RETRY_DELAY_S)
+
+    def _reset_link(self):
+        """Drop the classic link through BlueZ, which ends any RFCOMM session
+        left on it. Captured 2026-11-21: an orphaned session blocked every
+        connect for minutes and `bluetoothctl disconnect` cleared it."""
+        if not sys.platform.startswith("linux"):
+            return False
+        _run(["bluetoothctl", "disconnect", self.identifier])
+        time.sleep(LINK_RESET_SETTLE_S)
+        return True
 
     def write(self, data):
         try:
             self._socket.settimeout(30)
             self._socket.sendall(data)
         except OSError as exc:
-            raise TransportError(f"Bluetooth Classic write failed. {exc}") from exc
+            kind = LinkDropped if exc.errno in _DROPPED else TransportError
+            raise kind(f"Bluetooth Classic write failed. {exc}") from exc
         return len(data)
 
     def read(self, size=64, timeout_ms=10000):
@@ -186,9 +357,10 @@ class ClassicTransport(Transport):
             except TimeoutError as exc:
                 raise ReplyTimeout("Bluetooth Classic reply timed out.") from exc
             except OSError as exc:
-                raise TransportError(f"Bluetooth Classic read failed. {exc}") from exc
+                kind = LinkDropped if exc.errno in _DROPPED else TransportError
+                raise kind(f"Bluetooth Classic read failed. {exc}") from exc
             if not chunk:
-                raise TransportError("Bluetooth Classic cutter disconnected.")
+                raise LinkDropped("Bluetooth Classic cutter disconnected.")
             self._buffer.extend(chunk)
 
     def close(self):

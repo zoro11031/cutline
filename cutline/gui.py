@@ -1327,7 +1327,7 @@ class Window(Adw.ApplicationWindow):
 
         self.send_cutter_group = g2 = Adw.PreferencesGroup(title="Cutter")
         cutter_actions = Gtk.Box(spacing=6)
-        scan = Gtk.Button(label="Refresh Cutters")
+        self.refresh_cutters_button = scan = Gtk.Button(label="Refresh Cutters")
         scan.connect("clicked", self._scan_bluetooth)
         cutter_actions.append(scan)
         self.check_cutter_status = Gtk.Button(label="Check Status", valign=Gtk.Align.CENTER)
@@ -1349,11 +1349,18 @@ class Window(Adw.ApplicationWindow):
         self._usb_devices = {}
         self._wireless_choices = {}
         self._wireless_scanning = False
+        self._search_pending = False
         self.preferred_endpoint = None
         self.endpoint_changed_id = self.r_bluetooth.connect("notify::selected", self.select_detected)
         g2.add(self.r_bluetooth)
         self.connection_status = Adw.ActionRow(title="Cutter status")
         self.connection_status.set_subtitle_lines(0)
+        # Offered only while no cutter is available, as in Silhouette Studio.
+        self._manual_scanning = False
+        self.scan_cutters_button = Gtk.Button(label=cutters.SCAN_LABEL, valign=Gtk.Align.CENTER,
+                                              css_classes=["suggested-action"], visible=False)
+        self.scan_cutters_button.connect("clicked", self.on_scan_cutters)
+        self.connection_status.add_suffix(self.scan_cutters_button)
         g2.add(self.connection_status)
         self.r_connection.connect("notify::selected", self.on_connection_changed)
         self.on_connection_changed()
@@ -3295,6 +3302,14 @@ class Window(Adw.ApplicationWindow):
     def refresh_usb(self):
         if self._sending or self._connection_mode() != "auto":
             return False
+        self._refresh_cutter_list()
+        self._update_scan_ui()
+        if self._search_pending and not self._wireless_scanning and not self._checking_status:
+            self._search_pending = False
+            self.refresh_wireless(search=True)
+        return False
+
+    def _refresh_cutter_list(self):
         devices = {**cutters.usb_choices(), **self._wireless_choices}
         if devices != self._usb_devices:
             selected = cutters.detected_choice(devices, self.preferred_endpoint)
@@ -3305,31 +3320,60 @@ class Window(Adw.ApplicationWindow):
                 self.r_bluetooth.set_model(Gtk.StringList.new(["Select a cutter", *devices.values()]))
                 self.r_bluetooth.set_selected(list(devices).index(selected) + 1 if selected else 0)
             if same_cutter:
-                return False
+                return
             self.on_bluetooth_selected()
-            self.connection_status.set_subtitle(devices.get(selected, "Select a cutter." if devices else "No cutter found."))
-        return False
+            if selected is None:   # otherwise on_bluetooth_selected is reading its status
+                self.connection_status.set_subtitle("Select a cutter." if devices else cutters.NO_CUTTER_TEXT)
 
-    def refresh_wireless(self):
+    def refresh_wireless(self, search=False):
+        """Refresh the wireless list; a search also listens for unpaired
+        Classic cutters (13 s), and is only run when asked for."""
+        if search and (self._wireless_scanning or self._sending or self._checking_status):
+            self._search_pending = True   # run it once the window is free
+            self._update_scan_ui()
+            return False
         if self._sending or self._wireless_scanning or self._connection_mode() != "auto":
             return False
         self._wireless_scanning = True
-
-        def done(choices):
-            self._wireless_scanning = False
-            self._wireless_choices = choices
-            self.refresh_usb()
-            return False
+        self._update_scan_ui()
 
         def work():
             try:
-                choices = cutters.wireless_choices()
+                choices = cutters.wireless_choices(search=search)
             except transport.TransportError:
                 choices = {}
-            GLib.idle_add(done, choices)
+            GLib.idle_add(self._wireless_done, choices)
 
         threading.Thread(target=work, daemon=True).start()
         return False
+
+    def _wireless_done(self, choices):
+        self._wireless_scanning = False
+        self._wireless_choices = choices
+        self.refresh_usb()
+        self._update_scan_ui()
+        return False
+
+    def on_scan_cutters(self, *_args):
+        if self._connection_mode() == "auto":
+            self.refresh_usb()
+            self.refresh_wireless(search=True)
+        else:
+            self._scan_bluetooth(self.scan_cutters_button)
+
+    def _update_scan_ui(self):
+        """With no cutter available, offer a scan in the status row and say
+        what is happening; once there is one, the header actions suffice."""
+        if self._connection_mode() == "auto":
+            none, scanning = not self._usb_devices, self._wireless_scanning or self._search_pending
+        else:
+            none = not self._bluetooth_devices and not self.r_bluetooth_id.get_text().strip()
+            scanning = self._manual_scanning
+        self.scan_cutters_button.set_visible(none)
+        self.scan_cutters_button.set_sensitive(not scanning and not self._sending)
+        self.refresh_cutters_button.set_visible(not none)
+        if none:
+            self.connection_status.set_subtitle(cutters.SCANNING_TEXT if scanning else cutters.NO_CUTTER_TEXT)
 
     def _automatic_endpoint(self):
         index = self.r_bluetooth.get_selected() - 1
@@ -3361,6 +3405,7 @@ class Window(Adw.ApplicationWindow):
         changed = self.update_holder_labels()
         self.connection_status.set_subtitle("Not checked")
         self.scan_result.set_visible(False)
+        self._update_scan_ui()
         if changed:
             self.on_changed()
         else:
@@ -3371,13 +3416,15 @@ class Window(Adw.ApplicationWindow):
         mode = self._connection_mode()
         if mode == "auto":
             self.refresh_usb()
-            self.refresh_wireless()
+            self.refresh_wireless(search=True)
             return
         scanner = ble if mode == "ble" else rfcomm
 
         def update(devices, error):
             button.set_sensitive(True)
+            self._manual_scanning = False
             if mode != self._connection_mode():
+                self._update_scan_ui()
                 return
             if error:
                 self.toast(error)
@@ -3389,6 +3436,7 @@ class Window(Adw.ApplicationWindow):
             self.r_bluetooth.set_selected(0)
             if not devices:
                 self.toast(f"No Silhouette cutter found over {bluetooth.BLUETOOTH_MODES[mode]}.")
+            self._update_scan_ui()
 
         def work():
             try:
@@ -3397,6 +3445,8 @@ class Window(Adw.ApplicationWindow):
                 GLib.idle_add(update, [], str(exc))
 
         button.set_sensitive(False)
+        self._manual_scanning = True
+        self._update_scan_ui()
         threading.Thread(target=work, daemon=True).start()
 
     def select_detected(self, *_args):
@@ -3412,7 +3462,13 @@ class Window(Adw.ApplicationWindow):
             if model and self.selected_cutter() == cutters.AUTO:
                 self.r_cutter.set_selected(graphtec.DEVICES.index(model))
             self.on_connection_target_changed()
-            self.detect_tools()
+            if endpoint:
+                # As in Studio, choosing a cutter reads its status, so a paired
+                # cutter that is switched off is never shown as available; one a
+                # search found is paired first.
+                name = self._usb_devices.get(endpoint, "").split(" · ")[0]
+                self.on_refresh_status(pending=f"Pairing with {name}…" if cutters.unpaired(endpoint)
+                                       else "Checking…")
             return
         if 0 <= index < len(self._bluetooth_devices):
             identifier, name = self._bluetooth_devices[index]
@@ -3538,7 +3594,7 @@ class Window(Adw.ApplicationWindow):
         self.corrected_tools = None
         self.update_holder_labels()
 
-    def on_refresh_status(self, *_a):
+    def on_refresh_status(self, *_a, pending="Checking…"):
         if self._sending or self._checking_status or self.active_job is not None:
             return
         connection = self._connection()
@@ -3548,7 +3604,7 @@ class Window(Adw.ApplicationWindow):
             return
         self._checking_status = True
         self.update_send_actions()
-        self.connection_status.set_subtitle("Checking…")
+        self.connection_status.set_subtitle(pending)
 
         def done(text, device, codes):
             self._checking_status = False
@@ -3571,6 +3627,8 @@ class Window(Adw.ApplicationWindow):
                     text = f"{device.name} · {status}"
                     if mode in bluetooth.BLUETOOTH_MODES:
                         text += f" · {cutter.firmware_version()}"
+            except transport.NotFound:
+                text = cutters.NOT_DETECTED_TEXT
             except Exception as exc:
                 text = f"Tool detection unavailable · {exc}"
             GLib.idle_add(done, text, device, codes)

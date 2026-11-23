@@ -18,8 +18,8 @@ cheap: nine sub-suites of a few tests each.
 import io
 import unittest
 
-from cutline import (actions, config, corner_test, pixscan, cutters, editor_model, graphtec, job, regmarks, sheet, starting_guide,
-                         sticker_print, testcut, tooling, transport, verify)
+from cutline import (actions, config, corner_test, pixscan, cutters, editor_model, graphtec, job, regmarks, rfcomm, sheet,
+                         starting_guide, sticker_print, testcut, tooling, transport, verify)
 
 
 def _run(class_paths):
@@ -61,6 +61,14 @@ CASES = (
     (cutters, "usb_refusal", lambda *a: "refused", "every endpoint refused",
      ["tests.test_cutter_detection.TestExactEndpoint.test_refusal_changes_with_endpoint_and_model"]),
 
+    (rfcomm, "bonded", lambda *a: True, "every cutter taken as paired",
+     ["tests.test_bluetooth.TestPairing.test_bonded_reads_bluez_both_ways"]),
+    (rfcomm, "bonded", lambda *a: False, "every cutter paired again",
+     ["tests.test_bluetooth.TestPairing.test_bonded_reads_bluez_both_ways"]),
+    (cutters, "unpaired", lambda *a: False, "no found cutter paired on choosing",
+     ["tests.test_cutter_detection.TestExactEndpoint.test_only_a_search_runs_the_classic_inquiry"]),
+    (cutters, "unpaired", lambda *a: True, "every cutter paired on choosing",
+     ["tests.test_cutter_detection.TestExactEndpoint.test_only_a_search_runs_the_classic_inquiry"]),
     (graphtec.Device, "supports_holder", lambda *a: True, "every holder accepted",
      ["tests.test_guards.TestInstalledTools"]),
     (graphtec.Device, "supports_holder", lambda *a: False, "every holder refused",

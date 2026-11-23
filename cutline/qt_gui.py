@@ -403,11 +403,18 @@ class Window(QMainWindow):
         self.cutter_model = cutter.choice("Cutter model", cutters.MODELS, cutters.AUTO, self.change_model)
         self.wireless_choices = {}
         self.wireless_scanning = False
+        self.search_pending = False
         self.preferred_endpoint = None
         self.detected = cutter.choice("Connected cutter", {"": "Select a cutter"}, changed=self.select_detected)
         self.connection_status = cutter.note("Cutter status not checked.")
+        # Offered only while no cutter is available, as in Silhouette Studio.
+        self.cutter_form = cutter
+        self.manual_scanning = False
+        self.scan_cutters = button(cutters.SCAN_LABEL, self.on_scan_cutters, primary=True)
+        cutter.addRow(self.scan_cutters)
+        cutter.setRowVisible(self.scan_cutters, False)
         self.discover = button("Refresh Cutters", self.find_cutters)
-        self.refresh_cutter = button("Check Status", self.check_device)
+        self.refresh_cutter = button("Check Status", lambda: self.check_device())
         cutter.actions(self.discover, self.refresh_cutter)
 
         groups = normal.group("Cut groups")
@@ -1726,6 +1733,13 @@ class Window(QMainWindow):
     def refresh_usb(self):
         if self.busy or self.link.currentData() != "auto":
             return
+        self._refresh_cutter_list()
+        self._update_scan_ui()
+        if self.search_pending and not self.wireless_scanning and not self.busy:
+            self.search_pending = False
+            self.refresh_wireless(search=True)
+
+    def _refresh_cutter_list(self):
         choices = {**cutters.usb_choices(), **self.wireless_choices}
         items = {"": "Select a cutter", **choices}
         if [(self.detected.itemData(i), self.detected.itemText(i)) for i in range(self.detected.count())] != list(items.items()):
@@ -1736,22 +1750,48 @@ class Window(QMainWindow):
             if same_cutter:
                 return
             self.device_selected()
-            # The list above already names the cutter; say what is known about it.
-            self.set_cutter_status("Connected · status not checked yet." if selected in choices
-                                   else "Select a cutter." if choices else "No cutter found.")
+            if not selected:   # otherwise device_selected is reading its status
+                self.set_cutter_status("Select a cutter." if choices else cutters.NO_CUTTER_TEXT)
 
 
-    def refresh_wireless(self):
+    def refresh_wireless(self, search=False):
+        """Refresh the wireless list; a search also listens for unpaired
+        Classic cutters (13 s), and is only run when asked for."""
+        if search and (self.wireless_scanning or self.busy):
+            self.search_pending = True   # run it once the window is free
+            self._update_scan_ui()
+            return
         if self.busy or self.wireless_scanning or self.link.currentData() != "auto":
             return
         self.wireless_scanning = True
+        self._update_scan_ui()
+        self.tasks.run(lambda: cutters.wireless_choices(search=search), self._wireless_done)
 
-        def done(value, error):
-            self.wireless_scanning = False
-            self.wireless_choices = value if not error else {}
+    def _wireless_done(self, value, error):
+        self.wireless_scanning = False
+        self.wireless_choices = value if not error else {}
+        self.refresh_usb()
+        self._update_scan_ui()
+
+    def on_scan_cutters(self):
+        if self.link.currentData() == "auto":
             self.refresh_usb()
+            self.refresh_wireless(search=True)
+        else:
+            self.find_cutters()
 
-        self.tasks.run(cutters.wireless_choices, done)
+    def _update_scan_ui(self):
+        """With no cutter available, offer a scan under the status and say
+        what is happening; once there is one, the actions below suffice."""
+        none = self.detected.count() <= 1 and (self.link.currentData() == "auto"
+                                               or not self.identifier.text().strip())
+        scanning = (self.wireless_scanning or self.search_pending if self.link.currentData() == "auto"
+                    else self.manual_scanning)
+        self.cutter_form.setRowVisible(self.scan_cutters, none)
+        self.scan_cutters.setEnabled(not scanning and not self.busy)
+        self.discover.setVisible(not none)
+        if none:
+            self.connection_status.setText(cutters.SCANNING_TEXT if scanning else cutters.NO_CUTTER_TEXT)
 
     def change_connection(self):
         mode = self.link.currentData()
@@ -1763,6 +1803,7 @@ class Window(QMainWindow):
         self.change_target()
         if mode == "auto" and not self.loading:
             self.refresh_usb()
+        self._update_scan_ui()
 
     def change_target(self):
         if self.tools_connection is not None and self.tools_connection != self.connection():
@@ -1878,7 +1919,13 @@ class Window(QMainWindow):
             if model and self.cutter_model.currentData() == cutters.AUTO:
                 self.select("cutter", model.name)
             self.change_target()
-            self.detect_tools()
+            if identifier:
+                # As in Studio, choosing a cutter reads its status, so the window
+                # never calls a paired cutter that is switched off "connected";
+                # one a search found is paired first.
+                name = self.detected.currentText().split(" · ")[0]
+                self.check_device(pending=f"Pairing with {name}…" if cutters.unpaired(identifier)
+                                  else "Reading cutter status…")
             return
         self.identifier.setText(identifier or "")
         device = bluetooth.advertised_model(self.detected.currentText().split(" · ")[0])
@@ -1892,15 +1939,19 @@ class Window(QMainWindow):
         mode = self.link.currentData()
         if mode == "auto":
             self.refresh_usb()
-            self.refresh_wireless()
+            self.refresh_wireless(search=True)
             return
         scanner = ble if mode == "ble" else rfcomm
         self.discover.setEnabled(False)
+        self.manual_scanning = True
+        self._update_scan_ui()
         self.connection_status.setText("Searching for Bluetooth cutters…")
 
         def done(devices, error):
             self.discover.setEnabled(True)
+            self.manual_scanning = False
             if mode != self.link.currentData():
+                self._update_scan_ui()
                 return
             if error:
                 self.connection_status.setText(str(error))
@@ -1908,10 +1959,17 @@ class Window(QMainWindow):
             set_choices(self.detected, {"": "Select a cutter", **{
                 identifier: f"{name or 'Unnamed'} · {identifier}" for identifier, name in devices}}, "")
             self.connection_status.setText("Select a cutter from the list." if devices else "No cutters found.")
+            self._update_scan_ui()
 
         self.tasks.run(scanner.discover, done)
 
-    def check_device(self):
+    @staticmethod
+    def _status_failure(error):
+        if isinstance(error, transport.NotFound):
+            return cutters.NOT_DETECTED_TEXT
+        return f"Cutter detection unavailable. {error}"
+
+    def check_device(self, pending="Reading cutter status…"):
         connection = self.connection()
         if self.busy or self.active_job is not None:
             return
@@ -1920,7 +1978,7 @@ class Window(QMainWindow):
             return
         self.busy = True
         self.update_enabled_fields()
-        self.set_cutter_status("Reading cutter status…")
+        self.set_cutter_status(pending)
         self.refresh_send()
 
         def work():
@@ -1933,7 +1991,7 @@ class Window(QMainWindow):
             self.busy = False
             self.update_enabled_fields()
             if connection == self.connection():
-                self.set_cutter_status(f"Cutter detection unavailable. {error}" if error else value[1])
+                self.set_cutter_status(self._status_failure(error) if error else value[1])
                 if not error and self.cutter_model.currentData() == cutters.AUTO:
                     self.select("cutter", value[0].name)
                 if not error and value[2] is not None:

@@ -72,8 +72,20 @@ the real cut.
 
 Built and tested with a Silhouette Cameo 4 over USB. Cutline also knows the
 other Cameo models (1 to 5, including Plus, Pro and Alpha) and the Portrait 1
-to 4, but those have not been tried on real hardware. Bluetooth is
-experimental.
+to 4, but those have not been tried on real hardware.
+
+Bluetooth: turn the cutter on and open **Send**. On Linux, Cutline finds a
+cutter that has never been paired and pairs it when you choose it, as
+Silhouette Studio does; on other systems, pair it in the system's Bluetooth
+settings first. A Cameo 4 connects over Bluetooth Classic, as it does with
+Studio, and Cutline reads its status and tools that way; cutting over
+Bluetooth has not been tried yet. Bluetooth LE is experimental.
+
+## How it works
+
+The [documentation](docs/README.md) explains how Cutline builds and checks
+each job, and how what it knows about Silhouette's cutters and Silhouette
+Studio was worked out.
 
 ---
 

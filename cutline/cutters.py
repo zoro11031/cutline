@@ -1,5 +1,9 @@
 """Shared desktop cutter selection and exact endpoint binding."""
 
+import atexit
+import sys
+import threading
+
 from . import graphtec, transport
 
 AUTO = "Auto Detect"
@@ -22,6 +26,19 @@ for family in FAMILIES:
                   for device in graphtec.DEVICES if device.name.startswith(f"Silhouette {family}"))
     MODELS.update((name, f"{family} · {name}") for name, (group, _) in LEGACY.items()
                   if group == family)
+
+
+# With no cutter available, both windows offer a scan in the status row, as
+# Silhouette Studio does, and say what to try when it finds nothing.
+SCAN_LABEL = "Scan for Cutters"
+SCANNING_TEXT = "Scanning for cutters…"
+NOT_DETECTED_TEXT = "No cutter detected."
+# On Linux a scan also finds and pairs Bluetooth cutters; elsewhere they are
+# paired in the system's settings first.
+NO_CUTTER_TEXT = ("No cutter found. Turn the cutter on and connect it by USB, or turn on its "
+                  "Bluetooth and scan again." if sys.platform.startswith("linux") else
+                  "No cutter found. Turn the cutter on and connect it by USB, "
+                  "or pair it in your system's Bluetooth settings.")
 
 
 def usb_choices():
@@ -67,24 +84,193 @@ def open_link(connection, device=None):
         return transport.open_transport(mode, device=target[0], usb_endpoint=identifier)
     if not identifier:
         raise transport.NotFound("Select a Bluetooth cutter.")
+    channel = channel[0] if channel else None
+    if mode in HELD_MODES:
+        return _HeldLink((mode, identifier, channel), device)
     return transport.open_transport(mode, device=device, bluetooth_id=identifier,
-                                    bluetooth_channel=channel[0] if channel else None)
+                                    bluetooth_channel=channel)
 
 
-def wireless_choices():
-    """Discover wireless candidates without opening a cutter session."""
+# One Bluetooth Classic connection is kept open across actions, as Studio
+# 5.0.556.1 does (captured 2026-11-21: one link, status polled about 1 Hz).
+# Measured the same day on a Cameo 4: an idle link answered status in ~20 ms
+# after 60 s, while a new session took 3-55 s whenever the cutter stalled it.
+# LE is not held: no LE session to a Cameo has worked, so nothing is known
+# about how one behaves when kept.
+HELD_MODES = frozenset({"bluetooth"})
+# Release the cutter after a while unused, so Studio or a terminal command
+# can reach it; the next action reopens.
+IDLE_CLOSE_S = 300
+_held_lock = threading.Lock()   # guards _held and its timer
+_use_lock = threading.RLock()   # one action on the link at a time
+_held = None                    # (key, link)
+_idle_timer = None
+
+
+def _answers(link):
+    """Whether the link still answers a status query (ESC ENQ). The front
+    ends raise TransportError for refusals such as "no media is loaded" on a
+    link that is perfectly healthy; only a link that no longer answers goes."""
+    try:
+        link.status()
+        return True
+    except (transport.TransportError, OSError):
+        return False
+
+
+def _drop_held():
+    """Close and forget the held link. Caller holds _held_lock."""
+    global _held
+    if _held is not None:
+        try:
+            _held[1].close()
+        except Exception:
+            pass
+        _held = None
+
+
+def _close_if_idle(link):
+    if not _use_lock.acquire(blocking=False):
+        return  # lent out; the next release starts a new timer
+    try:
+        with _held_lock:
+            if _held is not None and _held[1] is link:
+                _drop_held()
+    finally:
+        _use_lock.release()
+
+
+def close_held():
+    """Close the held link, if any (application exit, or a test)."""
+    global _idle_timer
+    with _held_lock:
+        if _idle_timer is not None:
+            _idle_timer.cancel()
+            _idle_timer = None
+        _drop_held()
+
+
+atexit.register(close_held)
+
+
+class _HeldLink:
+    """Lend the held link for one action. A transport failure during the
+    action drops it, so the next action opens a fresh one."""
+
+    def __init__(self, key, device):
+        self.key, self.device, self.link = key, device, None
+
+    def __enter__(self):
+        global _held, _idle_timer
+        _use_lock.acquire()
+        try:
+            with _held_lock:
+                if _idle_timer is not None:
+                    _idle_timer.cancel()
+                    _idle_timer = None
+                if _held is not None and _held[0] != self.key:
+                    _drop_held()
+                if _held is not None and not _answers(_held[1]):
+                    _drop_held()
+                if _held is None:
+                    mode, identifier, channel = self.key
+                    _held = (self.key, transport.open_transport(
+                        mode, device=self.device, bluetooth_id=identifier, bluetooth_channel=channel))
+                self.link = _held[1]
+                _nearby.pop(self.key[1], None)   # opening it paired it
+            if self.device is not None and self.link.device != self.device:
+                raise transport.TransportError(f"Connected cutter is {self.link.device.name}.")
+            return self.link
+        except BaseException:
+            _use_lock.release()
+            raise
+
+    def __exit__(self, kind, error, trace):
+        global _idle_timer
+        try:
+            with _held_lock:
+                if isinstance(error, (transport.TransportError, OSError)) and not _answers(self.link):
+                    if _held is not None and _held[1] is self.link:
+                        _drop_held()
+                elif _held is not None and _held[1] is self.link:
+                    _idle_timer = threading.Timer(IDLE_CLOSE_S, _close_if_idle, (self.link,))
+                    _idle_timer.daemon = True
+                    _idle_timer.start()
+        finally:
+            _use_lock.release()
+        return False
+
+
+# Classic cutters the last search heard that BlueZ keeps no key for, by
+# address. Listed until paired: BlueZ itself forgets them ~30 s after a search.
+_nearby = {}
+# Cutter names heard over LE and searched for over Classic once already.
+_searched_le = set()
+
+
+def forget_nearby():
+    _nearby.clear()
+    _searched_le.clear()
+
+
+def unpaired(endpoint):
+    """Whether choosing this endpoint pairs a cutter first (it was found by a
+    search and not yet paired), so the windows can say so."""
+    return bool(endpoint) and endpoint[0] == "bluetooth" and endpoint[1] in _nearby
+
+
+def wireless_choices(search=False):
+    """Discover wireless candidates without opening a cutter session. Only a
+    search runs a Classic inquiry: it takes 13 s and can make Bluetooth audio
+    stutter, so the periodic refresh does not."""
     from . import ble, bluetooth, rfcomm
 
+    # The inquiry runs beside the LE scan rather than after it (8 s + 13 s).
+    heard = []
+    inquiry = threading.Thread(target=lambda: heard.extend(rfcomm.nearby_candidates()), daemon=True)
+    if search:
+        inquiry.start()
     try:
         records = ble.discover()
     except transport.TransportError:
         records = ()
-    choices = {("ble", address): f"{name or 'Unknown Silhouette cutter'} · Bluetooth LE · {address}"
-               for address, name in records}
-    for record in rfcomm.paired_candidates(connected=True):
+    paired = list(rfcomm.paired_candidates())
+    if not search:
+        # A cutter heard only over LE is usually one never paired over
+        # Classic: an unpaired Cameo 4 advertises over LE, and no LE session
+        # to one has worked. Search for it over Classic, once per name.
+        known = {record.name.strip().casefold() for record in (*paired, *_nearby.values())}
+        heard_le = {(name or "").strip().casefold() for _, name in records
+                    if bluetooth.advertised_model(name or "") is not None}
+        if new := heard_le - known - _searched_le:
+            _searched_le.update(new)
+            search = True
+            inquiry.start()
+    if search:
+        inquiry.join()
+        _nearby.clear()
+        _nearby.update((record.identifier, record) for record in heard)
+    # Classic first, and any paired cutter, connected or not: links are opened
+    # per action, so a paired cutter is normally disconnected. Studio 5.0.556.1
+    # reaches a Cameo 4 over Classic only (captured 2026-11-21) and no LE
+    # session to one has worked here, so a cutter offered over Classic does not
+    # also appear under its LE address. A cutter seen only over LE stays.
+    choices, classic_names = {}, set()
+    for record in paired:
         if record.catalog_name:
             choices[("bluetooth", record.identifier)] = (
                 f"{record.name} · Bluetooth Classic · {record.identifier}")
+            classic_names.add(record.name.strip().casefold())
+            _nearby.pop(record.identifier, None)
+    # Found by a search, not yet paired: choosing one pairs it, as in Studio.
+    for record in list(_nearby.values()):
+        if ("bluetooth", record.identifier) not in choices:
+            choices[("bluetooth", record.identifier)] = (
+                f"{record.name} · Bluetooth Classic · {record.identifier}")
+            classic_names.add(record.name.strip().casefold())
+    for address, name in records:
+        if (name or "").strip().casefold() not in classic_names:
+            choices[("ble", address)] = f"{name or 'Unknown Silhouette cutter'} · Bluetooth LE · {address}"
     return choices
 
 
