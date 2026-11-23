@@ -540,3 +540,25 @@ class TestPassLog(unittest.TestCase):
                                                     "then 1 at B: Force 25 · Speed 3 · Depth 7")
         self.assertEqual(self.guide.tested_settings.light_passes, 2)
 
+    def test_only_an_identical_pass_skips_the_confirmation(self):
+        first = self.guide.prepare(("auto", None), self.options, None)
+        self.assertFalse(self.guide.is_repeat(first), "the first pass is always confirmed")
+        self.guide.record(first)
+        same = self.guide.prepare(("auto", None), self.options, None)
+        self.assertTrue(self.guide.is_repeat(same))
+        self.assertEqual(self.guide.pass_label(self.options), "Repeat One Pass")
+        self.options["force"] = 20
+        changed = self.guide.prepare(("auto", None), self.options, None)
+        self.assertFalse(self.guide.is_repeat(changed))
+        self.assertEqual(self.guide.pass_label(self.options), "Cut One Pass…")
+        self.assertEqual(self.guide.confirm_title(changed), "Cut With Changed Settings?")
+        self.assertIn("This spot was last cut at Force 10", self.guide.prompt(changed))
+
+    def test_the_prompt_says_where_a_scrap_goes_not_to_load_a_whole_sheet(self):
+        trial = self.guide.prepare(("auto", None), self.options, None)
+        prompt = self.guide.prompt(trial)
+        spot = trial.sheet.cells[0].rect
+        self.assertIn("Put a scrap at least", prompt)
+        self.assertIn(f"{spot.x:g}–{spot.x2:g} mm from the left", prompt)
+        self.assertNotIn("279.4 × 215.9", prompt)
+

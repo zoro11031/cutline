@@ -813,7 +813,8 @@ class Window(Adw.ApplicationWindow):
         bar.pack_end(self.pause_cut)
         bar.pack_end(self.corner_button)
         bar.pack_end(self.scan_button)
-        self.back_to_send = Gtk.Button(label="Exit Material Test", css_classes=["suggested-action"])
+        # Secondary, as in Qt: Cut One Pass is the test's one primary action.
+        self.back_to_send = Gtk.Button(label="Exit Material Test")
         self.back_to_send.connect("clicked", self.close_material_guide)
         bar.pack_end(self.back_to_send)
         return bar
@@ -899,6 +900,11 @@ class Window(Adw.ApplicationWindow):
             self.pause_cut.set_sensitive(pause_sensitive)
             self.cancel_cut.set_label(cancel_label)
             self.cancel_cut.set_sensitive(cancel_sensitive)
+        # A material test cuts one pass at a time with Cut Settings A or B:
+        # the job's pass count, staging and its own force, speed and depth step aside.
+        for field in ("force", "speed", "passes", "depth"):
+            self.send_rows[field].set_visible(not self.tuning)
+        self.r_stage.set_visible(not self.tuning)
         if self.tuning:
             self.send_cutter_group.set_visible(False)
             self.send_groups.set_visible(False)
@@ -917,6 +923,7 @@ class Window(Adw.ApplicationWindow):
             self.guide_view.set_visible(False)
         self.back_to_send.set_visible(self.tuning)
         self.material_guide.set_label("Resume Material Test" if self.guide.has_tests else "Dial In a Material…")
+        self.material_guide.set_visible(not self.tuning)
         job = self.job
         mode, identifier, *_ = self._connection()
         can_check = bool(identifier) and not (self._sending or self._checking_status)
@@ -985,6 +992,7 @@ class Window(Adw.ApplicationWindow):
         self.material_guide.set_label("Resume Material Test")
         self.stack.set_visible_child_name("cut")
         self.tuning = True
+        self.start_guide_slots()
         self.send_page.get_vadjustment().set_value(0)
         self.update_send_actions()
 
@@ -1000,9 +1008,68 @@ class Window(Adw.ApplicationWindow):
         self.send_page.get_vadjustment().set_value(0)
         self.update_send_actions()
 
-    def adjust_guide_settings(self, *_args):
-        self.open_cut_settings()
-        self.update_send_actions()
+    GUIDE_SLOT_KEYS = ("force", "speed", "depth")
+
+    def add_guide_slots(self, group):
+        """Cut Settings A and B: two settings to compare, each opening on its
+        own. "Cut with" picks which one cuts, and each pass records it."""
+        self.guide_headers, self.guide_fields = {}, {}
+        for name in ("A", "B"):
+            header = Adw.ExpanderRow(title=f"Cut Settings {name}")
+            self.guide_fields[name] = {}
+            for field, title, low, high in (("force", "Force", 1, 40), ("speed", "Speed", 1, 30),
+                                            ("depth", "Blade Depth", -1, 10)):
+                row, precision, _ = self._slider_row(field, title, low, high, low if low > 0 else -1,
+                                                     lambda *_a, name=name: self.change_guide_slot(name))
+                header.add_row(row)
+                self.guide_fields[name][field] = precision
+            group.add(header)
+            self.guide_headers[name] = header
+
+    @property
+    def guide_slot(self):
+        return "AB"[self.guide_slot_choice.get_selected()]
+
+    @property
+    def guide_pass_name(self):
+        return self.guide_slot
+
+    def guide_slot_values(self, name):
+        return {key: (None if field.get_value() < 0 else int(field.get_value()))
+                for key, field in self.guide_fields[name].items()}
+
+    def _show_guide_slot_values(self, name, values):
+        previous, self._guide_slot_loading = getattr(self, "_guide_slot_loading", False), True
+        try:
+            for key, field in self.guide_fields[name].items():
+                field.set_value(-1 if values[key] is None else values[key])
+        finally:
+            self._guide_slot_loading = previous
+
+    def _blade_slot_values(self):
+        return {key: (None if field.get_value() < 0 else int(field.get_value()))
+                for key, field in (("force", self.r_force), ("speed", self.r_speed), ("depth", self.r_depth))}
+
+    def start_guide_slots(self):
+        """A new test starts both settings from Cut Settings, with A open."""
+        values = self._blade_slot_values()
+        for name in self.guide_fields:
+            self._show_guide_slot_values(name, values)
+        self.guide_headers["A"].set_expanded(True)
+        self.guide_slot_choice.set_selected(0)
+
+    def use_guide_slot(self):
+        self.set_guide_blade_values(self.guide_slot_values(self.guide_slot))
+
+    def change_guide_slot(self, name):
+        if not getattr(self, "_guide_slot_loading", False) and name == self.guide_slot:
+            self.use_guide_slot()
+
+    def sync_guide_slot(self):
+        """Settings changed from elsewhere land in the chosen setting."""
+        values = self._blade_slot_values()
+        if values != self.guide_slot_values(self.guide_slot):
+            self._show_guide_slot_values(self.guide_slot, values)
 
     def update_tuning_preview(self):
         trial = None
@@ -1335,22 +1402,23 @@ class Window(Adw.ApplicationWindow):
             guide.add(field)
         self.guide_shape_id = self.guide_shape.connect("notify::selected", self.on_guide_sample)
         self.guide_size_id = self.guide_size.connect("notify::selected", self.on_guide_sample)
-        self.guide_apply, self.guide_edit = self.guide_buttons(
-            guide, ("Use Starting Settings", self.on_guide_start), ("Adjust Cut Settings", self.adjust_guide_settings))
-        self.guide_spot_selector = _spin("Test Spot", 1, 999, 1, 1, 0)
+        self.guide_spot_selector = _spin("Test spot", 1, 999, 1, 1, 0)
+        self.guide_spot_selector.set_tooltip_text("Or click a spot in the preview.")
         self.guide_spot_selector.connect("notify::value", self.on_guide_spot_selected)
         guide.add(self.guide_spot_selector)
-        self.guide_spot_status = Adw.ActionRow(title="Untouched stock")
-        self.guide_spot_status.set_subtitle_lines(0)
-        guide.add(self.guide_spot_status)
-        self.guide_status = Adw.ActionRow(title="Test spot 1")
+        self.add_guide_slots(guide)
+        self.guide_status = Adw.ActionRow(title="Spot 1")
         self.guide_status.set_subtitle_lines(0)
         guide.add(self.guide_status)
-        self.guide_send, self.guide_use = self.guide_buttons(
-            guide, ("Cut One Pass…", self.on_guide_pass), ("Use Tested Settings…", self.on_guide_use))
+        self.guide_slot_choice = _combo("Cut with", ["Cut Settings A", "Cut Settings B"])
+        self.guide_slot_choice.set_tooltip_text("Which cut settings the next pass uses.")
+        self.guide_slot_choice.connect("notify::selected", lambda *_: self.use_guide_slot())
+        guide.add(self.guide_slot_choice)
+        self.guide_send, self.guide_next = self.guide_buttons(
+            guide, ("Cut One Pass…", self.on_guide_pass), ("Next Spot", self.on_guide_next))
         self.guide_send.add_css_class("suggested-action")
-        self.guide_next = self.guide_button(guide, "Next Test Spot", self.on_guide_next)
-        self.exit_guide_btn = self.guide_button(guide, "Exit Material Test", self.close_material_guide)
+        self.guide_use, self.guide_apply = self.guide_buttons(
+            guide, ("Use Tested Settings…", self.on_guide_use), ("Use Starting Settings", self.on_guide_start))
         self.guide_view.append(guide)
         extras, self.guide_advanced = disclosure(self.guide_view, "Test Options")
         tips = Adw.PreferencesGroup(title="Test sheet")
@@ -1457,30 +1525,21 @@ class Window(Adw.ApplicationWindow):
         self.material_note = Gtk.Label(xalign=0, wrap=True, css_classes=["dim-label", "caption"],
                                        margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
         group.add(Adw.PreferencesRow(child=self.material_note, activatable=False, selectable=False))
-        self.send_sliders = {}
+        self.send_sliders, self.send_rows = {}, {}
         for field, title, low, high, value in (
                 ("force", "Force", 1, 40, 30), ("speed", "Speed", 1, 30, 3),
                 ("passes", "Passes", 1, 10, 3), ("depth", "Blade Depth", -1, 10, 7),
                 ("acceleration", "Acceleration", -1, 3, -1)):
-            row = Adw.ActionRow(title=title)
-            pieces = Gtk.Box(spacing=8, valign=Gtk.Align.CENTER)
-            adjustment = Gtk.Adjustment(lower=low, upper=high, value=value, step_increment=1, page_increment=10)
-            slider = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=adjustment,
-                               draw_value=False, hexpand=True, width_request=110)
-            slider.update_property([Gtk.AccessibleProperty.LABEL], [title])
-            precision = Gtk.SpinButton(adjustment=adjustment,
-                                       width_chars=len(BLADE_VALUE_TEXT["depth"]))
-            precision.update_property([Gtk.AccessibleProperty.LABEL], [f"{title} value"])
-            if field in BLADE_VALUE_TEXT:
-                _special_value(precision, -1, BLADE_VALUE_TEXT[field])
-            precision.bind_property("sensitive", slider, "sensitive", GObject.BindingFlags.SYNC_CREATE)
-            precision.connect("value-changed", self.on_changed)
-            pieces.append(slider)
-            pieces.append(precision)
-            row.add_suffix(pieces)
+            row, precision, slider = self._slider_row(field, title, low, high, value, self.on_changed)
             group.add(row)
             setattr(self, f"r_{field}", precision)
             self.send_sliders[field] = slider
+            self.send_rows[field] = row
+            if field == "passes":
+                group.add(self._stage_expander())
+        # The staging note spells out the full passes too, so it follows them.
+        for field in (self.r_force, self.r_speed, self.r_passes):
+            field.connect("value-changed", self._refresh_stage_note)
         toggles = Gtk.Box(spacing=16, css_classes=["cut-toggles"])
         self.r_corners = Gtk.CheckButton(label="Line Segment Overcut")
         self.r_track = Gtk.CheckButton(label="Track Enhancing")
@@ -1785,6 +1844,77 @@ class Window(Adw.ApplicationWindow):
         except OSError as exc:
             self.toast(f"Could not save Weed Settings visibility. {exc}")
 
+    @staticmethod
+    def _slider_row(field, title, low, high, value, changed):
+        """A cut setting as a slider with its exact value beside it."""
+        row = Adw.ActionRow(title=title)
+        pieces = Gtk.Box(spacing=8, valign=Gtk.Align.CENTER)
+        adjustment = Gtk.Adjustment(lower=low, upper=high, value=value, step_increment=1, page_increment=10)
+        # A fixed width, not hexpand: a stretching slider squeezes the title
+        # until it wraps ("Accelerati-on") and starts each slider at a
+        # different x. Fixed, every suffix is the same width and they align.
+        # 96 px leaves "Acceleration" one line in the 1024 px window.
+        slider = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=adjustment,
+                           draw_value=False, width_request=96)
+        slider.update_property([Gtk.AccessibleProperty.LABEL], [title])
+        # One width for every value box, so the sliders line up even when a
+        # box reads "Same as Speed".
+        precision = Gtk.SpinButton(adjustment=adjustment, width_chars=len(BLADE_VALUE_TEXT["light_speed"]))
+        precision.update_property([Gtk.AccessibleProperty.LABEL], [f"{title} value"])
+        if field in BLADE_VALUE_TEXT:
+            _special_value(precision, -1, BLADE_VALUE_TEXT[field])
+        precision.bind_property("sensitive", slider, "sensitive", GObject.BindingFlags.SYNC_CREATE)
+        precision.connect("value-changed", changed)
+        pieces.append(slider)
+        pieces.append(precision)
+        row.add_suffix(pieces)
+        return row, precision, slider
+
+    def _stage_expander(self):
+        """Staged passes, under Passes: a switch that opens the light pass settings."""
+        self.r_stage = Adw.ExpanderRow(title="Lighter first passes", show_enable_switch=True,
+                                       enable_expansion=False)
+        self.r_stage.set_tooltip_text("Cut the first passes lighter, then finish at Force and Speed. "
+                                      "Useful when a full first pass lifts a laminated edge.")
+        self.stage_fields = {}
+        for field, title, low, high in (("light_passes", "Light passes", 1, 9),
+                                        ("light_force", "Light force", -1, 40),
+                                        ("light_speed", "Light speed", -1, 30)):
+            row, precision, _ = self._slider_row(field, title, low, high, 1 if low > 0 else -1,
+                                                 self.on_stage_changed)
+            precision.set_tooltip_text(CONTROL_HELP[field])
+            self.r_stage.add_row(row)
+            self.stage_fields[field] = precision
+        self.stage_note = Gtk.Label(label="Every pass uses Force and Speed.", xalign=0, wrap=True,
+                                    css_classes=["dim-label", "caption"],
+                                    margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
+        self.r_stage.add_row(Adw.PreferencesRow(child=self.stage_note, activatable=False, selectable=False))
+        self.r_stage.connect("notify::enable-expansion", self.on_stage_toggled)
+        return self.r_stage
+
+    def on_stage_toggled(self, *_args):
+        if self.r_stage.get_enable_expansion():
+            self.r_stage.set_expanded(True)
+            light = int(self.stage_fields["light_passes"].get_value())
+            if self.r_passes.get_value() <= light:
+                self.r_passes.set_value(light + 1)
+        self.on_stage_changed()
+
+    def on_stage_changed(self, *_args):
+        self._refresh_stage_note()
+        self.on_changed()
+
+    def _refresh_stage_note(self, *_args):
+        count = self._light_passes()
+        total, force, speed = (int(field.get_value()) for field in (self.r_passes, self.r_force, self.r_speed))
+        light_force, light_speed = (int(self.stage_fields[key].get_value()) for key in ("light_force", "light_speed"))
+        self.stage_note.set_label(actions.stage_note(count, total, force, speed,
+                                                     None if light_force < 0 else light_force,
+                                                     None if light_speed < 0 else light_speed))
+
+    def _light_passes(self):
+        return int(self.stage_fields["light_passes"].get_value()) if self.r_stage.get_enable_expansion() else 0
+
     def _blade_options(self):
         acceleration = int(self.r_acceleration.get_value())
         return dict(holder=int(self.r_holder.get_value()) if self.r_holder.get_sensitive() else 1,
@@ -1799,7 +1929,13 @@ class Window(Adw.ApplicationWindow):
                     overcut_mm=round(self.r_overcut.get_value(), 2),
                     interior_first=self.r_interiors.get_active(),
                     delicate_media=self.r_delicate.get_active(),
-                    track_enhancing=self.r_track.get_active())
+                    track_enhancing=self.r_track.get_active(),
+                    **self._stage_options())
+
+    def _stage_options(self):
+        force, speed = (int(self.stage_fields[key].get_value()) for key in ("light_force", "light_speed"))
+        return dict(light_passes=self._light_passes(), light_force=force if force >= 0 else None,
+                    light_speed=speed if speed >= 0 else None)
 
     def current_holder_profile(self):
         preset = presets.get(self._text(self.r_preset), self._text(self.r_cutter))
@@ -1832,6 +1968,11 @@ class Window(Adw.ApplicationWindow):
             self._suppress = False
 
     def _load_blade_settings(self, settings):
+        self.r_stage.set_enable_expansion(settings.light_passes > 0)
+        if settings.light_passes:
+            self.stage_fields["light_passes"].set_value(settings.light_passes)
+        self.stage_fields["light_force"].set_value(-1 if settings.light_force is None else settings.light_force)
+        self.stage_fields["light_speed"].set_value(-1 if settings.light_speed is None else settings.light_speed)
         self.r_force.set_value(settings.force)
         self.r_speed.set_value(settings.speed)
         self.r_passes.set_value(settings.passes)
@@ -2813,9 +2954,11 @@ class Window(Adw.ApplicationWindow):
 
     def update_guide(self):
         busy = self._sending or self._checking_status
-        for field in (self.guide_apply, self.guide_edit, self.guide_next, self.guide_reset):
+        for field in (self.guide_apply, self.guide_next, self.guide_reset, self.guide_slot_choice):
             field.set_sensitive(not busy)
         state = self.guide
+        if self.tuning:
+            self.sync_guide_slot()
         self.guide_next.set_sensitive(not busy and (
             state.placement is None or any(number != state.spot for number in state.fresh_spots())))
         used = state.current_spot
@@ -2835,9 +2978,10 @@ class Window(Adw.ApplicationWindow):
         if self.tuning:
             self.send_status.set_label(state.sheet_status)
             self.send_status.set_tooltip_text(state.sheet_status)
-        label = "Repeat One Pass" if state.completed and not state.interrupted else "Cut One Pass…"
+        label = state.pass_label(self.options())
         self.guide_send.set_label(label)
-        title, _, body = self.guide.status().partition("\n")
+        differ = state.completed > 0 and state.settings_differ(self.options())
+        title, _, body = state.summary(differ).partition("\n")
         self.guide_status.set_title(title)
         if not connected:
             body = "\n".join(filter(None, (body, "Go back to Send and select a cutter to run a test pass.")))
@@ -2849,9 +2993,6 @@ class Window(Adw.ApplicationWindow):
             self.guide_spot_selector.get_adjustment().set_upper(max(self.guide.max_spots, self.guide.spot))
             if int(self.guide_spot_selector.get_value()) != self.guide.spot:
                 self.guide_spot_selector.set_value(self.guide.spot)
-            differ = state.completed > 0 and state.settings_differ(self.options())
-            self.guide_spot_status.set_title(
-                f"{state.spot_status} · Settings changed" if differ else state.spot_status)
         self.guide_history.set_subtitle(state.history_text() or "Completed passes appear here.")
         self.guide_outcome.set_sensitive(not busy)
         self.guide_outcome.set_selected(tuple(starting_guide.OUTCOMES).index(state.outcome))
@@ -3016,10 +3157,10 @@ class Window(Adw.ApplicationWindow):
         except (ValueError, KeyError) as error:
             self.toast(str(error))
             return
-        if self.guide.completed:
+        if self.guide.is_repeat(trial):
             self._guide_pass_response(None, "cut", trial)
             return
-        dialog = Adw.AlertDialog(heading="Send One Test Pass?", body=self.guide.prompt(trial))
+        dialog = Adw.AlertDialog(heading=self.guide.confirm_title(trial), body=self.guide.prompt(trial))
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("cut", "Cut")
         dialog.set_response_appearance("cut", Adw.ResponseAppearance.DESTRUCTIVE)
@@ -3052,8 +3193,10 @@ class Window(Adw.ApplicationWindow):
         self._sending = True
         self.update_send_actions()
 
+        name = self.guide_pass_name
+
         def done(error=None):
-            self.guide.record(trial, error)
+            self.guide.record(trial, error, name)
             self._send_done()
             if self.persist_guide():
                 self.toast(str(error) if error else "Pass complete.")

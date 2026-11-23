@@ -1,5 +1,6 @@
 """Bluetooth Classic transport using the cutter's RFCOMM serial profile."""
 
+import errno
 import re
 import socket
 import subprocess
@@ -11,6 +12,24 @@ from .bluetooth import Candidate, confirm_firmware, select_candidate
 from .transport import Transport, TransportError
 
 DEFAULT_CHANNEL = 1
+# Silhouette Studio 5.0.556.1, captured on 2026-11-21: the Cameo 4 took
+# 18.35 s to accept the RFCOMM session (SABM to UA), and Windows waited.
+CONNECT_TIMEOUT_S = 40
+# Captured on Linux the same day: a session opened a few seconds after the
+# previous one can complete RFCOMM while the cutter never grants credits, so
+# nothing (not even FG) is sent. A healthy first reply took 0.32 s; a stalled
+# session is closed and reopened. The cutter frees the stuck link ~20.3 s
+# later, and until then a connect is refused with EBUSY (or EHOSTDOWN while
+# the link drops), so busy retries must outlast that.
+FIRST_REPLY_TIMEOUT_MS = 5000
+OPEN_ATTEMPTS = 2
+CONNECT_ATTEMPTS = 10
+CONNECT_RETRY_DELAY_S = 3
+_LINK_STILL_CLOSING = {errno.EBUSY, errno.EHOSTDOWN}
+
+
+class ReplyTimeout(TransportError):
+    """No reply arrived in time."""
 _ADDRESS = re.compile(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", re.I)
 
 
@@ -35,11 +54,13 @@ def paired_candidates(*, connected=False):
                 tag, _, rest = line.strip().partition(" ")
                 address, _, name = rest.partition(" ")
                 if tag == "Device" and _ADDRESS.fullmatch(address) and name:
-                    details = _run(["bluetoothctl", "info", address]).lower()
-                    if connected and "br/edr.connected: yes" not in details:
+                    # Older bluetoothctl prints "BR/EDR.Connected", 5.88 prints
+                    # "BREDR.Connected"; read both as one.
+                    details = _run(["bluetoothctl", "info", address]).lower().replace("br/edr.", "bredr.")
+                    if connected and "bredr.connected: yes" not in details:
                         continue
                     if ("00001101-0000-1000-8000-00805f9b34fb" in details
-                            or ("br/edr.paired: yes" in details)):
+                            or ("bredr.paired: yes" in details)):
                         yield Candidate(address.upper(), name.strip())
     elif sys.platform == "win32" and not connected:
         command = ("Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | "
@@ -97,10 +118,7 @@ class ClassicTransport(Transport):
         self._socket = None
         self._buffer = bytearray()
         try:
-            self._socket = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
-            self._socket.settimeout(10)
-            self._socket.connect((self.identifier, channel))
-            version = self.firmware_version()
+            version = self._open_session(channel)
             self.device = confirm_firmware(version, device, known.model if known else None,
                                            allow_unknown=allow_unknown)
         except OSError as exc:
@@ -110,6 +128,38 @@ class ClassicTransport(Transport):
         except BaseException:
             self.close()
             raise
+
+    def _open_session(self, channel):
+        """Connect and read the firmware, reopening a session that stalls."""
+        for session in range(1, OPEN_ATTEMPTS + 1):
+            self._connect(channel)
+            try:
+                self._firmware = self.query_text(graphtec.QUERY_FIRMWARE_VERSION,
+                                                 timeout_ms=FIRST_REPLY_TIMEOUT_MS)
+                return self._firmware
+            except ReplyTimeout:
+                self.close()
+                self._buffer.clear()
+                if session == OPEN_ATTEMPTS:
+                    raise TransportError(
+                        f"{self.identifier} accepted the Bluetooth connection but did not answer. "
+                        "Turn the cutter off and on, then try again.") from None
+
+    def _connect(self, channel):
+        """Open the RFCOMM link, retrying only while a previous link closes.
+        Each attempt uses a new socket: a socket whose connect failed cannot
+        be connected again."""
+        for attempt in range(1, CONNECT_ATTEMPTS + 1):
+            self._socket = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
+            self._socket.settimeout(CONNECT_TIMEOUT_S)
+            try:
+                self._socket.connect((self.identifier, channel))
+                return
+            except OSError as exc:
+                self.close()
+                if exc.errno not in _LINK_STILL_CLOSING or attempt == CONNECT_ATTEMPTS:
+                    raise
+                time.sleep(CONNECT_RETRY_DELAY_S)
 
     def write(self, data):
         try:
@@ -129,12 +179,12 @@ class ClassicTransport(Transport):
                 return reply
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise TransportError("Bluetooth Classic reply timed out.")
+                raise ReplyTimeout("Bluetooth Classic reply timed out.")
             try:
                 self._socket.settimeout(remaining)
                 chunk = self._socket.recv(size)
             except TimeoutError as exc:
-                raise TransportError("Bluetooth Classic reply timed out.") from exc
+                raise ReplyTimeout("Bluetooth Classic reply timed out.") from exc
             except OSError as exc:
                 raise TransportError(f"Bluetooth Classic read failed. {exc}") from exc
             if not chunk:

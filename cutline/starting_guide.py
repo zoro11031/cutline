@@ -347,7 +347,9 @@ class Guide:
 
     @staticmethod
     def _pass_settings(device, options, shape):
-        blade = dict(options["blade_options"], track_enhancing=False)
+        # One pass at a time: staging belongs to the cut job, never to a test pass.
+        blade = dict(options["blade_options"], track_enhancing=False, light_passes=0, light_force=None,
+                     light_speed=None)
         if not blade.get("blade_diameter_mm"):
             raise ValueError("Choose a blade setting for the material test.")
         settings = graphtec.CutSettings(force=options["force"], speed=options["speed"],
@@ -454,12 +456,35 @@ class Guide:
             width, height = geometry.sheet(options["sheet"]).size(options.get("portrait") is True)
         return Placement(width, height, options["offset_mm"], options["mat"], self.registered)
 
+    def is_repeat(self, trial):
+        """The same cut again on a spot already cut, which needs no second
+        confirmation. Any change of settings is a new cut and is confirmed."""
+        return bool(self.completed and self.trial is not None and not self.interrupted
+                    and trial.settings == self.trial.settings)
+
+    def pass_label(self, options):
+        if self.completed and not self.interrupted and not self.settings_differ(options):
+            return "Repeat One Pass"
+        return "Cut One Pass…"
+
+    def confirm_title(self, trial):
+        return "Cut With Changed Settings?" if self.completed and not self.is_repeat(trial) else "Send One Test Pass?"
+
     def prompt(self, trial):
         if trial.placement.registered:
             action = "Load the marked test sheet face-up as shown. The cutter scans the marks before cutting."
         else:
-            action = f"Load a {trial.placement.width:g} × {trial.placement.height:g} mm test sheet."
-        return (f"{trial.sheet.device.name} · {trial.describe()}\n\n{action}\n"
+            # A scrap is enough: say how big, and where it has to sit.
+            spot = trial.sheet.cells[0].rect
+            need = math.ceil(max(spot.w, spot.h) + 2 * testcut.DEFAULT_GAP_MM)
+            action = (f"Put a scrap at least {need} mm square on the mat under spot {self.spot}, "
+                      f"covering {spot.x:g}–{spot.x2:g} mm from the left and {spot.y:g}–{spot.y2:g} mm "
+                      "from the top of the cutting grid. A full sheet works too.")
+        change = ""
+        if self.completed and self.trial is not None and trial.settings != self.trial.settings:
+            change = (f"This spot was last cut at {PassSettings.of(self.trial.settings).label}. "
+                      f"This pass uses {PassSettings.of(trial.settings).label}.\n\n")
+        return (f"{change}{trial.sheet.device.name} · {trial.describe()}\n\n{action}\n"
                 "The cutter returns to the origin after this test.")
 
     def record(self, trial, error=None, name=""):

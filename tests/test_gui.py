@@ -620,8 +620,9 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertEqual(win.guide.spot, 2)
         self.assertEqual(int(win.guide_spot_selector.get_value()), 2)
 
-        win.guide_edit.emit('clicked')
-        self.assertEqual(win.stack.get_visible_child_name(), 'cut')
+        self.assertFalse(win.material_guide.get_visible(), 'no way back into a test already open')
+        win.back_to_send.emit('clicked')
+        self.assertTrue(win.material_guide.get_visible())
         self.assertEqual(win.material_guide.get_label(), 'Resume Material Test')
         win.material_guide.emit('clicked')
         self.assertTrue(win.tuning)
@@ -1008,6 +1009,50 @@ class TestDesignWorkspace(unittest.TestCase):
             self.assertEqual(open_transport.call_count, 0)
             self.assertIn('connection changed', warning.call_args.args[0])
 
+    def test_staged_passes_open_from_a_switch_under_passes(self):
+        win = self.make_window()
+        self.assertFalse(win.r_stage.get_enable_expansion())
+        self.assertEqual(win._blade_options()["light_passes"], 0)
+        win.r_passes.set_value(1)
+        win.r_stage.set_enable_expansion(True)
+        self.assertTrue(win.r_stage.get_expanded())
+        self.assertEqual(win.r_passes.get_value(), 2, "room for a full pass after the light one")
+        for key, value in (("light_force", 10), ("light_speed", 3)):
+            win.stage_fields[key].set_value(value)
+        win.r_force.set_value(20)
+        win.r_speed.set_value(5)
+        options = win._blade_options()
+        self.assertEqual((options["light_passes"], options["light_force"], options["light_speed"]), (1, 10, 3))
+        self.assertEqual(win.stage_note.get_label(), "Pass 1 at force 10, speed 3; pass 2 at force 20, speed 5.")
+        self.assertEqual([(g.settings.passes, g.settings.force) for g in win.job.action_groups], [(1, 10), (1, 20)])
+        win.r_stage.set_enable_expansion(False)
+        self.assertEqual(win._blade_options()["light_passes"], 0)
+        self.assertEqual(win.job.action_groups, ())
+
+    def test_the_material_test_compares_two_settings_and_hides_pass_counts(self):
+        win = self.make_window()
+        win.r_force.set_value(10)
+        win.open_material_guide()
+        for field in ("force", "speed", "passes", "depth"):
+            self.assertFalse(win.send_rows[field].get_visible())
+        self.assertFalse(win.r_stage.get_visible())
+        a, b = win.guide_headers["A"], win.guide_headers["B"]
+        self.assertTrue(a.get_expanded())
+        self.assertEqual(win.guide_fields["B"]["force"].get_value(), 10, "both start from Cut Settings")
+        b.set_expanded(True)
+        self.assertTrue(a.get_expanded() and b.get_expanded(), "each opens on its own")
+        win.guide_fields["B"]["force"].set_value(28)
+        self.assertEqual(win.r_force.get_value(), 10, "editing B leaves the chosen A alone")
+        self.assertEqual(win.guide_pass_name, "A")
+        win.guide_slot_choice.set_selected(1)
+        self.assertEqual(win.guide_pass_name, "B")
+        self.assertEqual(win.r_force.get_value(), 28)
+        win.guide_slot_choice.set_selected(0)
+        self.assertEqual(win.r_force.get_value(), 10)
+        win.back_to_send.emit('clicked')
+        self.assertTrue(win.send_rows["passes"].get_visible())
+        self.assertTrue(win.r_stage.get_visible())
+
     def test_the_app_reopens_on_the_material_used_last(self):
         with tempfile.TemporaryDirectory() as folder, mock.patch.object(config, "CONFIG_DIR", Path(folder)):
             win = self.make_window()
@@ -1056,13 +1101,18 @@ class TestDesignWorkspace(unittest.TestCase):
             win.guide_spot_selector.set_value(1)
             self.assertEqual(win.guide.spot, 1)
             win.r_force.set_value(win.r_force.get_value() + 5)
-            self.assertIn('Settings changed', win.guide_spot_status.get_title())
+            self.assertIn('changed settings', win.guide_status.get_subtitle())
+            self.assertEqual(win.guide_send.get_label(), 'Cut One Pass…')
             sent = len(fake.run.call_args_list)
             win.guide_send.emit('clicked')
+            self.assertEqual(len(fake.run.call_args_list), sent, 'a changed setting asks before cutting')
+            self.assertEqual(dialog.call_args.kwargs['heading'], 'Cut With Changed Settings?')
+            _, response, proposal = dialog.return_value.connect.call_args.args
+            response(None, 'cut', proposal)
             self.assertEqual(len(fake.run.call_args_list), sent + 1)
             self.assertEqual(win.guide.spot, 1)
             self.assertEqual(win.guide.completed, 3)
-        dialog.assert_called_once()
+        self.assertEqual(dialog.call_count, 2)
 
         win.guide_next.emit('clicked')
         self.assertEqual(win.guide.spot, 2)
@@ -1090,7 +1140,7 @@ class TestDesignWorkspace(unittest.TestCase):
         spot = win.guide.spot
         self.assertEqual(spot, 2)
 
-        win.guide_edit.emit("clicked")
+        win.open_cut_settings()
         self.assertTrue(win.tuning, "editing cut settings closed the material test")
         self.assertEqual(win.stack.get_visible_child_name(), "cut")
         self.assertTrue(win.cut_settings.get_visible())
@@ -1124,7 +1174,7 @@ class TestDesignWorkspace(unittest.TestCase):
 
         selector.set_value(4)
         self.assertEqual(win.guide.spot, 4)
-        self.assertIn("Untouched stock", win.guide_spot_status.get_title())
+        self.assertEqual(win.guide_status.get_title(), "Spot 4 · Untouched stock")
 
         selector.set_value(1)
         self.assertEqual(win.guide.spot, 1)
@@ -1560,7 +1610,7 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertNotIn(b"TF", win.job.stream)
 
         picker.set_selected(0)
-        self.assertIn("Detection error", win.send_holder_buttons[2].get_label())
+        self.assertIn("No tool detected", win.send_holder_buttons[2].get_label())
 
         win.r_holder.set_value(1)
         self.assertEqual(win._text(picker), "Rotary blade")

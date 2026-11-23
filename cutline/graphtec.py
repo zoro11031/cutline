@@ -45,8 +45,11 @@ ESC_ENQ = b"\x05"           # escape: return status
 ESC_NAK = b"\x15"           # escape: return tool setup (Cameo 4 and later)
 
 # inkscape-silhouette Graphtec.py 198-205, identifiers returned by ESC NAK.
+# 255 is named as Studio 5.0.556.1 shows it: captured over Bluetooth on
+# 2026-11-21, the reply " 255, 4" displayed as "No tool detected" for holder 1
+# (inkscape-silhouette calls it "Detection error").
 TOOL_NAMES = {0: "Empty", 1: "Ratchet blade", 2: "AutoBlade", 3: "Deep-cut blade",
-              4: "Kraft blade", 5: "Rotary blade", 7: "Pen", 255: "Detection error"}
+              4: "Kraft blade", 5: "Rotary blade", 7: "Pen", 255: "No tool detected"}
 
 
 def tool_name(code: int) -> str:

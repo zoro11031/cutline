@@ -1,3 +1,4 @@
+import errno
 import unittest
 from unittest import mock
 
@@ -75,6 +76,79 @@ class TestClassic(unittest.TestCase):
             with self.assertRaisesRegex(transport.TransportError, "write failed"):
                 cutter.write(b"cut")
             self.assertEqual(self.socket.sendall.call_count, 2)
+
+    def test_connect_waits_for_a_slow_rfcomm_open(self):
+        # Studio's own capture (2026-11-21): the Cameo 4 took 18.35 s to
+        # answer the RFCOMM multiplexer SABM. The connect must outlast that.
+        self.socket.recv.side_effect = [b"CAMEO 4 V1.20\x03"]
+        with rfcomm.ClassicTransport(self.address):
+            pass
+        connect_timeout = self.socket.settimeout.call_args_list[0].args[0]
+        self.assertGreater(connect_timeout, 18.35)
+
+    def test_link_still_closing_is_retried_on_a_fresh_socket(self):
+        sockets = [mock.MagicMock(), mock.MagicMock(), mock.MagicMock()]
+        sockets[0].connect.side_effect = OSError(errno.EBUSY, "Device or resource busy")
+        sockets[1].connect.side_effect = OSError(errno.EHOSTDOWN, "Host is down")
+        sockets[2].recv.side_effect = [b"CAMEO 4 V1.20\x03"]
+        with mock.patch.object(rfcomm.socket, "socket", side_effect=sockets), \
+             mock.patch.object(rfcomm.time, "sleep") as sleep:
+            with rfcomm.ClassicTransport(self.address) as cutter:
+                self.assertEqual(cutter.firmware_version(), "CAMEO 4 V1.20")
+        for failed in sockets[:2]:
+            self.assertEqual(failed.close.call_count, 1)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_a_session_that_never_answers_is_reopened(self):
+        # Captured on Linux 2026-11-21: a session opened soon after another
+        # completes RFCOMM but the cutter never grants credits, so not even
+        # FG goes out. It frees the stuck link ~20 s later (EBUSY until then).
+        stalled, still_held, healthy = mock.MagicMock(), mock.MagicMock(), mock.MagicMock()
+        stalled.recv.side_effect = TimeoutError()
+        still_held.connect.side_effect = OSError(errno.EBUSY, "Device or resource busy")
+        healthy.recv.side_effect = [b"CAMEO 4 V1.20\x03"]
+        with mock.patch.object(rfcomm.socket, "socket", side_effect=[stalled, still_held, healthy]), \
+             mock.patch.object(rfcomm.time, "sleep"):
+            with rfcomm.ClassicTransport(self.address) as cutter:
+                self.assertEqual(cutter.firmware_version(), "CAMEO 4 V1.20")
+        self.assertEqual(stalled.close.call_count, 1)
+        first_reply_wait = stalled.settimeout.call_args_list[-1].args[0]
+        self.assertLessEqual(first_reply_wait, rfcomm.FIRST_REPLY_TIMEOUT_MS / 1000)
+
+    def test_a_cutter_that_never_answers_gives_up_with_advice(self):
+        self.socket.recv.side_effect = TimeoutError()
+        with mock.patch.object(rfcomm.time, "sleep"), \
+             self.assertRaisesRegex(transport.TransportError, "did not answer.*off and on"):
+            rfcomm.ClassicTransport(self.address)
+        self.assertEqual(self.socket.connect.call_count, rfcomm.OPEN_ATTEMPTS)
+
+    def test_busy_retries_outlast_the_cutters_release_of_a_stuck_link(self):
+        self.assertGreater((rfcomm.CONNECT_ATTEMPTS - 1) * rfcomm.CONNECT_RETRY_DELAY_S, 20.3)
+
+    def test_other_connect_failures_are_not_retried(self):
+        self.socket.connect.side_effect = OSError(errno.ECONNREFUSED, "Connection refused")
+        with mock.patch.object(rfcomm.time, "sleep") as sleep, \
+             self.assertRaisesRegex(transport.TransportError, "RFCOMM channel 1"):
+            rfcomm.ClassicTransport(self.address)
+        self.assertEqual(self.socket.connect.call_count, 1)
+        self.assertEqual(sleep.call_count, 0)
+
+    def test_a_link_that_stays_busy_gives_up(self):
+        self.socket.connect.side_effect = OSError(errno.EBUSY, "Device or resource busy")
+        with mock.patch.object(rfcomm.time, "sleep"), \
+             self.assertRaisesRegex(transport.TransportError, "busy"):
+            rfcomm.ClassicTransport(self.address)
+        self.assertEqual(self.socket.connect.call_count, rfcomm.CONNECT_ATTEMPTS)
+
+    def test_bluez_5_88_bredr_fields_are_read(self):
+        # bluetoothctl 5.88 prints "BREDR.Connected", not "BR/EDR.Connected".
+        for connected, expected in (("yes", [self.address]), ("no", [])):
+            output = {("devices", "Paired"): f"Device {self.address} CAMEO 4-1234",
+                      ("info", self.address): f"BREDR.Paired: yes\nBREDR.Connected: {connected}"}
+            with self.subTest(connected=connected), \
+                 mock.patch.object(rfcomm.sys, "platform", "linux"), \
+                 mock.patch.object(rfcomm, "_run", side_effect=lambda a, o=output: o.get(tuple(a[1:]), "")):
+                self.assertEqual([r.identifier for r in rfcomm.paired_candidates(connected=True)], expected)
 
     def test_linux_discovery_prefers_paired_models_and_deduplicates(self):
         def commands(args):

@@ -35,12 +35,12 @@ QTabWidget[role="settings"] QTabBar::tab:selected {
 }
 QTabWidget[role="settings"] QTabBar::tab:hover:!selected { background: palette(alternate-base); }
 QGroupBox[role="card"] {
-    background: palette(base); border: 1px solid palette(midlight);
+    background: @card; border: 1px solid palette(midlight);
     border-radius: 8px; margin-top: 9px; font-weight: 650;
 }
 QGroupBox[role="card"]::title {
     subcontrol-origin: margin; subcontrol-position: top left;
-    background: palette(base); border-radius: 3px; left: 11px; padding: 1px 5px;
+    background: @card; border-radius: 3px; left: 11px; padding: 1px 5px;
 }
 QGroupBox[role="card"] QLabel { font-weight: normal; }
 QGroupBox[role="card"] QAbstractSpinBox, QGroupBox[role="card"] QComboBox,
@@ -205,6 +205,13 @@ def _control_edge(surface, text):
     return text
 
 
+def _card_surface(base, text):
+    """A card a step off the field colour, so fields drawn in `base` read as
+    fields inside it in light and dark themes alike."""
+    step = 0.035 if base.lightnessF() > 0.5 else 0.07
+    return QColor.fromRgbF(*(a + (b - a) * step for a, b in zip(base.getRgbF()[:3], text.getRgbF()[:3])))
+
+
 def workspace_style(palette):
     active, role = QPalette.ColorGroup.Active, QPalette.ColorRole
     button = palette.color(active, role.Button)
@@ -223,6 +230,8 @@ def workspace_style(palette):
             .replace("@destructive_text", destructive_text.name())
             .replace("@destructive_edge", destructive_edge.name())
             .replace("@destructive", destructive.name())
+            .replace("@card", _card_surface(palette.color(active, role.Base),
+                                            palette.color(active, role.Text)).name())
             .replace("@check_edge", _control_edge(palette.color(active, role.Base),
                                                   palette.color(active, role.Text)).name())
             .replace("@disabled_button", button.name()).replace("@disabled_text", disabled.name()))

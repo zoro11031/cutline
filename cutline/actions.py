@@ -45,6 +45,27 @@ def light_pass_problem(key: str, settings: CutSettings) -> str | None:
     return None
 
 
+def stage_note(count: int, total: int, force: int, speed: int,
+               light_force: int | None, light_speed: int | None) -> str:
+    """What staged passes will do, in pass numbers, for the note under the
+    light pass settings. None for a light value means the same as full."""
+    light_force = force if light_force is None else light_force
+    light_speed = speed if light_speed is None else light_speed
+    if not count:
+        return "Every pass uses Force and Speed."
+    if count >= total:
+        return f"Set Passes above {count} so at least one full pass follows the light ones."
+    if (light_force, light_speed) == (force, speed):
+        return "The light passes match Force and Speed. Lower Light force or Light speed to make them lighter."
+
+    def span(first, last, capital):
+        word = "Pass" if first == last else "Passes"
+        word = word if capital else word.lower()
+        return f"{word} {first}" if first == last else f"{word} {first}–{last}"
+    return (f"{span(1, count, True)} at force {light_force}, speed {light_speed}; "
+            f"{span(count + 1, total, False)} at force {force}, speed {speed}.")
+
+
 def stage_passes(groups) -> tuple[CutGroup, ...]:
     """Split each group whose settings ask for light first passes into a
     light group and a full group over the same paths, light first.

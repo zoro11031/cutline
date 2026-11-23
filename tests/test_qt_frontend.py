@@ -529,7 +529,7 @@ class TestQtFrontend(unittest.TestCase):
         self.assertEqual(blade["light_force"].specialValueText(), "Same as Force")
         blade["light_force"].setValue(10)
         blade["light_speed"].setValue(3)
-        self.assertEqual(window.stage_note.text(), "First 2 passes at force 10, speed 3; then 6 at force 20, speed 5.")
+        self.assertEqual(window.stage_note.text(), "Passes 1–2 at force 10, speed 3; passes 3–8 at force 20, speed 5.")
         self.assertEqual(window.job.blocked, [])
         self.assertEqual([(g.settings.passes, g.settings.force, g.settings.speed) for g in window.job.action_groups],
                          [(2, 10, 3), (6, 20, 5)])
@@ -855,15 +855,26 @@ class TestQtFrontend(unittest.TestCase):
             window.guide_send.click()
             self.assertTrue(window.guide_send.isEnabled())
             self.assertEqual(window.guide_outcome.currentData(), "")
+            self.assertEqual(window.guide_send.text(), "Repeat One Pass")
+            confirm.assert_called_once()
 
-            # Changed settings repeat on the same spot with the new settings.
+            # Changed settings are a new cut on the same spot: no "Repeat", and it asks first.
             window.blade["force"].setValue(27)
+            self.assertEqual(window.guide_send.text(), "Cut One Pass…")
+            confirm.return_value = False
+            window.guide_send.click()
+            self.assertEqual(len(fake.run.call_args_list), 1, "declining sends nothing")
+            title, body = confirm.call_args.args
+            self.assertEqual(title, "Cut With Changed Settings?")
+            self.assertIn("last cut at Force 25", body)
+            self.assertIn("uses Force 27", body)
+            confirm.return_value = True
             window.guide_send.click()
             self.assertEqual(len(fake.run.call_args_list), 2)
             self.assertEqual(window.guide.spot, 1)
             self.assertEqual(window.guide.completed, 2)
             self.assertEqual(window.guide.tested_settings.force, 27)
-        confirm.assert_called_once()
+        self.assertEqual(confirm.call_count, 3)
         self.assertIn("2 completed passes", window.guide_status.text())
         self.assertTrue(window.guide_use.isEnabled())
         with mock.patch.object(qt_gui, "QInputDialog") as dialog:
@@ -1020,7 +1031,7 @@ class TestQtFrontend(unittest.TestCase):
         from cutline import qt_controls
 
         window = self.window
-        roles = {"send_button": "primary", "review_button": "primary", "back_to_send": "primary",
+        roles = {"send_button": "primary", "review_button": "primary", "back_to_send": "secondary",
                  "scan_button": "secondary", "corner_button": "secondary",
                  "pause_cut": "secondary", "cancel_cut": "destructive"}
         for name, role in roles.items():
@@ -1448,7 +1459,7 @@ class TestQtFrontend(unittest.TestCase):
 
         # Clear holder 2
         picker.setCurrentIndex(picker.findData(""))
-        self.assertIn("Detection error", holders.holders.button(2).text())
+        self.assertIn("No tool detected", holders.holders.button(2).text())
 
         # Switch back to holder 1: manual rotary is still selected
         holders.setValue(1)

@@ -285,7 +285,8 @@ class Preview(SheetView):
             color = "#984d12" if spot.uncertain else "#166356"
             item = scene.addRect(box, pen(color, 0.35), QBrush(QColor(49, 141, 125, 28)))
             item.setToolTip(f"Spot {spot.number} · {spot.count}")
-            label = scene.addSimpleText(f"{spot.number}: {spot.passes}{'?' if spot.uncertain else ''}")
+            unit = "pass" if spot.passes == 1 else "passes"
+            label = scene.addSimpleText(f"{spot.number}\n{spot.passes} {unit}{'?' if spot.uncertain else ''}")
             label.setBrush(QColor(color))
             label.setScale(0.45)
             label.setPos(box.left() + 1, box.top() + 2)
@@ -314,10 +315,19 @@ class Preview(SheetView):
                     if index in crowded:
                         tint = QColor(234, 157, 60, 51)
                         if self.colorblind:
-                            scene.addRect(rect(box), QPen(QColor(181, 87, 19), 0.4, Qt.PenStyle.DashLine),
-                                          QBrush(tint, Qt.BrushStyle.DiagCrossPattern))
+                            item = scene.addRect(rect(box), QPen(QColor(181, 87, 19), 0.4, Qt.PenStyle.DashLine),
+                                                 QBrush(tint, Qt.BrushStyle.DiagCrossPattern))
                         else:
-                            scene.addRect(rect(box), QPen(Qt.PenStyle.NoPen), QBrush(tint))
+                            item = scene.addRect(rect(box), QPen(Qt.PenStyle.NoPen), QBrush(tint))
+                        # Say what the tint means where it is: these cards sit near a
+                        # registration mark and are covered while the cutter scans.
+                        item.setToolTip("Near a registration mark: cover this card while the cutter scans, "
+                                        "then uncover it before cutting.")
+                        note = scene.addSimpleText("Cover during scan")
+                        note.setBrush(QColor("#8a4410"))
+                        note.setScale(0.42)
+                        width = note.boundingRect().width() * note.scale()
+                        note.setPos(box.x + (box.w - width) / 2, box.y + box.h / 2 - 2)
                     else:
                         tint = QColor(48, 126, 165, 18)
                         scene.addRect(rect(box), QPen(Qt.PenStyle.NoPen), QBrush(tint))

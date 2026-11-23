@@ -185,6 +185,10 @@ class Rect:
                 and self.y < other.y2 - tol and other.y < self.y2 - tol)
 
 
+# How each layout engine is named to a person, rather than by its id.
+ENGINE_NAMES = {"scm": "Card Maker layout", "centered": "centred grid", "imported": "from the file"}
+
+
 @dataclasses.dataclass(frozen=True)
 class Grid:
     """Where every card face sits on one sheet.
@@ -223,8 +227,9 @@ class Grid:
 
     def describe(self) -> str:
         o = "portrait" if self.portrait else "landscape"
+        layout = ENGINE_NAMES.get(self.engine, self.engine)
         return (f"{self.cols}x{self.rows} = {self.count} {self.card.name} cards "
-                f"on {self.sheet_name} {o} ({self.engine})")
+                f"on {self.sheet_name} {o} ({layout})")
 
 
 # --------------------------------------------------------------------------

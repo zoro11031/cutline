@@ -198,6 +198,14 @@ class TestGroupedSend(unittest.TestCase):
 
 
 class TestStagedPasses(unittest.TestCase):
+    def test_stage_note_names_passes_by_number(self):
+        note = actions.stage_note
+        self.assertEqual(note(0, 3, 25, 8, None, None), "Every pass uses Force and Speed.")
+        self.assertEqual(note(1, 2, 20, 5, 10, 3), "Pass 1 at force 10, speed 3; pass 2 at force 20, speed 5.")
+        self.assertEqual(note(2, 4, 20, 5, 10, None), "Passes 1–2 at force 10, speed 5; passes 3–4 at force 20, speed 5.")
+        self.assertIn("Set Passes above 2", note(2, 2, 20, 5, 10, 3))
+        self.assertTrue(note(1, 2, 20, 5, None, None).startswith("The light passes match Force and Speed."))
+
     """The first passes at a lighter force and speed, the rest at full, in one job."""
 
     def staged(self, **kwargs):

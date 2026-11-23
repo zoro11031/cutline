@@ -37,7 +37,10 @@ CONTROL_HELP = {
 }
 
 SETUP_STEPS = (
-    "1. Draw in Design, open a cut template in Layout, or open a print bundle ZIP in Sheet.\n\n"
-    "2. In Send, connect your cutter and choose a material. Use Dial In a Material to try a scrap.\n\n"
-    "3. Cutting a print? Check the PDF in Sheet and test the printed marks in Send."
+    "1. Draw in Design. Or switch to Send and open a cut template on the Layout tab, "
+    "or a print bundle ZIP on the Sheet tab.\n\n"
+    "2. On Send's Cut Job tab, connect your cutter and choose a material. "
+    "Use Dial In a Material to try a scrap first.\n\n"
+    "3. Cutting a print? Check the PDF on the Sheet tab, then choose Test Registration "
+    "at the bottom of Cut Job."
 )

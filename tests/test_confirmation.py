@@ -32,7 +32,7 @@ class TestConfirmation(unittest.TestCase):
         self.assertEqual(conf.lead, "This moves the blade.")
         self.assertEqual(conf.confirm_label, "Cut")
         self.assertTrue(conf.destructive)
-        self.assertIn("Connection: Silhouette Cameo 4 (/dev/usb/lp0)", conf.body)
+        self.assertIn("Connection: Silhouette Cameo 4 · USB printer /dev/usb/lp0", conf.body)
         self.assertIn("paths decoded and measured inside the sheet.", conf.body)
 
         # Ordering check: lead comes before warnings, warnings before settings, settings before connection
@@ -56,7 +56,7 @@ class TestConfirmation(unittest.TestCase):
         self.assertEqual(conf.confirm_label, "Scan")
         self.assertFalse(conf.destructive)
         self.assertIn("This scans the printed marks without sending cut paths.", conf.warnings)
-        self.assertIn("Connection: Silhouette Cameo 4 (/dev/usb/lp0)", conf.body)
+        self.assertIn("Connection: Silhouette Cameo 4 · USB printer /dev/usb/lp0", conf.body)
         self.assertIn(self.plan.grid.describe(), conf.body)
 
     def test_discrimination_scan_vs_cut(self):
@@ -66,3 +66,12 @@ class TestConfirmation(unittest.TestCase):
         self.assertNotEqual(cut_conf.lead, scan_conf.lead)
         self.assertNotEqual(cut_conf.confirm_label, scan_conf.confirm_label)
         self.assertNotEqual(cut_conf.destructive, scan_conf.destructive)
+
+
+class TestEndpointText(unittest.TestCase):
+    def test_every_kind_of_connection_reads_as_words_not_a_tuple(self):
+        self.assertEqual(confirmation.endpoint_text("auto", (1, 2)), "USB bus 1, device 2")
+        self.assertEqual(confirmation.endpoint_text("ble", "AA:BB"), "Bluetooth LE AA:BB")
+        self.assertEqual(confirmation.endpoint_text("bluetooth", "AA:BB"), "Bluetooth Classic AA:BB")
+        self.assertEqual(confirmation.endpoint_text("auto", "/dev/usb/lp0"), "USB printer /dev/usb/lp0")
+

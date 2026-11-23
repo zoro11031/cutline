@@ -131,7 +131,7 @@ class TestInstalledTools(unittest.TestCase):
     def test_status_preserves_unknown_ids_and_labels_each_holder(self):
         for raw, labels in ((b" 2, 0\x03", ("AutoBlade", "Empty")),
                             (b" 3, 4\x03", ("Deep-cut blade", "Kraft blade")),
-                            (b"77,255\x03", ("Unknown tool (ID 77)", "Detection error"))):
+                            (b"77,255\x03", ("Unknown tool (ID 77)", "No tool detected"))):
             cutter = self.cutter(b"2\x03", raw)
             self.assertEqual(cutter.status_with_tools(),
                              f"unloaded · Holder 1: {labels[0]} · Holder 2: {labels[1]}")

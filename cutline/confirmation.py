@@ -32,6 +32,18 @@ class SendConfirmation:
         return "\n\n".join(blocks)
 
 
+from .bluetooth import BLUETOOTH_MODES
+
+
+def endpoint_text(mode: str, endpoint) -> str:
+    """A connection as a person reads it: never a raw tuple."""
+    if isinstance(endpoint, (tuple, list)) and len(endpoint) == 2:
+        return f"USB bus {endpoint[0]}, device {endpoint[1]}"
+    if mode in BLUETOOTH_MODES:
+        return f"{BLUETOOTH_MODES[mode]} {endpoint}"
+    return f"USB printer {endpoint}"
+
+
 def verification_statement(job: Job) -> str:
     count = len(job.paths)
     unit = "path" if count == 1 else "paths"
@@ -95,7 +107,7 @@ def build_send_confirmation(
     # 3. Connection
     conn_text = None
     if len(connection) > 1 and connection[1]:
-        conn_text = f"{plan.device.name} ({connection[1]})"
+        conn_text = f"{plan.device.name} · {endpoint_text(connection[0], connection[1])}"
 
     confirm_label = "Scan" if scan_only else "Cut"
     destructive = not scan_only

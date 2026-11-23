@@ -21,7 +21,7 @@ class TestHolderLabels(unittest.TestCase):
         label, _ = tooling.holder_labels((99, 0), CAMEO4)
         self.assertEqual(label, "Tool Holder 1 · Unknown tool (ID 99)")
         self.assertEqual(tooling.holder_labels((255, 0), CAMEO4)[0],
-                         "Tool Holder 1 · Detection error")
+                         "Tool Holder 1 · No tool detected")
 
     def test_no_reply_reads_as_unknown_not_as_empty(self):
         self.assertEqual(tooling.holder_labels((), CAMEO4),

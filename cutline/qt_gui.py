@@ -191,7 +191,7 @@ class Window(QMainWindow):
         self.send_button = button("Send to Cutter", self.confirm_send, primary=True,
                                   icon=("media-playback-start", QStyle.StandardPixmap.SP_MediaPlay))
         self.send_button.setMinimumHeight(32)
-        self.back_to_send = button("Exit Material Test", self.close_material_guide, primary=True)
+        self.back_to_send = button("Exit Material Test", self.close_material_guide, role="secondary")
         self.pause_cut = button("Pause Cut", lambda: self.cut_control.toggle_pause(), role="secondary")
         self.cancel_cut = button("Cancel Cut", lambda: self.cut_control.cancel(), role="destructive")
         footer.addWidget(self.review_button)
@@ -436,6 +436,12 @@ class Window(QMainWindow):
                                                   slider=True, special_text=BLADE_VALUE_TEXT.get(key, ""))
             if key == "passes":
                 self.add_stage_controls(settings)
+        # One width for every value box, so the sliders beside them line up
+        # even when a box reads "Same as Speed".
+        values = [self.blade[key] for key, *_ in BLADE_NUMBERS if key in QUICK_NUMBERS or key in STAGE_NUMBERS]
+        widest = max(field.sizeHint().width() for field in values)
+        for field in values:
+            field.setFixedWidth(widest)
         self.update_stages(rebuild=False)
         self.automatic_depth_maximum = self.blade["depth"].maximum()
         for key, label in BLADE_SWITCHES[1:3]:
@@ -506,7 +512,7 @@ class Window(QMainWindow):
         self.add_guide_slots(guide)
         self.guide_status = guide.note()
         self.guide_send = button("Cut One Pass…", self.confirm_guide_pass, primary=True)
-        guide.actions(self.guide_slot_choice, self.guide_send)
+        guide.addRow(AdaptiveActions((self.guide_slot_choice, self.guide_send)))
         self.guide_next = button("Next Spot", self.next_guide_spot)
         self.guide_next.setToolTip("Move to untouched stock.")
         self.guide_use = button("Use Tested Settings…", self.use_guide_settings)
@@ -514,7 +520,8 @@ class Window(QMainWindow):
                                   "as a material.")
         self.guide_apply = button("Use Starting Settings", self.apply_guide_start)
         self.guide_apply.setToolTip("Reset Cut Settings to a known starting point for this blade.")
-        guide.actions(self.guide_next, self.guide_use, self.guide_apply)
+        self.guide_more = AdaptiveActions((self.guide_next, self.guide_use, self.guide_apply))
+        guide.addRow(self.guide_more)
         extras = self.guide_page.advanced("Test Options")
         extra = extras.group("Test sheet")
         self.guide_registration = extra.check("Use Registration Marks", self.guide.registered,
@@ -1079,7 +1086,7 @@ class Window(QMainWindow):
         for key, label, lo, hi, step, decimals in BLADE_NUMBERS:
             if key in STAGE_NUMBERS:
                 self.blade[key] = form.number(label, lo, lo, hi, step, decimals, self.update_stages,
-                                              special_text=BLADE_VALUE_TEXT[key])
+                                              slider=True, special_text=BLADE_VALUE_TEXT[key])
                 self.blade[key].setToolTip(CONTROL_HELP[key])
         self.stage_note = form.note()
 
@@ -1214,21 +1221,14 @@ class Window(QMainWindow):
         for key in self.GUIDE_SLOT_KEYS:
             form.setRowVisible(self._row_of(self.blade[key]), not testing)
         for key in STAGE_NUMBERS:
-            form.setRowVisible(self.blade[key], count > 0 and not testing)
+            form.setRowVisible(self._row_of(self.blade[key]), count > 0 and not testing)
         form.setRowVisible(self.stage_note, count > 0 and not testing)
         total, force, speed = (self.blade[key].value() for key in ("passes", "force", "speed"))
         light_force = self.blade["light_force"].value()
         light_speed = self.blade["light_speed"].value()
-        light_force = force if light_force < 0 else light_force
-        light_speed = speed if light_speed < 0 else light_speed
-        if not count:
-            text = "Every pass uses Force and Speed."
-        elif count >= total:
-            text = f"Set Passes above {count} so at least one full pass follows the light ones."
-        else:
-            text = (f"First {count} {'pass' if count == 1 else 'passes'} at force {light_force}, speed {light_speed}; "
-                    f"then {total - count} at force {force}, speed {speed}.")
-        self.stage_note.setText(text)
+        self.stage_note.setText(actions.stage_note(count, total, force, speed,
+                                                   None if light_force < 0 else light_force,
+                                                   None if light_speed < 0 else light_speed))
         if rebuild:
             self.rebuild()
 
@@ -1736,7 +1736,9 @@ class Window(QMainWindow):
             if same_cutter:
                 return
             self.device_selected()
-            self.set_cutter_status(choices.get(selected, "Select a cutter." if choices else "No cutter found."))
+            # The list above already names the cutter; say what is known about it.
+            self.set_cutter_status("Connected · status not checked yet." if selected in choices
+                                   else "Select a cutter." if choices else "No cutter found.")
 
 
     def refresh_wireless(self):
@@ -2083,7 +2085,7 @@ class Window(QMainWindow):
                                                        "and optionally save it as a material.")
         self.guide_registration.setEnabled(not self.busy and not (state.spots or state.sheet_exported))
         self.guide_marked_sheet.setEnabled(not self.busy and state.registered)
-        self.guide_send.setText("Repeat One Pass" if (state.completed and not state.interrupted) else "Cut One Pass…")
+        self.guide_send.setText(state.pass_label(self.job_options()))
         if hasattr(self, "guide_spot_selector"):
             blocked = self.guide_spot_selector.blockSignals(True)
             self.guide_spot_selector.setMaximum(max(state.max_spots, state.spot))
@@ -2277,7 +2279,7 @@ class Window(QMainWindow):
         except (ValueError, KeyError) as error:
             self.message(str(error))
             return
-        if self.guide.completed or self.confirm("Send One Test Pass?", self.guide.prompt(trial)):
+        if self.guide.is_repeat(trial) or self.confirm(self.guide.confirm_title(trial), self.guide.prompt(trial)):
             self.start_guide_pass(trial)
 
     def start_guide_pass(self, trial):
