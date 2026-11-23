@@ -19,7 +19,8 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QGroupBox, 
 
 from . import (actions, bluetooth, bundle, config, confirmation, corner_test, editor_model, geometry, graphtec, importer, job,
                layout_presets, materials, presets, regmarks, sheet, starting_guide, template, testcut, toolpath, transport)
-from .desktop_help import BLADE_VALUE_TEXT, CONTROL_HELP, SETUP_STEPS
+from .desktop_help import (BLADE_VALUE_TEXT, CONTROL_HELP, CUT_PROBLEMS, CUT_SETTINGS, DIAL_IN, OPEN_SHEET,
+                           REGISTRATION_PROBLEM, SETUP_STEPS)
 from .holder_settings import HolderSettings, for_holder
 from . import tooling
 from .qt_canvas import PREVIEW_MODES, Preview, ZoomControls
@@ -284,7 +285,9 @@ class Window(QMainWindow):
         settings = self.menu_bar.addMenu("&Settings")
         command(settings, "Cut Settings", self.open_cut_settings)
         command(settings, "Advanced Send Settings", self.open_send_advanced)
-        command(self.menu_bar.addMenu("&Help"), "Setup Guide", self.show_setup_guide)
+        help_menu = self.menu_bar.addMenu("&Help")
+        command(help_menu, "Setup Guide", self.show_setup_guide)
+        command(help_menu, "Troubleshoot a Cut…", self.troubleshoot_cut)
 
     def open_cut_settings(self):
         """Show the editable cut settings. An open material test stays open:
@@ -371,6 +374,7 @@ class Window(QMainWindow):
         self.scan_result = scan.note()
         self.scan_result.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.copy_scan = scan.push("Copy Scan Details", self.copy_scan_details)
+        scan.push("Troubleshoot Registration…", lambda: self.troubleshoot_cut(REGISTRATION_PROBLEM))
         self.clear_scan_result()
         self.sheet_advanced = advanced = page.advanced()
         self.sheet_dpi = advanced.group("PDF check").choice("Measurement resolution", (150, 200, 300), 200, self.measure_sheet)
@@ -540,6 +544,7 @@ class Window(QMainWindow):
         self.guide_outcome = help_form.choice("Optional symptom", starting_guide.OUTCOMES, changed=self.inspect_test_cut)
         self.guide_advice = help_form.note()
         help_form.note(starting_guide.TUNING_TIPS)
+        help_form.push("Troubleshoot a Cut…", self.troubleshoot_cut)
         calibration = advanced.group("Calibration")
         dx, dy = config.cut_offset()
         self.cal_x = calibration.number("Offset X (mm)", dx, -5, 5, 0.05, 2, self.rebuild)
@@ -575,6 +580,31 @@ class Window(QMainWindow):
         dialog.exec()
         if dialog.clickedButton() is tune:
             self.open_material_guide()
+
+    def troubleshoot_cut(self, symptom=None):
+        if not isinstance(symptom, str) or symptom not in CUT_PROBLEMS:
+            symptom, accepted = QInputDialog.getItem(self, "Troubleshoot a Cut", "What happened?",
+                                                      list(CUT_PROBLEMS), editable=False)
+            if not accepted:
+                return
+        text, action = CUT_PROBLEMS[symptom]
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Troubleshoot a Cut")
+        dialog.setText(symptom)
+        dialog.setInformativeText(text)
+        follow = dialog.addButton(action, QMessageBox.ButtonRole.ActionRole) if action else None
+        dialog.addButton(QMessageBox.StandardButton.Close)
+        dialog.exec()
+        if follow is not None and dialog.clickedButton() is follow:
+            self.follow_troubleshooting(action)
+
+    def follow_troubleshooting(self, action):
+        if action == OPEN_SHEET:
+            self.tabs.setCurrentIndex(self.tab("Sheet"))
+        elif action == DIAL_IN:
+            self.open_material_guide()
+        elif action == CUT_SETTINGS:
+            self.open_cut_settings()
 
     def open_material_guide(self):
         index = self.tab("Send")

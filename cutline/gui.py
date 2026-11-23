@@ -42,7 +42,8 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 
 from . import (actions, bluetooth, bundle, config, confirmation, corner_test, geometry, graphtec, job as job_mod, layout_presets, presets, regmarks,
                sheet as sheet_mod, starting_guide, template, testcut, toolpath, tooling, transport)  # noqa: E402
-from .desktop_help import BLADE_VALUE_TEXT, CONTROL_HELP, SETUP_STEPS  # noqa: E402
+from .desktop_help import (BLADE_VALUE_TEXT, CONTROL_HELP, CUT_PROBLEMS, CUT_SETTINGS,  # noqa: E402
+                           DIAL_IN, OPEN_SHEET, REGISTRATION_PROBLEM, SETUP_STEPS)
 from .editor_canvas import DesignCanvas, draw_feed_arrow  # noqa: E402
 from .gtk_controls import (disclosure, menu_item, protect_settings_wheel, workspace_header,  # noqa: E402
                            workspace_tools, zoom_controls)
@@ -771,6 +772,7 @@ class Window(Adw.ApplicationWindow):
         command(settings, "Advanced Send Settings", "advanced-settings", self.open_send_advanced)
         help_menu = Gio.Menu()
         command(help_menu, "Setup Guide", "setup-guide", self.show_setup_guide)
+        command(help_menu, "Troubleshoot a Cut…", "troubleshoot-cut", self.troubleshoot_cut)
         menus = Gio.Menu()
         for label, menu in (("_File", files), ("_Edit", edit), ("_View", view),
                             ("_Settings", settings), ("_Help", help_menu)):
@@ -982,6 +984,47 @@ class Window(Adw.ApplicationWindow):
         dialog.set_close_response("close")
         dialog.connect("response::tune", self.open_material_guide)
         dialog.present(self)
+
+    def troubleshoot_cut(self, symptom=None, *_args):
+        problems = tuple(CUT_PROBLEMS)
+        dialog = Adw.AlertDialog(heading="Troubleshoot a Cut")
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        choices = Gtk.DropDown.new_from_strings(problems)
+        choices.update_property([Gtk.AccessibleProperty.LABEL], ["What happened?"])
+        if isinstance(symptom, str) and symptom in CUT_PROBLEMS:
+            choices.set_selected(problems.index(symptom))
+        content.append(choices)
+        body = Gtk.Label(wrap=True, xalign=0, max_width_chars=56)
+        content.append(body)
+        dialog.set_extra_child(content)
+        dialog.add_response("close", "Close")
+        dialog.add_response("follow", OPEN_SHEET)
+        dialog.set_close_response("close")
+        self.troubleshoot_dialog = dialog
+
+        def selected():
+            return CUT_PROBLEMS[problems[choices.get_selected()]]
+
+        def update(*_):
+            text, action = selected()
+            body.set_label(text)
+            dialog.set_response_label("follow", action or OPEN_SHEET)
+            dialog.set_response_enabled("follow", action is not None)
+
+        choices.connect("notify::selected", update)
+        dialog.connect("response::follow", lambda *_: self.follow_troubleshooting(selected()[1]))
+        update()
+        dialog.present(self)
+        return dialog
+
+    def follow_troubleshooting(self, action):
+        if action == OPEN_SHEET:
+            self.close_material_guide()
+            self.stack.set_visible_child_name("sheet")
+        elif action == DIAL_IN:
+            self.open_material_guide()
+        elif action == CUT_SETTINGS:
+            self.open_cut_settings()
 
     def open_material_guide(self, *_args):
         if self.guide.placement is None:
@@ -1448,6 +1491,7 @@ class Window(Adw.ApplicationWindow):
         detail = Adw.ActionRow(title="One change at a time", subtitle=starting_guide.TUNING_TIPS)
         detail.set_subtitle_lines(0)
         help_group.add(detail)
+        self.guide_button(help_group, "Troubleshoot a Cut…", self.troubleshoot_cut)
         extras.append(help_group)
 
         gcal = Adw.PreferencesGroup(
@@ -3813,9 +3857,11 @@ class Window(Adw.ApplicationWindow):
         dialog.add_response("close", "Close")
         dialog.add_response("copy", "Copy scan details")
         dialog.add_response("sheet", "Review marks")
+        dialog.add_response("troubleshoot", "Troubleshoot…")
         dialog.set_default_response("sheet")
         dialog.set_close_response("close")
         dialog.connect("response::copy", lambda *_: self.get_clipboard().set(diagnostics))
+        dialog.connect("response::troubleshoot", lambda *_: self.troubleshoot_cut(REGISTRATION_PROBLEM))
         dialog.connect("response::sheet", lambda *_: self.stack.set_visible_child_name("sheet"))
         dialog.present(self)
 

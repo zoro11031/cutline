@@ -142,6 +142,7 @@ class TestStartingGuide(unittest.TestCase):
         self.assertEqual(self.guide.outcome, "")
         for outcome, suggestion in (("rough", "Reduce force"), ("shallow", "blade is seated"),
                                     ("skipped", "power-cycle"), ("mat", "Reduce blade depth"),
+                                    ("chipped", "Cut Settings A"), ("fibers", "full pass"),
                                     ("clean", "Use the completed pass count")):
             with self.subTest(outcome=outcome):
                 self.guide.inspect(outcome)

@@ -67,6 +67,13 @@ the real cut.
   and pick `condition.csv` from a Silhouette Studio installation.
 - **Two tools at once.** Assign shapes to **Tool Holder 1** or **2** under
   **Object → Tool Holder**, and Cutline sends each to the right one.
+- **Something went wrong?** **Help → Troubleshoot a Cut** has checks for
+  marks that won't scan, foil glare, angled or misplaced cuts, rough edges,
+  a chipped coating, leftover fibers, a skipping carriage, Track Enhancing and
+  laminate, each with a button to the controls it refers to. For coated, core
+  and foil stock, try **Lighter first passes** under Passes. It is adapted from the Silhouette Card Maker
+  [cutting guide](https://alan-cha.github.io/silhouette-card-maker/tutorial/guide/)
+  and [troubleshooting](https://alan-cha.github.io/silhouette-card-maker/tutorial/troubleshooting/) pages.
 
 ## Supported cutters
 

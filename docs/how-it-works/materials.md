@@ -99,3 +99,34 @@ change was reverted, and the test now only checks the machine's accepted
 range. The question stays open until a cut decides it. The Silhouette presets
 follow the vendor and the guide presets follow the guide, each saying where
 its number came from.
+
+## Staged passes on coated, core and foil stock (reported 2026-11-20)
+
+A community thread, not a cut made here. Two users cutting coated core
+stock on a Cameo reported:
+
+- **Light first, then full.** The printed coating is weaker than the core,
+  so cutting it at full force chips or tears it. Several light passes get the
+  blade through the coating, then fewer full-force passes finish the core,
+  where edge quality does not show. One run of 1 pass at force 10, speed 30
+  then 6 at force 20, speed 25 was "so much better than before" but left
+  fibers; the suggestion was more light passes and fewer heavy ones, e.g.
+  4 at force 10 then 3 at 25.
+- **Foil wants more of it.** One user runs foil at 8 passes at force 8 then
+  4 at force 22, because the foil layer is thicker and more delicate. That is
+  12 passes; Cutline's job and material test allow 10, so it has to be scaled.
+- **Leftover fibers come from the bottom of the card.** Coating cut, core
+  not quite through. Fix it with one more full pass or a little more force on
+  the full passes only; otherwise trim with a hobby knife.
+- **Speed mattered little** to either user; one runs everything at 20 and
+  advised against maxing it. This sits on the Card Maker side of the
+  disputed speed scale above and does not settle it.
+- **Blades.** One user got raised edges from the AutoBlade whatever the
+  settings and cleaner cuts from a different, cheaper replacement blade that
+  dulls quickly; the other thought the same light-first approach should work
+  on the AutoBlade. No conclusion.
+
+Cutline's material-test advice and **Help → Troubleshoot a Cut** use this as
+advice to try, marked as reported: **Lighter first passes** under Passes for a
+job, and a light Cut Settings A then a full Cut Settings B in the material
+test. None of the numbers is a preset.

@@ -16,7 +16,11 @@ TUNING_TIPS = (
     "Blade depth limits how far the blade can extend. Start with enough exposure for the stock. "
     "Excess exposure, force or passes can score the mat.\n\n"
     "Avoid jumping straight to maximum force or speed. If the carriage skips or the mat shifts, "
-    "finish stopping the cutter and power-cycle it so the carriage can rehome."
+    "finish stopping the cutter and power-cycle it so the carriage can rehome.\n\n"
+    "On coated, core or foil stock, cut light first: set Cut Settings A to a light force and B to a full one. "
+    "Several passes with A get through the printed coating without chipping it, then fewer with B finish "
+    "the core. Use Tested Settings turns them into Lighter first passes. Other cutters report that force "
+    "matters more than speed here."
 )
 OUTCOMES = {
     "": "Choose a symptom",
@@ -24,6 +28,8 @@ OUTCOMES = {
     "holding": "Still attached",
     "shallow": "Barely marked the material",
     "rough": "Rough or rippled edge",
+    "chipped": "Printed coating chipped or torn",
+    "fibers": "Fibers left on the back edge",
     "skipped": "Cutter skipped or slipped",
     "mat": "Cut deeply into the mat",
 }
@@ -32,10 +38,16 @@ ADVICE = {
     "holding": "Keep the mat loaded and repeat one pass in the same spot. Each completed pass counts toward your total.",
     "shallow": "Check that the blade is seated and set for the stock. Try slightly more force on a fresh spot. "
                "If the blade cannot extend far enough to reach through the stock, increase depth one step.",
-    "rough": "Reduce force first on a fresh spot. For rippled laminate, try a small speed increase separately "
-             "once the cutter is tracking reliably. Add a pass if the cleaner cut still holds, and check the blade for wear.",
-    "skipped": "Wait for the cutter to stop, then power-cycle it to rehome. Reload the test sheet. "
-               "Try lower force first and reduce speed if needed. Check that the blade is not catching in the mat.",
+    "rough": "Reduce force first on a fresh spot. Heavy pressure can drag and tear laminate; speed matters less. "
+             "Add a pass if the cleaner cut still holds, and check the blade for wear.",
+    "chipped": "The coating is weaker than the core. On a fresh spot, cut several passes with a light Cut Settings A, "
+               "then switch to a full Cut Settings B and repeat until the sample separates. Other cutters report "
+               "4 light passes at force 10 then 3 at 25 on core stock, and more light passes at lower force on foil.",
+    "fibers": "The coating is cut but the bottom of the core is holding. Repeat one full pass here. Next time, "
+              "add a full pass or a little more force on the full passes only. Stray fibers trim off with a hobby knife.",
+    "skipped": "Wait for the cutter to stop, then power-cycle it to rehome. Check that both rollers grip the mat, "
+               "then reload the test sheet. Try less force or lower speed on a fresh spot: skipping often means the "
+               "blade is taking too much in one pass. If it caught in the mat, reduce blade exposure.",
     "mat": "Reduce blade depth one step on a fresh spot. If the cut still gouges the mat, lower force or use fewer passes.",
 }
 MAX_JOB_PASSES = 10

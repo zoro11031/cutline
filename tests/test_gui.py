@@ -233,6 +233,21 @@ class TestDesignWorkspace(unittest.TestCase):
         return {controller.get_item(i).get_trigger().to_string(): controller.get_item(i).get_action().to_string()
                 for i in range(controller.get_n_items())}
 
+    def test_troubleshooting_opens_the_controls_its_advice_names(self):
+        from cutline import desktop_help
+        win = self.make_window()
+        self.assertIsNotNone(win.workspace_actions.lookup_action('troubleshoot-cut'))
+        dialog = win.troubleshoot_cut(desktop_help.REGISTRATION_PROBLEM)
+        self.assertEqual(dialog.get_response_label('follow'), desktop_help.OPEN_SHEET)
+        dialog.force_close()
+        win.follow_troubleshooting(desktop_help.DIAL_IN)
+        self.assertTrue(win.tuning)
+        win.follow_troubleshooting(desktop_help.OPEN_SHEET)
+        self.assertFalse(win.tuning)
+        self.assertEqual(win.stack.get_visible_child_name(), 'sheet')
+        win.follow_troubleshooting(desktop_help.CUT_SETTINGS)
+        self.assertEqual(win.stack.get_visible_child_name(), 'cut')
+
     def test_send_workspace_has_keyboard_shortcuts(self):
         win = self.make_window()
         keys = self.shortcuts(win.send_shortcuts)

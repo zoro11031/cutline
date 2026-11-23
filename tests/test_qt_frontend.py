@@ -437,6 +437,29 @@ class TestQtFrontend(unittest.TestCase):
                          ["Cut Job", "Edit in Design", "Fit Preview", "Layout",
                           "Open Cut Template…", "Open PDF or ZIP…", "Sheet", "Zoom In", "Zoom Out"])
 
+    def test_troubleshooting_opens_the_controls_its_advice_names(self):
+        window = self.window
+        help_menu = next(action.menu() for action in window.menu_bar.actions() if action.text() == "&Help")
+        self.assertIn("Troubleshoot a Cut…", [action.text() for action in help_menu.actions()])
+        window.follow_troubleshooting(qt_gui.OPEN_SHEET)
+        self.assertEqual(window.tabs.currentIndex(), window.tab("Sheet"))
+        window.follow_troubleshooting(qt_gui.DIAL_IN)
+        self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
+        self.assertTrue(window.tuning)
+        window.tabs.setCurrentIndex(window.tab("Sheet"))
+        window.follow_troubleshooting(qt_gui.CUT_SETTINGS)
+        self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
+        with mock.patch.object(qt_gui.QInputDialog, "getItem", return_value=("", False)) as ask, \
+                mock.patch.object(qt_gui.QMessageBox, "exec") as shown:
+            window.troubleshoot_cut(False)
+        ask.assert_called_once()
+        shown.assert_not_called()
+        with mock.patch.object(qt_gui.QMessageBox, "exec"), \
+                mock.patch.object(qt_gui.QMessageBox, "clickedButton", return_value=None), \
+                mock.patch.object(window, "follow_troubleshooting") as follow:
+            window.troubleshoot_cut(qt_gui.REGISTRATION_PROBLEM)
+        follow.assert_not_called()
+
     def test_file_menu_changes_pages_only_after_opening_the_print_file(self):
         window = self.window
         window.send_workspace.click()
