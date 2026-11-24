@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """Build an x64 Windows installer from official Python and MSYS2 packages.
 
-The installer offers two windows. Qt runs on the official embedded Python
-with PySide6 wheels and a few MSYS2 DLLs. GTK (experimental) needs PyGObject,
-which exists for Windows only as MSYS2 builds, so it ships MSYS2's own Python
-and GTK 4 runtime. The payload has three folders: core (Cutline itself), qt
-and gtk; the installer copies core and the runtime chosen."""
+The Windows build is Qt only: the official embedded Python with PySide6
+wheels, plus the MSYS2 DLLs Cutline loads (Cairo, Pango, GEOS, Poppler,
+libusb)."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
@@ -28,12 +26,6 @@ QT = "6.12.0"
 MSYS2 = "https://repo.msys2.org/mingw/ucrt64/"
 MSYS2_PREFIX = "mingw-w64-ucrt-x86_64-"
 NATIVE = ("cairo", "pango", "geos", "poppler", "libusb")
-GTK_NATIVE = ("python", "python-gobject", "python-cairo", "gtk4", "libadwaita", "librsvg",
-              "adwaita-icon-theme", "hicolor-icon-theme", "python-pillow", "python-pyusb",
-              "geos", "poppler", "libusb")
-# Parts of the MSYS2 tree the GTK runtime does not need at run time.
-GTK_SKIP = ("include", "share/doc", "share/man", "share/info", "share/gtk-doc", "share/aclocal",
-            "share/gettext", "share/vala", "share/gir-1.0", "lib/pkgconfig", "lib/cmake")
 WINRT = ("runtime", "windows-devices-bluetooth",
          "windows-devices-bluetooth-advertisement",
          "windows-devices-bluetooth-genericattributeprofile",
@@ -97,23 +89,12 @@ def native_packages(cache, names=NATIVE):
     return {fields["FILENAME"][0]: fields["SHA256SUM"][0] for fields in found.values()}
 
 
-def wanted_for_qt(path):
+def wanted(path):
     needed_binary = path.parent == Path("bin") and (path.suffix == ".dll" or path.name in POPPLER_PROGRAMS)
     return needed_binary or path.is_relative_to("share/licenses") or path.is_relative_to("share/poppler")
 
 
-def wanted_for_gtk(path):
-    if any(path.is_relative_to(skip) for skip in GTK_SKIP):
-        return False
-    if path.suffix == ".a" or "__pycache__" in path.parts:
-        return False
-    # The Python test suite: lib/python3.x/test and idlelib/idle_test.
-    if len(path.parts) > 2 and path.parts[0] == "lib" and path.parts[2] in ("test", "idlelib"):
-        return False
-    return True
-
-
-def unpack_native(archive, destination, wanted=wanted_for_qt):
+def unpack_native(archive, destination):
     process = subprocess.Popen(["zstd", "-dc", archive], stdout=subprocess.PIPE)
     with process.stdout, tarfile.open(fileobj=process.stdout, mode="r|") as files:
         for member in files:
@@ -149,13 +130,7 @@ def pip_command():
                 "org.gnome.Sdk//50", "-m", "pip"]
 
 
-def compile_gtk_schemas(gtk):
-    schemas = gtk / "share/glib-2.0/schemas"
-    if schemas.is_dir() and shutil.which("glib-compile-schemas"):
-        subprocess.run(["glib-compile-schemas", schemas], check=True)
-
-
-def build(cache, output, gtk_runtime=True):
+def build(cache, output):
     wheel_dir = cache / "windows-wheels"
     subprocess.run([*pip_command(), "download", "--dest", wheel_dir,
                     "--platform", "win_amd64", "--python-version", "3.13",
@@ -163,52 +138,36 @@ def build(cache, output, gtk_runtime=True):
                     *WHEELS], check=True)
     python_zip = download(cache, f"https://www.python.org/ftp/python/{PYTHON}/python-{PYTHON}-embed-amd64.zip")
     packages = native_packages(cache)
-    gtk_packages = native_packages(cache, GTK_NATIVE) if gtk_runtime else {}
-
-    def fetch(items):
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            return list(pool.map(lambda item: download(cache, MSYS2 + item[0], item[1]), items.items()))
-
-    archives, gtk_archives = fetch(packages), fetch(gtk_packages)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        archives = list(pool.map(lambda item: download(cache, MSYS2 + item[0], item[1]), packages.items()))
     with TemporaryDirectory(prefix="cutline-windows-") as stage:
-        payload = Path(stage)
-        core, qt, gtk = payload / "core", payload / "qt", payload / "gtk"
-        for folder in (core, qt, gtk):
-            folder.mkdir()
-        # Qt: the official embedded Python, PySide6 wheels and the DLLs Cutline loads.
+        app = Path(stage) / "Cutline"
+        app.mkdir()
         with ZipFile(python_zip) as embedded:
-            embedded.extractall(qt)
-        (qt / "python313._pth").write_text("python313.zip\n.\nLib/site-packages\n")
+            embedded.extractall(app)
+        (app / "python313._pth").write_text("python313.zip\n.\nLib/site-packages\n")
         wheels = sorted(wheel_dir.glob("*.whl"))
         for source in wheels:
             with ZipFile(source) as wheel:
-                wheel.extractall(qt / "Lib/site-packages")
+                wheel.extractall(app / "Lib/site-packages")
         for archive in archives:
-            unpack_native(archive, qt / "native")
-        # GTK: MSYS2's Python with PyGObject, GTK 4 and libadwaita.
-        for archive in gtk_archives:
-            unpack_native(archive, gtk, wanted_for_gtk)
-        compile_gtk_schemas(gtk)
-        # Core: Cutline and its launchers, shared by both.
-        shutil.copytree(ROOT / "cutline", core / "cutline", ignore=shutil.ignore_patterns("__pycache__"))
-        shutil.copy2(ROOT / "packaging/windows-launcher.py", core / "launcher.py")
-        shutil.copy2(ROOT / "LICENSE", core / "LICENSE")
-        shutil.copy2(ROOT / "packaging/windows-readme.txt", core / "Start Here.txt")
-        (core / "build-manifest.json").write_text(json.dumps({
+            unpack_native(archive, app / "native")
+        shutil.copytree(ROOT / "cutline", app / "cutline", ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copy2(ROOT / "packaging/windows-launcher.py", app / "launcher.py")
+        shutil.copy2(ROOT / "LICENSE", app / "LICENSE")
+        shutil.copy2(ROOT / "packaging/windows-readme.txt", app / "Start Here.txt")
+        (app / "build-manifest.json").write_text(json.dumps({
             "python": {python_zip.name: sha256(python_zip)},
             "pypi_wheels": {wheel.name: sha256(wheel) for wheel in wheels},
             "msys2_ucrt64_packages": packages,
-            "msys2_ucrt64_gtk_packages": gtk_packages,
         }, indent=2) + "\n")
-        app = payload
         version = re.search(r'^__version__ = "(.*?)"', (ROOT / "cutline/__init__.py").read_text(),
                             re.M).group(1)
         filename = f"Cutline-{version}-Windows-x86_64-Setup.exe"
         # Publish the completed installer only after makensis succeeds.
         with TemporaryDirectory(prefix="windows-setup-", dir=output) as folder:
             installer = Path(folder) / filename
-            flags = ["-DWITH_GTK"] if gtk_runtime else []
-            subprocess.run(["makensis", "-V3", *flags, f"-DAPP_VERSION={version}",
+            subprocess.run(["makensis", "-V3", f"-DAPP_VERSION={version}",
                             f"-DPAYLOAD={app}", f"-DINSTALLER={installer}",
                             ROOT / "packaging/windows-installer.nsi"], check=True)
             installer.replace(output / filename)
@@ -219,10 +178,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cache", type=Path, default=ROOT / "out/windows-cache")
     parser.add_argument("--output", type=Path, default=ROOT / "out/packages")
-    parser.add_argument("--no-gtk", action="store_true", help="leave the experimental GTK runtime out")
     args = parser.parse_args()
     if not shutil.which("makensis"):
         parser.error("Install NSIS (makensis) to build the Windows installer.")
     for directory in (args.cache, args.output):
         directory.mkdir(parents=True, exist_ok=True)
-    build(args.cache.resolve(), args.output.resolve(), gtk_runtime=not args.no_gtk)
+    build(args.cache.resolve(), args.output.resolve())

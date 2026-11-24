@@ -112,7 +112,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install NSIS
         run: sudo apt-get update && sudo apt-get install -y nsis zstd libglib2.0-bin
-      - name: Build the Windows installer (Qt, and GTK as an option)
+      - name: Build the Windows installer
         run: python3 packaging/build-windows.py
       - uses: actions/upload-artifact@v7
         with:
@@ -126,28 +126,15 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: windows
-      - name: Install with the Qt window and check a job
+      - name: Install and check a job
         shell: pwsh
         run: |
           $setup = (Get-ChildItem Cutline-*-Setup.exe).FullName
           Start-Process $setup -ArgumentList '/S' -Wait
           $app = "$env:LOCALAPPDATA\Programs\Cutline\app"
-          & "$app\qt\python.exe" "$app\launcher.py" cut --dry-run
+          & "$app\python.exe" "$app\launcher.py" cut --dry-run
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          & "$app\qt\python.exe" -c "import sys; sys.path.insert(0, r'$app'); import PySide6.QtWidgets, cutline.qt_gui"
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: Reinstall with the GTK window and check a job
-        shell: pwsh
-        run: |
-          $setup = (Get-ChildItem Cutline-*-Setup.exe).FullName
-          Start-Process $setup -ArgumentList '/S', '/GTK' -Wait
-          $app = "$env:LOCALAPPDATA\Programs\Cutline\app"
-          if (Test-Path "$app\qt") { Write-Error "The Qt runtime should have been replaced"; exit 1 }
-          & "$app\gtk\bin\python.exe" "$app\launcher.py" cut --dry-run
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          $env:GI_TYPELIB_PATH = "$app\gtk\lib\girepository-1.0"
-          $env:PATH = "$app\gtk\bin;$env:PATH"
-          & "$app\gtk\bin\python.exe" -c "import gi; gi.require_version('Gtk', '4.0'); gi.require_version('Adw', '1'); from gi.repository import Gtk, Adw; print('GTK', Gtk.get_major_version(), Gtk.get_minor_version(), 'Adw', Adw.get_major_version(), Adw.get_minor_version())"
+          & "$app\python.exe" -c "import sys; sys.path.insert(0, r'$app'); import PySide6.QtWidgets, cutline.qt_gui"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
   publish:
