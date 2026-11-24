@@ -46,10 +46,14 @@ class Job:
     skip: tuple[int, ...] = ()
     # The standing blade-vs-sensor correction this job was built with.
     offset_mm: tuple[float, float] = (0.0, 0.0)
-    # Cards the optical sensor may mistake for a mark. Not blocking: the
-    # answer is to cover them for the scan, which is what the Card Maker
-    # guide tells you to do.
+    # Cards to cover with a sticky note for the scan: those crowding the
+    # bottom-left mark. The Card Maker guide covers that card only, and in
+    # use it is the one that matters; cards near the other marks scan fine
+    # almost every time. Not blocking.
     mask_hints: list[dict] = dataclasses.field(default_factory=list)
+    # Every card close to any mark, from regmarks.mask_hints. Shown only when
+    # a scan fails, as a place to look.
+    near_marks: list[dict] = dataclasses.field(default_factory=list)
     # Preserve the exact write/read plan whose writes were verified. Front
     # ends must not reconstruct a different plan from current widget state.
     steps: tuple = ()
@@ -98,6 +102,14 @@ class Job:
                               for part in step.data.split(graphtec.CMD_ETX) if part)
                      for step in self.registration_steps() if step.kind == "write")
 
+    def cover_note(self) -> str:
+        """What to cover for the scan, in the words both windows show."""
+        if not self.mask_hints:
+            return ""
+        cards = [str(hint["index"] + 1) for hint in self.mask_hints]
+        named = f"card {cards[0]}" if len(cards) == 1 else "cards " + " and ".join(cards)
+        return f"Cover {named} with a sticky note during the scan (next to the bottom-left mark)."
+
     def registration_notes(self, report=None, near_marks=None) -> list[str]:
         """PDF and layout observations available after a hardware scan fails."""
         notes = []
@@ -109,7 +121,7 @@ class Job:
                 names = ", ".join(mark.name for mark in report.found)
                 notes.append(f"PDF check found all expected marks: {names}.")
         if near_marks is None:
-            corners = {hint["mark"] for hint in self.mask_hints}
+            corners = {hint["mark"] for hint in self.near_marks}
             near_marks = [f"{corner} {'square' if corner == 'top-left' and self.marks.square else 'L'}"
                           for corner in sorted(corners)]
         if near_marks:
@@ -346,8 +358,9 @@ def build(sheet: str = config.DEFAULT_SHEET,
     if groups and weed:
         groups = (*groups[:-1], dataclasses.replace(groups[-1], paths=groups[-1].paths + weed))
     cut_cards = tuple(c for i, c in enumerate(grid.cards) if i not in set(skip))
-    hints = [h for h in regmarks.mask_hints(grid, mk)
-             if h["index"] not in set(skip)]
+    near = [h for h in regmarks.mask_hints(grid, mk)
+            if h["index"] not in set(skip)]
+    hints = [h for h in near if h["mark"] == "bottom-left"]
 
     off += cutting_mat_errors(device, mat, grid.sheet_w_mm, grid.sheet_h_mm)
     if grid.sheet_h_mm > device.length_mm:
@@ -417,7 +430,7 @@ def build(sheet: str = config.DEFAULT_SHEET,
     return Job(grid=grid, marks=mk, paths=paths, settings=cut, device=device,
                preset=preset, mode=mode, stream=stream, rows=rows, ok=ok,
                collisions=collisions, off_sheet=off, warnings=warnings,
-               skip=skip, mask_hints=hints, offset_mm=offset,
+               skip=skip, mask_hints=hints, near_marks=near, offset_mm=offset,
                liveness_failures=liveness, steps=steps, registration=registration,
                auto_search=auto_search, mat=mat, end_position=end_position, end_feed_mm=end_feed_mm,
                send_mode=send_mode, action_groups=groups)

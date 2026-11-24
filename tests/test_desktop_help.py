@@ -11,6 +11,10 @@ class TestCutProblems(unittest.TestCase):
             self.assertIn(action, (desktop_help.OPEN_SHEET, desktop_help.DIAL_IN,
                                    desktop_help.CUT_SETTINGS, None), symptom)
 
+    def test_front_and_back_offset_links_to_the_card_maker_guide(self):
+        advice, _action = desktop_help.CUT_PROBLEMS["Front and back are offset"]
+        self.assertIn("silhouette-card-maker/docs/offset", advice)
+
     def test_track_enhancing_is_offered_as_a_step(self):
         advice, action = desktop_help.CUT_PROBLEMS["Rollers shift, skew or mark the sheet"]
         self.assertIn("Turn off Track Enhancing", advice)

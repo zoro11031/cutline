@@ -1,6 +1,6 @@
 # Status and open questions
 
-Where every claim stands, as of 2026-11-23. **Verified** means measured, or
+Where every claim stands, as of 2026-11-24. **Verified** means measured, or
 checked against a published reference or a capture of Studio. **Untested**
 means the bytes are checked but no cutter has done it yet. Details are in
 [How Cutline works](how-it-works.md) and
@@ -25,6 +25,11 @@ means the bytes are checked but no cutter has done it yet. Details are in
 - Tool detection: ` 2, 0` with an AutoBlade in holder 1, over USB.
 - A registration-only run from Linux found the marks on a printed sheet in
   14.51 s, using Studio's captured sequence (2026-11-17).
+- Cutting: Cutline has cut several registered Print & Cut sheets over USB,
+  scanning the marks and cutting around the print (reported by the operator,
+  2026-11-24). The cuts landed slightly off-centre; the offset was seen, not
+  measured. Jobs using both tool holders register and cut as well (same
+  report).
 - Bluetooth Classic: firmware, status and tool queries; a link held open
   across actions; recovery from stalled and orphaned sessions; five
   consecutive status checks succeeding (2026-11-21).
@@ -47,8 +52,11 @@ means the bytes are checked but no cutter has done it yet. Details are in
 These are built from recovered protocol or community documentation, and the
 bytes are checked, but no cutter has done them yet:
 
-- **No blade has been moved by Cutline.** Cutting, and where the cut lands
-  relative to the print, are unverified on any machine.
+- **Cut placement** has not been measured. Registered cuts over USB landed
+  slightly off-centre, and how far, and whether calibration corrects it, is
+  open.
+- **Cutting over Bluetooth**: status and tool queries work, but no cut has
+  been sent that way.
 - **Every preset except Silhouette's own** has not been cut. The speed scale
   is disputed (Silhouette's table never exceeds 10; the Card Maker guide uses
   25 on a Cameo 5).

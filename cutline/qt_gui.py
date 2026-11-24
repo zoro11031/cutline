@@ -1312,8 +1312,7 @@ class Window(QMainWindow):
                     title = "Layout checked · Registration off"
                     summary += "\nThe cutter uses sheet coordinates. Use a blank sheet."
                 elif current.mask_hints:
-                    indices = ", ".join(str(h["index"] + 1) for h in current.mask_hints)
-                    summary += f"\nArtwork is close to a registration mark (card{'s' if len(current.mask_hints) > 1 else ''} {indices})."
+                    summary += "\n" + current.cover_note()
                 elif current.warnings:
                     summary += "\n" + current.warnings[0]
         marks = self.job.marks if self.job else None

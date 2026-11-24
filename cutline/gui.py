@@ -444,7 +444,7 @@ class Preview(Gtk.DrawingArea):
                     cr.line_to(x2, y2)
                     cr.stroke()
 
-        # Amber marks proximity, not a requirement to mask every such card.
+        # Amber marks the card by the bottom-left mark, to cover for the scan.
         crowded = {h["index"] for h in j.mask_hints}
         skipped = set(j.skip)
         for i, rect in enumerate(j.grid.cards):
@@ -2186,12 +2186,7 @@ class Window(Adw.ApplicationWindow):
             passes = "pass" if j.settings.passes == 1 else "passes"
             caption = f"{j.preset.name} · {j.settings.passes} {passes}"
         self.summary_material.set_label(caption)
-        mask_hint_text = (
-            f"Artwork is close to a registration mark (card{'s' if len(j.mask_hints) > 1 else ''} "
-            f"{', '.join(str(h['index'] + 1) for h in j.mask_hints)})."
-            if j.mask_hints
-            else ""
-        )
+        mask_hint_text = j.cover_note()
         self.summary_note.set_label(
             j.blocked[0] if j.blocked else
             'Open Sheet to see which marks failed the PDF check.' if failed_pdf else
@@ -2211,10 +2206,10 @@ class Window(Adw.ApplicationWindow):
             lines.append(f"[warn] {w}")
         if j.mask_hints:
             lines.append("")
-            lines.append("NEAR REGISTRATION MARKS (conservative proximity check):")
+            lines.append("COVER FOR THE SCAN:")
             for h in j.mask_hints:
                 lines.append(f"  {h['text']}")
-            lines.append("Use Test scan to see whether the cutter can read the printed marks.")
+            lines.append("Uncover it before cutting. Use Test scan to check the printed marks first.")
         self.checks.set_text("\n".join(lines))
 
         blocked = j.blocked

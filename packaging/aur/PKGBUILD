@@ -1,7 +1,7 @@
 # Upload the generated source tarball to the GitHub release and declare
 # the upstream license before publishing to the AUR.
 pkgname=cutline
-pkgver=0.2.1
+pkgver=0.2.2
 pkgrel=1
 pkgdesc='Design, print and cut with Silhouette cutters'
 replaces=('silhouette-control-center')

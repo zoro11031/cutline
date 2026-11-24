@@ -70,10 +70,14 @@ try other settings.
 
 ## Tips
 
-- If a card sits right next to one of the corner marks, the cutter's sensor
-  can mistake it for the mark. Cutline flags those cards in the preview.
-  Cover them with a sticky note while the cutter scans, then take it off
-  before the cut.
+- The card next to the bottom-left mark can be mistaken for the mark during
+  the scan, so Cutline marks it in the preview. Cover it with a sticky note
+  while the cutter scans, then take it off before the cut. The cards near
+  the other marks almost never need it.
+- If the backs of double-sided prints don't line up with the fronts, that's
+  the printer, not the cut. Silhouette Card Maker's
+  [alignment guide](https://alan-cha.github.io/silhouette-card-maker/docs/offset/)
+  shows how to measure and correct it.
 - If every cut is off by the same small amount, draw a sheet with the Sketch
   Pen and measure how far the lines miss. Enter that under
   **Send → Advanced Options → Calibration**. If the miss gets bigger toward
@@ -96,12 +100,12 @@ try other settings.
 
 ## Supported cutters
 
-Cutline is developed against a Silhouette Cameo 4. Over USB it has scanned
-the marks on a printed sheet and read the cutter's status, firmware and
-tools; over Bluetooth it reads status and tools. It has not cut anything yet,
-so treat cutting as untested. The other Cameo models (1 to 5, including Plus,
-Pro and Alpha) and the Portrait 1 to 4 are supported in the code but haven't
-been tried on real hardware.
+Cutline is developed against a Silhouette Cameo 4. Over USB it has cut
+several registered Print & Cut sheets, with both tool holders, and the cuts
+landed slightly off-centre; use the calibration tip above to correct that. Over Bluetooth it
+reads the cutter's status and tools, but hasn't sent a cut that way yet. The
+other Cameo models (1 to 5, including Plus, Pro and Alpha) and the Portrait 1
+to 4 are supported in the code but haven't been tried on real hardware.
 
 For Bluetooth, turn the cutter on and open **Send**. On Linux, Cutline finds a
 cutter that has never been paired and pairs it when you pick it, the way

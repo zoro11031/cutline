@@ -51,12 +51,15 @@ plausible guess. Where a value is magic — `TB51,400`, `TB53,10`, `TB99` — it
 is labelled magic rather than explained away.
 
 **Geometry claims and hardware claims are different claims.** A Cameo 4 is
-attached here over USB and paired over Bluetooth Classic. From Linux it has
-been sent a registration scan and queries (status, firmware, tools); no blade
-has been moved by this code. "The stream decodes to the right coordinates" is
-verified; "the machine cuts in the right place" is not, and nothing in the
-docs or the UI may blur the two. `docs/status.md` keeps the
-verified and the untested apart on purpose.
+attached here over USB and paired over Bluetooth Classic. Cutline has cut
+several registered Print & Cut sheets on it over USB; the cuts landed
+slightly off-centre, which nobody has measured yet. It has not cut over
+Bluetooth. A claim about the byte stream ("it decodes to the right
+coordinates") is still not a claim about where the blade lands, and nothing
+in the docs or the UI may blur the two. `docs/status.md` keeps the verified
+and the untested apart on purpose. Ask the operator what the cutter has
+actually done before writing it down; this file once said no blade had moved
+long after it had.
 
 **Presets carry their provenance.** `origin` is one of `silhouette` (verbatim
 from Studio's own `condition.csv`), `guide` (community documentation measured
@@ -239,9 +242,9 @@ pairing holds the link key.
 `docs/studio-parity.md` lists Silhouette Studio's features beside Cutline's,
 marked ✅ works, 🟡 partial, ❌ missing, with a headline percentage (✅ counts
 1, 🟡 counts ½). `tests/test_studio_parity.py` recomputes the headline from
-the tables, so change a row and the headline together. Anything that drives
-the blade stays 🟡 until a real cut proves it: no blade has been moved yet.
-When a feature lands or a cut is made, update its row in the same commit.
+the tables, so change a row and the headline together. A cutting option stays
+🟡 until a real cut has used it. When a feature lands or a cut is made,
+update its row in the same commit.
 
 ## Help and advice
 

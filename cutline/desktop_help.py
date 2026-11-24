@@ -112,10 +112,11 @@ CUT_PROBLEMS = {
         "across the sheet, use Send → Advanced Options → Calibration to shift in the opposite direction.",
         OPEN_SHEET),
     "Front and back are offset": (
-        "If only one side drifts, check the printer’s duplex alignment and flip setting first, or correct "
-        "it with Silhouette Card Maker’s offset.py. "
-        "Stock Silhouette Card Maker layouts use long-edge flip. If both sides shift against the cut, "
-        "compare registration and template placement before adjusting the printer.", OPEN_SHEET),
+        "If the backs drift against the fronts, check the printer’s flip setting first: stock Silhouette "
+        "Card Maker layouts use long-edge flip. To measure and correct the back’s offset, follow Silhouette "
+        "Card Maker’s alignment guide: https://alan-cha.github.io/silhouette-card-maker/docs/offset/\n\n"
+        "If both sides shift against the cut, compare registration and template placement instead.",
+        OPEN_SHEET),
     "Cards print or cut at the wrong size": (
         "Print at Actual size (100%) and match the selected paper size. Measure a printed edge or the "
         "spacing between marks in both directions. If the printer changes the scale at 100%, correct its "

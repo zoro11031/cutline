@@ -319,9 +319,9 @@ class Preview(SheetView):
                                                  QBrush(tint, Qt.BrushStyle.DiagCrossPattern))
                         else:
                             item = scene.addRect(rect(box), QPen(Qt.PenStyle.NoPen), QBrush(tint))
-                        # Say what the tint means where it is: these cards sit near a
-                        # registration mark and are covered while the cutter scans.
-                        item.setToolTip("Near a registration mark: cover this card while the cutter scans, "
+                        # Say what the tint means where it is: this card sits by the
+                        # bottom-left mark and is covered while the cutter scans.
+                        item.setToolTip("Next to the bottom-left mark: cover this card while the cutter scans, "
                                         "then uncover it before cutting.")
                         note = scene.addSimpleText("Cover during scan")
                         note.setBrush(QColor("#8a4410"))
