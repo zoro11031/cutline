@@ -1,9 +1,8 @@
 # Cutline
 
-I built Cutline for myself so I could cut Magic: The Gathering (MTG) proxies
-with my Silhouette Cameo 4 on Linux. I added design and cutting tools so my wife
-could use it for her own hobbies and projects, too. It's a hobby project, and I'm
-sharing it here so the community can use it.
+I built Cutline to cut my Magic: The Gathering proxies on Linux with a
+Silhouette Cameo 4. I added the design tools so my wife could use it for her
+own projects. It's a hobby project, and I'm sharing it so others can use it too.
 
 ![A proxy sheet ready to cut](screenshots/send-workspace.png)
 
@@ -19,12 +18,13 @@ sharing it here so the community can use it.
 
 ## Getting started
 
-Download Cutline from [GitHub Releases](https://github.com/zoro11031/cutline/releases).
-On Linux, you can use the AppImage or Flatpak with the included install script.
-Fedora and Arch packages are also available, along with an experimental Windows
-installer.
+The downloads include an AppImage, a Flatpak, Fedora and Arch packages, and an
+experimental Windows installer. [GitHub Releases](https://github.com/zoro11031/cutline/releases)
 
-For the AppImage or Flatpak, put `install-cutline.sh` next to the download and run:
+Put `install-cutline.sh` next to the AppImage or Flatpak. The script installs
+the AppImage and adds it to your app menu, or sets up Flathub and installs the
+Flatpak. If Cutline needs permission to use the cutter over USB, run the
+`--udev` command once and reconnect the cutter.
 
 ```sh
 sh install-cutline.sh --appimage    # or --flatpak
@@ -38,16 +38,13 @@ small cut on a scrap.
 
 ## Cutter support
 
-I've used Cutline to cut printed sheets on my Cameo 4 over USB. Those cuts
-landed slightly off-center. Bluetooth cutting and the other Cameo and
-Portrait models still need hardware testing. See the [testing status](docs/status.md)
-and [project documentation](docs/README.md) for details.
+I've only tested Cutline with my Cameo 4 over USB and Bluetooth.
+Your mileage may vary with other cutters.
 
 ## Thanks
 
-Thanks to Alan Cha for the card layouts and cutting guides behind Cutline's
-proxy workflow, and to everyone in the Discord community who shares tips and
-helps others get their cuts right.
+Thanks to Alan Cha for the card layouts and cutting guides, and to the
+Discord community for sharing what works.
 [Silhouette Card Maker](https://alan-cha.github.io/silhouette-card-maker/) ·
 [Silhouette Card Makers Discord](https://discord.gg/jhsKmAgbXc)
 
