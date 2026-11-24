@@ -410,7 +410,7 @@ class Window(QMainWindow):
         self.wireless_scanning = False
         self.search_pending = False
         self.preferred_endpoint = None
-        self.detected = cutter.choice("Connected cutter", {"": "Select a cutter"}, changed=self.select_detected)
+        self.detected = cutter.choice("Selected cutter", {"": "Select a cutter"}, changed=self.select_detected)
         self.connection_status = cutter.note("Cutter status not checked.")
         # Offered only while no cutter is available, as in Silhouette Studio.
         self.cutter_form = cutter

@@ -51,7 +51,7 @@ Cutline then shows up in your application menu. Plug the cutter in after the
 ## Your first cut
 
 1. **Design** something, or choose **File → Open** to bring in a cut file.
-2. Switch to **Send**. Cutline finds a connected cutter on its own.
+2. Switch to **Send**. Cutline looks for available cutters automatically.
 3. Pick your **Material**. For a new material, choose **Dial In a Material**
    and cut a test shape on a scrap first.
 4. Load the mat and choose **Send to Cutter**.

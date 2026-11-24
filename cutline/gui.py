@@ -1405,7 +1405,7 @@ class Window(Adw.ApplicationWindow):
         self.r_connection = _combo("Connection method", ["Automatic", *bluetooth.BLUETOOTH_MODES.values()])
         self.r_connection.set_tooltip_text(
             "Automatic looks for USB and Bluetooth cutters. Choose a Bluetooth method to connect manually.")
-        self.r_bluetooth = _combo("Connected cutter", ["Select a cutter"])
+        self.r_bluetooth = _combo("Selected cutter", ["Select a cutter"])
         self.r_bluetooth_id = Adw.EntryRow(title="Bluetooth identifier")
         self.r_bluetooth_channel = _spin("Channel", 1, 30, 1, 1, 0)
         self.r_bluetooth_channel.set_tooltip_text("Bluetooth Classic usually uses channel 1.")
