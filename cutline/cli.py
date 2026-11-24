@@ -99,7 +99,7 @@ def show_checks(j):
         warn(w)
     if j.mask_hints:
         say()
-        say("Near registration marks (conservative proximity check):", style="bold yellow")
+        say("Cover for the scan, then uncover before cutting:", style="bold yellow")
         for h in j.mask_hints:
             say(f"  - {h['text']}")
         say("Use Cutline's Test scan to check the printed marks without cutting.", style="dim")

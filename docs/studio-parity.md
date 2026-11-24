@@ -1,19 +1,19 @@
 # Silhouette Studio parity
 
 How Cutline compares with Silhouette Studio 5.0.556.1, feature by feature, as
-of 2026-11-23.
+of 2026-11-24.
 
 | Mark | Meaning |
 |---|---|
 | ✅ | Works: in Cutline and checked, by the tests or on a Cameo 4. |
-| 🟡 | Partial: there with gaps, or it drives the blade and no cut has proved it yet. |
+| 🟡 | Partial: there with gaps, or not yet confirmed on a real cut. |
 | ❌ | Missing. |
 
-Cutline has not yet moved a blade (see [Status](status.md)). Everything that
-sends cut commands is checked by decoding the bytes, but a feature that cuts
-counts as partial until a real cut confirms it.
+Cutline has cut several registered Print & Cut sheets on a Cameo 4 over USB
+(see [Status](status.md)). Every option that changes what is sent is checked
+by decoding the bytes, but an option no real cut has used yet stays partial.
 
-**Parity: 72.5%** (47 ✅, 22 🟡, 11 ❌ across 80 features; ✅ counts 1, 🟡 counts ½).
+**Parity: 74.1%** (50 ✅, 20 🟡, 11 ❌ across 81 features; ✅ counts 1, 🟡 counts ½).
 
 ## Design: drawing and editing
 
@@ -95,10 +95,10 @@ counts as partial until a real cut confirms it.
 |---|---|---|
 | Material list | Studio's own table, bundled, or imported from an installation | ✅ |
 | Custom materials | Save, update and delete presets | ✅ |
-| Force, speed, passes, blade depth | All, stream-verified | 🟡 |
+| Force, speed, passes, blade depth | All, used on real cuts | ✅ |
 | Cut, score or no action per object | Cut, Score, None | 🟡 |
 | Send by line colour, fill colour or layer | Send by line or fill colour; layers from SVG and the command line | 🟡 |
-| Two tool holders | Tool Holder 1 and 2 per object | 🟡 |
+| Two tool holders | Tool Holder 1 and 2 per object, used on registered cuts | ✅ |
 | Tool detection | Reads both holders, over USB and Bluetooth | ✅ |
 | Line segment overcut | Line Segment Overcut | 🟡 |
 | Track Enhancing | Track Enhancing | 🟡 |
@@ -117,6 +117,7 @@ counts as partial until a real cut confirms it.
 | Connect over Bluetooth | Bluetooth Classic, link held open as in Studio | ✅ |
 | Find and pair a new cutter | Scan for Cutters; pairs on Linux, system settings elsewhere | ✅ |
 | Cutter status and firmware version | Check Status, read when a cutter is chosen | ✅ |
+| Cut over USB | Registered Print & Cut sheets cut; placement slightly off-centre | ✅ |
 | Cut over Bluetooth | Built; status and tools work, but no cut has been sent | 🟡 |
 | Firmware updates | — | ❌ |
 | Several cutters at once (Business edition) | One at a time | ❌ |

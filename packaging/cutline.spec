@@ -1,5 +1,5 @@
 Name:           cutline
-Version:        0.2.0
+Version:        0.2.3
 Release:        1%{?dist}
 Summary:        Design, print and cut with Silhouette cutters
 Obsoletes:      silhouette-control-center < %{version}

@@ -32,7 +32,7 @@ for family in FAMILIES:
 # Silhouette Studio does, and say what to try when it finds nothing.
 SCAN_LABEL = "Scan for Cutters"
 SCANNING_TEXT = "Scanning for cutters…"
-NOT_DETECTED_TEXT = "No cutter detected."
+NOT_DETECTED_TEXT = "Cutter did not respond. Refresh Cutters, then check its status again."
 # On Linux a scan also finds and pairs Bluetooth cutters; elsewhere they are
 # paired in the system's settings first.
 NO_CUTTER_TEXT = ("No cutter found. Turn the cutter on and connect it by USB, or turn on its "

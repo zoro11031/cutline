@@ -12,15 +12,10 @@ from . import geometry, graphtec, importer, job as cut_job, presets, regmarks, t
 STARTING = presets.BUILTIN_BY_NAME[presets.STARTING_NAME].cut_settings()
 GUIDE_TEXT = "Load a scrap of the same material. Cut one pass, check it, and repeat until it separates."
 TUNING_TIPS = (
-    "Change one setting at a time on a fresh spot. Start with passes, then try force, speed and depth.\n\n"
-    "Blade depth limits how far the blade can extend. Start with enough exposure for the stock. "
-    "Excess exposure, force or passes can score the mat.\n\n"
-    "Avoid jumping straight to maximum force or speed. If the carriage skips or the mat shifts, "
-    "finish stopping the cutter and power-cycle it so the carriage can rehome.\n\n"
-    "On coated, core or foil stock, cut light first: set Cut Settings A to a light force and B to a full one. "
-    "Several passes with A get through the printed coating without chipping it, then fewer with B finish "
-    "the core. Use Tested Settings turns them into Lighter first passes. Other cutters report that force "
-    "matters more than speed here."
+    "1. Test on a fresh spot for each change. Tune passes first, then force, speed, and depth.\n\n"
+    "2. Use minimum blade depth needed. Excess depth, force, or passes will score the mat.\n\n"
+    "3. On coated or foil stock, cut light first: use light Settings A for coating, then full Settings B for core.\n\n"
+    "4. If the carriage skips or slips, power-cycle the cutter so it can rehome."
 )
 OUTCOMES = {
     "": "Choose a symptom",
@@ -40,9 +35,8 @@ ADVICE = {
                "If the blade cannot extend far enough to reach through the stock, increase depth one step.",
     "rough": "Reduce force first on a fresh spot. Heavy pressure can drag and tear laminate; speed matters less. "
              "Add a pass if the cleaner cut still holds, and check the blade for wear.",
-    "chipped": "The coating is weaker than the core. On a fresh spot, cut several passes with a light Cut Settings A, "
-               "then switch to a full Cut Settings B and repeat until the sample separates. Other cutters report "
-               "4 light passes at force 10 then 3 at 25 on core stock, and more light passes at lower force on foil.",
+    "chipped": "The coating is weaker than the core. On a fresh spot, cut several passes with light Cut Settings A, "
+               "then switch to full Cut Settings B until the sample separates.",
     "fibers": "The coating is cut but the bottom of the core is holding. Repeat one full pass here. Next time, "
               "add a full pass or a little more force on the full passes only. Stray fibers trim off with a hobby knife.",
     "skipped": "Wait for the cutter to stop, then power-cycle it to rehome. Check that both rollers grip the mat, "

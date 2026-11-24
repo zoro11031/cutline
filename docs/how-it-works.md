@@ -53,19 +53,23 @@ printed. Printed-sheet presets pin it: 8.0264 mm on Letter. Rounding that to
 8 mm once selected a different registration sequence from the one Studio was
 captured sending (2026-11-18).
 
-**Cards near a mark.** The Card Maker guide says to cover the card nearest
-the bottom-left mark with a sticky note during the scan. Every full Letter and
-A4 layout puts three cards within about 1.2 mm of a mark (measured
-2026-11-07), so the preview labels those cards "Cover during scan". This is a
-hint, not a refusal. A stricter rule still refuses any card inside a mark's
-own zone. That rule rejects some of Card Maker's own layouts, but loosening it
+**Cards near a mark.** Every full Letter and A4 layout puts three cards within
+about 1.2 mm of a mark (measured 2026-11-07). Only the one by the bottom-left
+mark needs covering: the Card Maker guide covers that card alone, and in use
+the other two scan fine almost every time (operator's report, 2026-11-24). So
+the preview labels just the bottom-left card "Cover during scan", and the
+others are listed only when a scan fails, as places to look. This is a hint,
+not a refusal. A stricter rule still refuses any card inside a mark's own
+zone. That rule rejects some of Card Maker's own layouts, but loosening it
 was tried and reverted (2026-11-15), because nobody here has measured where
 the sensor's limit actually is.
 
 **Printed sheets.** `sheet.py` measures the marks on a printed PDF. On a real
 print all three were within 0.03 mm of their template positions (2026-11-17).
 On double-sided sheets the marks go on the front only, and a front/back
-offset is a printing fault the cut cannot fix.
+offset is a printing fault the cut cannot fix. Silhouette Card Maker's
+[alignment guide](https://alan-cha.github.io/silhouette-card-maker/docs/offset/)
+covers correcting it at the printer.
 
 ## The cut stream
 

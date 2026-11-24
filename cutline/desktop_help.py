@@ -37,12 +37,9 @@ CONTROL_HELP = {
 }
 
 SETUP_STEPS = (
-    "1. Draw in Design. Or switch to Send and open a cut template on the Layout tab, "
-    "or a print bundle ZIP on the Sheet tab.\n\n"
-    "2. On Send's Cut Job tab, connect your cutter and choose a material. "
-    "Use Dial In a Material to try a scrap first.\n\n"
-    "3. Cutting a print? Check the PDF on the Sheet tab, then choose Test Registration "
-    "at the bottom of Cut Job."
+    "1. Open or draw: Open a template, import a print bundle, or draw in Design.\n\n"
+    "2. Choose material: In Send → Cut Job, connect your cutter and select a material.\n\n"
+    "3. Test & cut: For printed sheets, choose Test Registration under Registration in Cut Job. Then choose Send to Cutter."
 )
 
 # Adapted from the Silhouette Card Maker cutting guide and troubleshooting pages:
@@ -57,79 +54,71 @@ CUT_SETTINGS = "Cut Settings"
 TRACK_OFF = "If Track Enhancing is on in Cut Settings, try once with it off."
 CUT_PROBLEMS = {
     "Registration marks won’t scan": (
-        "Check that the printed front and cut file are a matched pair. On the Sheet tab, choose "
-        "Measure Registration Marks. Print at Actual size (100%). Load the sheet face-up with its "
-        "paper edges aligned to the preview.\n\n"
-        "Keep the marks and sensor clear. If the sensor is mistaking nearby dark artwork for a mark, "
-        "mask the artwork with a light sticky note and leave the mark visible. Try Test Registration "
-        "with no cut paths. Remove any mask before sending the cut. Try diffuse light or close the lid. "
+        "1. Print at Actual size (100%) and align paper edges to the preview.\n"
+        "2. If nearby dark artwork confuses the sensor, mask it with a light sticky note.\n"
+        "3. Reduce glare with diffuse light, or close the cutter lid.\n"
+        "4. In Sheet, choose Check PDF Marks. Then choose Test Registration in Cut Job.\n"
         + TRACK_OFF, OPEN_SHEET),
     "Registration fails on foil or glossy stock": (
-        "Try diffuse light. If glare persists, place clear matte tape flat over the marks, keeping the "
-        "black shapes visible. Or put opaque tape where the marks go and print the marks over it; test "
-        "that on scrap before printing a new sheet. Run Test Registration with the sheet loaded.", OPEN_SHEET),
+        "1. Reduce glare: close the lid or use indirect light.\n"
+        "2. Place clear matte tape flat over the marks to stop reflections.\n"
+        "3. Or print marks on opaque matte tape placed over the stock.\n"
+        "4. Run Test Registration with the sheet loaded.", OPEN_SHEET),
     "Cut is too shallow or still attached": (
-        "Check that the blade is seated and the material settings match your stock. In Dial In a Material, "
-        "make one pass and lift a corner with the mat still loaded. Repeat on the same spot if the cut is "
-        "close. If it barely scores the stock, try slightly more force or another pass at a fresh spot. "
-        "Cut templates carry no cut settings, so check a material is chosen. If it stays inconsistent, "
-        "try a new blade, a new mat, or both.", DIAL_IN),
+        "1. Verify the blade is fully seated and a material preset is selected.\n"
+        "2. In Dial In a Material, cut one pass and lift a corner while loaded.\n"
+        "3. If close, repeat on the same spot; if barely scored, add force or depth.\n"
+        "4. If still inconsistent, replace the blade or cutting mat.", DIAL_IN),
     "Cut edges are rough or laminate ripples": (
-        "Use less force first and test each change separately on a fresh spot. Heavy pressure can drag "
-        "and tear the laminate; other cutters report that speed matters much less than force, and "
-        "advise against maxing it. If the cleaner cut still holds, repeat a pass at that spot. "
-        "Check the blade for wear if the edge stays rough.", DIAL_IN),
+        "1. Reduce force first on a fresh spot (excess force tears laminate).\n"
+        "2. Keep speed moderate; speed matters much less than force.\n"
+        "3. If the cleaner cut holds, repeat a pass at that spot.\n"
+        "4. Check the blade tip for wear or adhesive buildup.", DIAL_IN),
     "Printed coating chips or tears at the edge": (
-        "The printed coating on core and foil stock is weaker than the core, so a full-force cut chips it. "
-        "Cut light first: several light passes get through the coating gently, then fewer full passes "
-        "finish the core, where the edge does not show. For a job, turn on Lighter first passes under "
-        "Passes. In Dial In a Material, cut with a light Cut Settings A, then switch to a full Cut "
-        "Settings B on the same spot. Other cutters report "
-        "4 light passes at force 10 then 3 at force 25 on core stock.\n\n"
-        "Foil is thicker and more delicate, so use more light passes at lower force. One user runs 8 at "
-        "force 8 then 4 at force 22; Cutline allows 10 passes in all, so scale it, for example 7 then 3. "
-        "Try it in Dial In a Material before a full sheet.", DIAL_IN),
+        "1. Cut light first: the printed coating is weaker than the core.\n"
+        "2. Run gentle first passes to cut the coating, then full-force passes to finish.\n"
+        "3. In Dial In a Material, test light Settings A then full Settings B.\n"
+        "4. In Cut Settings, enable Lighter first passes under Passes.", DIAL_IN),
     "Fibers left on the back of the card": (
-        "The coating is cut but the bottom of the core is still holding. Add one more full pass, or a "
-        "little more force on the full passes only; leave the light passes alone. Fibers that remain trim "
-        "off with a hobby knife. If raised edges persist whatever the settings, try a fresh or different "
-        "blade: replacement blades vary and dull quickly.", DIAL_IN),
+        "1. Coating cut cleanly but core base is holding: add one full pass.\n"
+        "2. Or increase force slightly on full passes only (keep light passes low).\n"
+        "3. Trim any stray fibers with a hobby knife.\n"
+        "4. If dull cuts persist, install a fresh blade.", DIAL_IN),
     "Carriage skips during a cut": (
-        "A blade that takes too much in one pass can make the carriage skip. Once motion stops, "
-        "power-cycle the cutter so it can rehome. On a fresh spot, reduce force first or try a lower speed. "
-        "If the blade catches in the mat, reduce blade exposure. Use the minimum depth that works. "
-        "If the sample tracks cleanly and stays attached, add a pass.", DIAL_IN),
+        "1. Power-cycle the cutter after motion stops so it can rehome.\n"
+        "2. Reduce force or speed on a fresh spot (blade is catching).\n"
+        "3. Reduce blade depth to the minimum exposure needed for your stock.\n"
+        "4. Add a pass if the lighter cut stays attached.", DIAL_IN),
     "Cuts are angled or the mat slips": (
-        "Stop the job and check that both pinch rollers grip the mat edges. Align the mat to the cutter’s "
-        "loading guide and make sure the stock cannot shift. Cover cards next to the corner marks with a "
-        "sticky note so the scan cannot mistake them for marks. " + TRACK_OFF + " If the carriage skipped, "
-        "power-cycle after motion stops so it can rehome.", OPEN_SHEET),
+        "1. Stop the job and confirm both pinch rollers grip the mat edges.\n"
+        "2. Align the mat against the cutter's loading guide.\n"
+        "3. Mask cards near corner marks so the scan does not mistake them.\n"
+        "4. If carriage skipped, power-cycle after motion stops to rehome.\n"
+        + TRACK_OFF, OPEN_SHEET),
     "Cut is in the wrong place": (
-        "Open the cut file paired with this PDF and compare the Overlay preview. Silhouette Card Maker "
-        "sheets are labelled with their cut template, such as letter-bridge-v1; use that one. Check the "
-        "sheet edge and feed arrow, then run Test Registration. " + TRACK_OFF + " If the overlay aligns "
-        "and a pen test shows the same offset "
-        "across the sheet, use Send → Advanced Options → Calibration to shift in the opposite direction.",
-        OPEN_SHEET),
+        "1. Verify cut file and PDF match (compare Overlay preview in Sheet).\n"
+        "2. Check paper edge and feed arrow, then run Test Registration.\n"
+        "3. If offset is uniform, calibrate under Send → Advanced Options → Calibration.\n"
+        + TRACK_OFF, OPEN_SHEET),
     "Front and back are offset": (
-        "If only one side drifts, check the printer’s duplex alignment and flip setting first, or correct "
-        "it with Silhouette Card Maker’s offset.py. "
-        "Stock Silhouette Card Maker layouts use long-edge flip. If both sides shift against the cut, "
-        "compare registration and template placement before adjusting the printer.", OPEN_SHEET),
+        "1. Check printer duplex settings: Card Maker layouts use long-edge flip.\n"
+        "2. To measure and align back offset, follow Silhouette Card Maker’s alignment guide: "
+        "https://alan-cha.github.io/silhouette-card-maker/docs/offset/\n"
+        "3. If both sides shift against the cut, compare registration and template placement instead.",
+        OPEN_SHEET),
     "Cards print or cut at the wrong size": (
-        "Print at Actual size (100%) and match the selected paper size. Measure a printed edge or the "
-        "spacing between marks in both directions. If the printer changes the scale at 100%, correct its "
-        "scale before adjusting cutter offsets.", OPEN_SHEET),
+        "1. Print at Actual size (100%) and verify selected sheet size matches.\n"
+        "2. Measure mark spacing with a ruler in both directions.\n"
+        "3. Fix printer scaling at 100% before adjusting cutter calibration.",
+        OPEN_SHEET),
     "Laminate lifts or the sheet curls": (
-        "Check the pouch, stock and laminator settings on an offcut. If the layers lift, run the sheet "
-        "through again or at slightly more heat within the pouch’s instructions, and handle it gently while "
-        "cutting. Laser toner can make bonding less consistent. If the sheet curls, try less heat and cool "
-        "it flat under a heavy book.", None),
+        "1. Test pouches on offcuts with different heat and speed settings.\n"
+        "2. If layers lift, increase heat slightly or run through laminator twice.\n"
+        "3. If sheet curls, reduce heat and cool flat under a heavy book.", None),
     "Rollers shift, skew or mark the sheet": (
-        "Track Enhancing feeds the mat in and out under the rollers before the scan or cut, so they grip "
-        "better. Some stock does better without it: the sheet can shift against its marks, the mat can "
-        "skew, or the rollers can mark a printed or laminated face. Turn off Track Enhancing in Cut "
-        "Settings and try again. Keep it on if the mat slips without it. Some Studio presets turn it on, "
-        "so check it again after choosing a material.", CUT_SETTINGS),
+        "1. Turn off Track Enhancing in Cut Settings and try again.\n"
+        "2. Keep it on only if the mat slips without it.\n"
+        "3. Check Cut Settings again after selecting a material, as some presets enable it.",
+        CUT_SETTINGS),
 }
 REGISTRATION_PROBLEM = next(iter(CUT_PROBLEMS))

@@ -71,6 +71,20 @@ class TestMaskHintsFire(unittest.TestCase):
                               preset_name="Plain paper test", skip=crowded)
         self.assertEqual(quiet.mask_hints, [])
 
+    def test_only_the_bottom_left_card_is_to_be_covered(self):
+        # Every full Letter sheet has three cards near a mark, but only the one
+        # by the bottom-left mark needs covering for the scan; the others are
+        # kept as places to look when a scan fails.
+        job = job_mod.build(sheet="Letter", portrait=False, preset_name="Plain paper test")
+        self.assertEqual(len(job.near_marks), 3)
+        self.assertEqual({h["mark"] for h in job.mask_hints}, {"bottom-left"})
+        self.assertLess(len(job.mask_hints), len(job.near_marks))
+        note = job.cover_note()
+        self.assertIn(f"card {job.mask_hints[0]['index'] + 1}", note)
+        self.assertIn("bottom-left", note)
+        failed = " ".join(job.registration_notes())
+        self.assertIn("top-", failed)
+
     def test_a_wider_clearance_catches_more(self):
         grid = geometry.scm_layout("Legal", "standard", True, 10.0)
         mk = regmarks.for_grid(grid, inset_mm=10.0)

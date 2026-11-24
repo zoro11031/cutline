@@ -51,12 +51,15 @@ plausible guess. Where a value is magic — `TB51,400`, `TB53,10`, `TB99` — it
 is labelled magic rather than explained away.
 
 **Geometry claims and hardware claims are different claims.** A Cameo 4 is
-attached here over USB and paired over Bluetooth Classic. From Linux it has
-been sent a registration scan and queries (status, firmware, tools); no blade
-has been moved by this code. "The stream decodes to the right coordinates" is
-verified; "the machine cuts in the right place" is not, and nothing in the
-docs or the UI may blur the two. `docs/status.md` keeps the
-verified and the untested apart on purpose.
+attached here over USB and paired over Bluetooth Classic. Cutline has cut
+several registered Print & Cut sheets on it over USB; the cuts landed
+slightly off-centre, which nobody has measured yet. It has not cut over
+Bluetooth. A claim about the byte stream ("it decodes to the right
+coordinates") is still not a claim about where the blade lands, and nothing
+in the docs or the UI may blur the two. `docs/status.md` keeps the verified
+and the untested apart on purpose. Ask the operator what the cutter has
+actually done before writing it down; this file once said no blade had moved
+long after it had.
 
 **Presets carry their provenance.** `origin` is one of `silhouette` (verbatim
 from Studio's own `condition.csv`), `guide` (community documentation measured
@@ -239,9 +242,9 @@ pairing holds the link key.
 `docs/studio-parity.md` lists Silhouette Studio's features beside Cutline's,
 marked ✅ works, 🟡 partial, ❌ missing, with a headline percentage (✅ counts
 1, 🟡 counts ½). `tests/test_studio_parity.py` recomputes the headline from
-the tables, so change a row and the headline together. Anything that drives
-the blade stays 🟡 until a real cut proves it: no blade has been moved yet.
-When a feature lands or a cut is made, update its row in the same commit.
+the tables, so change a row and the headline together. A cutting option stays
+🟡 until a real cut has used it. When a feature lands or a cut is made,
+update its row in the same commit.
 
 ## Help and advice
 
@@ -276,7 +279,7 @@ the branch. Release work goes on `release/vX.Y.Z`.
 | `linux` | RPM, Arch package and source tarball, then the AppImage (pinned type2 runtime), its payload smoke test and a dry-run cut. Runs in an Arch container. |
 | `flatpak` | The Flatpak on the GNOME 50 SDK, with a dry-run cut. |
 | `windows-build` | The Windows installer, built on Linux with NSIS. |
-| `windows-check` | Installs it on a Windows runner with the Qt window and then the GTK window, and runs a dry-run cut with each. |
+| `windows-check` | Installs it on a Windows runner and runs a dry-run cut. |
 | `publish` | Only for a `v*` tag: the release, with `install-cutline.sh` and `SHA256SUMS`. |
 
 A push to `release/**` runs everything except `publish`. To release:
@@ -292,11 +295,10 @@ Packaging rules:
 
 - **No distribution gets special treatment.** `install-cutline.sh` installs
   the AppImage or Flatpak and the udev rule on any Linux.
-- **The Windows installer offers a choice of window.** Qt (the default) runs on
-  the official embedded Python with PySide6. GTK (experimental) ships MSYS2's
-  Python and GTK 4 runtime, because PyGObject exists for Windows only as an
-  MSYS2 build. `packaging/windows-launcher.py` works out which runtime started
-  it. A silent install takes `/S`, plus `/GTK` for the GTK window.
+- **The Windows installer is Qt only**, on the official embedded Python with
+  PySide6 and a few MSYS2 DLLs. A GTK option was tried in 0.2.0 and dropped:
+  PyGObject exists for Windows only as an MSYS2 build, so it needed a second
+  Python and the whole GTK runtime, and the installer grew to 235 MB.
 - **Pin what is downloaded.** The AppImage runtime, Python, wheels and MSYS2
   packages are pinned by version and checked by SHA-256.
 - **Screenshots** come from `python3 tools/capture_screenshots.py`. Regenerate

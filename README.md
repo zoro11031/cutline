@@ -2,30 +2,29 @@
 
 Design, print and cut with your Silhouette cutter on Linux.
 
-Cutline lets you draw or import a design, print it with registration marks, and
-send it to a Silhouette Cameo over USB or Bluetooth, all without Silhouette
-Studio.
-Before the cutter moves, Cutline reads the job back and checks every cut line
-lands where it should. If something is off, it tells you and doesn't send.
+You draw or import a design in Cutline, print it with registration marks and
+send it to a Silhouette Cameo over USB or Bluetooth. You don't need Silhouette
+Studio. Before the cutter moves, Cutline decodes the job it built and checks
+that every cut lands where it should; if one doesn't, it says which check
+failed and doesn't send anything.
 
 ![The Design workspace with a sheet of gift tags](screenshots/design-workspace.png)
 
 ## What you can do
 
-- **Design cut files.** Draw shapes, type text in any installed font, set
-  text along a curve, edit points, weld and subtract shapes, and repeat them
-  in rows and columns.
-- **Print & Cut.** Place a picture, trace its outline, and print it with
-  registration marks. The cutter finds the marks and cuts around your print.
-- **Open what you already have.** SVG, DXF, Silhouette `.studio3` files,
-  Inkscape Silhouette layouts and Silhouette Card Maker templates.
-- **Find the right blade settings.** Cut a small test shape, check it, and
-  repeat until it's clean. Compare two settings side by side, and Cutline
-  remembers what worked.
-- **Cut cards and stickers in bulk.** Ready-made Letter and A4 layouts for
-  trading cards, plus sticker sheets from your own artwork.
+- Draw shapes, type text in any installed font or along a curve, edit points,
+  weld and subtract shapes, and repeat them in rows and columns.
+- Place a picture, trace its outline and print it with registration marks.
+  The cutter finds the marks and cuts around the print.
+- Open SVG, DXF and Silhouette `.studio3` files, Inkscape Silhouette layouts
+  and Silhouette Card Maker templates.
+- Cut a small test shape on a scrap and repeat it until it comes out clean,
+  or compare two settings side by side. Cutline keeps the settings that
+  worked.
+- Lay out trading cards on Letter or A4 from ready-made templates, or make
+  sticker sheets from your own artwork.
 
-![Ready to cut: the Send workspace](screenshots/send-workspace.png)
+![The Send workspace with a card sheet ready to cut](screenshots/send-workspace.png)
 
 ## Install
 
@@ -36,77 +35,90 @@ Download from the [Releases page](https://github.com/zoro11031/cutline/releases)
 | Any Linux | The AppImage or Flatpak, plus `install-cutline.sh` |
 | Fedora | The `.noarch.rpm`: `sudo dnf install ./cutline-*.noarch.rpm` |
 | Arch | The `.pkg.tar.zst`: `sudo pacman -U ./cutline-*.pkg.tar.zst` |
-| Windows (experimental) | `Cutline-*-Setup.exe`, which lets you choose the Qt or GTK window |
+| Windows (experimental) | `Cutline-*-Setup.exe` |
 
-For the AppImage or Flatpak, run the installer next to it:
+For the AppImage or Flatpak, put `install-cutline.sh` in the same folder and
+run:
 
 ```sh
 sh install-cutline.sh --appimage    # or --flatpak
 sh install-cutline.sh --udev        # once: lets Cutline talk to the cutter over USB
 ```
 
-Cutline appears in your application menu. Plug the cutter in after the second
-step.
+Cutline then shows up in your application menu. Plug the cutter in after the
+`--udev` step.
 
 ## Your first cut
 
 1. **Design** something, or choose **File → Open** to bring in a cut file.
-2. Switch to **Send**. Cutline finds a connected cutter on its own.
+2. Switch to **Send**. Cutline looks for available cutters automatically.
 3. Pick your **Material**. For a new material, choose **Dial In a Material**
    and cut a test shape on a scrap first.
 4. Load the mat and choose **Send to Cutter**.
 
 For Print & Cut, print the sheet at **100% / Actual size**, load it face-up
-in the top-left corner of the mat, and choose **Test Registration** before
-the real cut.
+in the top-left corner of the mat, and choose **Test Registration** under
+**Registration** in **Cut Job** before the real cut.
 
 ![Checking a printed sheet's registration marks](screenshots/sheet-alignment.png)
 
-New material? **Dial In a Material** cuts one small shape at a time on a
-scrap, so you can repeat a pass until it separates, or try other settings on
-a fresh spot.
+**Dial In a Material** cuts one small shape at a time, so you can repeat a
+pass on the same spot until the shape comes free, or move to a fresh spot to
+try other settings.
 
 ![Dialling in a material on a test sheet](screenshots/material-guide.png)
 
 ## Tips
 
-- **Cards near the corner marks** can confuse the cutter's scan. Cutline points
-  them out; cover them with a sticky note during the scan.
-- **Cut lands slightly off everywhere by the same amount?** Trace a sheet
-  with the Sketch Pen, measure how far off it is, and enter that under
-  **Send → Advanced Options → Calibration**. If the error grows across the
-  page, the print was scaled; check your printer's settings first.
-- **Want Silhouette's full material list?** Choose **Materials → Import CSV**
-  and pick `condition.csv` from a Silhouette Studio installation.
-- **Two tools at once.** Assign shapes to **Tool Holder 1** or **2** under
-  **Object → Tool Holder**, and Cutline sends each to the right one.
-- **Coated, core or foil stock chipping?** Turn on **Lighter first passes**
-  under Passes: a few gentle passes through the coating, then full ones.
-- **Something went wrong?** **Help → Troubleshoot a Cut** walks through
-  scans, glare, misplaced cuts, rough edges, Track Enhancing and laminate,
-  with a button to the right controls. It builds on the Silhouette Card Maker
+- The card next to the bottom-left mark can be mistaken for the mark during
+  the scan, so Cutline marks it in the preview. Cover it with a sticky note
+  while the cutter scans, then take it off before the cut. The cards near
+  the other marks almost never need it.
+- If the backs of double-sided prints don't line up with the fronts, that's
+  the printer, not the cut. Silhouette Card Maker's
+  [alignment guide](https://alan-cha.github.io/silhouette-card-maker/docs/offset/)
+  shows how to measure and correct it.
+- If every cut is off by the same small amount, draw a sheet with the Sketch
+  Pen and measure how far the lines miss. Enter that under
+  **Send → Advanced Options → Calibration**. If the miss gets bigger toward
+  the far side of the page, your printer is scaling the print, so fix that
+  first.
+- Cutline comes with Silhouette's material list. If you have Studio installed
+  and want its copy instead, choose **Materials → Import CSV** and pick its
+  `condition.csv`.
+- You can use both tool holders in one job, say a blade and a pen. Put each
+  shape on **Tool Holder 1** or **2** under **Object → Tool Holder**, and
+  Cutline sends it to the right tool.
+- Coated, core and foil card tends to chip if the first pass goes in at full
+  force. Turn on **Lighter first passes** under Passes so the blade eases
+  through the coating before the full-force passes.
+- When a cut goes wrong, try **Help → Troubleshoot a Cut**. It covers failed
+  scans, glare, cuts in the wrong place, rough edges, Track Enhancing and
+  laminate, and opens the setting you need to change. A lot of it comes from
+  the Silhouette Card Maker
   [troubleshooting guide](https://alan-cha.github.io/silhouette-card-maker/tutorial/troubleshooting/).
 
 ## Supported cutters
 
-Built and tested with a Silhouette Cameo 4 over USB and Bluetooth. Cutline also knows the
+Cutline is developed against a Silhouette Cameo 4. Over USB it has cut
+several registered Print & Cut sheets, with both tool holders, and the cuts
+landed slightly off-centre; use the calibration tip above to correct that. Over Bluetooth it
+reads the cutter's status and tools, but hasn't sent a cut that way yet. The
 other Cameo models (1 to 5, including Plus, Pro and Alpha) and the Portrait 1
-to 4, but those have not been tried on real hardware.
+to 4 are supported in the code but haven't been tried on real hardware.
 
-Bluetooth: turn the cutter on and open **Send**. On Linux, Cutline finds a
-cutter that has never been paired and pairs it when you choose it, as
-Silhouette Studio does; on other systems, pair it in the system's Bluetooth
-settings first. A Cameo 4 connects over Bluetooth Classic, as it does with
-Studio, and Cutline reads its status and tools that way; cutting over
-Bluetooth has not been tried yet. Bluetooth LE is experimental.
+For Bluetooth, turn the cutter on and open **Send**. On Linux, Cutline finds a
+cutter that has never been paired and pairs it when you pick it, the way
+Silhouette Studio does. On other systems, pair it in the system's Bluetooth
+settings first. A Cameo 4 uses Bluetooth Classic; Bluetooth LE support is
+experimental.
 
 ## How it works
 
-The [documentation](docs/README.md) explains how Cutline builds and checks
-each job, and how what it knows about Silhouette's cutters and Silhouette
-Studio was worked out.
-[Studio parity](docs/studio-parity.md) lists Silhouette Studio's features
-beside Cutline's, each marked working, partial or missing.
+The [documentation](docs/README.md) covers how Cutline builds and checks each
+job and how Silhouette's protocol and file formats were worked out.
+[Studio parity](docs/studio-parity.md) compares Silhouette Studio's features
+with Cutline's and marks each one as working, partial or missing.
 
 ---
 
@@ -117,13 +129,13 @@ their trademarks, used here only to say which machines Cutline works with.
 Licensed under the [GNU GPL v3](LICENSE).
 
 <details>
-<summary><strong>Advanced: run from source, the command line, and USB permissions</strong></summary>
+<summary><strong>Running from source, USB permissions and the command line</strong></summary>
 
 ### Run from a checkout
 
 ```sh
-./bin/cutline gui              # Qt is tried first; add --frontend gtk for GTK
-./install.sh                # add the command, launcher and icon for your user
+./bin/cutline gui    # Qt is tried first; add --frontend gtk for GTK
+./install.sh         # add the command, launcher and icon for your user
 ```
 
 Cutline needs Python 3.10 or newer and either PySide6 (Qt) or GTK 4,
