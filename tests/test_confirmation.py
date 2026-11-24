@@ -34,6 +34,9 @@ class TestConfirmation(unittest.TestCase):
         self.assertTrue(conf.destructive)
         self.assertIn("Connection: Silhouette Cameo 4 · USB printer /dev/usb/lp0", conf.body)
         self.assertIn("paths decoded and measured inside the sheet.", conf.body)
+        self.assertIn("This moves the blade.", conf.summary)
+        self.assertIn("paths decoded and measured inside the sheet.", conf.details)
+        self.assertIn("Connection: Silhouette Cameo 4 · USB printer /dev/usb/lp0", conf.details)
 
         # Ordering check: lead comes before warnings, warnings before settings, settings before connection
         body = conf.body

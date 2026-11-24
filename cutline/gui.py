@@ -3727,7 +3727,11 @@ class Window(Adw.ApplicationWindow):
         conf = confirmation.build_send_confirmation(
             j, connection, scan_only=scan_only, bundle=self.pdf_bundle, artwork=self.imported
         )
-        dialog = Adw.AlertDialog(heading=conf.title, body=conf.body)
+        dialog = Adw.AlertDialog(heading=conf.title, body=conf.summary)
+        exp = Gtk.Expander(label="Details")
+        label = Gtk.Label(label=conf.details, wrap=True, xalign=0)
+        exp.set_child(label)
+        dialog.set_extra_child(exp)
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("cut", conf.confirm_label)
         dialog.set_response_appearance(

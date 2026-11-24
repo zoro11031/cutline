@@ -1475,11 +1475,13 @@ class Window(QMainWindow):
                     f"{display_job.device.name} · {len(display_job.paths)} paths · "
                     + ("Registration on" if display_job.registration else "Registration off")))
 
-    def confirm(self, title, prompt, *, confirm_label=None, destructive=False):
+    def confirm(self, title, prompt, *, confirm_label=None, destructive=False, details=None):
         if confirm_label:
             box = QMessageBox(self)
             box.setWindowTitle(title)
             box.setText(prompt)
+            if details:
+                box.setDetailedText(details)
             btn = box.addButton(
                 confirm_label,
                 QMessageBox.ButtonRole.DestructiveRole if destructive else QMessageBox.ButtonRole.AcceptRole,
@@ -2038,7 +2040,13 @@ class Window(QMainWindow):
         conf = confirmation.build_send_confirmation(
             plan, connection, scan_only=scan_only, bundle=self.bundle, artwork=self.artwork
         )
-        if self.confirm(conf.title, conf.body, confirm_label=conf.confirm_label, destructive=conf.destructive):
+        if self.confirm(
+            conf.title,
+            conf.summary,
+            confirm_label=conf.confirm_label,
+            destructive=conf.destructive,
+            details=conf.details,
+        ):
             self.start_send(plan, connection, scan_only=scan_only)
 
     def confirm_corner_test(self):

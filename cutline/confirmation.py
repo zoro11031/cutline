@@ -21,6 +21,22 @@ class SendConfirmation:
     destructive: bool
 
     @property
+    def summary(self) -> str:
+        blocks = [self.lead]
+        if self.warnings:
+            blocks.append("\n".join(f"⚠ {w}" for w in self.warnings))
+        return "\n\n".join(blocks)
+
+    @property
+    def details(self) -> str:
+        blocks = [self.verification]
+        if self.settings:
+            blocks.append("\n".join(self.settings))
+        if self.connection:
+            blocks.append(f"Connection: {self.connection}")
+        return "\n\n".join(blocks)
+
+    @property
     def body(self) -> str:
         blocks = [f"{self.lead}\n\n{self.verification}"]
         if self.warnings:
