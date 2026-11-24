@@ -47,9 +47,9 @@ jobs:
           pacman -Syu --noconfirm
           pacman -Qqn | pacman -S --noconfirm -
           pacman -S --noconfirm --needed licenses base-devel git rpm-tools zstd curl \
-            python python-gobject python-cairo python-pillow python-pyusb \
+            python pyside6 qt6-svg python-gobject python-cairo python-pillow python-pyusb \
             gtk4 libadwaita pango cairo geos libusb poppler librsvg \
-            squashfs-tools desktop-file-utils glib2
+            squashfs-tools desktop-file-utils glib2 ttf-dejavu
       - uses: actions/checkout@v7
       - name: Native packages (RPM, Arch, source)
         run: |
