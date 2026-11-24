@@ -17,6 +17,8 @@ from __future__ import annotations
 import argparse
 import contextlib
 import dataclasses
+from importlib import import_module
+import os
 import pathlib
 import sys
 
@@ -1022,22 +1024,27 @@ def cmd_gui(args):
 
 
 def launch_gui(frontend="auto", argv=None):
-    from importlib.util import find_spec
-
-    if frontend == "qt" or (frontend == "auto" and find_spec("PySide6") is not None):
+    frontends = {"qt": ".qt_gui", "gtk": ".gui"}
+    if frontend == "auto":
+        desktops = os.environ.get("XDG_CURRENT_DESKTOP", "").casefold().split(":")
+        order = ("gtk", "qt") if "gnome" in desktops else ("qt", "gtk")
+    else:
+        order = (frontend,)
+    failures = []
+    for choice in order:
         try:
-            from . import qt_gui
-        except ImportError as exc:
-            if frontend == "qt":
-                fail(f"The Qt frontend needs PySide6 with Qt Widgets. {exc}")
+            module = import_module(frontends[choice], __package__)
+        except (ImportError, ValueError) as exc:
+            # PyGObject raises ValueError when a requested typelib is missing.
+            failures.append(str(exc))
         else:
-            return qt_gui.main(argv)
-
-    try:
-        from . import gui
-    except ImportError as exc:
-        fail(f"Install PySide6 for the Qt frontend or GTK4 and libadwaita for the GTK frontend. {exc}")
-    return gui.main(argv)
+            return module.main(argv)
+    requirements = {
+        "qt": "The Qt frontend needs PySide6 with Qt Widgets.",
+        "gtk": "The GTK frontend needs GTK4 and libadwaita.",
+        "auto": "Install PySide6 for the Qt frontend or GTK4 and libadwaita for the GTK frontend.",
+    }
+    fail(" ".join([requirements[frontend], *failures]))
 
 
 # --------------------------------------------------------------------------
@@ -1180,7 +1187,7 @@ def main(argv=None):
 
     g = sub.add_parser("gui", help="open the window")
     g.add_argument("--frontend", choices=("auto", "qt", "gtk"), default="auto",
-                   help="auto prefers Qt when PySide6 is installed")
+                   help="auto prefers GTK on GNOME and Qt elsewhere")
     g.add_argument("argv", nargs="*")
     g.set_defaults(func=cmd_gui)
 

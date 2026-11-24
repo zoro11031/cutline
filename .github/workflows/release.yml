@@ -34,8 +34,7 @@ jobs:
         run: xvfb-run -a ./run-tests.sh
 
   linux:
-    # Arch is the build host the AppImage builder documents; it also has
-    # makepkg and rpmbuild for the native packages.
+    # Build the AppImage with Arch's Qt and GTK libraries.
     runs-on: ubuntu-24.04
     container: archlinux:latest
     steps:
@@ -46,17 +45,11 @@ jobs:
           sed -i '/^NoExtract/d' /etc/pacman.conf
           pacman -Syu --noconfirm
           pacman -Qqn | pacman -S --noconfirm -
-          pacman -S --noconfirm --needed licenses base-devel git rpm-tools zstd curl \
-            python python-gobject python-cairo python-pillow python-pyusb \
+          pacman -S --noconfirm --needed licenses git curl \
+            python pyside6 qt6-svg python-gobject python-cairo python-pillow python-pyusb \
             gtk4 libadwaita pango cairo geos libusb poppler librsvg \
-            squashfs-tools desktop-file-utils glib2
+            squashfs-tools desktop-file-utils glib2 ttf-dejavu
       - uses: actions/checkout@v7
-      - name: Native packages (RPM, Arch, source)
-        run: |
-          useradd -m builder
-          chown -R builder "$GITHUB_WORKSPACE"
-          su builder -c "cd '$GITHUB_WORKSPACE' && python3 packaging/build-native.py"
-          cp out/packages/aur/*.pkg.tar.zst out/packages/
       - name: AppImage
         run: |
           curl -fsSL -o runtime-x86_64 "$APPIMAGE_RUNTIME_URL"
@@ -73,12 +66,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: linux
-          path: |
-            out/packages/cutline-*.tar.gz
-            out/packages/cutline-*.noarch.rpm
-            out/packages/cutline-*.src.rpm
-            out/packages/cutline-*.pkg.tar.zst
-            out/packages/Cutline-*-x86_64.AppImage
+          path: out/packages/Cutline-*-x86_64.AppImage
 
   flatpak:
     runs-on: ubuntu-24.04

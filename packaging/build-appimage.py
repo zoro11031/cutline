@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Bundle the installed x86_64 Linux Python/GTK runtime into an AppImage.
+"""Bundle the installed x86_64 Linux Qt and GTK runtimes into an AppImage.
 
-Requires PyGObject, pycairo, Pillow, GTK4, libadwaita, Poppler, librsvg,
+Requires PySide6, Qt SVG, PyGObject, pycairo, Pillow, GTK4, libadwaita, Poppler, librsvg,
 mksquashfs and an official AppImage type2 runtime supplied with --runtime.
 Does not download or install anything.
 """
@@ -73,6 +73,9 @@ def main():
     if header[:4] != b'\x7fELF' or header[8:11] != b'AI\x02' or header[18:20] != b'\x3e\x00':
         parser.error('--runtime must be an x86_64 AppImage type2 runtime')
     import gi
+    from PySide6.QtCore import QLibraryInfo
+
+    qt_plugins = pathlib.Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath))
     repo = gi.Repository.get_default()
     repo.require('Gtk', '4.0', 0)
     repo.require('Adw', '1', 0)
@@ -113,6 +116,26 @@ def main():
             module = importlib.import_module(name)
             tree(pathlib.Path(module.__file__).parent, site / name,
                  shutil.ignore_patterns('__pycache__', '*.pyc'))
+        import PySide6
+        import shiboken6
+
+        # The editor uses Qt Core, Gui and Widgets. Leave the unrelated Qt
+        # bindings on the build host.
+        pyside_dir = pathlib.Path(PySide6.__file__).parent
+        for pattern in ('*.py', 'QtCore.*.so', 'QtGui.*.so', 'QtWidgets.*.so'):
+            for source in pyside_dir.glob(pattern):
+                copy(source, site / 'PySide6' / source.name)
+        tree(pathlib.Path(shiboken6.__file__).parent, site / 'shiboken6',
+             shutil.ignore_patterns('__pycache__', '*.pyc'))
+        # Include platform plugins for X11, Wayland and the offscreen check.
+        # Their shared-library dependencies are collected by the ELF scan below.
+        for plugin in ('platforms/libqxcb.so', 'platforms/libqwayland.so',
+                       'platforms/libqoffscreen.so', 'wayland-shell-integration/libxdg-shell.so',
+                       'wayland-decoration-client/libbradient.so',
+                       'imageformats/libqjpeg.so', 'imageformats/libqsvg.so',
+                       'iconengines/libqsvgicon.so'):
+            copy(qt_plugins / plugin, lib / 'qt6/plugins' / plugin)
+        (app / 'usr/bin/qt.conf').write_text('[Paths]\nPrefix=..\nPlugins=lib/qt6/plugins\n')
         # No pip or host installation: a verified pure-Python wheel can be
         # unpacked directly into this isolated runtime.
         if args.pyusb_wheel:
@@ -194,7 +217,10 @@ def main():
                 raise RuntimeError(dependencies)
             for match in re.finditer(r'(?:=>\s+|^\s*)(/\S+)', dependencies, re.M):
                 path = pathlib.Path(match[1])
-                copy(path, lib / path.name)
+                target = lib / path.name
+                # Qt's plugin RPATH can resolve a dependency already bundled.
+                if path.resolve() != target:
+                    copy(path, target)
             if binary in explicit_roots:
                 copy(binary, lib / binary.name)
         # Include provenance and licenses for the host-built runtime.

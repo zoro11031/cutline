@@ -1048,9 +1048,25 @@ class TestQtFrontend(unittest.TestCase):
 
     def test_qt_launcher_can_be_selected_explicitly_or_automatically(self):
         with mock.patch.object(qt_gui, "main", return_value=0) as launch:
-            self.assertEqual(cli.main(["gui", "--frontend", "qt"]), 0)
-            self.assertEqual(cli.main(["gui"]), 0)
+            with mock.patch.dict(os.environ, XDG_CURRENT_DESKTOP="ubuntu:GNOME"):
+                self.assertEqual(cli.main(["gui", "--frontend", "qt"]), 0)
+            with mock.patch.dict(os.environ, XDG_CURRENT_DESKTOP="KDE"):
+                self.assertEqual(cli.main(["gui"]), 0)
         self.assertEqual(launch.call_args_list, [mock.call([]), mock.call([])])
+
+    def test_launcher_prefers_gtk_on_gnome_and_falls_back_to_qt(self):
+        gtk = mock.Mock()
+        gtk.main.return_value = 0
+        with mock.patch.dict(os.environ, XDG_CURRENT_DESKTOP="ubuntu:GNOME"):
+            with mock.patch.object(cli, "import_module", return_value=gtk) as load:
+                self.assertEqual(cli.main(["gui"]), 0)
+            load.assert_called_once_with(".gui", "cutline")
+            gtk.main.assert_called_once_with([])
+            with mock.patch.object(cli, "import_module", side_effect=[ImportError, qt_gui]) as load:
+                with mock.patch.object(qt_gui, "main", return_value=0) as launch:
+                    self.assertEqual(cli.main(["gui"]), 0)
+                launch.assert_called_once_with([])
+            self.assertEqual(load.call_args_list, [mock.call(".gui", "cutline"), mock.call(".qt_gui", "cutline")])
 
     def test_preview_zoom_survives_settings_edits_and_fit_restores_the_view(self):
         window = self.window
