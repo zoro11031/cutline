@@ -715,7 +715,7 @@ class TestQtFrontend(unittest.TestCase):
         self.assertFalse(window.link.isVisible())
         self.assertEqual(window.link.currentData(), "bluetooth")
 
-    def test_sheet_failure_keeps_send_actions_visible_and_previous_paths_out_of_the_job(self):
+    def test_sheet_failure_offers_review_and_keeps_previous_paths_out_of_the_job(self):
         window = self.window
         window.show()
         rows = [dict(sheet=n, frontPage=n, svg=f"sheet-{n}.svg") for n in (1, 2)]
@@ -734,8 +734,9 @@ class TestQtFrontend(unittest.TestCase):
             self.assertEqual(window.sheet_result.text(), "Unreadable SVG")
             window.send_workspace.click()
             self.assertEqual(window.tabs.currentIndex(), window.tab("Send"))
-            self.assertTrue(window.send_button.isVisible())
+            self.assertFalse(window.send_button.isVisible())
             self.assertFalse(window.send_button.isEnabled())
+            self.assertTrue(window.review_button.isVisible())
             self.assertEqual(window.review_button.text(), "Review Sheet")
             window.review_button.click()
             window.sheet_page_number.setValue(1)
@@ -1108,6 +1109,8 @@ class TestQtFrontend(unittest.TestCase):
         first = window.preview.trial.sheet.extent()
         self.assertEqual(window.preview_title.text(), "Material test sheet")
         self.assertFalse(window.send_button.isVisible())
+        self.assertTrue(window.guide_send.isVisible())
+        self.assertIn("Spot 1 · Cut Settings A", window.footer_status.text())
         self.assertFalse(window.scan_button.isVisible())
         self.assertFalse(window.corner_button.isVisible())
         self.assertTrue(window.settings_box.isVisible())
@@ -1315,7 +1318,12 @@ class TestQtFrontend(unittest.TestCase):
 
         # Pending check
         window.pdf_check_state = sheet.RegistrationDecision.CHECKING
+        window.tabs.setCurrentIndex(window.tab("Send"))
         window.refresh_send()
+        self.assertTrue(window.send_button.isHidden())
+        self.assertFalse(window.review_button.isHidden())
+        self.assertFalse(window.measure_button.isEnabled())
+        self.assertEqual(window.measure_button.text(), "Checking PDF Marks…")
         self.assertEqual(window.review_tab(), "Sheet")
         self.assertFalse(window.send_button.isEnabled())
         self.assertFalse(window.corner_button.isEnabled())
@@ -1346,6 +1354,10 @@ class TestQtFrontend(unittest.TestCase):
         window.pdf_check_state = sheet.RegistrationDecision.PASSED
         window.refresh_send()
         self.assertEqual(window.review_tab(), "Send")
+        self.assertFalse(window.send_button.isHidden())
+        self.assertTrue(window.review_button.isHidden())
+        self.assertTrue(window.measure_button.isEnabled())
+        self.assertEqual(window.measure_button.text(), "Check PDF Marks")
         self.assertTrue(window.send_button.isEnabled())
         self.assertTrue(window.corner_button.isEnabled())
         self.assertTrue(window.scan_button.isEnabled())

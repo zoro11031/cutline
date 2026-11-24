@@ -180,7 +180,6 @@ class Window(QMainWindow):
         split.setStretchFactor(0, 1)
 
         footer_bar, footer = bar(setup)
-        self.footer = footer
         self.footer_status = styled_label(role="body")
         self.footer_status.setWordWrap(True)
         # The status gives way first: at compact widths it wraps and shrinks so
@@ -193,6 +192,7 @@ class Window(QMainWindow):
                                   icon=("media-playback-start", QStyle.StandardPixmap.SP_MediaPlay))
         self.send_button.setMinimumHeight(32)
         self.back_to_send = button("Exit Material Test", self.close_material_guide, role="secondary")
+        self.guide_send = button("Cut One Pass…", self.confirm_guide_pass, primary=True)
         self.pause_cut = button("Pause Cut", lambda: self.cut_control.toggle_pause(), role="secondary")
         self.cancel_cut = button("Cancel Cut", lambda: self.cut_control.cancel(), role="destructive")
         footer.addWidget(self.review_button)
@@ -200,6 +200,7 @@ class Window(QMainWindow):
         footer.addWidget(self.pause_cut)
         footer.addWidget(self.cancel_cut)
         footer.addWidget(self.back_to_send)
+        footer.addWidget(self.guide_send)
         content.addWidget(footer_bar)
 
         with self.editing():
@@ -356,7 +357,7 @@ class Window(QMainWindow):
     def sheet_page(self):
         page = Page()
         form = page.group("Printed sheet")
-        self.sheet_file = form.note("Open a print PDF or a matched Print & Cut ZIP.")
+        self.sheet_file = form.note("Open the PDF or ZIP you printed from.")
         self.close_print = button("Close File", self.close_printed_sheet)
         self.open_print_button = button("Open PDF or ZIP…", self.open_sheet)
         form.actions(self.open_print_button, self.close_print)
@@ -366,8 +367,8 @@ class Window(QMainWindow):
         self.bundle_print.hide()
         self.sheet_page_number = form.number("Page", 1, 1, 999, changed=self.change_sheet_page)
         self.sheet_page_label = form.labelForField(self.sheet_page_number)
-        self.measure_button = form.push("Measure Registration Marks", self.measure_sheet)
-        result = page.group("Registration results")
+        self.measure_button = form.push("Check PDF Marks", self.measure_sheet)
+        result = page.group("PDF registration check")
         self.sheet_result = result.note("Not measured")
         scan = page.group("Last cutter scan")
         self.scan_box = scan.parentWidget()
@@ -469,8 +470,7 @@ class Window(QMainWindow):
         self.corner_button = button("Corner Test Cut…", self.confirm_corner_test, role="secondary")
         self.scan_button.setToolTip("Scan the printed marks without cutting.")
         self.corner_button.setToolTip("Cut a single 3 mm square outside the artwork in a clear corner.")
-        self.footer.insertWidget(1, self.scan_button)
-        self.footer.insertWidget(2, self.corner_button)
+        registration.actions(self.scan_button, self.corner_button)
 
         self.send_advanced = advanced = normal.advanced()
         connection = advanced.group("Connection")
@@ -522,8 +522,7 @@ class Window(QMainWindow):
         self.guide_spot_selector.setToolTip("Or click a spot in the preview.")
         self.add_guide_slots(guide)
         self.guide_status = guide.note()
-        self.guide_send = button("Cut One Pass…", self.confirm_guide_pass, primary=True)
-        guide.addRow(AdaptiveActions((self.guide_slot_choice, self.guide_send)))
+        guide.addRow("Cut with", self.guide_slot_choice)
         self.guide_next = button("Next Spot", self.next_guide_spot)
         self.guide_next.setToolTip("Move to untouched stock.")
         self.guide_use = button("Use Tested Settings…", self.use_guide_settings)
@@ -1351,6 +1350,16 @@ class Window(QMainWindow):
             self.open_design()
         else:
             self.tabs.setCurrentIndex(self.tab(target))
+            if target == "Sheet":
+                action = self.measure_button
+                if self.bundle_row_error:
+                    action = self.sheet_page_number
+                elif self.bundle and self.artwork is None:
+                    action = self.bundle_export
+                if action.isEnabled():
+                    action.setFocus()
+            elif self.send_button.isEnabled():
+                self.send_button.setFocus()
 
     def send_refusal(self, plan, connection, *, scan_only=False):
         if self.busy:
@@ -1420,11 +1429,13 @@ class Window(QMainWindow):
         self.use_generated.setEnabled(can_reset)
         self.back_to_send.setText("Exit Material Test")
         self.back_to_send.setVisible(self.tuning)
+        self.guide_send.setVisible(self.tuning and index == self.tab("Send"))
         self.review_button.setVisible(not self.tuning and (target == "Design" or index != self.tab(target)))
         control = self.cut_control
-        at_send = not self.tuning and index == self.tab("Send") and control is None
-        for button in (self.send_button, self.scan_button, self.corner_button):
-            button.setVisible(at_send)
+        at_send = not self.tuning and target == "Send" and control is None
+        self.send_button.setVisible(at_send and index == self.tab("Send"))
+        self.scan_button.setVisible(not self.tuning and bool(self.job and self.job.registration_steps()))
+        self.corner_button.setVisible(not self.tuning)
         for button in (self.pause_cut, self.cancel_cut):
             button.setVisible(control is not None)
         if control is not None:
@@ -1566,8 +1577,10 @@ class Window(QMainWindow):
         editable = self.active_job is None and not self.busy
         self.close_print.setEnabled(editable and loaded)
         self.close_print.setToolTip("Close the open PDF." if loaded else "No print file open.")
+        checking = self.pdf_check_state == sheet.RegistrationDecision.CHECKING
         can_measure = editable and loaded and self.bundle_row_error is None
-        self.measure_button.setEnabled(can_measure)
+        self.measure_button.setEnabled(can_measure and not checking)
+        self.measure_button.setText("Checking PDF Marks…" if checking else "Check PDF Marks")
         self.measure_button.setToolTip(
             "Measure printed registration marks on the open PDF."
             if can_measure
@@ -1702,7 +1715,7 @@ class Window(QMainWindow):
         self.invalidate_measurement(clear_image=True)
         self.pdf_check_state = sheet.RegistrationDecision.CHECKING
         token = self.sheet_token = object()
-        self.sheet_result.setText("Measuring…")
+        self.sheet_result.setText("Checking PDF marks…")
         self.refresh_send()
         row = self.current_bundle_row()
         marks = matched.marks() if matched else current.marks
@@ -1725,14 +1738,15 @@ class Window(QMainWindow):
                 return
             if error:
                 self.pdf_check_state = sheet.RegistrationDecision.ERROR
-                self.sheet_result.setText(f"Could not measure the sheet. {error}")
+                self.sheet_result.setText(f"Could not check PDF marks. {error}")
             else:
                 report, issues, png = value
                 self.report = report
                 self.bundle_checked = bool(matched) and not issues
                 self.pdf_check_state = (sheet.RegistrationDecision.FAILED if issues
                                         else sheet.RegistrationDecision.PASSED)
-                details = [report.diagnosis()]
+                details = (["PDF marks need attention", report.diagnosis()] if issues
+                           else ["PDF marks match the template"])
                 if report.preview_rotation in (90, 270):
                     details.append("Load the printed sheet face-up in the orientation shown in the preview.")
                 self.sheet_result.setText("\n".join([*details, *(mark.describe() for mark in report.marks), *issues]))
@@ -1998,7 +2012,7 @@ class Window(QMainWindow):
     def _status_failure(error):
         if isinstance(error, transport.NotFound):
             return cutters.NOT_DETECTED_TEXT
-        return f"Cutter detection unavailable. {error}"
+        return f"Could not read cutter status. {error}"
 
     def check_device(self, pending="Reading cutter status…"):
         connection = self.connection()
@@ -2060,7 +2074,7 @@ class Window(QMainWindow):
         except ValueError as error:
             self.message(str(error))
             return
-        if self.confirm("Corner Test Cut?", sample.describe()):
+        if self.confirm("Cut a corner test?", sample.describe(), confirm_label="Cut Corner Test", destructive=True):
             self.start_send(plan, connection, corner=sample)
 
     def start_send(self, plan, connection, *, scan_only=False, corner=None):
@@ -2191,7 +2205,12 @@ class Window(QMainWindow):
         # Inside the test, Cut Settings needs no way back into it.
         self.material_guide.setVisible(not self.tuning)
         if self.tuning:
-            self.footer_status.setText(state.sheet_status)
+            status = f"Spot {state.spot} · Cut Settings {self.guide_slot} · {state.sheet_status}"
+            if self.busy:
+                status = "Waiting for the cutter to finish…"
+            elif not connected:
+                status = "Exit Material Test and select a cutter."
+            self.footer_status.setText(status)
         status = state.summary(differ)
         if self.busy:
             status += "\nWaiting for the cutter to finish…"

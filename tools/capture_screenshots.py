@@ -6,7 +6,6 @@ pictures do not depend on this machine's presets and no cutter is opened.
 """
 
 import dataclasses
-import io
 import os
 import pathlib
 import subprocess
@@ -24,7 +23,7 @@ sys.path.insert(0, str(ROOT))
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from cutline import design_text, editor_model, graphtec, qt_gui, sheet, template, transport  # noqa: E402
+from cutline import cutters, design_text, editor_model, graphtec, qt_gui, template, transport  # noqa: E402
 
 SCREENSHOTS_DIR = ROOT / "screenshots"
 SIZE = (1280, 800)
@@ -33,8 +32,7 @@ SIZE = (1280, 800)
 def _window():
     window = qt_gui.Window()
     window.resize(*SIZE)
-    with mock.patch.object(window, "detect_tools"):
-        window.refresh_usb()
+    window.refresh_usb()
     window.show()
     QApplication.processEvents()
     if window.job is None:
@@ -68,7 +66,12 @@ def capture_all():
     SCREENSHOTS_DIR.mkdir(exist_ok=True)
     app = QApplication.instance() or QApplication([])
     device = graphtec.device_by_name("Silhouette Cameo 4")
+    def simulated_status(window, *_args, **_kwargs):
+        window.set_cutter_status("Cutter status not checked.")
+
     with mock.patch.object(transport, "usb_endpoints", return_value=[(device, "", (1, 2))]), \
+            mock.patch.object(cutters, "wireless_choices", return_value={}), \
+            mock.patch.object(qt_gui.Window, "check_device", simulated_status), \
             mock.patch.object(transport, "open_transport", side_effect=transport.NotFound("screenshot")):
         # 1. Design, with a sheet of gift tags and the Text Style panel open.
         win = _window()
@@ -106,12 +109,11 @@ def capture_all():
             svg = template.write_svg(None, job.grid, job.paths, mk=job.marks, proof=True)
             proof_svg.write_text(svg.replace('<g id="cut"', f'<g id="artwork">{art}</g><g id="cut"'))
             subprocess.run(["rsvg-convert", "-f", "pdf", "-o", str(pdf_path), str(proof_svg)], check=True)
-            image = sheet.render(pdf_path, dpi=150, colour=True)
-            report = sheet.measure(pdf_path, job.marks, dpi=150, image=image)
-            buffer = io.BytesIO()
-            image.save(buffer, format="PNG")
+            win.pdf = pdf_path
+            win.sheet_file.setText(pdf_path.name)
+            with mock.patch.object(win.tasks, "run", side_effect=lambda work, done: done(work(), None)):
+                win.measure_sheet()
             win.tabs.setCurrentIndex(win.tab("Sheet"))
-            win.preview.show_pdf(buffer.getvalue(), (job.grid.sheet_w_mm, job.grid.sheet_h_mm), report)
             _save(app, win, "sheet-alignment.png")
 
         # 4. Dial In a Material.

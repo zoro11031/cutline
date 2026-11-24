@@ -39,7 +39,7 @@ CONTROL_HELP = {
 SETUP_STEPS = (
     "1. Open or draw: Open a template, import a print bundle, or draw in Design.\n\n"
     "2. Choose material: In Send → Cut Job, connect your cutter and select a material.\n\n"
-    "3. Test & cut: Run Test Registration for printed sheets, then click Send to Cutter."
+    "3. Test & cut: For printed sheets, choose Test Registration under Registration in Cut Job. Then choose Send to Cutter."
 )
 
 # Adapted from the Silhouette Card Maker cutting guide and troubleshooting pages:
@@ -57,7 +57,7 @@ CUT_PROBLEMS = {
         "1. Print at Actual size (100%) and align paper edges to the preview.\n"
         "2. If nearby dark artwork confuses the sensor, mask it with a light sticky note.\n"
         "3. Reduce glare with diffuse light, or close the cutter lid.\n"
-        "4. On the Sheet tab, run Measure Registration Marks, then Test Registration.\n"
+        "4. In Sheet, choose Check PDF Marks. Then choose Test Registration in Cut Job.\n"
         + TRACK_OFF, OPEN_SHEET),
     "Registration fails on foil or glossy stock": (
         "1. Reduce glare: close the lid or use indirect light.\n"

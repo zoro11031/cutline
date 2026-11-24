@@ -614,8 +614,9 @@ class TestDesignWorkspace(unittest.TestCase):
             self.assertEqual(win.sheet_result.get_subtitle(), "Unreadable SVG")
             win.send_workspace.emit("clicked")
             self.assertEqual(win.stack.get_visible_child_name(), "cut")
-            self.assertTrue(win.cut_button.get_visible())
+            self.assertFalse(win.cut_button.get_visible())
             self.assertFalse(win.cut_button.get_sensitive())
+            self.assertTrue(win.review_send.get_visible())
             win.review_send.emit("clicked")
             win.r_sheet_page.set_value(1)
             self.assertIs(win.imported, drawing)
@@ -728,6 +729,8 @@ class TestDesignWorkspace(unittest.TestCase):
         first = win.preview.trial.sheet.extent()
         self.assertEqual(win.preview_title.get_text(), 'Material test sheet')
         self.assertFalse(win.cut_button.get_visible())
+        self.assertTrue(win.guide_send.get_visible())
+        self.assertIn('Spot 1 · Cut Settings A', win.send_status.get_label())
         self.assertFalse(win.scan_button.get_visible())
         self.assertFalse(win.corner_button.get_visible())
         self.assertTrue(win.cut_settings.get_visible())
@@ -1499,7 +1502,12 @@ class TestDesignWorkspace(unittest.TestCase):
 
         # Pending check
         win.pdf_check_state = sheet.RegistrationDecision.CHECKING
+        win.stack.set_visible_child_name("cut")
         win.update_send_actions()
+        self.assertFalse(win.cut_button.get_visible())
+        self.assertTrue(win.review_send.get_visible())
+        self.assertFalse(win.measure_button.get_sensitive())
+        self.assertEqual(win.measure_button.get_label(), "Checking PDF Marks…")
         self.assertEqual(win.send_review_destination(), ("sheet", "Review Sheet"))
         self.assertFalse(win.cut_button.get_sensitive())
         self.assertFalse(win.corner_button.get_sensitive())
@@ -1540,6 +1548,10 @@ class TestDesignWorkspace(unittest.TestCase):
         win.pdf_check_state = sheet.RegistrationDecision.PASSED
         win.update_send_actions()
         self.assertEqual(win.send_review_destination(), ("cut", "Review Cut Job"))
+        self.assertTrue(win.cut_button.get_visible())
+        self.assertFalse(win.review_send.get_visible())
+        self.assertTrue(win.measure_button.get_sensitive())
+        self.assertEqual(win.measure_button.get_label(), "Check PDF Marks")
         self.assertTrue(win.cut_button.get_sensitive())
         self.assertTrue(win.corner_button.get_sensitive())
         self.assertTrue(win.scan_button.get_sensitive())

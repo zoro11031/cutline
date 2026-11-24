@@ -813,9 +813,9 @@ class Window(Adw.ApplicationWindow):
         self.pause_cut.add_css_class("flat")
         self.pause_cut.connect("clicked", lambda *_: self.cut_control.toggle_pause())
         bar.pack_end(self.pause_cut)
-        bar.pack_end(self.corner_button)
-        bar.pack_end(self.scan_button)
-        # Secondary, as in Qt: Cut One Pass is the test's one primary action.
+        self.guide_send = Gtk.Button(label="Cut One Pass…", css_classes=["suggested-action"])
+        self.guide_send.connect("clicked", self.on_guide_pass)
+        bar.pack_end(self.guide_send)
         self.back_to_send = Gtk.Button(label="Exit Material Test")
         self.back_to_send.connect("clicked", self.close_material_guide)
         bar.pack_end(self.back_to_send)
@@ -842,6 +842,16 @@ class Window(Adw.ApplicationWindow):
             self.on_edit_template()
         else:
             self.stack.set_visible_child_name(destination)
+            if destination == "sheet":
+                action = self.measure_button
+                if self.bundle_row_error:
+                    action = self.r_sheet_page
+                elif self.pdf_bundle and self.imported is None:
+                    action = self.save_paired_cut
+                if action.get_sensitive():
+                    action.grab_focus()
+            elif self.cut_button.get_sensitive():
+                self.cut_button.grab_focus()
 
     def open_send_workspace(self, *_args):
         """The Send workspace toggle. An open material test stays open:
@@ -865,8 +875,7 @@ class Window(Adw.ApplicationWindow):
         self.open_artwork_action.set_enabled(editable)
         self.open_print_action.set_enabled(editable)
         self.close_print_action.set_enabled(editable and self.pdf_path is not None)
-        self.close_print.set_sensitive(editable and self.pdf_path is not None)
-        self.measure_button.set_sensitive(editable and self.pdf_path is not None and self.bundle_row_error is None)
+        self.update_sheet_controls()
         self.paired_cut_action.set_enabled(self.pdf_bundle is not None)
         can_reset_layout = self.imported is not None or self.pdf_bundle is not None
         self.reset_layout_action.set_enabled(editable and can_reset_layout)
@@ -877,9 +886,12 @@ class Window(Adw.ApplicationWindow):
             else "Already using the generated layout."
         )
         self.review_send.set_visible(not self.tuning and page != destination)
-        at_send = not self.tuning and page == "cut" and self.cut_control is None
-        for control in (self.cut_button, self.scan_button, self.corner_button):
-            control.set_visible(at_send)
+        at_send = not self.tuning and destination == page == "cut" and self.cut_control is None
+        self.cut_button.set_visible(at_send)
+        show_scan_test = not self.tuning and bool(self.job and self.job.registration_steps())
+        self.registration_test.set_visible(show_scan_test)
+        self.scan_button.set_visible(show_scan_test)
+        self.corner_button.set_visible(not self.tuning)
         control = self.cut_control
         for button in (self.pause_cut, self.cancel_cut):
             button.set_visible(control is not None)
@@ -924,6 +936,7 @@ class Window(Adw.ApplicationWindow):
             self.send_advanced.set_visible(True)
             self.guide_view.set_visible(False)
         self.back_to_send.set_visible(self.tuning)
+        self.guide_send.set_visible(self.tuning and page == "cut")
         self.material_guide.set_label("Resume Material Test" if self.guide.has_tests else "Dial In a Material…")
         self.material_guide.set_visible(not self.tuning)
         job = self.job
@@ -1242,7 +1255,7 @@ class Window(Adw.ApplicationWindow):
 
     def _page_sheet(self):
         page = ControlPage()
-        g = Adw.PreferencesGroup(title="Printed sheet", description="Open your print file and check its marks.")
+        g = Adw.PreferencesGroup(title="Printed sheet", description="Check the PDF’s registration marks against your layout.")
         self.sheet_row = Adw.ActionRow(title="No print file open",
                                        subtitle="Open the PDF or ZIP you printed from.")
         self.sheet_row.set_subtitle_lines(0)
@@ -1257,11 +1270,12 @@ class Window(Adw.ApplicationWindow):
         file_actions.append(self.close_print)
         g.add(Adw.PreferencesRow(child=file_actions, activatable=False, selectable=False))
         save_actions = Gtk.Box(spacing=6, margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
-        for label, callback in (("Save Print PDF…", self.on_save_bundle_print),
-                                ("Save Paired Cut File…", self.on_save_bundle_file)):
-            save = Gtk.Button(label=label)
-            save.connect("clicked", callback)
-            save_actions.append(save)
+        save_print = Gtk.Button(label="Save Print PDF…")
+        save_print.connect("clicked", self.on_save_bundle_print)
+        self.save_paired_cut = Gtk.Button(label="Save Paired Cut File…")
+        self.save_paired_cut.connect("clicked", self.on_save_bundle_file)
+        save_actions.append(save_print)
+        save_actions.append(self.save_paired_cut)
         self.bundle_export = Adw.PreferencesRow(child=save_actions, activatable=False, selectable=False)
         self.bundle_export.set_visible(False)
         g.add(self.bundle_export)
@@ -1273,9 +1287,9 @@ class Window(Adw.ApplicationWindow):
         self.r_sheet_dpi.connect('notify::selected', self.on_pdf_page_changed)
 
         remeasure = Adw.ActionRow(
-            title="Measure again",
-            subtitle="After changing the layout or the mark settings")
-        self.measure_button = Gtk.Button(label="Measure", valign=Gtk.Align.CENTER)
+            title="Registration marks",
+            subtitle="Check again after changing the layout or marks.")
+        self.measure_button = Gtk.Button(label="Check PDF Marks", valign=Gtk.Align.CENTER)
         self.measure_button.connect("clicked", lambda *_: self.measure_sheet())
         remeasure.add_suffix(self.measure_button)
         g.add(remeasure)
@@ -1365,6 +1379,13 @@ class Window(Adw.ApplicationWindow):
         self.corner_button = Gtk.Button(label="Corner Test Cut…", valign=Gtk.Align.CENTER)
         self.corner_button.set_tooltip_text("Cut one 3 mm square in a clear corner.")
         self.corner_button.connect("clicked", lambda *_: self.on_cut(corner=True))
+        registration_test = Adw.ActionRow(title="Registration scan")
+        registration_test.add_suffix(self.scan_button)
+        g.add(registration_test)
+        self.registration_test = registration_test
+        corner_test_row = Adw.ActionRow(title="Small test cut")
+        corner_test_row.add_suffix(self.corner_button)
+        g.add(corner_test_row)
         self.r_register.connect("notify::active", self.on_changed)
         self.r_auto.connect("notify::active", self.on_changed)
 
@@ -1464,9 +1485,7 @@ class Window(Adw.ApplicationWindow):
         self.guide_slot_choice.set_tooltip_text("Which cut settings the next pass uses.")
         self.guide_slot_choice.connect("notify::selected", lambda *_: self.use_guide_slot())
         guide.add(self.guide_slot_choice)
-        self.guide_send, self.guide_next = self.guide_buttons(
-            guide, ("Cut One Pass…", self.on_guide_pass), ("Next Spot", self.on_guide_next))
-        self.guide_send.add_css_class("suggested-action")
+        self.guide_next = self.guide_button(guide, "Next Spot", self.on_guide_next)
         self.guide_use, self.guide_apply = self.guide_buttons(
             guide, ("Use Tested Settings…", self.on_guide_use), ("Use Starting Settings", self.on_guide_start))
         self.guide_view.append(guide)
@@ -2553,10 +2572,13 @@ class Window(Adw.ApplicationWindow):
 
     def update_sheet_controls(self):
         loaded = self.pdf_path is not None
-        self.close_print.set_sensitive(loaded)
+        editable = not (self._job_locked or self._sending)
+        self.close_print.set_sensitive(editable and loaded)
         self.close_print.set_tooltip_text("Close the open PDF." if loaded else "No print file open.")
-        can_measure = loaded and self.bundle_row_error is None
-        self.measure_button.set_sensitive(can_measure)
+        checking = self.pdf_check_state == sheet_mod.RegistrationDecision.CHECKING
+        can_measure = editable and loaded and self.bundle_row_error is None
+        self.measure_button.set_sensitive(can_measure and not checking)
+        self.measure_button.set_label("Checking PDF Marks…" if checking else "Check PDF Marks")
         self.measure_button.set_tooltip_text(
             "Measure printed registration marks on the open PDF."
             if can_measure
@@ -2604,6 +2626,7 @@ class Window(Adw.ApplicationWindow):
             artwork = None
         self.describe_bundle_sheet(row)
         self.bundle_checked = False
+        self.pdf_check_state = sheet_mod.RegistrationDecision.NONE
         self._sheet_token = self.sheet_report = None
         self.preview.set_sheet(None)
         self.preview.set_pdf()
@@ -2746,14 +2769,13 @@ class Window(Adw.ApplicationWindow):
             self.toast("Load a PDF and fix the layout first.")
             return
         self.scan_result.set_visible(False)
-        self.sheet_result.set_title("Measuring...")
+        self.sheet_result.set_title("Checking PDF marks…")
         self.sheet_result.set_subtitle("")
         marks = matched.marks() if matched else self.job.marks
         page = int(self.r_sheet_page.get_value())
         if matched:
             row = matched.rows[page-1]
             self.bundle_checked = False
-            self.update_send_actions()
         dpi = int(self._text(self.r_sheet_dpi))
         orient_scm = layout_presets.is_published(self.imported)
         token = self._sheet_token = object()
@@ -2762,6 +2784,7 @@ class Window(Adw.ApplicationWindow):
         self.checked_scm_orientation = orient_scm
         self.sheet_report = None
         self.preview.set_sheet(None)
+        self.update_send_actions()
 
         def work():
             from . import sheet as sheet_mod
@@ -2788,7 +2811,7 @@ class Window(Adw.ApplicationWindow):
         self.checked_marks = None
         self.preview.set_sheet(None)
         self.preview.set_pdf()
-        self.sheet_result.set_title("Could not measure")
+        self.sheet_result.set_title("Could not check PDF marks")
         self.sheet_result.set_subtitle(message)
         self.rebuild()
 
@@ -2804,14 +2827,12 @@ class Window(Adw.ApplicationWindow):
         lines = [m.describe() for m in report.marks]
         if getattr(report, 'preview_rotation', 0) in (90, 270):
             lines.insert(0, 'Load the printed sheet face-up in the orientation shown in the preview.')
-        lines.append("")
-        lines.append(report.diagnosis())
-        for pr in problems:
-            lines.append(f"PROBLEM: {pr}")
+        if problems:
+            lines.extend(("", report.diagnosis(), *problems))
         p_unit = "problem" if len(problems) == 1 else "problems"
         self.sheet_result.set_title(
-            "Sheet matches the template" if not problems
-            else f"{len(problems)} {p_unit}")
+            "PDF marks match the template" if not problems
+            else f"PDF marks need attention · {len(problems)} {p_unit}")
         self.sheet_result.set_subtitle("\n".join(lines))
         self.rebuild()
 
@@ -3022,8 +3043,14 @@ class Window(Adw.ApplicationWindow):
         self.guide_registration.set_sensitive(not busy and not (state.spots or state.sheet_exported))
         self.guide_marked_sheet.set_sensitive(not busy and state.registered)
         if self.tuning:
-            self.send_status.set_label(state.sheet_status)
-            self.send_status.set_tooltip_text(state.sheet_status)
+            status = f"Spot {state.spot} · Cut Settings {self.guide_slot} · {state.sheet_status}"
+            if busy:
+                status = "Waiting for the cutter to finish…"
+            elif not connected:
+                status = "Exit Material Test and select a cutter."
+            self.send_status.set_label(status)
+            self.send_status.set_tooltip_text(status)
+            self.send_status.remove_css_class("warning")
         label = state.pass_label(self.options())
         self.guide_send.set_label(label)
         differ = state.completed > 0 and state.settings_differ(self.options())
@@ -3669,7 +3696,7 @@ class Window(Adw.ApplicationWindow):
             except transport.NotFound:
                 text = cutters.NOT_DETECTED_TEXT
             except Exception as exc:
-                text = f"Tool detection unavailable · {exc}"
+                text = f"Could not read cutter status. {exc}"
             GLib.idle_add(done, text, device, codes)
 
         threading.Thread(target=work, daemon=True).start()
@@ -3715,9 +3742,9 @@ class Window(Adw.ApplicationWindow):
             except ValueError as error:
                 self.toast(str(error))
                 return
-            dialog = Adw.AlertDialog(heading="Corner Test Cut?", body=sample.describe())
+            dialog = Adw.AlertDialog(heading="Cut a corner test?", body=sample.describe())
             dialog.add_response("cancel", "Cancel")
-            dialog.add_response("cut", "Cut")
+            dialog.add_response("cut", "Cut Corner Test")
             dialog.set_response_appearance("cut", Adw.ResponseAppearance.DESTRUCTIVE)
             dialog.set_default_response("cancel")
             dialog.set_close_response("cancel")

@@ -57,8 +57,8 @@ Cutline then shows up in your application menu. Plug the cutter in after the
 4. Load the mat and choose **Send to Cutter**.
 
 For Print & Cut, print the sheet at **100% / Actual size**, load it face-up
-in the top-left corner of the mat, and choose **Test Registration** before
-the real cut.
+in the top-left corner of the mat, and choose **Test Registration** under
+**Registration** in **Cut Job** before the real cut.
 
 ![Checking a printed sheet's registration marks](screenshots/sheet-alignment.png)
 
