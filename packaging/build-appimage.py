@@ -217,7 +217,10 @@ def main():
                 raise RuntimeError(dependencies)
             for match in re.finditer(r'(?:=>\s+|^\s*)(/\S+)', dependencies, re.M):
                 path = pathlib.Path(match[1])
-                copy(path, lib / path.name)
+                target = lib / path.name
+                # Qt's plugin RPATH can resolve a dependency already bundled.
+                if path.resolve() != target:
+                    copy(path, target)
             if binary in explicit_roots:
                 copy(binary, lib / binary.name)
         # Include provenance and licenses for the host-built runtime.

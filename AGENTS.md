@@ -276,7 +276,7 @@ the branch. Release work goes on `release/vX.Y.Z`.
 | Job | What it produces |
 |---|---|
 | `tests` | The full suite on Arch, with Qt offscreen and GTK under Xvfb. |
-| `linux` | RPM, Arch package and source tarball, then the AppImage (pinned type2 runtime), its payload smoke test and a dry-run cut. Runs in an Arch container. |
+| `linux` | The AppImage (pinned type2 runtime), its payload smoke test and a dry-run cut. Runs in an Arch container. |
 | `flatpak` | The Flatpak on the GNOME 50 SDK, with a dry-run cut. |
 | `windows-build` | The Windows installer, built on Linux with NSIS. |
 | `windows-check` | Installs it on a Windows runner and runs a dry-run cut. |

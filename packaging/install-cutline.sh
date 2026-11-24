@@ -5,7 +5,7 @@ here=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 id=io.github.zoro11031.Cutline
 data=${XDG_DATA_HOME:-"$HOME/.local/share"}
 bin="$HOME/.local/bin"
-version=0.2.3
+version=0.2.4
 
 case ${1:-} in
     --flatpak)

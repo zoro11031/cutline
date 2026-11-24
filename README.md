@@ -18,8 +18,8 @@ own projects. It's a hobby project, and I'm sharing it so others can use it too.
 
 ## Getting started
 
-The downloads include an AppImage, a Flatpak, Fedora and Arch packages, and an
-experimental Windows installer. [GitHub Releases](https://github.com/zoro11031/cutline/releases)
+Download the AppImage, Flatpak, or experimental Windows installer.
+[GitHub Releases](https://github.com/zoro11031/cutline/releases)
 
 If Cutline can't access your cutter over USB on Linux, run this once and
 reconnect the cutter:
