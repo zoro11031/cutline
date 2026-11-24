@@ -6,7 +6,7 @@ own projects. It's a hobby project, and I'm sharing it so others can use it too.
 
 ![A proxy sheet ready to cut](screenshots/send-workspace.png)
 
-## What you can make
+## What you can do
 
 - Lay out eight proxies on a Letter or A4 sheet and cut them after printing.
 - Make stickers, gift tags, or other designs with your own artwork, shapes, and
@@ -15,6 +15,24 @@ own projects. It's a hobby project, and I'm sharing it so others can use it too.
   files.
 
 ![Gift tags in the Design workspace](screenshots/design-workspace.png)
+
+## Cut settings
+
+### Dial In a Material
+
+- Pick a test shape and size, then try one pass at a time.
+- See which settings you used for each pass at each test spot, and save the
+  settings that work.
+
+![Dial In a Material with a test spot selected](screenshots/material-guide.png)
+
+### Lighter first passes
+
+- Start with gentler passes and finish at your regular cut settings.
+- Choose how many passes run lighter, with separate force and speed settings
+  for those passes.
+
+![Lighter first passes in Cut Settings](screenshots/lighter-first-passes.png)
 
 ## Getting started
 
@@ -30,8 +48,7 @@ sh install-cutline.sh --udev
 
 Open Cutline, create or open a design, then switch to **Send** and pick your
 material. For Print & Cut, print at **Actual size (100%)** and choose
-**Test Registration** before cutting. Use **Dial In a Material** to try a
-small cut on a scrap.
+**Test Registration** before cutting.
 
 ## Cutter support
 

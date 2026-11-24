@@ -124,6 +124,13 @@ def capture_all():
             scroll.verticalScrollBar().setValue(win.guide_box.y() - 12)
         _save(app, win, "material-guide.png")
 
+        # 5. Lighter first passes, shown in the Cut Settings panel.
+        win = _window()
+        win.tabs.setCurrentIndex(win.tab("Send"))
+        win.stage_toggle.setChecked(True)
+        win.blade["light_force"].setValue(15)
+        _save(app, win.staged_form.parentWidget(), "lighter-first-passes.png")
+
 
 if __name__ == "__main__":
     capture_all()
