@@ -21,14 +21,11 @@ own projects. It's a hobby project, and I'm sharing it so others can use it too.
 The downloads include an AppImage, a Flatpak, Fedora and Arch packages, and an
 experimental Windows installer. [GitHub Releases](https://github.com/zoro11031/cutline/releases)
 
-Put `install-cutline.sh` next to the AppImage or Flatpak. The script installs
-the AppImage and adds it to your app menu, or sets up Flathub and installs the
-Flatpak. If Cutline needs permission to use the cutter over USB, run the
-`--udev` command once and reconnect the cutter.
+If Cutline can't access your cutter over USB on Linux, run this once and
+reconnect the cutter:
 
 ```sh
-sh install-cutline.sh --appimage    # or --flatpak
-sh install-cutline.sh --udev        # once for USB access on Linux
+sh install-cutline.sh --udev
 ```
 
 Open Cutline, create or open a design, then switch to **Send** and pick your
