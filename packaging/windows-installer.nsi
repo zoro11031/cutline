@@ -1,17 +1,21 @@
 Unicode true
 RequestExecutionLevel user
-SetCompressor /SOLID zlib
+SetCompressor /SOLID lzma
+AllowSkipFiles off
 
 !include "MUI2.nsh"
 !include "x64.nsh"
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
+!include "Sections.nsh"
 
 !define APP_NAME "Cutline"
 !define APP_PUBLISHER "Cutline contributors"
 !define APP_URL "https://github.com/zoro11031/cutline"
 !define APP_DESCRIPTION "Design, print and cut with Silhouette cutters"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}"
+
+Var StageCreated
 
 Name "${APP_NAME}"
 OutFile "${INSTALLER}"
@@ -44,6 +48,7 @@ VIAddVersionKey "LegalCopyright" "${APP_PUBLISHER}"
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_LICENSE "${LICENSE_FILE}"
 !insertmacro MUI_PAGE_COMPONENTS
+!define MUI_PAGE_CUSTOMFUNCTION_PRE KeepExistingInstallDir
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE VerifyInstallDir
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
@@ -78,12 +83,58 @@ Section "Cutline (required)" SecCore
   Call CheckInstallDirWritable
   !insertmacro CHECK_APP_NOT_RUNNING install
 
-  ; Replace any earlier installation's files completely.
-  RMDir /r "$INSTDIR\app"
-  SetOutPath "$INSTDIR\app"
+  ; Keep the installed copy until extraction completes.
+  IfFileExists "$INSTDIR\app.previous\launcher.py" 0 previous_ready
+  IfFileExists "$INSTDIR\app\launcher.py" previous_ready
+  ClearErrors
+  Rename "$INSTDIR\app.previous" "$INSTDIR\app"
+  IfErrors replace_failed
+  previous_ready:
+  IfFileExists "$INSTDIR\app.new\*" 0 start_stage
+  IfFileExists "$INSTDIR\app.new\.cutline-stage" 0 replace_failed
+  RMDir /r "$INSTDIR\app.new"
+  start_stage:
+  SetOutPath "$INSTDIR\app.new"
+  ClearErrors
+  FileOpen $1 "$INSTDIR\app.new\.cutline-stage" w
+  IfErrors replace_failed
+  FileClose $1
+  StrCpy $StageCreated 1
+  ClearErrors
   File /r "${PAYLOAD}/*"
-
+  IfErrors replace_failed
+  SetOutPath "$INSTDIR"
+  !insertmacro CHECK_APP_NOT_RUNNING replace
+  IfFileExists "$INSTDIR\app.previous\*" 0 move_installed
+  IfFileExists "$INSTDIR\app.previous\launcher.py" 0 replace_failed
+  RMDir /r "$INSTDIR\app.previous"
+  move_installed:
+  ClearErrors
+  IfFileExists "$INSTDIR\app\launcher.py" 0 install_staged
+  Rename "$INSTDIR\app" "$INSTDIR\app.previous"
+  IfErrors replace_failed
+  install_staged:
+  ClearErrors
+  Rename "$INSTDIR\app.new" "$INSTDIR\app"
+  IfErrors restore_previous
+  ClearErrors
   WriteUninstaller "$INSTDIR\Uninstall.exe"
+  IfErrors undo_install
+  Delete "$INSTDIR\app\.cutline-stage"
+  RMDir /r "$INSTDIR\app.previous"
+  Goto install_registered
+  undo_install:
+  Rename "$INSTDIR\app" "$INSTDIR\app.new"
+  restore_previous:
+  IfFileExists "$INSTDIR\app.previous\launcher.py" 0 replace_failed
+  Rename "$INSTDIR\app.previous" "$INSTDIR\app"
+  replace_failed:
+  SetOutPath "$TEMP"
+  StrCmp $StageCreated 1 0 +2
+  RMDir /r "$INSTDIR\app.new"
+  SetErrorLevel 1
+  Abort "Could not replace the Cutline app files. Close Cutline and run Setup again."
+  install_registered:
 
   ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "${APP_NAME}"
@@ -198,6 +249,12 @@ Function CheckInstallDirWritable
   Delete "$1"
 FunctionEnd
 
+Function KeepExistingInstallDir
+  IfFileExists "$INSTDIR\app\launcher.py" 0 choose_directory
+  Abort
+  choose_directory:
+FunctionEnd
+
 Function VerifyInstallDir
   Call CheckInstallDirWritable
 
@@ -228,6 +285,28 @@ Function .onInit
   ${EndIf}
   SetShellVarContext current
   SetRegView 64
+  ; Older Setup wrote InstallLocation after switching registry views.
+  ; Resolve that view explicitly before opening the directory page.
+  IfFileExists "$INSTDIR\app\launcher.py" shortcuts_init
+  StrCmp "$INSTDIR" "$LOCALAPPDATA\Programs\${APP_NAME}" 0 shortcuts_init
+  ReadRegStr $0 HKCU "${UNINSTALL_KEY}" "InstallLocation"
+  StrCmp $0 "" shortcuts_init
+  IfFileExists "$0\app\launcher.py" 0 shortcuts_init
+  StrCpy $INSTDIR "$0"
+  shortcuts_init:
+  IfFileExists "$INSTDIR\app\launcher.py" 0 shortcuts_ready
+  IfFileExists "$SMPROGRAMS\${APP_NAME}.lnk" start_menu_ready
+  !insertmacro UnselectSection ${SecStartMenu}
+  start_menu_ready:
+  IfFileExists "$DESKTOP\${APP_NAME}.lnk" 0 shortcuts_ready
+  !insertmacro SelectSection ${SecDesktop}
+  shortcuts_ready:
+FunctionEnd
+
+Function .onInstFailed
+  StrCmp $StageCreated 1 0 +3
+  SetOutPath "$TEMP"
+  RMDir /r "$INSTDIR\app.new"
 FunctionEnd
 
 Function un.onInit

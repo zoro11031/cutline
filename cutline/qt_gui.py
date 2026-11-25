@@ -91,6 +91,9 @@ class Window(QMainWindow):
         self.settings_wheel = SettingsWheel(self)
         self.setWindowIcon(_app_icon())
         self.tasks = Tasks(self)
+        from . import windows_update
+        self.can_update_windows = windows_update.installed()
+        self.update_setup = self.update_dialog = None
         self.settings = config.load_settings()
         self.job = self.artwork = self.project_shapes = self.design = self.reviewed_design = self.design_origin = None
         self.pdf = self.bundle = self.sheet_token = self.report = None
@@ -314,6 +317,19 @@ class Window(QMainWindow):
         help_menu = self.menu_bar.addMenu("&Help")
         command(help_menu, "Setup Guide", self.show_setup_guide)
         command(help_menu, "Troubleshoot a Cut…", self.troubleshoot_cut)
+        if self.can_update_windows:
+            command(help_menu, "Check for Updates…", self.check_for_updates)
+
+    def check_for_updates(self):
+        from .qt_update import UpdateDialog
+
+        if self.update_dialog is None:
+            self.update_dialog = UpdateDialog(self)
+            self.update_dialog.check()
+        dialog = self.update_dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def open_cut_settings(self):
         """Show the editable cut settings. An open material test stays open:
@@ -2679,6 +2695,19 @@ class Window(QMainWindow):
         elif self.design and not self.design.may_replace():
             event.ignore()
         else:
+            if self.update_setup is not None:
+                from .qt_update import launch
+
+                if self.busy or self.active_job is not None or (self.design and self.design.exporting_stickers):
+                    self.message("Wait for the cutter operation or export to finish before updating.")
+                    event.ignore()
+                    return
+                try:
+                    launch(self.update_setup)
+                except OSError as error:
+                    self.message(f"Couldn’t open Setup. {error}")
+                    event.ignore()
+                    return
             super().closeEvent(event)
 
 

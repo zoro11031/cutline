@@ -39,6 +39,10 @@ own projects. It's a hobby project, and I'm sharing it so others can use it too.
 Download the AppImage, Flatpak, or experimental Windows installer.
 [GitHub Releases](https://github.com/zoro11031/cutline/releases)
 
+On Windows, run the first update-enabled Setup over your existing installation.
+For later updates, choose **Help → Check for Updates…** in Cutline. Download
+the update, then choose **Quit and Run Setup** when you are ready to install.
+
 If Cutline can't access your cutter over USB on Linux, run this once and
 reconnect the cutter:
 

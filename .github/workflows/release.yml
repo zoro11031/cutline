@@ -114,23 +114,77 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: windows
-      - name: Install and check a job
+      - name: Verify fresh installation and in-place upgrades
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $setup = (Get-ChildItem Cutline-*-Setup.exe).FullName
-          $proc = Start-Process $setup -ArgumentList '/S' -Wait -PassThru
-          if ($proc.ExitCode -ne 0) { throw "Installer exited with code $($proc.ExitCode)" }
-          $app = "$env:LOCALAPPDATA\Programs\Cutline\app"
-          if (-not (Test-Path "$app\cutline.ico")) { throw "Missing cutline.ico" }
-          if (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Cutline.lnk")) { throw "Missing Start Menu shortcut" }
-          $reg = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Cutline"
-          if ($reg.DisplayIcon -ne "$app\cutline.ico") { throw "Unexpected DisplayIcon: $($reg.DisplayIcon)" }
-          if (-not $reg.Publisher) { throw "Missing Publisher" }
-          if (-not $reg.EstimatedSize) { throw "Missing EstimatedSize" }
-          & "$app\python.exe" "$app\launcher.py" cut --dry-run
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          & "$app\python.exe" -c "import sys; sys.path.insert(0, r'$app'); from PySide6 import QtWidgets; import cutline.qt_gui as g; a = QtWidgets.QApplication([]); assert not g._app_icon().isNull()"
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $expected = [regex]::Match((Split-Path $setup -Leaf), 'Cutline-(\d+\.\d+\.\d+)-').Groups[1].Value
+          $default = Join-Path $env:LOCALAPPDATA 'Programs\Cutline'
+          $custom = Join-Path $env:LOCALAPPDATA 'Cutline Custom Install'
+          $registry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Cutline'
+          $data = New-Item -ItemType Directory -Force (Join-Path $env:LOCALAPPDATA 'Cutline')
+          Set-Content (Join-Path $data 'settings.json') '{"speed":22}'
+          $env:CUTLINE_CONFIG = $data.FullName
+
+          function Run-Setup($file, $arguments = '/S', $expectedExit = 0) {
+            $process = Start-Process $file -ArgumentList $arguments -Wait -PassThru
+            if ($process.ExitCode -ne $expectedExit) { throw "Unexpected setup exit code $($process.ExitCode)" }
+          }
+
+          function Check-Install($folder) {
+            $entry = Get-ItemProperty $registry
+            if ($entry.InstallLocation -ne $folder -or $entry.DisplayVersion -ne $expected) {
+              throw "Wrong installation location or version: $($entry.InstallLocation), $($entry.DisplayVersion)"
+            }
+            $app = Join-Path $folder 'app'
+            & "$app\python.exe" "$app\launcher.py" cut --dry-run
+            if ($LASTEXITCODE) { throw "Cut dry run failed" }
+            & "$app\python.exe" -c "import sys; sys.path.insert(0, r'$app'); from PySide6.QtWidgets import QApplication; from cutline import __version__, qt_gui, windows_update; assert __version__ == '$expected'; app = QApplication([]); assert windows_update.installed(); window = qt_gui.Window(); window.show(); app.processEvents()"
+            if ($LASTEXITCODE) { throw "Qt startup failed" }
+          }
+
+          Run-Setup $setup
+          Check-Install $default
+          Run-Setup "$default\Uninstall.exe"
+
+          foreach ($case in @(
+            @{ Version = '0.3.0'; Folder = $default; Args = '/S'; SHA = '3f7c404a60514d77ac0c70640d984f4dad1470cbeb72049adae581bd5908b96a' },
+            @{ Version = '0.3.1'; Folder = $custom; Args = "/S /D=$custom"; SHA = '0f26641b66fb08bae81c4aeef5173bb7598e978ebf5615d5947ccd5fe3ab3ce3' }
+          )) {
+            $name = "Cutline-$($case.Version)-Windows-x86_64-Setup.exe"
+            $url = "https://github.com/zoro11031/cutline/releases/download/v$($case.Version)"
+            $previous = Join-Path $env:RUNNER_TEMP $name
+            Invoke-WebRequest "$url/$name" -OutFile $previous
+            if ((Get-FileHash $previous).Hash -ne $case.SHA) { throw "Baseline checksum failed" }
+            Run-Setup $previous $case.Args
+            $before = (Get-FileHash (Join-Path $data 'settings.json')).Hash
+            $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Cutline.lnk'
+            $hadShortcut = Test-Path $shortcut
+            $python = Join-Path $case.Folder 'app\python.exe'
+            $running = Start-Process $python -ArgumentList '-c "import time; time.sleep(90)"' -PassThru
+            try {
+              Start-Sleep -Seconds 1
+              Run-Setup $setup '/S' 1
+              if ((Get-ItemProperty $registry).DisplayVersion -ne $case.Version) { throw "Running app was replaced" }
+            } finally {
+              Stop-Process -Id $running.Id -ErrorAction SilentlyContinue
+              $running.WaitForExit()
+            }
+            $blockedStage = New-Item -ItemType Directory (Join-Path $case.Folder 'app.new')
+            Set-Content (Join-Path $blockedStage 'sentinel.txt') 'Keep this file'
+            Run-Setup $setup '/S' 1
+            if ((Get-ItemProperty $registry).DisplayVersion -ne $case.Version -or
+                -not (Test-Path (Join-Path $blockedStage 'sentinel.txt'))) {
+              throw "A failed replacement modified the existing installation"
+            }
+            Remove-Item $blockedStage -Recurse
+            Run-Setup $setup
+            if ((Get-FileHash (Join-Path $data 'settings.json')).Hash -ne $before) { throw "Setup changed saved settings" }
+            if ((Test-Path $shortcut) -ne $hadShortcut) { throw "Shortcut preference changed" }
+            Check-Install $case.Folder
+            Run-Setup "$($case.Folder)\Uninstall.exe"
+          }
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
