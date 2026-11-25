@@ -8,9 +8,29 @@ from functools import lru_cache
 import json
 from pathlib import Path
 
-from . import importer, regmarks, template
+from . import config, importer, regmarks, template
 
 _SCM_SOURCE = "Silhouette Card Maker template"
+
+
+DEFAULT_KEY = 'default'
+
+
+class DefaultLayout:
+    name = 'Default'
+
+    @staticmethod
+    def options():
+        return dict(sheet=config.DEFAULT_SHEET, card=config.DEFAULT_CARD, portrait=None,
+                    engine='scm', mode=template.ROUNDED, radius_mm=3.2,
+                    mark_inset_mm=10.0, mark_length_mm=None, mark_thickness_mm=1.0,
+                    pattern=regmarks.THREE, bleed_mm=0.0)
+
+
+def uses_default(options):
+    return (options["imported"] is None and not options["skip"]
+            and options["registration"] and options["auto_search"]
+            and all(options[key] == value for key, value in DefaultLayout.options().items()))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -73,6 +93,10 @@ def available():
                                                row['orientation'] == 'portrait', row['inset'], row['arm'],
                                                row['thickness'], paths)
     return result
+
+
+def desktop_presets():
+    return {**available(), DEFAULT_KEY: DefaultLayout()}
 
 
 def is_published(drawing):

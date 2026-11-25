@@ -333,8 +333,8 @@ class Window(QMainWindow):
         self.use_generated = source.push("Use Generated Layout", self.reset_artwork)
         layout = page.group("Media and cards")
         self.choose(layout, "layout_preset", "Layout preset",
-                    {"": "Custom", **{key: value.name for key, value in layout_presets.available().items()}},
-                    changed=self.apply_layout_preset)
+                    {"": "Custom", **{key: value.name for key, value in layout_presets.desktop_presets().items()}},
+                    default=layout_presets.DEFAULT_KEY, changed=self.apply_layout_preset)
         self.choose(layout, "sheet", "Sheet", sorted(geometry.SHEETS), config.DEFAULT_SHEET)
         self.choose(layout, "portrait", "Orientation", {"best": "Best fit", True: "Portrait", False: "Landscape"})
         self.choose(layout, "card", "Card size", sorted(geometry.CARDS), config.DEFAULT_CARD)
@@ -866,7 +866,7 @@ class Window(QMainWindow):
     def apply_layout_preset(self):
         if self.loading:
             return
-        profile = layout_presets.available().get(self.choice("layout_preset"))
+        profile = layout_presets.desktop_presets().get(self.choice("layout_preset"))
         if profile is None:
             if layout_presets.is_published(self.artwork):
                 self.reset_artwork()
@@ -877,9 +877,9 @@ class Window(QMainWindow):
         self.forget_sent_design()
         with self.editing():
             for key in ("sheet", "card", "engine", "portrait", "mode", "pattern"):
-                self.select(key, settings[key])
+                self.select(key, "best" if key == "portrait" and settings[key] is None else settings[key])
             for key in ("radius_mm", "mark_inset_mm", "mark_length_mm", "mark_thickness_mm", "bleed_mm"):
-                self.controls[key].setValue(settings[key])
+                self.controls[key].setValue(settings[key] or 0)
             self.controls["registration"].setChecked(True)
             self.controls["auto_search"].setChecked(True)
             self.skip.clear()
@@ -1296,7 +1296,12 @@ class Window(QMainWindow):
                        "Save the legacy cut file from Sheet. A cut SVG is required for direct cutting.")
         else:
             try:
-                self.job = job.build(**self.job_options())
+                options = self.job_options()
+                if self.choice("layout_preset") in ("", layout_presets.DEFAULT_KEY):
+                    with self.editing():
+                        self.select("layout_preset", layout_presets.DEFAULT_KEY
+                                    if self.bundle is None and layout_presets.uses_default(options) else "")
+                self.job = job.build(**options)
             except (ValueError, KeyError) as error:
                 title = "Layout needs attention"
                 summary = str(error)

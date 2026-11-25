@@ -1154,7 +1154,9 @@ class Window(Adw.ApplicationWindow):
             title='Printed-sheet preset',
             description='Choose the layout you printed.')
         self.r_layout_preset = _combo(
-            'Layout preset', ['Custom'] + [p.name for p in layout_presets.available().values()])
+            'Layout preset', ['Custom'] + [p.name for p in layout_presets.desktop_presets().values()])
+        self.default_layout_index = tuple(layout_presets.desktop_presets()).index(layout_presets.DEFAULT_KEY) + 1
+        self.r_layout_preset.set_selected(self.default_layout_index)
         self.r_layout_preset.connect('notify::selected', self.on_layout_preset)
         group.add(self.r_layout_preset)
         page.add(group)
@@ -1695,7 +1697,7 @@ class Window(Adw.ApplicationWindow):
             if layout_presets.is_published(self.imported):
                 self.on_clear_artwork()
             return
-        profile = tuple(layout_presets.available().values())[selected - 1]
+        profile = tuple(layout_presets.desktop_presets().values())[selected - 1]
         self.clear_bundle()
         options = profile.options()
         was, self._suppress = self._suppress, True
@@ -1709,12 +1711,12 @@ class Window(Adw.ApplicationWindow):
         self.r_engine.set_selected(0 if options['engine'] == 'scm' else 1)
         self.r_sheet.set_selected(sorted(geometry.SHEETS).index(options['sheet']))
         self.r_card.set_selected(sorted(geometry.CARDS).index(options['card']))
-        self.r_orient.set_selected(1 if options['portrait'] else 2)
+        self.r_orient.set_selected({None: 0, True: 1, False: 2}[options['portrait']])
         self.r_mode.set_selected(0)
         self.r_radius.set_value(options['radius_mm'])
         self.r_pattern.set_selected(0)
         self.r_inset.set_value(options['mark_inset_mm'])
-        self.r_length.set_value(options['mark_length_mm'])
+        self.r_length.set_value(options['mark_length_mm'] or 0)
         self.r_thickness.set_value(options['mark_thickness_mm'])
         self.r_bleed.set_value(options['bleed_mm'])
         self.r_skip.set_text('')
@@ -2156,6 +2158,14 @@ class Window(Adw.ApplicationWindow):
         self._building = True
         try:
             opts = self.options()
+            if self.r_layout_preset.get_selected() in (0, self.default_layout_index):
+                self._suppress = True
+                try:
+                    self.r_layout_preset.set_selected(self.default_layout_index
+                                                      if self.pdf_bundle is None and layout_presets.uses_default(opts)
+                                                      else 0)
+                finally:
+                    self._suppress = False
             j = job_mod.build(**opts)
         except geometry.LayoutImpossible as exc:
             self.job = None

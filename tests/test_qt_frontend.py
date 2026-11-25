@@ -257,6 +257,16 @@ class TestQtFrontend(unittest.TestCase):
                        window.delete_preset_btn, window.blade["force"]):
             self.assertTrue(cut_job.isAncestorOf(widget), "material choice and saving live on Cut Job")
 
+    def test_layout_preset_tracks_and_restores_defaults(self):
+        win = self.window
+        self.assertEqual(win.controls["layout_preset"].currentText(), "Default")
+        original = win.job.paths
+        win.select("sheet", "A4")
+        self.assertEqual(win.controls["layout_preset"].currentText(), "Custom")
+        win.select("layout_preset", "default")
+        self.assertEqual(win.controls["layout_preset"].currentText(), "Default")
+        self.assertEqual(win.job.paths, original)
+
     def test_published_template_is_selected_in_layout_and_can_be_cleared(self):
         window = self.window
         window.select("layout_preset", "scm-a4-standard-borderless")

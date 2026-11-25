@@ -42,7 +42,7 @@ by decoding the bytes, but an option no real cut has used yet stays partial.
 
 | Silhouette Studio | Cutline | |
 |---|---|---|
-| Page Setup: size, mat, registration marks | Page Setup panel | ✅ |
+| Page Setup: size, mat, registration marks | Page Setup panel and a named default card layout | ✅ |
 | Transform: move, rotate, scale, shear, mirror | Transform panel and Object → Transform | ✅ |
 | Align and distribute | Align panel | ✅ |
 | Arrange (front and back) | Object → Arrange | ✅ |
