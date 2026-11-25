@@ -259,12 +259,12 @@ class TestQtFrontend(unittest.TestCase):
 
     def test_layout_preset_tracks_and_restores_defaults(self):
         win = self.window
-        self.assertEqual(win.controls["layout_preset"].currentText(), "Default")
+        self.assertEqual(win.controls["layout_preset"].currentText(), "Letter · Standard (8 cards)")
         original = win.job.paths
         win.select("sheet", "A4")
         self.assertEqual(win.controls["layout_preset"].currentText(), "Custom")
         win.select("layout_preset", "default")
-        self.assertEqual(win.controls["layout_preset"].currentText(), "Default")
+        self.assertEqual(win.controls["layout_preset"].currentText(), "Letter · Standard (8 cards)")
         self.assertEqual(win.job.paths, original)
 
     def test_published_template_is_selected_in_layout_and_can_be_cleared(self):

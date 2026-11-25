@@ -418,12 +418,12 @@ class TestDesignWorkspace(unittest.TestCase):
 
     def test_layout_preset_tracks_and_restores_defaults(self):
         win = self.make_window()
-        self.assertEqual(win._text(win.r_layout_preset), "Default")
+        self.assertEqual(win._text(win.r_layout_preset), "Letter · Standard (8 cards)")
         original = win.job.paths
         win.r_sheet.set_selected(0)
         self.assertEqual(win._text(win.r_layout_preset), "Custom")
         win.r_layout_preset.set_selected(win.default_layout_index)
-        self.assertEqual(win._text(win.r_layout_preset), "Default")
+        self.assertEqual(win._text(win.r_layout_preset), "Letter · Standard (8 cards)")
         self.assertEqual(win.job.paths, original)
 
     def test_published_template_is_selected_in_layout_and_can_be_cleared(self):

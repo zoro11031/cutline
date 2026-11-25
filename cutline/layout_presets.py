@@ -17,7 +17,7 @@ DEFAULT_KEY = 'default'
 
 
 class DefaultLayout:
-    name = 'Default'
+    name = 'Letter · Standard (8 cards)'
 
     @staticmethod
     def options():
