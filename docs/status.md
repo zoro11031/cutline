@@ -1,6 +1,6 @@
 # Status and open questions
 
-Where every claim stands, as of 2026-11-24. **Verified** means measured, or
+Where every claim stands, as of 2026-11-25. **Verified** means measured, or
 checked against a published reference or a capture of Studio. **Untested**
 means the bytes are checked but no cutter has done it yet. Details are in
 [How Cutline works](how-it-works.md) and
@@ -30,6 +30,8 @@ means the bytes are checked but no cutter has done it yet. Details are in
   2026-11-24). The cuts landed slightly off-centre; the offset was seen, not
   measured. Jobs using both tool holders register and cut as well (same
   report).
+- Track Enhancing, Pause Cut, and Cancel Cut: tested on the cutter and
+  working (reported by the operator, 2026-11-25).
 - Bluetooth Classic: firmware, status and tool queries; a link held open
   across actions; recovery from stalled and orphaned sessions; five
   consecutive status checks succeeding (2026-11-21).

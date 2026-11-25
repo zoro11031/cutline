@@ -1,19 +1,21 @@
 # Silhouette Studio parity
 
 How Cutline compares with Silhouette Studio 5.0.556.1, feature by feature, as
-of 2026-11-24.
+of 2026-11-25.
 
 | Mark | Meaning |
 |---|---|
 | ✅ | Works: in Cutline and checked, by the tests or on a Cameo 4. |
-| 🟡 | Partial: there with gaps, or not yet confirmed on a real cut. |
+| 🟡 | Partial: there with gaps, or uses an unconfirmed cutter command. |
 | ❌ | Missing. |
 
 Cutline has cut several registered Print & Cut sheets on a Cameo 4 over USB
-(see [Status](status.md)). Every option that changes what is sent is checked
-by decoding the bytes, but an option no real cut has used yet stays partial.
+(see [Status](status.md)). Options that drive the cutter through already
+verified commands (such as path ordering, weed paths, test cuts, action
+filtering, and end position) count as working; options whose protocol
+commands are not yet confirmed on hardware stay partial.
 
-**Parity: 74.1%** (50 ✅, 20 🟡, 11 ❌ across 81 features; ✅ counts 1, 🟡 counts ½).
+**Parity: 78.4%** (57 ✅, 13 🟡, 11 ❌ across 81 features; ✅ counts 1, 🟡 counts ½).
 
 ## Design: drawing and editing
 
@@ -96,17 +98,17 @@ by decoding the bytes, but an option no real cut has used yet stays partial.
 | Material list | Studio's own table, bundled, or imported from an installation | ✅ |
 | Custom materials | Save, update and delete presets | ✅ |
 | Force, speed, passes, blade depth | All, used on real cuts | ✅ |
-| Cut, score or no action per object | Cut, Score, None | 🟡 |
+| Cut, score or no action per object | Cut, Score, None | ✅ |
 | Send by line colour, fill colour or layer | Send by line or fill colour; layers from SVG and the command line | 🟡 |
 | Two tool holders | Tool Holder 1 and 2 per object, used on registered cuts | ✅ |
 | Tool detection | Reads both holders, over USB and Bluetooth | ✅ |
 | Line segment overcut | Line Segment Overcut | 🟡 |
-| Track Enhancing | Track Enhancing | 🟡 |
-| Cut order and interior first | Path order, pass order, interior first, delicate media | 🟡 |
-| Weed lines and border | Weed Lines and Weed Border | 🟡 |
-| Test cut | Corner Test Cut, Test-Cut Matrix, Dial In a Material | 🟡 |
-| Pause and cancel | Pause Cut and Cancel Cut | 🟡 |
-| Feed and end position | Feed Options and end position | 🟡 |
+| Track Enhancing | Track Enhancing, tested on a Cameo 4 | ✅ |
+| Cut order and interior first | Path order, pass order, interior first, delicate media | ✅ |
+| Weed lines and border | Weed Lines and Weed Border | ✅ |
+| Test cut | Corner Test Cut, Test-Cut Matrix, Dial In a Material | ✅ |
+| Pause and cancel | Pause Cut and Cancel Cut, tested on a Cameo 4 | ✅ |
+| Feed and end position | Feed Options and end position | ✅ |
 | Sketch pen and pen styles | The pen as a tool; no sketch fills | 🟡 |
 
 ## The cutter

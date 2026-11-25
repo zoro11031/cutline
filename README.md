@@ -55,6 +55,18 @@ material. For Print & Cut, print at **Actual size (100%)** and choose
 I've only tested Cutline with my Cameo 4 over USB and Bluetooth.
 Your mileage may vary with other cutters.
 
+See the [Silhouette Studio parity chart](docs/studio-parity.md) for a
+feature-by-feature breakdown (78.4% parity):
+
+- **Works now:** Design and layout tools (drawing, point editing, text, trace,
+  offset, weld/modify, nesting, Print & Cut marks), plus registered Print & Cut
+  jobs, dual tool holders, tool detection, Track Enhancing, and pause/cancel on
+  a Cameo 4 over USB (and status/tool checks over Bluetooth).
+- **Not yet or partial:** Cutting over Bluetooth, Line Segment Overcut,
+  other Silhouette cutters (Portrait, Curio), direct printing, and Studio-only
+  effects (text warp, pattern/gradient fills, image effects, sketch fills,
+  emboss, rhinestone, Design Store/cloud sync).
+
 ## Thanks
 
 Thanks to Alan Cha for the card layouts and cutting guides, and to the
