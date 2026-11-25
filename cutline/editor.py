@@ -209,6 +209,7 @@ class DesignWorkspace:
         self.drawing = False
         self.custom_page = False
         self.polygon = []
+        self.keyboard_node = None
         self.cutter = cutter or graphtec.device_by_name("Silhouette Cameo 4")
         self.last_registration = project.registration or Registration.from_marks(
             regmarks.marks(project.width, project.height))
@@ -1144,6 +1145,7 @@ class DesignWorkspace:
             is_sticker=bool(obj and obj.sticker),
             is_text=bool(obj and obj.text),
             needs_trace=bool(obj and obj.sticker and not obj.contours),
+            node_selected=obj is not None and self.active_keyboard_node(obj) is not None,
         )
         self.tool_hint.set_label(hint)
         self.tool_hint.set_tooltip_text(f'{tool.tooltip}\n{hint}' if hint != tool.hint else tool.tooltip)
@@ -1457,6 +1459,7 @@ class DesignWorkspace:
 
     def tool_changed(self):
         self.canvas.grab_focus()
+        self.keyboard_node = None
         self.polygon.clear()
         self.cancel_drag()
         tool = TOOLS[self.tool.get_selected()]
@@ -1572,6 +1575,7 @@ class DesignWorkspace:
         self.drag = Drag('marquee', x, y, scale, indices if extend else ())
 
     def begin_point_edit(self, x, y, scale):
+        self.keyboard_node = None
         indices = self.selected_indices()
         if len(indices) == 1:
             index = indices[0]
@@ -1709,9 +1713,55 @@ class DesignWorkspace:
         self.drawing = False
         self.select_shape()
 
+    def active_keyboard_node(self, shape):
+        if self.keyboard_node and self.keyboard_node[0] is shape:
+            return self.keyboard_node[1]
+        return None
+
+    def point_key(self, indices, key, arrows):
+        cycle = key in (Gdk.KEY_bracketleft, Gdk.KEY_bracketright)
+        delete = key in (Gdk.KEY_Delete, Gdk.KEY_BackSpace)
+        if len(indices) != 1 or not (cycle or delete or key in arrows):
+            return False
+        index = indices[0]
+        shapes = self.project.shapes
+        shape = shapes[index]
+        if not path_edit.editable(shape):
+            return False
+        outline = path_edit.nodes(shape)
+        current = self.active_keyboard_node(shape)
+        if cycle:
+            direction = 1 if key == Gdk.KEY_bracketright else -1
+            current = path_edit.step_point(current, len(outline.points), direction)
+            self.keyboard_node = (shape, current)
+        elif current is None:
+            return not delete
+        else:
+            try:
+                if delete:
+                    outline = path_edit.delete_point(outline, current)
+                    edited = path_edit.to_shape(outline, shape)
+                    current = max(0, current - 1)
+                else:
+                    dx, dy = arrows[key]
+                    step = self.grid_spacing.get_value() if self.snap.get_active() else 1
+                    edited = path_edit.nudge_point(shape, outline, current, dx * step, dy * step)
+            except ValueError as error:
+                self.show_message(str(error), level='warning')
+                return True
+            self.keyboard_node = (edited, current)
+            self.commit(shapes[:index] + (edited,) + shapes[index + 1:], indices)
+            outline = path_edit.nodes(edited)
+        self.canvas.reveal_point(outline.points[current])
+        self.refresh_tool_hint()
+        self.canvas.queue_draw()
+        return True
+
     def canvas_key(self, _controller, key, _code, state):
         ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
         indices = self.selected_indices()
+        arrows = {Gdk.KEY_Left: (-1, 0), Gdk.KEY_Right: (1, 0),
+                  Gdk.KEY_Up: (0, -1), Gdk.KEY_Down: (0, 1)}
         if key == Gdk.KEY_Escape:
             in_progress = bool(self.drag is not None or self.polygon)
             self.cancel_drag()
@@ -1722,6 +1772,10 @@ class DesignWorkspace:
                 self.set_selection(())
                 self.tool.set_selected(0)
         elif self.drag is not None and self.drag.mode in ('rotate', 'scale'):
+            return True
+        elif self.active_tool == 'Point Edit' and not (state & (
+                Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK | Gdk.ModifierType.SHIFT_MASK
+        )) and self.point_key(indices, key, arrows):
             return True
         elif self.active_tool in ('Polygon', 'Curve') and key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
             self.finish_polygon(closed=self.active_tool == 'Polygon')
@@ -1746,11 +1800,10 @@ class DesignWorkspace:
             self.change_history(self.history.redo)
         elif key in (Gdk.KEY_BackSpace, Gdk.KEY_Delete) and indices:
             self.delete_shape(None)
-        elif key in (Gdk.KEY_Left, Gdk.KEY_Right, Gdk.KEY_Up, Gdk.KEY_Down) and indices:
+        elif key in arrows and indices:
             distance = self.grid_spacing.get_value() if self.snap.get_active() else 1
-            dx, dy = {Gdk.KEY_Left: (-distance, 0), Gdk.KEY_Right: (distance, 0),
-                      Gdk.KEY_Up: (0, -distance), Gdk.KEY_Down: (0, distance)}[key]
-            self.commit(editor_model.move(self.project.shapes, indices, dx, dy), indices)
+            dx, dy = arrows[key]
+            self.commit(editor_model.move(self.project.shapes, indices, dx * distance, dy * distance), indices)
         else:
             return False
         return True

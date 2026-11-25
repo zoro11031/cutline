@@ -1194,6 +1194,37 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertEqual(len(design.project.shapes), 6)
         self.assertNotIn('<Control>v', self.shortcuts(design.shortcuts))
 
+    def test_keyboard_point_edit_moves_a_curve_node_without_flattening(self):
+        from gi.repository import Gdk
+        from cutline import path_edit
+
+        win = self.make_window()
+        win.draw_in_design_btn.emit('clicked')
+        design = win.design
+        shape = editor_model.Shape('Ellipse', 20, 25, 30, 20)
+        design.commit((shape,), (0,))
+        design.tool.set_selected(design.tools.index('Point Edit'))
+
+        def key(value):
+            self.assertTrue(design.canvas_key(None, value, 0, Gdk.ModifierType(0)))
+
+        before = path_edit.nodes(shape)
+        key(Gdk.KEY_Right)
+        self.assertEqual(design.project.shapes, (shape,))
+        key(Gdk.KEY_bracketleft)
+        self.assertEqual(design.active_keyboard_node(shape), len(before.points) - 1)
+        key(Gdk.KEY_bracketright)
+        key(Gdk.KEY_Right)
+        after = path_edit.nodes(design.project.shapes[0])
+        self.assertEqual(after.points[0], (before.points[0][0] + 1, before.points[0][1]))
+        self.assertEqual(after.points[1:], before.points[1:])
+        self.assertTrue(after.handles[0][2])
+        key(Gdk.KEY_Delete)
+        self.assertEqual(len(path_edit.nodes(design.project.shapes[0]).points), 3)
+        design.change_history(design.history.undo)
+        design.change_history(design.history.undo)
+        self.assertEqual(design.project.shapes, (shape,))
+
     def test_design_drawing_points_selection_and_replicate_enter_history(self):
         from cutline.editor_model import Shape
         from gi.repository import Gdk

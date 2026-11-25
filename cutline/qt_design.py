@@ -50,7 +50,7 @@ class AdaptiveCommands(QWidget):
         self.row.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
         self.row.setContentsMargins(0, 0, 0, 0)
         self.row.addWidget(inline)
-        self.row.addWidget(overflow)
+        self.row.addWidget(overflow, alignment=Qt.AlignmentFlag.AlignLeft)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         overflow.hide()
 
@@ -144,6 +144,7 @@ class Canvas(SheetView):
         self.scale_anchor = None
         self.angle = 0
         self.node_point = None      # the selected point in Point Edit
+        self.node_selection = ()
         self.node_drag = None       # (base nodes, kind, index, side) while dragging a point or handle
         self.space = False
         self.dragging = False
@@ -1008,6 +1009,36 @@ class Canvas(SheetView):
         self.stroke = []
 
     # ---- keys and menus ---------------------------------------------------------
+    def point_key(self, key, arrows):
+        if key not in arrows and key not in (Qt.Key.Key_BracketLeft, Qt.Key.Key_BracketRight):
+            return False
+        found = self.edited_nodes()
+        if not found:
+            return False
+        index, outline = found
+        if key in arrows:
+            if self.node_point is None or self.node_point >= len(outline.points):
+                return True
+            x, y = arrows[key]
+            editor = self.design
+            step = editor.spacing.value() if editor.snap.isChecked() else editor.nudge_step()
+            shapes = editor.project.shapes
+            try:
+                edited = path_edit.nudge_point(shapes[index], outline, self.node_point, x * step, y * step)
+            except ValueError as error:
+                editor.message(str(error), level="warning")
+                return True
+            editor.commit_shapes(self.replaced(index, edited, shapes), (index,))
+            outline = path_edit.nodes(edited)
+        else:
+            direction = 1 if key == Qt.Key.Key_BracketRight else -1
+            self.node_point = path_edit.step_point(self.node_point, len(outline.points), direction)
+        x, y = outline.points[self.node_point]
+        self.ensureVisible(QRectF(x, y, 0.1, 0.1), 24, 24)
+        self.design.refresh_tool_hint()
+        self.redraw()
+        return True
+
     def keyPressEvent(self, event):
         editor = self.design
         tool = editor.tool.currentData()
@@ -1038,6 +1069,9 @@ class Canvas(SheetView):
             return
         arrows = {Qt.Key.Key_Left: (-1, 0), Qt.Key.Key_Right: (1, 0),
                   Qt.Key.Key_Up: (0, -1), Qt.Key.Key_Down: (0, 1)}
+        if tool == "Point Edit" and event.modifiers() == Qt.KeyboardModifier.NoModifier and self.point_key(
+                event.key(), arrows):
+            return
         if event.key() in arrows and editor.selection():
             x, y = arrows[event.key()]
             distance = editor.spacing.value() if editor.snap.isChecked() else editor.nudge_step()
@@ -2509,6 +2543,9 @@ class Design(QWidget):
             return
         self.loading = True
         indices = self.selection()
+        if indices != self.canvas.node_selection:
+            self.canvas.node_selection = indices
+            self.canvas.node_point = None
         shapes = self.project.shapes
         shape = shapes[indices[0]] if len(indices) == 1 else None
         units = len(model.selected_units(shapes, indices))
@@ -3003,7 +3040,10 @@ class Design(QWidget):
         self.sides_option.setVisible(tool.name == "Regular Polygon")
         self.close_polygon.setVisible(tool.name in CLICK_PATH_TOOLS)
         self.eraser_options.setVisible(tool.name == "Eraser")
-        self.adaptive_points.setVisible(tool.name == "Point Edit")
+        point_edit = tool.name == "Point Edit"
+        self.adaptive_points.setVisible(point_edit)
+        cue = "Use [ or ] to select. Arrows move."
+        self.tool_hint.setMinimumWidth(self.tool_hint.fontMetrics().horizontalAdvance(cue) + 24 if point_edit else 0)
         self.measure_options.setVisible(tool.name == "Measure")
         self.canvas.measure = None
         self.measured()

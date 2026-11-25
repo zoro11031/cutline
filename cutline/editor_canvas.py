@@ -108,6 +108,15 @@ class DesignCanvas(Gtk.DrawingArea):
         self.pan = self.pan_start[0] + x, self.pan_start[1] + y
         self.queue_draw()
 
+    def reveal_point(self, point):
+        width, height = self.get_width(), self.get_height()
+        if min(width, height) < 48:
+            return
+        left, top, scale = self.viewport(width, height)
+        x, y = left + point[0] * scale, top + point[1] * scale
+        self.pan = (self.pan[0] + min(width - 24, max(24, x)) - x,
+                    self.pan[1] + min(height - 24, max(24, y)) - y)
+
     def viewport(self, width, height):
         project = self.editor.project
         mat = self.editor.mat_size if self.editor.show_mat.get_active() else None
@@ -180,9 +189,20 @@ class DesignCanvas(Gtk.DrawingArea):
                                               drag.angle if drag else 0, scale)
         if editor.active_tool == 'Point Edit' and len(indices) == 1:
             shape = project.shapes[indices[0]]
-            if shape.visible and shape.kind in editor_model.POINT_EDIT_KINDS:
-                for path in shape.paths():
-                    self.draw_vertices(cr, path.points, scale)
+            if shape.visible and (shape.kind in editor_model.POINT_EDIT_KINDS or path_edit.editable(shape)):
+                chosen = editor.active_keyboard_node(shape)
+                if chosen is not None:
+                    outline = path_edit.nodes(shape)
+                    self.draw_vertices(cr, outline.points, scale)
+                    cr.arc(*outline.points[chosen], 5 / scale, 0, math.tau)
+                    cr.set_source_rgb(1, 1, 1)
+                    cr.fill_preserve()
+                    cr.set_source_rgb(0.1, 0.28, 0.63)
+                    cr.set_line_width(2 / scale)
+                    cr.stroke()
+                elif shape.kind in editor_model.POINT_EDIT_KINDS:
+                    for path in shape.paths():
+                        self.draw_vertices(cr, path.points, scale)
         if editor.polygon:
             points = editor.polygon
             cr.move_to(*points[0])

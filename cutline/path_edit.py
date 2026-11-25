@@ -150,6 +150,18 @@ def move_point(nodes, i, position):
     return _with(nodes, points, handles)
 
 
+def step_point(current, count, direction):
+    """Cycle in outline order, starting at the corresponding end."""
+    if current is None or not 0 <= current < count:
+        return 0 if direction > 0 else count - 1
+    return (current + direction) % count
+
+
+def nudge_point(shape, outline, index, dx, dy):
+    x, y = outline.points[index]
+    return to_shape(move_point(outline, index, (x + dx, y + dy)), shape)
+
+
 def move_handle(nodes, i, side, position):
     """Drag the in (0) or out (1) handle of point i; a smooth point keeps the
     other handle opposite, at its own length."""

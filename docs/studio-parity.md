@@ -25,9 +25,11 @@ and mixed Cut and Score paths in Send. The keyboard flows saved identical
 projects. The mouse flows covered drawing, moving a node, pan, and zoom.
 Compact, wide, light, dark, and larger-text captures included 720 × 520.
 
-The next Design milestone is point editing across both frontends. Compare
-geometry and saved projects before moving on to transforms, tracing, and
-text editing. Studio3 export still needs complete files checked in Studio.
+Both frontends can now select and nudge individual points from the keyboard.
+With one outline selected, choose Point Edit, press [ or ] to select a
+point, and use the arrow keys to move it. Next, bring GTK pointer editing
+and Bézier handles up to parity. Studio3 export still needs complete files
+checked in Studio.
 
 ## Design: drawing and editing
 
@@ -38,7 +40,7 @@ either frontend is partial.
 | Silhouette Studio | Cutline | |
 |---|---|---|
 | Select, move, scale and rotate | Both have selection and transforms; Qt has side stretch and on-canvas corner radius | 🟡 |
-| Point editing | Qt has the node toolbar and Bézier handles; GTK can drag existing points | 🟡 |
+| Point editing | Both select, nudge, and delete nodes from the keyboard. Qt also has the node toolbar and Bézier handles. | 🟡 |
 | Line | Both draw lines; Qt has Shift angle constraints | 🟡 |
 | Rectangle and rounded rectangle | Both draw rectangles and rounded rectangles; Qt has Shift and Alt modifiers | 🟡 |
 | Ellipse | Both draw ellipses; Qt can constrain circles with Shift | 🟡 |

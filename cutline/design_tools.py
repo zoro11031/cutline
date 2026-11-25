@@ -35,7 +35,7 @@ TOOL_GROUPS = (
              (((5, 3), (5, 19), (9, 15), (12, 21), (15, 19), (12, 13), (18, 13), (5, 3)),)),
     )),
     ("Point Edit", (
-        Tool("Point Edit", "A", "Select a path and drag its points.",
+        Tool("Point Edit", "A", "Drag a point, or choose one with [ or ] and move it with the arrow keys.",
              (((5, 17), (12, 6), (19, 15)),
               ((3, 16), (7, 16), (7, 20), (3, 20), (3, 16)),
               ((10, 4), (14, 4), (14, 8), (10, 8), (10, 4)),
@@ -148,7 +148,7 @@ SELECT_TOOL = Tool("Select", "V", "Drag to move, corner to scale, top grip to ro
                    _tool("Select").strokes)
 TYPE_TOOL = Tool("Type", "T", "Click to place text, or click text to edit it.",
                  COMMAND_ICONS["text"].strokes)
-POINT_EDIT_TOOL = Tool("Point Edit", "A", "Drag a point or blue handle. Click the outline to add a point.",
+POINT_EDIT_TOOL = Tool("Point Edit", "A", "Drag a point or handle. Click the outline to add a point. Use [ or ] to choose a point.",
                        _tool("Point Edit").strokes)
 LINE_TOOL = Tool(LINE, "L", "Drag to draw a line. Hold Shift for 45° steps.", _tool(LINE).strokes)
 RECT_TOOL = Tool(RECTANGLE, "R", "Drag to draw a rectangle. Shift draws a square; Alt centers.",
@@ -365,5 +365,6 @@ def contextual_hint(tool, *, shape_count, selected_count, is_sticker=False, is_t
         if selected_count != 1:
             return "Click an outline to edit its points."
         if not node_selected:
-            return "Drag a point or click the outline to add one."
+            return "Use [ or ] to select a point."
+        return "Use [ or ] to select. Arrows move."
     return tool.hint

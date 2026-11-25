@@ -2327,6 +2327,28 @@ class TestQtDesignEditor(unittest.TestCase):
         self.assertEqual(len(design.project.shapes), 2)
         self.assertIn("three or more points", design.status.text())
 
+    def test_keyboard_point_edit_nudges_one_node_and_supports_undo(self):
+        from cutline import path_edit
+
+        shape = editor_model.Shape("Ellipse", 20, 25, 30, 20)
+        design = self.editor(editor_model.Project(216, 279, (shape,)))
+        design.show()
+        design.tool.setCurrentText("Point Edit")
+        canvas = design.canvas
+        before = path_edit.nodes(shape)
+        QTest.keyClick(canvas, Qt.Key.Key_Right)
+        self.assertEqual(design.project.shapes, (shape,))
+        QTest.keyClick(canvas, Qt.Key.Key_BracketLeft)
+        self.assertEqual(canvas.node_point, len(before.points) - 1)
+        QTest.keyClick(canvas, Qt.Key.Key_BracketRight)
+        QTest.keyClick(canvas, Qt.Key.Key_Right)
+        after = path_edit.nodes(design.project.shapes[0])
+        self.assertEqual(after.points[0], (before.points[0][0] + 1, before.points[0][1]))
+        self.assertEqual(after.points[1:], before.points[1:])
+        self.assertEqual(len(design.history.past), 1)
+        design.undo()
+        self.assertEqual(design.project.shapes, (shape,))
+
     def test_point_editing_works_as_in_studio(self):
         square = editor_model.Shape("Rectangle", 40, 40, 60, 60, action="Score")
         design = self.editor(editor_model.Project(279.4, 215.9, (square,)))
