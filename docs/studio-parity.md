@@ -15,7 +15,7 @@ verified commands (such as path ordering, weed paths, test cuts, action
 filtering, and end position) count as working; options whose protocol
 commands are not yet confirmed on hardware stay partial.
 
-**Parity: 78.4%** (57 ✅, 13 🟡, 11 ❌ across 81 features; ✅ counts 1, 🟡 counts ½).
+**Parity: 79.0%** (58 ✅, 12 🟡, 11 ❌ across 81 features; ✅ counts 1, 🟡 counts ½).
 
 ## Design: drawing and editing
 
@@ -120,7 +120,7 @@ commands are not yet confirmed on hardware stay partial.
 | Find and pair a new cutter | Scan for Cutters shows available devices; pairs on Linux, system settings elsewhere | ✅ |
 | Cutter status and firmware version | Check Status verifies a Bluetooth selection while layout editing stays available | ✅ |
 | Cut over USB | Registered Print & Cut sheets cut; placement slightly off-centre | ✅ |
-| Cut over Bluetooth | Built; status and tools work, but no cut has been sent | 🟡 |
+| Cut over Bluetooth | Tested on a Cameo 4 | ✅ |
 | Firmware updates | — | ❌ |
 | Several cutters at once (Business edition) | One at a time | ❌ |
 | Tiling a large design (Business edition) | — | ❌ |

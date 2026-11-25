@@ -32,6 +32,8 @@ means the bytes are checked but no cutter has done it yet. Details are in
   report).
 - Track Enhancing, Pause Cut, and Cancel Cut: tested on the cutter and
   working (reported by the operator, 2026-11-25).
+- Bluetooth cutting: tested on a Cameo 4 and working (reported by the
+  operator, 2026-11-25).
 - Bluetooth Classic: firmware, status and tool queries; a link held open
   across actions; recovery from stalled and orphaned sessions; five
   consecutive status checks succeeding (2026-11-21).
@@ -57,8 +59,6 @@ bytes are checked, but no cutter has done them yet:
 - **Cut placement** has not been measured. Registered cuts over USB landed
   slightly off-centre, and how far, and whether calibration corrects it, is
   open.
-- **Cutting over Bluetooth**: status and tool queries work, but no cut has
-  been sent that way.
 - **Every preset except Silhouette's own** has not been cut. The speed scale
   is disputed (Silhouette's table never exceeds 10; the Card Maker guide uses
   25 on a Cameo 5).
