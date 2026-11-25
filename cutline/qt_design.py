@@ -1952,7 +1952,7 @@ class Design(QWidget):
         command(files, "Place Image…", self.place_sticker)
         command(files, "Import PixScan Photo…", self.import_pixscan)
         files.addSeparator()
-        command(files, "Export Print && Cut ZIP…", self.export_stickers)
+        command(files, "Export Print && Cut…", self.export_stickers)
 
         edit = self.menu_bar.addMenu("&Edit")
         edit.addActions((self.undo_action, self.redo_action))
@@ -2212,7 +2212,8 @@ class Design(QWidget):
     def export_stickers(self):
         if self.exporting_stickers:
             return
-        name, _ = QFileDialog.getSaveFileName(self, "Export Print & Cut", "stickers.zip", "Matched ZIP (*.zip)")
+        name, _ = QFileDialog.getSaveFileName(self, "Export Print & Cut", "stickers.zip", "Print & Cut files (*.zip)",
+                                              options=QFileDialog.Option.HideNameFilterDetails)
         if not name:
             return
         try:

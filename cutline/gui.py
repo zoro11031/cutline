@@ -604,7 +604,7 @@ class Window(Adw.ApplicationWindow):
         self.banner = Adw.Banner(revealed=False)
         outer.add_top_bar(self.banner)
         self.bundle_banner = Adw.Banner(
-            title="Matched ZIP: the cut paths are locked to the printed sheet.",
+            title="The cut paths are locked to the printed sheet.",
             button_label="Open Sheet", revealed=False)
         self.bundle_banner.connect("button-clicked",
                                    lambda *_: self.stack.set_visible_child_name("sheet"))
@@ -750,7 +750,7 @@ class Window(Adw.ApplicationWindow):
 
         files = Gio.Menu()
         self.open_artwork_action = command(files, "Open Cut Template…", "open-artwork", self.on_open_artwork, "<Control>o")
-        self.open_print_action = command(files, "Open PDF or ZIP…", "open-print", self.on_pick_pdf, "<Control><Shift>o")
+        self.open_print_action = command(files, "Open Print File…", "open-print", self.on_pick_pdf, "<Control><Shift>o")
         self.close_print_action = command(files, "Close Print File", "close-print", self.close_printed_sheet)
         self.paired_cut_action = command(files, "Save Paired Cut File…", "paired-cut", self.on_save_bundle_file)
         command(files, "Export Cut Templates…", "export-templates", self.on_export)
@@ -955,7 +955,7 @@ class Window(Adw.ApplicationWindow):
             "Sending to the cutter…" if self._sending else
             "Checking cutter status…" if self._checking_status else
             "The design has edits Send has not used. Open Design, then switch to Send." if destination == "design" else
-            "Choose another sheet or reopen the ZIP in Sheet." if self.bundle_row_error else
+            "Choose another sheet or reopen the Print & Cut file in Sheet." if self.bundle_row_error else
             "Save the legacy cut file from Sheet." if self.pdf_bundle and self.imported is None else
             pdf_refusal if pdf_refusal else
             "Check the matching PDF in Sheet." if destination == "sheet" else
@@ -1257,9 +1257,9 @@ class Window(Adw.ApplicationWindow):
         page = ControlPage()
         g = Adw.PreferencesGroup(title="Printed sheet", description="Check the PDF’s registration marks against your layout.")
         self.sheet_row = Adw.ActionRow(title="No print file open",
-                                       subtitle="Open the PDF or ZIP you printed from.")
+                                       subtitle="Open the PDF you printed.")
         self.sheet_row.set_subtitle_lines(0)
-        self.open_print_button = pick = Gtk.Button(label="Open PDF or ZIP…")
+        self.open_print_button = pick = Gtk.Button(label="Open Print File…")
         pick.set_valign(Gtk.Align.CENTER)
         pick.connect("clicked", self.on_pick_pdf)
         self.close_print = Gtk.Button(label="Close File", valign=Gtk.Align.CENTER)
@@ -2148,7 +2148,7 @@ class Window(Adw.ApplicationWindow):
             self.summary_layout.set_label(self.bundle_row_error or 'Use Sheet → Save Paired Cut File.')
             self.summary_material.set_label('')
             self.summary_note.set_label('' if self.bundle_row_error else
-                                        'A newer print bundle ZIP includes SVG paths for direct cutting.')
+                                        'A newer Print & Cut file includes SVG paths for direct cutting.')
             self.checks.set_text('')
             self.update_send_actions()
             self.banner.set_revealed(False)
@@ -2346,8 +2346,8 @@ class Window(Adw.ApplicationWindow):
     def on_edit_template(self, *_args):
         if self.pdf_bundle:
             dialog = Adw.AlertDialog(
-                heading="Matched ZIP Paths Locked",
-                body="Matched ZIP paths are locked to the printed sheet. To edit cut paths or clear the match, open Sheet.")
+                heading="Matched Cut Paths Locked",
+                body="Matched cut paths are locked to the printed sheet. To edit cut paths or clear the match, open Sheet.")
             dialog.add_response("cancel", "Cancel")
             dialog.add_response("sheet", "Open Sheet")
             dialog.set_response_appearance("sheet", Adw.ResponseAppearance.SUGGESTED)
@@ -2402,8 +2402,8 @@ class Window(Adw.ApplicationWindow):
             self.review_design(self.design.project, detail)
             return
         if verdict == "stickers":
-            self.toast("Sticker sheets are cut from their Print & Cut ZIP. Choose Export Print & Cut, "
-                       "then open the ZIP in Sheet.")
+            self.toast("Sticker sheets are cut from their Print & Cut file. Choose Export Print & Cut, "
+                       "then open the file in Sheet.")
         if verdict != "keep":
             self.forget_sent_design()
         self.leave_design()
@@ -2597,7 +2597,7 @@ class Window(Adw.ApplicationWindow):
         self.preview.set_sheet(None)
         self.preview.set_pdf()
         self.sheet_row.set_title('No print file open')
-        self.sheet_row.set_subtitle('Open the PDF or ZIP you printed from.')
+        self.sheet_row.set_subtitle('Open the PDF you printed.')
         self.sheet_result.set_title('Not measured')
         self.sheet_result.set_subtitle('')
         self.scan_result.set_visible(False)
@@ -2677,9 +2677,9 @@ class Window(Adw.ApplicationWindow):
     def on_pick_pdf(self, *_a):
         if self._job_locked or self._sending:
             return
-        dialog = Gtk.FileDialog(title="Open the printed sheet")
+        dialog = Gtk.FileDialog(title="Open Print File")
         filt = Gtk.FileFilter()
-        filt.set_name('PDF and ZIP files (*.pdf, *.zip)')
+        filt.set_name('Print files')
         for suffix in ('pdf', 'zip'):
             filt.add_suffix(suffix)
         all_files = Gtk.FileFilter()
@@ -2700,7 +2700,7 @@ class Window(Adw.ApplicationWindow):
                 return
             filename = gfile.get_path()
             if filename is None:
-                self.toast('Choose a local PDF or a matched Print & Cut ZIP.')
+                self.toast('Choose a local print file.')
                 return
             path = pathlib.Path(filename)
             if path.suffix.lower() == '.zip' or zipfile.is_zipfile(path):
@@ -2721,7 +2721,7 @@ class Window(Adw.ApplicationWindow):
                 self.preview.set_pdf()
                 self.sheet_row.set_title(path.name)
                 self._suppress = True
-                self.r_sheet_page.set_title('Sheet in ZIP')
+                self.r_sheet_page.set_title('Matched sheet')
                 self.r_sheet_page.set_subtitle('which matched sheet to check and cut')
                 self.r_sheet_page.get_adjustment().set_upper(len(matched.rows))
                 self.r_sheet_page.set_value(1)

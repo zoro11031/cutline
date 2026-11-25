@@ -502,7 +502,7 @@ class DesignWorkspace:
                 ('Import Artwork…', 'import-artwork', None, self.import_vector)):
             command(files, label, name, lambda handler=callback: handler(None), shortcut)
         command(files, 'Place Image…', 'place-sticker', self.place_sticker)
-        command(files, 'Export Print & Cut ZIP…', 'export-stickers', self.export_stickers)
+        command(files, 'Export Print & Cut…', 'export-stickers', self.export_stickers)
         edit = Gio.Menu()
         command(edit, 'Undo', 'undo', lambda: self.change_history(self.history.undo))
         command(edit, 'Redo', 'redo', lambda: self.change_history(self.history.redo))
@@ -811,7 +811,7 @@ class DesignWorkspace:
 
             threading.Thread(target=write, daemon=True).start()
 
-        self.file_dialog('Export Print & Cut', chosen, filters=('*.zip',), save_name='stickers.zip')
+        self.file_dialog('Export Print & Cut', chosen, save_name='stickers.zip')
 
     def replicate_panel(self, inspector):
         self.heading(inspector, 'Replicate')

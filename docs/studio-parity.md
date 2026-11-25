@@ -70,10 +70,10 @@ by decoding the bytes, but an option no real cut has used yet stays partial.
 |---|---|---|
 | Open `.studio3` | Paths, compound paths, curves and page size; not registration, colours, images or effects | 🟡 |
 | Save `.studio3` | Rewrites a Card Maker template in place; Studio has not been seen opening one | 🟡 |
-| Import SVG (Designer edition) | Full SVG import with Inkscape layers and marks; in every edition | ✅ |
+| Import SVG (Designer edition) | Full SVG import with Inkscape layers and marks, available during startup cutter checks | ✅ |
 | Import DXF | DXF import | ✅ |
 | Export DXF | DXF export with true arcs (Studio opens it 2.84% too large) | ✅ |
-| Import PDF (Designer edition) | PDFs are checked on the Sheet tab, not edited as artwork | 🟡 |
+| Import PDF (Designer edition) | Open Print File on the Sheet tab checks PDF registration marks | 🟡 |
 | Place an image (PNG, JPG) | Place Image | ✅ |
 | PixScan | Import PixScan Photo; only tried on synthetic photos | 🟡 |
 | Library and Design Store | — | ❌ |

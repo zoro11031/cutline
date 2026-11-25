@@ -1352,7 +1352,7 @@ class TestDesignWorkspace(unittest.TestCase):
         with mock.patch.object(gui.Adw, "AlertDialog") as dialog_cls:
             win.on_edit_template()
             dialog = dialog_cls.return_value
-            self.assertEqual(dialog_cls.call_args.kwargs["heading"], "Matched ZIP Paths Locked")
+            self.assertEqual(dialog_cls.call_args.kwargs["heading"], "Matched Cut Paths Locked")
             _, response_handler = dialog.connect.call_args.args
             response_handler(None, "sheet")
             self.assertEqual(win.stack.get_visible_child_name(), "sheet")
@@ -1898,7 +1898,7 @@ class TestOpenDialogs(unittest.TestCase):
         filters = dialog.return_value.set_filters.call_args.args[0]
         self.assertEqual(filters.get_n_items(), 2)
         filt = filters.get_item(0)
-        self.assertEqual(filt.get_name(), 'PDF and ZIP files (*.pdf, *.zip)')
+        self.assertEqual(filt.get_name(), 'Print files')
         self.assertEqual(filters.get_item(1).get_name(), 'All files')
         dialog.return_value.set_default_filter.assert_called_once_with(filt)
         for name, mime, accepted in (

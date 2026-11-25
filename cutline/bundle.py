@@ -44,7 +44,7 @@ class Bundle:
     def artwork(self, row):
         self.check_current()
         if 'svg' not in row:
-            raise BundleError('This ZIP has a legacy cut file. Export a current print bundle ZIP with a cut SVG for direct cutting.')
+            raise BundleError('This Print & Cut file has a legacy cut file. Export a current Print & Cut file with a cut SVG for direct cutting.')
         try:
             with zipfile.ZipFile(self.path) as archive:
                 imported = importer.load_svg(io.BytesIO(archive.read(row['svg'])))
@@ -99,7 +99,7 @@ class Bundle:
         self.check_current()
         target = pathlib.Path(path)
         if target.resolve() == self.path.resolve():
-            raise BundleError("Choose a destination separate from the source ZIP.")
+            raise BundleError("Choose a destination separate from the source file.")
         temporary = None
         try:
             with zipfile.ZipFile(self.path) as archive, archive.open(name) as source, \
@@ -120,7 +120,7 @@ class Bundle:
                 return
         except OSError:
             pass
-        raise BundleError('The ZIP changed on disk. Open the current export again.')
+        raise BundleError('The Print & Cut file changed on disk. Open the current export again.')
 
     def measure(self, row, marks, dpi):
         self.check_current()
@@ -159,7 +159,7 @@ def load(path):
         with zipfile.ZipFile(path) as archive:
             entries = set(archive.namelist())
             if 'registration.json' not in entries:
-                raise BundleError('This ZIP is missing registration.json. Open a matched Print & Cut ZIP.')
+                raise BundleError('This file is missing registration data. Open a Print & Cut file.')
             with archive.open('registration.json') as manifest:
                 data = json.loads(manifest.read(1_048_577))
         legacy = 'format' not in data and 'version' not in data
@@ -167,11 +167,11 @@ def load(path):
         sticker = (format_id, data.get('version')) == (STICKER_FORMAT, 1)
         if (data['units'], data['origin']) != ('mm', 'top left') or (
                 not legacy and not sticker and (format_id, data.get('version')) != (CARD_FORMAT, 1)):
-            raise BundleError('This ZIP needs a supported Print & Cut export version.')
+            raise BundleError('This Print & Cut export version is unsupported.')
         pdf, page, mat, reg, rows = (data[key] for key in
                                    ('pdf', 'pdfPage', 'mat', 'registration', 'sheets'))
         if not pdf.lower().endswith('.pdf') or pdf not in entries or not rows:
-            raise BundleError('The matched ZIP must contain a PDF and at least one sheet.')
+            raise BundleError('The Print & Cut file must contain a PDF and at least one sheet.')
         portrait = mat['orientation'] == 'portrait'
         width, height = float(mat['width']), float(mat['height'])
         turned = mat['orientation'] != page['orientation']
@@ -216,11 +216,11 @@ def load(path):
     except BundleError:
         raise
     except zipfile.BadZipFile as exc:
-        raise BundleError('This file could not be read as a ZIP archive.') from exc
+        raise BundleError('This file could not be opened as a Print & Cut file.') from exc
     except KeyError as exc:
-        raise BundleError(f'The ZIP is missing a required registration field ({exc.args[0]}).') from exc
+        raise BundleError(f'The Print & Cut file is missing a required registration field ({exc.args[0]}).') from exc
     except (AttributeError, OSError, TypeError, ValueError) as exc:
-        raise BundleError(f'Could not read the Print & Cut ZIP: {exc}') from exc
+        raise BundleError(f'Could not read the Print & Cut file: {exc}') from exc
     layout = dict(sheet=paper, portrait=portrait, use_document_page=not legacy, mark_inset_mm=inset,
                   mark_length_mm=arm, mark_thickness_mm=weight, pattern=pattern)
     if sticker:

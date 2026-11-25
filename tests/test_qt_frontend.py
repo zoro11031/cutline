@@ -136,7 +136,35 @@ class TestQtFrontend(unittest.TestCase):
                                  "Pairing with CAMEO 4-1234…" if unpaired else "Reading cutter status…")
                 self.assertEqual(detect.call_count, 0)
                 self.assertEqual(run.call_count, 1)          # the status read, which pairs first
-                window.busy = False
+                window.checking_status = False
+
+    def test_template_import_works_while_startup_status_is_pending(self):
+        window = self.window
+        classic = ("bluetooth", "AA:BB:CC:00:11:22")
+        source = Path(__file__).parent / "fixtures" / "studio3" / "letter-catan-v2.studio3"
+        with mock.patch.object(transport, "usb_endpoints", return_value=[]), \
+             mock.patch.object(window.tasks, "run") as run, \
+             mock.patch.object(QFileDialog, "getOpenFileName", return_value=(str(source), "")) as picker:
+            window._wireless_done({classic: "CAMEO 4-1234 · Bluetooth Classic"}, None)
+            run.assert_called_once()
+            self.assertTrue(window.busy)
+            self.assertFalse(window.send_button.isEnabled())
+            self.assertTrue(window.open_artwork_button.isEnabled())
+            window.open_artwork_button.click()
+            picker.assert_called_once()
+            self.assertEqual(window.job.paths, window.artwork.paths)
+            self.send_shortcut("Ctrl+O").trigger()
+            self.assertEqual(picker.call_count, 2)
+            run.call_args.args[1](None, transport.NotFound("offline test"))
+            self.assertFalse(window.busy)
+            window.sending = True
+            window.refresh_send()
+            self.assertFalse(window.open_artwork_button.isEnabled())
+            window.open_artwork()
+            self.assertEqual(picker.call_count, 2)
+            artwork = window.artwork
+            window.load_artwork(source)
+            self.assertIs(window.artwork, artwork)
 
     def test_a_listed_cutter_that_does_not_answer_is_not_called_connected(self):
         # A paired cutter is listed even when it is switched off.
@@ -435,7 +463,7 @@ class TestQtFrontend(unittest.TestCase):
         # Nothing that moves the cutter is one keystroke away: these are all of them.
         self.assertEqual(sorted(action.text() for action in window.send_view.actions()),
                          ["Cut Job", "Edit in Design", "Fit Preview", "Layout",
-                          "Open Cut Template…", "Open PDF or ZIP…", "Sheet", "Zoom In", "Zoom Out"])
+                          "Open Cut Template…", "Open Print File…", "Sheet", "Zoom In", "Zoom Out"])
 
     def test_troubleshooting_opens_the_controls_its_advice_names(self):
         window = self.window
@@ -1180,7 +1208,7 @@ class TestQtFrontend(unittest.TestCase):
             box.addButton.side_effect = lambda text, role: action_btn if text == "Open Sheet" else mock.MagicMock()
             box.clickedButton.return_value = action_btn
             window.open_design()
-            box.setWindowTitle.assert_called_with("Matched ZIP Paths Locked")
+            box.setWindowTitle.assert_called_with("Matched Cut Paths Locked")
             self.assertEqual(window.tabs.currentIndex(), window.tab("Sheet"))
 
     def test_footer_actions_carry_their_roles_and_warnings_stay_readable(self):
@@ -1651,10 +1679,10 @@ class TestQtFrontend(unittest.TestCase):
             self.assertEqual(cutter.tool_codes.call_count, 1)
 
             window.active_job = None
-            window.busy = True
+            window.sending = True
             window.detect_tools()
             self.assertEqual(cutter.tool_codes.call_count, 1)
-            window.busy = False
+            window.sending = False
 
     def test_a_cutter_that_cannot_report_its_tools_is_never_queried(self):
         window = self.window
@@ -1689,7 +1717,7 @@ class TestQtFrontend(unittest.TestCase):
         control = transport.CutControl(lambda: None)
         window.cut_control = control
         window.active_job = original_job
-        window.busy = True
+        window.sending = True
         window.update_enabled_fields()
         window.refresh_send()
 
@@ -1757,7 +1785,7 @@ class TestQtFrontend(unittest.TestCase):
         # Terminal state reset restores editable controls
         window.cut_control = None
         window.active_job = None
-        window.busy = False
+        window.sending = False
         window.update_enabled_fields()
         window.rebuild()
         window.refresh_send()

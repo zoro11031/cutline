@@ -145,7 +145,7 @@ class BundleRules(unittest.TestCase):
         target = loaded.save_cut_file(row, self.path.parent / 'sheet-2.svg')
         with zipfile.ZipFile(self.path) as archive:
             self.assertEqual(target.read_bytes(), archive.read(row['svg']))
-        with self.assertRaisesRegex(bundle.BundleError, 'separate from the source ZIP'):
+        with self.assertRaisesRegex(bundle.BundleError, 'separate from the source file'):
             loaded.save_cut_file(row, self.path)
         self.assertTrue(zipfile.is_zipfile(self.path))
 

@@ -71,7 +71,8 @@ class Window(QMainWindow):
         self.job = self.artwork = self.project_shapes = self.design = self.reviewed_design = self.design_origin = None
         self.pdf = self.bundle = self.sheet_token = self.report = None
         self.bundle_row_error = None
-        self.bundle_checked = self.busy = self.loading = False
+        self.bundle_checked = self.loading = False
+        self.sending = self.checking_status = False
         self.pdf_check_state = sheet.RegistrationDecision.NONE
         self.checked_marks = None
         self.checked_scm_orientation = False
@@ -141,7 +142,7 @@ class Window(QMainWindow):
         self.bundle_notice_bar, bundle_notice_row = bar(preview_panel, (12, 8, 12, 8))
         self.bundle_notice = styled_label(role="body")
         self.bundle_notice.setWordWrap(True)
-        self.bundle_notice.setText("Matched ZIP: the cut paths are locked to the printed sheet. "
+        self.bundle_notice.setText("The cut paths are locked to the printed sheet. "
                                    "Open Sheet to review the match or clear it.")
         bundle_notice_row.addWidget(self.bundle_notice, 1)
         bundle_notice_row.addWidget(button("Open Sheet", lambda: self.tabs.setCurrentIndex(self.tab("Sheet")),
@@ -264,7 +265,7 @@ class Window(QMainWindow):
 
         files = self.menu_bar.addMenu("&File")
         self.open_artwork_action = command(files, "Open Cut Template…", self.open_artwork, "Ctrl+O")
-        self.open_print_action = command(files, "Open PDF or ZIP…", self.open_sheet, "Ctrl+Shift+O")
+        self.open_print_action = command(files, "Open Print File…", self.open_sheet, "Ctrl+Shift+O")
         self.close_print_action = command(files, "Close Print File", self.close_printed_sheet)
         self.paired_cut_action = command(files, "Save Paired Cut File…", self.save_bundle_file)
         files.addSeparator()
@@ -357,9 +358,9 @@ class Window(QMainWindow):
     def sheet_page(self):
         page = Page()
         form = page.group("Printed sheet")
-        self.sheet_file = form.note("Open the PDF or ZIP you printed from.")
+        self.sheet_file = form.note("Open the PDF you printed.")
         self.close_print = button("Close File", self.close_printed_sheet)
-        self.open_print_button = button("Open PDF or ZIP…", self.open_sheet)
+        self.open_print_button = button("Open Print File…", self.open_sheet)
         form.actions(self.open_print_button, self.close_print)
         self.bundle_export = form.push("Save Paired Cut File…", self.save_bundle_file)
         self.bundle_print = form.push("Save Print PDF…", self.save_bundle_print)
@@ -731,6 +732,13 @@ class Window(QMainWindow):
         return (self.save_preset_btn, self.save_new_preset_btn, self.delete_preset_btn,
                 self.import_csv_btn, self.import_folder_btn, self.restore_materials_btn)
 
+    @property
+    def busy(self):
+        return self.sending or self.checking_status
+
+    def can_import_template(self):
+        return self.active_job is None and not self.sending
+
     def settings_locked(self):
         """A sent job owns its settings until it ends."""
         return self.active_job is not None or self.busy
@@ -881,14 +889,14 @@ class Window(QMainWindow):
             self.use_artwork(None, "Generated card layout")
 
     def open_artwork(self):
-        if self.active_job is not None or self.busy:
+        if not self.can_import_template():
             return
         path, _ = QFileDialog.getOpenFileName(self, "Open Cut Template", "", ARTWORK_FILTER)
         if path:
             self.load_artwork(Path(path))
 
     def load_artwork(self, path, page=None):
-        if self.active_job is not None or self.busy:
+        if not self.can_import_template():
             return
         try:
             drawing = importer.load(path, page=page)
@@ -1367,7 +1375,7 @@ class Window(QMainWindow):
         if self.pending_design():
             return "The design has edits Send has not used. Open Design, then switch to Send."
         if self.bundle and self.artwork is None:
-            return ("Choose another sheet or reopen the ZIP in Sheet." if self.bundle_row_error
+            return ("Choose another sheet or reopen the Print & Cut file in Sheet." if self.bundle_row_error
                     else "Save the legacy cut file from Sheet.")
         if self.bundle and not self.bundle_checked:
             if self.pdf_check_state == sheet.RegistrationDecision.FAILED:
@@ -1418,8 +1426,9 @@ class Window(QMainWindow):
         self.update_stages(rebuild=False)
         self.review_button.setText(f"Review {'Cut Job' if target == 'Send' else target}")
         editable = self.active_job is None and not self.busy
-        for control in (self.open_artwork_action, self.open_print_action,
-                        self.open_artwork_button, self.open_print_button):
+        for control in (self.open_artwork_action, self.open_artwork_button):
+            control.setEnabled(self.can_import_template())
+        for control in (self.open_print_action, self.open_print_button):
             control.setEnabled(editable)
         self.close_print_action.setEnabled(editable and self.pdf is not None)
         self.update_sheet_controls()
@@ -1505,8 +1514,8 @@ class Window(QMainWindow):
         return QMessageBox.question(self, title, prompt, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                     QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes
 
-    def select_open(self, title, filters):
-        value, _ = QFileDialog.getOpenFileName(self, title, "", filters)
+    def select_open(self, title, filters, *, options=QFileDialog.Option(0)):
+        value, _ = QFileDialog.getOpenFileName(self, title, "", filters, options=options)
         return Path(value) if value else None
 
     def choose_output(self, title, name, filters=""):
@@ -1587,13 +1596,13 @@ class Window(QMainWindow):
             else (self.bundle_row_error or "Open a PDF first.")
         )
         self.sheet_dpi.setEnabled(editable and loaded)
-        self.sheet_page_label.setText("Sheet in ZIP" if self.bundle else "PDF page")
+        self.sheet_page_label.setText("Matched sheet" if self.bundle else "PDF page")
         self.sheet_page_number.setEnabled(editable and loaded and (not self.bundle or len(self.bundle.rows) > 1))
 
     def clear_printed_sheet(self):
         self.pdf = self.bundle_row_error = None
         self.invalidate_measurement(clear_image=True)
-        self.sheet_file.setText("Open a print PDF or a matched Print & Cut ZIP.")
+        self.sheet_file.setText("Open the PDF you printed.")
         self.sheet_result.setText("Not measured")
         with self.editing():
             self.sheet_page_number.setRange(1, 999)
@@ -1635,7 +1644,8 @@ class Window(QMainWindow):
     def open_sheet(self):
         if self.active_job is not None or self.busy:
             return
-        path = self.select_open("Open Printed Sheet", "Print PDF or matched ZIP (*.pdf *.PDF *.zip *.ZIP)")
+        path = self.select_open("Open Print File", "Print files (*.pdf *.PDF *.zip *.ZIP)",
+                                options=QFileDialog.Option.HideNameFilterDetails)
         if not path or self.active_job is not None or self.busy:
             return
         if path.suffix.casefold() == ".zip" or zipfile.is_zipfile(path):
@@ -1928,7 +1938,7 @@ class Window(QMainWindow):
                 or not device.detects_tools or self.tools_connection == connection):
             return
 
-        self.busy = True
+        self.checking_status = True
         self.update_enabled_fields()
         self.refresh_send()
 
@@ -1937,7 +1947,7 @@ class Window(QMainWindow):
                 return cutter.tool_codes()
 
         def done(codes, error):
-            self.busy = False
+            self.checking_status = False
             self.update_enabled_fields()
             if connection == self.connection():
                 if error:
@@ -2021,7 +2031,7 @@ class Window(QMainWindow):
         if connection[0] != "auto" and not connection[1]:
             self.message("Select a Bluetooth cutter.")
             return
-        self.busy = True
+        self.checking_status = True
         self.update_enabled_fields()
         self.set_cutter_status(pending)
         self.refresh_send()
@@ -2033,7 +2043,7 @@ class Window(QMainWindow):
                 return cutter.device, f"{cutter.device.name} · {status}{version}", codes
 
         def done(value, error):
-            self.busy = False
+            self.checking_status = False
             self.update_enabled_fields()
             if connection == self.connection():
                 self.set_cutter_status(self._status_failure(error) if error else value[1])
@@ -2114,7 +2124,7 @@ class Window(QMainWindow):
         """Return the window to an editable state after a send ends, however it ended."""
         self.cut_control = None
         self.active_job = None
-        self.busy = False
+        self.sending = False
         self.update_enabled_fields()
         self.refresh_send()
 
@@ -2145,7 +2155,7 @@ class Window(QMainWindow):
         control = self.cut_control = (transport.CutControl(
             lambda: self.tasks.result.emit(lambda *_: self.refresh_send(), None, None))
             if controllable else None)
-        self.busy = True
+        self.sending = True
         self.clear_scan_result()
         self.refresh_send()
 
@@ -2417,7 +2427,7 @@ class Window(QMainWindow):
             except OSError as error:
                 self.message(f"Could not save the marked test sheet history. {error}")
                 return
-        self.busy = True
+        self.sending = True
         self.refresh_send()
 
         def work():
@@ -2428,7 +2438,7 @@ class Window(QMainWindow):
 
         def done(_sent, error):
             self.guide.record(trial, error, name)
-            self.busy = False
+            self.sending = False
             self.refresh_send()
             if self.persist_guide():
                 self.message(str(error) if error else "Pass complete.")
@@ -2464,8 +2474,8 @@ class Window(QMainWindow):
     def open_design(self):
         if self.bundle:
             dialog = QMessageBox(self)
-            dialog.setWindowTitle("Matched ZIP Paths Locked")
-            dialog.setText("Matched ZIP paths are locked to the printed sheet.")
+            dialog.setWindowTitle("Matched Cut Paths Locked")
+            dialog.setText("Matched cut paths are locked to the printed sheet.")
             dialog.setInformativeText("To edit cut paths or clear the match, open Sheet.")
             open_sheet = dialog.addButton("Open Sheet", QMessageBox.ButtonRole.ActionRole)
             dialog.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
@@ -2507,8 +2517,8 @@ class Window(QMainWindow):
             self.review_design(self.design.project, detail)
             return
         if verdict == "stickers":
-            self.message("Sticker sheets are cut from their Print & Cut ZIP. Choose Export Print & Cut, "
-                         "then open the ZIP in Sheet.")
+            self.message("Sticker sheets are cut from their Print & Cut file. Choose Export Print & Cut, "
+                         "then open the file in Sheet.")
         if verdict != "keep":
             self.forget_sent_design()
         self.leave_design()
