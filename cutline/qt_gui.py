@@ -1188,11 +1188,17 @@ class Window(QMainWindow):
             field.blockSignals(blocked)
 
     def start_guide_slots(self):
-        """A new test starts both settings from Cut Settings, with A open."""
-        values = {key: (None if self.blade[key].value() < 0 else self.blade[key].value())
-                  for key in self.GUIDE_SLOT_KEYS}
-        for name in self.guide_fields:
-            self._show_guide_slot_values(name, values)
+        """A new test starts A from Cut Settings and B from light pass settings, with A open."""
+        main = {key: (None if self.blade[key].value() < 0 else self.blade[key].value())
+                for key in self.GUIDE_SLOT_KEYS}
+        light = dict(main)
+        if self.blade["light_passes"].value() > 0:
+            for key, stage_key in (("force", "light_force"), ("speed", "light_speed")):
+                value = self.blade[stage_key].value()
+                if value >= 0:
+                    light[key] = value
+        self._show_guide_slot_values("A", main)
+        self._show_guide_slot_values("B", light)
         self.guide_headers["A"].setChecked(True)
         self.guide_slot_choice.setCurrentIndex(self.guide_slot_choice.findData("A"))
 

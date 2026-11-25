@@ -703,6 +703,19 @@ class TestQtFrontend(unittest.TestCase):
         for shown in (blade["passes"], window.stage_toggle, blade["force"]):
             self.assertTrue(shown.isVisibleTo(window))
 
+        # When light passes are enabled, A inherits main settings and B inherits light pass settings.
+        blade["force"].setValue(25)
+        blade["speed"].setValue(12)
+        window.stage_toggle.setChecked(True)
+        blade["light_force"].setValue(8)
+        blade["light_speed"].setValue(-1)
+        window.open_material_guide()
+        self.assertEqual(window.guide_fields["A"]["force"].value(), 25)
+        self.assertEqual(window.guide_fields["A"]["speed"].value(), 12)
+        self.assertEqual(window.guide_fields["B"]["force"].value(), 8)
+        self.assertEqual(window.guide_fields["B"]["speed"].value(), 12)
+        window.back_to_send.click()
+
     def test_staged_passes_open_from_a_box_under_passes(self):
         window = self.window
         blade = window.blade

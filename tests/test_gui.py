@@ -1204,6 +1204,20 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertTrue(win.send_rows["passes"].get_visible())
         self.assertTrue(win.r_stage.get_visible())
 
+        # When light passes are enabled, A inherits main settings and B inherits light pass settings.
+        win.r_force.set_value(25)
+        win.r_speed.set_value(12)
+        win.r_stage.set_enable_expansion(True)
+        win.stage_fields["light_passes"].set_value(1)
+        win.stage_fields["light_force"].set_value(8)
+        win.stage_fields["light_speed"].set_value(-1)
+        win.open_material_guide()
+        self.assertEqual(win.guide_fields["A"]["force"].get_value(), 25)
+        self.assertEqual(win.guide_fields["A"]["speed"].get_value(), 12)
+        self.assertEqual(win.guide_fields["B"]["force"].get_value(), 8)
+        self.assertEqual(win.guide_fields["B"]["speed"].get_value(), 12)
+        win.back_to_send.emit('clicked')
+
     def test_the_app_reopens_on_the_material_used_last(self):
         with tempfile.TemporaryDirectory() as folder, mock.patch.object(config, "CONFIG_DIR", Path(folder)):
             win = self.make_window()

@@ -1109,10 +1109,16 @@ class Window(Adw.ApplicationWindow):
                 for key, field in (("force", self.r_force), ("speed", self.r_speed), ("depth", self.r_depth))}
 
     def start_guide_slots(self):
-        """A new test starts both settings from Cut Settings, with A open."""
-        values = self._blade_slot_values()
-        for name in self.guide_fields:
-            self._show_guide_slot_values(name, values)
+        """A new test starts A from Cut Settings and B from light pass settings, with A open."""
+        main = self._blade_slot_values()
+        light = dict(main)
+        if self._light_passes() > 0:
+            for key, stage_key in (("force", "light_force"), ("speed", "light_speed")):
+                value = int(self.stage_fields[stage_key].get_value())
+                if value >= 0:
+                    light[key] = value
+        self._show_guide_slot_values("A", main)
+        self._show_guide_slot_values("B", light)
         self.guide_headers["A"].set_expanded(True)
         self.guide_slot_choice.set_selected(0)
 
