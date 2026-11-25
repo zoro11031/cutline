@@ -52,6 +52,10 @@ def refuse_sticker_ink(*args):
 
 
 CASES = (
+    (cutters, "wireless_refusal", lambda *a: "", "unverified Bluetooth always accepted",
+     ["tests.test_guards.TestWirelessVerification"]),
+    (cutters, "wireless_refusal", lambda *a: "refused", "verified Bluetooth always refused",
+     ["tests.test_guards.TestWirelessVerification"]),
     (sticker_print, "check_print_area", lambda *a: None, "sticker print guard always allows",
      ["tests.test_sticker_print.TestStickerPrint.test_export_refuses_to_overwrite_archive_if_print_covers_a_mark"]),
     (sticker_print, "check_print_area", refuse_sticker_ink, "sticker print guard always refuses",

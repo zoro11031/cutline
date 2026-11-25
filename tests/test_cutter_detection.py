@@ -23,7 +23,7 @@ class TestExactEndpoint(unittest.TestCase):
             choices = {**cutters.usb_choices(), wireless: "CAMEO 4-1234 · Bluetooth LE · A"}
             self.assertEqual(cutters.detected_choice(choices, None), usb)
             self.assertEqual(cutters.detected_choice(choices, wireless), wireless)
-            self.assertEqual(cutters.detected_choice({wireless: choices[wireless]}, None), wireless)
+            self.assertIsNone(cutters.detected_choice({wireless: choices[wireless]}, None))
             records.append((cameo, "", second_usb))
             choices.update(cutters.usb_choices())
             self.assertIsNone(cutters.detected_choice(choices, None))
@@ -54,15 +54,14 @@ class TestExactEndpoint(unittest.TestCase):
             opened.assert_not_called()
 
 
-    def test_paired_classic_is_offered_without_a_live_connection(self):
-        # Connections are opened per action, so a paired cutter is normally
-        # disconnected; it must still be offered.
+    def test_paired_classic_requires_current_presence(self):
         classic = bluetooth.Candidate("AA:BB:CC:00:11:22", "CAMEO 4-1234")
-        with mock.patch.object(ble, "discover", return_value=[]), \
-             mock.patch.object(rfcomm, "paired_candidates", return_value=[classic]) as paired:
-            choices = cutters.wireless_choices()
-        self.assertIn(("bluetooth", classic.identifier), choices)
-        self.assertNotEqual(paired.call_args, mock.call(connected=True))
+        with mock.patch.object(ble, "discover", return_value=[]) as discover, \
+             mock.patch.object(rfcomm, "paired_candidates",
+                               side_effect=lambda connected=False: [] if connected else [classic]):
+            self.assertEqual(cutters.wireless_choices(), {})
+            discover.return_value = [("A", classic.name)]
+            self.assertIn(("bluetooth", classic.identifier), cutters.wireless_choices())
 
     def test_classic_replaces_the_same_cutters_le_entry(self):
         # Studio 5.0.556.1 reaches a Cameo 4 over Classic only (2026-11-21);
@@ -77,7 +76,7 @@ class TestExactEndpoint(unittest.TestCase):
         self.assertEqual(next(iter(choices)), ("bluetooth", "AA:BB:CC:00:11:22"))
         self.assertEqual(cutters.detected_choice(choices, None), None)  # two cutters: ask
         only = {key: label for key, label in choices.items() if key[0] == "bluetooth"}
-        self.assertEqual(cutters.detected_choice(only, None), ("bluetooth", classic.identifier))
+        self.assertIsNone(cutters.detected_choice(only, None))
 
 
     def test_only_a_search_runs_the_classic_inquiry(self):
@@ -97,8 +96,8 @@ class TestExactEndpoint(unittest.TestCase):
             self.assertEqual(inquiry.call_count, 1)
             self.assertEqual(choices[endpoint], "CAMEO 4-1234 · Bluetooth Classic · AA:BB:CC:00:11:22")
             self.assertTrue(cutters.unpaired(endpoint))
-            self.assertEqual(cutters.detected_choice(choices, None), endpoint)
-            self.assertIn(endpoint, cutters.wireless_choices())          # a later refresh keeps it
+            self.assertIsNone(cutters.detected_choice(choices, None))
+            self.assertNotIn(endpoint, cutters.wireless_choices())       # no fresh evidence
             self.assertEqual(inquiry.call_count, 1)
             paired.return_value = [nearby]                                 # now paired
             self.assertEqual(list(cutters.wireless_choices()), [endpoint])

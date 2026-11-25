@@ -943,6 +943,7 @@ class Window(Adw.ApplicationWindow):
         mode, identifier, *_ = self._connection()
         can_check = bool(identifier) and not (self._sending or self._checking_status)
         self.check_cutter_status.set_sensitive(can_check)
+        self.r_bluetooth.set_sensitive(editable and not self._checking_status)
         self.r_tool_selection.set_sensitive(editable and can_check)
         pdf_refusal = ""
         if job and job.registration_steps() and self.pdf_path is not None:
@@ -961,6 +962,7 @@ class Window(Adw.ApplicationWindow):
             "Check the matching PDF in Sheet." if destination == "sheet" else
             "Check this layout before sending." if job is None or job.blocked else
             "Select a Bluetooth cutter." if mode in bluetooth.BLUETOOTH_MODES and not identifier else
+            "Check the cutter connection first." if not self.wireless_ready() else
             ""
         )
         if not reason:
@@ -1417,6 +1419,7 @@ class Window(Adw.ApplicationWindow):
         self._wireless_scanning = False
         self._search_pending = False
         self.preferred_endpoint = None
+        self.verified_wireless = None
         self.endpoint_changed_id = self.r_bluetooth.connect("notify::selected", self.select_detected)
         g2.add(self.r_bluetooth)
         self.connection_status = Adw.ActionRow(title="Cutter status")
@@ -3001,7 +3004,7 @@ class Window(Adw.ApplicationWindow):
 
     def on_guide_spot_selected(self, row, _param=None):
         spot = int(row.get_value())
-        if self.guide.spot == spot or self._sending or self._checking_status:
+        if self.guide.spot == spot or self._sending:
             return
         try:
             self.guide.select_spot(spot)
@@ -3014,7 +3017,7 @@ class Window(Adw.ApplicationWindow):
         self.update_tuning_preview()
 
     def on_preview_spot_clicked(self, x, y):
-        if not self.tuning or self._sending or self._checking_status:
+        if not self.tuning or self._sending:
             return False
         spot = self.guide.spot_for_point(x, y)
         if spot is not None:
@@ -3030,7 +3033,7 @@ class Window(Adw.ApplicationWindow):
         return False
 
     def update_guide(self):
-        busy = self._sending or self._checking_status
+        busy = self._sending
         for field in (self.guide_apply, self.guide_next, self.guide_reset, self.guide_slot_choice):
             field.set_sensitive(not busy)
         state = self.guide
@@ -3048,7 +3051,7 @@ class Window(Adw.ApplicationWindow):
                 field.set_selected(selection)
             field.set_sensitive(not busy)
         connected = starting_guide.has_cutter_endpoint(self._connection())
-        self.guide_send.set_sensitive(not busy and connected and state.can_cut)
+        self.guide_send.set_sensitive(not busy and not self._checking_status and self.wireless_ready() and connected and state.can_cut)
         self.guide_use.set_sensitive(not busy and state.tested_settings is not None)
         self.guide_registration.set_sensitive(not busy and not (state.spots or state.sheet_exported))
         self.guide_marked_sheet.set_sensitive(not busy and state.registered)
@@ -3088,7 +3091,7 @@ class Window(Adw.ApplicationWindow):
         self.update_guide()
 
     def on_guide_sample(self, *_args):
-        if self._sending or self._checking_status:
+        if self._sending:
             return
         shape = tuple(testcut.TEST_SHAPES)[self.guide_shape.get_selected()]
         size = tuple(starting_guide.SAMPLE_SIZES)[self.guide_size.get_selected()]
@@ -3120,7 +3123,7 @@ class Window(Adw.ApplicationWindow):
 
     def on_guide_use(self, *_args):
         settings = self.guide.tested_settings
-        if self._sending or self._checking_status or settings is None:
+        if self._sending or settings is None:
             return
         device = graphtec.device_by_name(self._text(self.r_cutter))
         if device != self.guide.trial.sheet.device or settings.holder != self._blade_options()["holder"]:
@@ -3163,7 +3166,7 @@ class Window(Adw.ApplicationWindow):
         dialog.present(self)
 
     def on_guide_next(self, *_args):
-        if self._sending or self._checking_status:
+        if self._sending:
             return
         try:
             self.guide.next_spot()
@@ -3183,7 +3186,7 @@ class Window(Adw.ApplicationWindow):
         dialog.set_close_response("cancel")
 
         def reset(_dialog, response):
-            if response == "new" and not (self._sending or self._checking_status):
+            if response == "new" and not (self._sending):
                 self.guide.reset()
                 self.guide.placement = self.guide.make_placement(self.job, self.options())
                 self.persist_guide()
@@ -3233,7 +3236,7 @@ class Window(Adw.ApplicationWindow):
         return self.guide.prepare(self._connection(), self.options(), self.job)
 
     def on_guide_pass(self, *_args):
-        if self._sending or self._checking_status or not self.guide.can_cut:
+        if self._sending or self._checking_status or not self.guide.can_cut or not self.wireless_ready():
             return
         try:
             trial = self.guide_proposal()
@@ -3253,7 +3256,7 @@ class Window(Adw.ApplicationWindow):
         dialog.present(self)
 
     def _guide_pass_response(self, _dialog, response, trial):
-        if response != "cut" or self._sending or self._checking_status or not self.guide.can_cut:
+        if response != "cut" or self._sending or self._checking_status or not self.guide.can_cut or not self.wireless_ready():
             return
         try:
             current = self.guide_proposal()
@@ -3334,7 +3337,7 @@ class Window(Adw.ApplicationWindow):
     def _test_cut_response(self, _dialog, response, ts, connection):
         if response != "cut":
             return
-        if self._sending or self._checking_status:
+        if self._sending or self._checking_status or not self.wireless_ready():
             self.toast("The cutter connection is busy.")
             return
         self.guide.moved()
@@ -3387,8 +3390,14 @@ class Window(Adw.ApplicationWindow):
 
     def _refresh_cutter_list(self):
         devices = {**cutters.usb_choices(), **self._wireless_choices}
+        if cutters.wireless_endpoint(self.preferred_endpoint) and self.preferred_endpoint not in devices:
+            self.preferred_endpoint = self.verified_wireless = None
         if devices != self._usb_devices:
-            selected = cutters.detected_choice(devices, self.preferred_endpoint)
+            preferred = self.preferred_endpoint
+            if cutters.wireless_endpoint(preferred) and self.verified_wireless != preferred:
+                selected = None
+            else:
+                selected = cutters.detected_choice(devices, preferred)
             same_cutter = (selected is not None and selected == self._automatic_endpoint() and
                            devices[selected] == self._usb_devices.get(selected))
             self._usb_devices = devices
@@ -3408,7 +3417,11 @@ class Window(Adw.ApplicationWindow):
             self._search_pending = True   # run it once the window is free
             self._update_scan_ui()
             return False
-        if self._sending or self._wireless_scanning or self._connection_mode() != "auto":
+        if self._sending or self._wireless_scanning:
+            return False
+        if self._connection_mode() != "auto":
+            if not search and self._connection() == self.verified_wireless:
+                self.on_refresh_status()
             return False
         self._wireless_scanning = True
         self._update_scan_ui()
@@ -3425,9 +3438,15 @@ class Window(Adw.ApplicationWindow):
 
     def _wireless_done(self, choices):
         self._wireless_scanning = False
-        self._wireless_choices = choices
+        selected = self._automatic_endpoint()
+        last_label = self._wireless_choices.get(selected)
+        self._wireless_choices = dict(choices)
+        if last_label and cutters.wireless_endpoint(selected):
+            self._wireless_choices.setdefault(selected, last_label)
         self.refresh_usb()
         self._update_scan_ui()
+        if cutters.wireless_endpoint(self._automatic_endpoint()):
+            self.on_refresh_status()
         return False
 
     def on_scan_cutters(self, *_args):
@@ -3461,6 +3480,7 @@ class Window(Adw.ApplicationWindow):
     def on_connection_changed(self, *_args):
         mode = self._connection_mode()
         self.preferred_endpoint = None
+        self.verified_wireless = None
         self._bluetooth_devices = []
         with self.r_bluetooth.handler_block(self.endpoint_changed_id):
             self.r_bluetooth.set_model(Gtk.StringList.new(["Select a cutter"]))
@@ -3488,13 +3508,11 @@ class Window(Adw.ApplicationWindow):
             self.update_send_actions()
 
     def _scan_bluetooth(self, button):
-        from . import ble, rfcomm
         mode = self._connection_mode()
         if mode == "auto":
             self.refresh_usb()
             self.refresh_wireless(search=True)
             return
-        scanner = ble if mode == "ble" else rfcomm
 
         def update(devices, error):
             button.set_sensitive(True)
@@ -3516,7 +3534,7 @@ class Window(Adw.ApplicationWindow):
 
         def work():
             try:
-                GLib.idle_add(update, scanner.discover(), None)
+                GLib.idle_add(update, cutters.discover_desktop(mode), None)
             except transport.TransportError as exc:
                 GLib.idle_add(update, [], str(exc))
 
@@ -3526,8 +3544,35 @@ class Window(Adw.ApplicationWindow):
         threading.Thread(target=work, daemon=True).start()
 
     def select_detected(self, *_args):
+        if self._checking_status:
+            return
         if self._connection_mode() == "auto":
-            self.preferred_endpoint = self._automatic_endpoint()
+            endpoint = self._automatic_endpoint()
+            if endpoint == self.preferred_endpoint:
+                self.update_send_actions()
+                return
+            self.preferred_endpoint = endpoint
+            if cutters.wireless_endpoint(endpoint):
+                with self.r_bluetooth.handler_block(self.endpoint_changed_id):
+                    self.r_bluetooth.set_selected(0)
+                self.on_connection_target_changed()
+                pending = "Pairing with cutter…" if cutters.unpaired(endpoint) else "Connecting…"
+                self.on_refresh_status(pending=pending, endpoint=endpoint)
+                return
+        else:
+            index = self.r_bluetooth.get_selected() - 1
+            if 0 <= index < len(self._bluetooth_devices):
+                mode = self._connection_mode()
+                identifier = self._bluetooth_devices[index][0]
+                old = self._connection()
+                if old == self.verified_wireless and old[1] == identifier:
+                    return
+                with self.r_bluetooth.handler_block(self.endpoint_changed_id):
+                    self.r_bluetooth.set_selected(0)
+                self.r_bluetooth_id.set_text("")
+                self.on_refresh_status(pending="Connecting…", endpoint=(mode, identifier),
+                                       target=(mode, identifier, *old[2:]))
+                return
         self.on_bluetooth_selected()
 
     def on_bluetooth_selected(self, *_args):
@@ -3670,10 +3715,12 @@ class Window(Adw.ApplicationWindow):
         self.corrected_tools = None
         self.update_holder_labels()
 
-    def on_refresh_status(self, *_a, pending="Checking…"):
+    def on_refresh_status(self, *_a, pending="Checking…", endpoint=None, target=None):
         if self._sending or self._checking_status or self.active_job is not None:
             return
-        connection = self._connection()
+        original = self._connection()
+        connection = target or endpoint or original
+        automatic = self._connection_mode() == "auto"
         mode = connection[0]
         if not connection[1]:
             self.connection_status.set_subtitle("Select a cutter.")
@@ -3685,13 +3732,43 @@ class Window(Adw.ApplicationWindow):
         def done(text, device, codes):
             self._checking_status = False
             self.update_send_actions()
-            if connection != self._connection():
+            if original != self._connection():
                 return
+            if mode in bluetooth.BLUETOOTH_MODES:
+                self.verified_wireless = connection if device is not None else None
+                wireless = endpoint or self._automatic_endpoint()
+                if device is None and automatic and cutters.wireless_endpoint(wireless):
+                    self._wireless_choices.pop(wireless, None)
+                    self.preferred_endpoint = None
+                    self._refresh_cutter_list()
+                    self._update_scan_ui()
+                elif not automatic:
+                    if device is None:
+                        filtered = [(address, name) for address, name in self._bluetooth_devices
+                                    if address != connection[1]]
+                        if filtered != self._bluetooth_devices:
+                            self._bluetooth_devices = filtered
+                            with self.r_bluetooth.handler_block(self.endpoint_changed_id):
+                                self.r_bluetooth.set_model(Gtk.StringList.new(["Select a cutter"] + [
+                                    f"{name or 'Unnamed'} ({address})" for address, name in filtered]))
+                            if self.r_bluetooth_id.get_text().strip() == connection[1]:
+                                self.r_bluetooth_id.set_text("")
+                    elif endpoint:
+                        self.r_bluetooth_id.set_text(endpoint[1])
+                        position = next((i for i, (address, _) in enumerate(self._bluetooth_devices, 1)
+                                         if address == endpoint[1]), 0)
+                        with self.r_bluetooth.handler_block(self.endpoint_changed_id):
+                            self.r_bluetooth.set_selected(position)
+                elif endpoint and endpoint in self._usb_devices:
+                    with self.r_bluetooth.handler_block(self.endpoint_changed_id):
+                        self.r_bluetooth.set_selected(list(self._usb_devices).index(endpoint) + 1)
+                    self.on_connection_target_changed()
             self.connection_status.set_subtitle(text)
             if device is not None and self.selected_cutter() == cutters.AUTO:
                 self.r_cutter.set_selected(graphtec.DEVICES.index(device))
             if codes is not None:
                 self.apply_tool_detection(codes)
+            self.update_send_actions()
 
         def work():
             device = None
@@ -3704,12 +3781,18 @@ class Window(Adw.ApplicationWindow):
                     if mode in bluetooth.BLUETOOTH_MODES:
                         text += f" · {cutter.firmware_version()}"
             except transport.NotFound:
+                device = None
                 text = cutters.NOT_DETECTED_TEXT
             except Exception as exc:
+                device = None
                 text = f"Could not read cutter status. {exc}"
             GLib.idle_add(done, text, device, codes)
 
         threading.Thread(target=work, daemon=True).start()
+
+    def wireless_ready(self):
+        connection = self._connection()
+        return not cutters.wireless_refusal(connection, self.verified_wireless)
 
     def on_cut(self, *_a, scan_only=False, corner=False):
         if design_review_pending(self):
@@ -3731,7 +3814,8 @@ class Window(Adw.ApplicationWindow):
                 self.toast(pdf_reason)
                 return
         j = self.job
-        refusal = cut_refusal(j, j, self._sending or self._checking_status)
+        refusal = cut_refusal(j, j, self._sending or self._checking_status) or (
+            "" if self.wireless_ready() else "Check the cutter connection first.")
         if refusal:
             self.toast(refusal)
             return
@@ -3801,7 +3885,8 @@ class Window(Adw.ApplicationWindow):
             if not allowed:
                 self.toast(pdf_reason)
                 return
-        refusal = cut_refusal(self.job, j, self._sending or self._checking_status)
+        refusal = cut_refusal(self.job, j, self._sending or self._checking_status) or (
+            "" if self.wireless_ready() else "Check the cutter connection first.")
         if refusal:
             self.toast(refusal)
             return

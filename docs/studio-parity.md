@@ -115,8 +115,8 @@ by decoding the bytes, but an option no real cut has used yet stays partial.
 |---|---|---|
 | Connect over USB | PyUSB or the kernel's printer driver | ✅ |
 | Connect over Bluetooth | Bluetooth Classic, link held open as in Studio | ✅ |
-| Find and pair a new cutter | Scan for Cutters; pairs on Linux, system settings elsewhere | ✅ |
-| Cutter status and firmware version | Check Status, read when a cutter is chosen | ✅ |
+| Find and pair a new cutter | Scan for Cutters shows available devices; pairs on Linux, system settings elsewhere | ✅ |
+| Cutter status and firmware version | Check Status verifies a Bluetooth selection while layout editing stays available | ✅ |
 | Cut over USB | Registered Print & Cut sheets cut; placement slightly off-centre | ✅ |
 | Cut over Bluetooth | Built; status and tools work, but no cut has been sent | 🟡 |
 | Firmware updates | — | ❌ |

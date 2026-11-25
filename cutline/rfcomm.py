@@ -135,12 +135,16 @@ def paired_candidates(*, connected=False):
                 yield Candidate(":".join(mac[i:i + 2] for i in range(0, 12, 2)), name.strip())
 
 
-def nearby_candidates():
+def nearby_candidates(*, fresh=False):
     """Cutters a Classic inquiry hears that BlueZ keeps no key for (Linux).
     BlueZ forgets such a device about 30 s after the search ends."""
     if not sys.platform.startswith("linux"):
         return []
-    _call(["bluetoothctl", "--timeout", str(INQUIRY_S), "scan", "bredr"], INQUIRY_S + 10)
+    _, output, _ = _call(["bluetoothctl", "--timeout", str(INQUIRY_S), "scan", "bredr"], INQUIRY_S + 10)
+    heard = {address.upper() for address in re.findall(
+        r"\[NEW\] Device (" + _ADDRESS.pattern + r")", output, re.I)}
+    heard.update(address.upper() for address in re.findall(
+        r"\[CHG\] Device (" + _ADDRESS.pattern + r") RSSI: *(?!nil)\S+", output, re.I))
     found = []
     for line in _run(["bluetoothctl", "devices"]).splitlines():
         tag, _, rest = line.strip().partition(" ")
@@ -148,6 +152,8 @@ def nearby_candidates():
         if tag != "Device" or not _ADDRESS.fullmatch(address) or not name:
             continue
         record = Candidate(address.upper(), name.strip())
+        if fresh and record.identifier not in heard:
+            continue
         if record.catalog_name is None:
             continue
         details = _info(address)
@@ -155,7 +161,7 @@ def nearby_candidates():
         # no Class of Device, which only a Classic inquiry reports.
         if "(random)" in details.split("\n", 1)[0] or "class:" not in details:
             continue
-        if _bonded(details) is False:
+        if fresh or _bonded(details) is False:
             found.append(record)
     return found
 

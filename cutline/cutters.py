@@ -32,7 +32,7 @@ for family in FAMILIES:
 # Silhouette Studio does, and say what to try when it finds nothing.
 SCAN_LABEL = "Scan for Cutters"
 SCANNING_TEXT = "Scanning for cutters…"
-NOT_DETECTED_TEXT = "Cutter did not respond. Refresh Cutters, then check its status again."
+NOT_DETECTED_TEXT = "Cutter did not respond. Turn it on, then scan for cutters again."
 # On Linux a scan also finds and pairs Bluetooth cutters; elsewhere they are
 # paired in the system's settings first.
 NO_CUTTER_TEXT = ("No cutter found. Turn the cutter on and connect it by USB, or turn on its "
@@ -225,53 +225,70 @@ def wireless_choices(search=False):
     stutter, so the periodic refresh does not."""
     from . import ble, bluetooth, rfcomm
 
-    # The inquiry runs beside the LE scan rather than after it (8 s + 13 s).
     heard = []
-    inquiry = threading.Thread(target=lambda: heard.extend(rfcomm.nearby_candidates()), daemon=True)
+    inquiry = threading.Thread(
+        target=lambda: heard.extend(rfcomm.nearby_candidates(fresh=True)), daemon=True)
     if search:
         inquiry.start()
     try:
         records = ble.discover()
     except transport.TransportError:
         records = ()
-    paired = list(rfcomm.paired_candidates())
-    if not search:
-        # A cutter heard only over LE is usually one never paired over
-        # Classic: an unpaired Cameo 4 advertises over LE, and no LE session
-        # to one has worked. Search for it over Classic, once per name.
-        known = {record.name.strip().casefold() for record in (*paired, *_nearby.values())}
-        heard_le = {(name or "").strip().casefold() for _, name in records
-                    if bluetooth.advertised_model(name or "") is not None}
-        if new := heard_le - known - _searched_le:
-            _searched_le.update(new)
-            search = True
-            inquiry.start()
+    paired = {record.identifier: record for record in rfcomm.paired_candidates()
+              if record.catalog_name}
+    name_key = lambda name: (name or "").strip().casefold()
+    le_names = {name_key(name) for _, name in records}
+    connected = {record.identifier: record for record in rfcomm.paired_candidates(connected=True)
+                 if record.catalog_name}
+    known_names = {name_key(record.name) for record in paired.values()}
+    nearby_names = {name_key(record.name) for record in _nearby.values()}
+    le_cutters = {name_key(name) for _, name in records
+                  if bluetooth.advertised_model(name or "") is not None}
+    _searched_le.intersection_update(le_cutters)
+    if not search and (new := le_cutters - known_names - nearby_names - _searched_le):
+        _searched_le.update(new)
+        search = True
+        inquiry.start()
     if search:
         inquiry.join()
         _nearby.clear()
         _nearby.update((record.identifier, record) for record in heard)
-    # Classic first, and any paired cutter, connected or not: links are opened
-    # per action, so a paired cutter is normally disconnected. Studio 5.0.556.1
-    # reaches a Cameo 4 over Classic only (captured 2026-11-21) and no LE
-    # session to one has worked here, so a cutter offered over Classic does not
-    # also appear under its LE address. A cutter seen only over LE stays.
-    choices, classic_names = {}, set()
-    for record in paired:
-        if record.catalog_name:
-            choices[("bluetooth", record.identifier)] = (
-                f"{record.name} · Bluetooth Classic · {record.identifier}")
-            classic_names.add(record.name.strip().casefold())
-            _nearby.pop(record.identifier, None)
-    # Found by a search, not yet paired: choosing one pairs it, as in Studio.
-    for record in list(_nearby.values()):
-        if ("bluetooth", record.identifier) not in choices:
-            choices[("bluetooth", record.identifier)] = (
-                f"{record.name} · Bluetooth Classic · {record.identifier}")
-            classic_names.add(record.name.strip().casefold())
-    for address, name in records:
-        if (name or "").strip().casefold() not in classic_names:
-            choices[("ble", address)] = f"{name or 'Unknown Silhouette cutter'} · Bluetooth LE · {address}"
+    else:
+        for address, record in tuple(_nearby.items()):
+            if name_key(record.name) not in le_names:
+                _nearby.pop(address)
+    classic = {**_nearby, **connected}
+    for address, record in paired.items():
+        if name_key(record.name) in le_names:
+            classic[address] = record
+        _nearby.pop(address, None)
+    classic_names = {name_key(record.name) for record in classic.values()}
+    choices = {("bluetooth", address): f"{record.name} · Bluetooth Classic · {address}"
+               for address, record in classic.items()}
+    choices.update({("ble", address): f"{name or 'Unknown Silhouette cutter'} · Bluetooth LE · {address}"
+                    for address, name in records if name_key(name) not in classic_names})
     return choices
+
+
+def discover_desktop(mode):
+    if mode == "ble":
+        from . import ble
+        return ble.discover()
+    return [(endpoint[1], label.split(" · ", 1)[0])
+            for endpoint, label in wireless_choices(search=True).items()
+            if endpoint[0] == mode]
+
+
+def wireless_endpoint(endpoint):
+    from . import bluetooth
+
+    return bool(endpoint) and endpoint[0] in bluetooth.BLUETOOTH_MODES
+
+
+def wireless_refusal(connection, verified):
+    if wireless_endpoint(connection) and connection != verified:
+        return "Check the cutter connection first."
+    return ""
 
 
 def auto_model(endpoint, label):
@@ -290,7 +307,7 @@ def detected_choice(choices, preferred):
         return preferred if preferred in choices else None
     usb = {endpoint: label for endpoint, label in choices.items()
            if endpoint[0] not in bluetooth.BLUETOOTH_MODES}
-    candidates = usb or choices
+    candidates = usb
     if len(candidates) == 1:
         endpoint, label = next(iter(candidates.items()))
         if auto_model(endpoint, label):

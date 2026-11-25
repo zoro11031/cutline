@@ -337,6 +337,13 @@ class TestPairing(unittest.TestCase):
         # BluetoothIO.dll: cTimeoutMultiplier 10 x 1.28 s.
         self.assertGreaterEqual(int(scan[scan.index("--timeout") + 1]), 12.8)
 
+    def test_fresh_inquiry_excludes_cached_records_and_includes_paired_replies(self):
+        paired = "AA:BB:CC:55:55:55"
+        self.call.return_value = (0, f"[CHG] Device {paired} RSSI: -52", "")
+        self.assertEqual([r.identifier for r in rfcomm.nearby_candidates(fresh=True)], [paired])
+        self.call.return_value = (0, f"[CHG] Device {paired} RSSI: nil", "")
+        self.assertEqual(rfcomm.nearby_candidates(fresh=True), [])
+
     def test_no_inquiry_off_linux(self):
         with mock.patch.object(rfcomm.sys, "platform", "win32"):
             self.assertEqual(rfcomm.nearby_candidates(), [])

@@ -91,7 +91,7 @@ class TestDesignWorkspace(unittest.TestCase):
             win._wireless_done({classic: "CAMEO 4-1234 · Bluetooth Classic · 01:23:45:AB:CD:EF"})
             self.assertFalse(win.scan_cutters_button.get_visible())
             self.assertTrue(win.refresh_cutters_button.get_visible())
-            self.assertEqual(win._connection(), classic)
+            self.assertIsNone(win._connection()[1])
         with mock.patch.object(win, "on_refresh_status"):
             win._wireless_done({})
             win.refresh_usb()
@@ -133,15 +133,17 @@ class TestDesignWorkspace(unittest.TestCase):
                 detect.reset_mock()
                 thread.reset_mock()
                 win._wireless_done(listing)
-                self.assertEqual(win._connection(), classic)
+                self.assertIsNone(win._connection()[1])
+                win.r_bluetooth.set_selected(1)
+                self.assertIsNone(win._connection()[1])
                 self.assertEqual(win.connection_status.get_subtitle(),
-                                 "Pairing with CAMEO 4-1234…" if unpaired else "Checking…")
+                                 "Pairing with cutter…" if unpaired else "Connecting…")
                 self.assertEqual(detect.call_count, 0)
                 self.assertEqual(thread.call_count, 1)   # the status read, which pairs first
                 win._checking_status = False
 
     def test_a_listed_cutter_that_does_not_answer_is_not_shown_as_available(self):
-        # A paired cutter is listed even when it is switched off.
+        # A discovered cutter may stop responding before it is selected.
         win = self.make_window()
         classic = ("bluetooth", "AA:BB:CC:00:11:22")
         listing = {classic: "CAMEO 4-1234 · Bluetooth Classic · AA:BB:CC:00:11:22"}
@@ -155,20 +157,27 @@ class TestDesignWorkspace(unittest.TestCase):
             if not answers:
                 link.__enter__.side_effect = gui.transport.NotFound("No cutter detected at AA:BB:CC:00:11:22.")
 
-            def run_now(target, daemon):
-                return mock.Mock(start=target)
-
             with self.subTest(answers=answers), \
                  mock.patch.object(gui.transport, "usb_endpoints", return_value=[]), \
                  mock.patch.object(cutters, "open_link", return_value=link), \
                  mock.patch.object(gui.GLib, "idle_add", side_effect=lambda f, *a: f(*a)), \
-                 mock.patch.object(gui.threading, "Thread", side_effect=run_now):
+                 mock.patch.object(gui.threading, "Thread") as thread:
                 win._wireless_done({})
                 win._wireless_done(listing)
+                win.r_bluetooth.set_selected(1)
+                thread.call_args.kwargs["target"]()
+                self.assertEqual(win._connection(), classic if answers else ("auto", None))
+                self.assertEqual(classic in win._usb_devices, answers)
                 text = win.connection_status.get_subtitle()
                 self.assertNotEqual(text, listing[classic])
                 if answers:
                     self.assertEqual(text, "Silhouette Cameo 4 · unloaded · 1.20")
+                    link.__enter__.side_effect = gui.transport.NotFound("cutter powered off")
+                    win._wireless_done({})
+                    thread.call_args.kwargs["target"]()
+                    self.assertIsNone(win._connection()[1])
+                    self.assertFalse(win.cut_button.get_sensitive())
+                    self.assertNotIn(classic, win._usb_devices)
                 else:
                     self.assertEqual(text, cutters.NOT_DETECTED_TEXT)
 
@@ -1141,6 +1150,9 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertFalse(win.cut_button.get_sensitive())
         self.assertIn('Select a Bluetooth cutter', win.send_status.get_label())
         win.r_bluetooth_id.set_text('AB:00:00:00:00:01')
+        self.assertFalse(win.cut_button.get_sensitive())
+        win.verified_wireless = win._connection()
+        win.update_send_actions()
         self.assertTrue(win.cut_button.get_sensitive())
         with mock.patch.object(win, 'toast') as warning, \
              mock.patch.object(gui.transport, 'open_transport') as open_transport:

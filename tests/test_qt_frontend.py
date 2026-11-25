@@ -91,7 +91,7 @@ class TestQtFrontend(unittest.TestCase):
             window._wireless_done({classic: "CAMEO 4-1234 · Bluetooth Classic · 01:23:45:AB:CD:EF"}, None)
             self.assertTrue(window.scan_cutters.isHidden())
             self.assertFalse(window.discover.isHidden())
-            self.assertEqual(window.connection()[:2], classic)
+            self.assertIsNone(window.connection()[1])
         with mock.patch.object(window, "check_device"):
             window._wireless_done({}, None)
             window.refresh_usb()
@@ -131,9 +131,11 @@ class TestQtFrontend(unittest.TestCase):
                 detect.reset_mock()
                 run.reset_mock()
                 window._wireless_done(listing, None)
-                self.assertEqual(window.connection()[:2], classic)
+                self.assertIsNone(window.connection()[1])
+                window.detected.setCurrentIndex(window.detected.findData(classic))
+                self.assertIsNone(window.connection()[1])
                 self.assertEqual(window.connection_status.text(),
-                                 "Pairing with CAMEO 4-1234…" if unpaired else "Reading cutter status…")
+                                 "Pairing with cutter…" if unpaired else "Connecting…")
                 self.assertEqual(detect.call_count, 0)
                 self.assertEqual(run.call_count, 1)          # the status read, which pairs first
                 window.checking_status = False
@@ -146,10 +148,24 @@ class TestQtFrontend(unittest.TestCase):
              mock.patch.object(window.tasks, "run") as run, \
              mock.patch.object(QFileDialog, "getOpenFileName", return_value=(str(source), "")) as picker:
             window._wireless_done({classic: "CAMEO 4-1234 · Bluetooth Classic"}, None)
+            popup = window.controls["layout_preset"]
+            window.show()
+            popup.showPopup()
+            window.detected.setCurrentIndex(window.detected.findData(classic))
+            self.assertTrue(popup.isEnabled())
+            self.assertTrue(popup.view().isVisible())
+            window.select("layout_preset", "mtg-cameo-a4")
+            self.assertEqual(window.job.grid.sheet_name, "A4")
+            popup.hidePopup()
             run.assert_called_once()
             self.assertTrue(window.busy)
             self.assertFalse(window.send_button.isEnabled())
             self.assertTrue(window.open_artwork_button.isEnabled())
+            self.assertTrue(window.open_print_button.isEnabled())
+            self.assertTrue(window.guide_shape.isEnabled())
+            window.open_design()
+            self.assertIsNotNone(window.design)
+            window.leave_design()
             window.open_artwork_button.click()
             picker.assert_called_once()
             self.assertEqual(window.job.paths, window.artwork.paths)
@@ -167,7 +183,7 @@ class TestQtFrontend(unittest.TestCase):
             self.assertIs(window.artwork, artwork)
 
     def test_a_listed_cutter_that_does_not_answer_is_not_called_connected(self):
-        # A paired cutter is listed even when it is switched off.
+        # A discovered cutter may stop responding before it is selected.
         window = self.window
         classic = ("bluetooth", "AA:BB:CC:00:11:22")
         listing = {classic: "CAMEO 4-1234 · Bluetooth Classic · AA:BB:CC:00:11:22"}
@@ -186,10 +202,18 @@ class TestQtFrontend(unittest.TestCase):
                  mock.patch.object(window.tasks, "run", side_effect=self._run_now):
                 window._wireless_done({}, None)
                 window._wireless_done(listing, None)
+                window.detected.setCurrentIndex(window.detected.findData(classic))
+                self.assertEqual(window.connection()[:2], classic if answers else ("auto", None))
+                self.assertEqual(window.detected.findData(classic) >= 0, answers)
                 text = window.connection_status.text()
                 self.assertNotIn("Connected", text)
                 if answers:
                     self.assertEqual(text, "Silhouette Cameo 4 · unloaded · 1.20")
+                    link.__enter__.side_effect = transport.NotFound("cutter powered off")
+                    window._wireless_done({}, None)
+                    self.assertIsNone(window.connection()[1])
+                    self.assertFalse(window.send_button.isEnabled())
+                    self.assertLess(window.detected.findData(classic), 0)
                 else:
                     self.assertEqual(text, cutters.NOT_DETECTED_TEXT)
 

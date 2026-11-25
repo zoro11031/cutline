@@ -250,7 +250,9 @@ class TestGuiCheckedPlan(unittest.TestCase):
             r_auto=mock.Mock(), toast=mock.Mock(),
             rebuild=mock.Mock(), _send_done=mock.Mock(), update_send_actions=mock.Mock(),
             lock_job_controls=mock.Mock(), active_job=None,
-            _connection=lambda: ("auto", (1, 2)), selected_cutter=lambda: gui.cutters.AUTO, guide=mock.Mock())
+            _connection=lambda: ("auto", (1, 2)), selected_cutter=lambda: gui.cutters.AUTO, guide=mock.Mock(),
+            verified_wireless=None)
+        window.wireless_ready = lambda: gui.Window.wireless_ready(window)
         window.r_auto.get_active.return_value = True
         transport = mock.MagicMock()
         transport.__enter__.return_value = transport

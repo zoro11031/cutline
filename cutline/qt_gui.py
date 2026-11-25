@@ -411,6 +411,7 @@ class Window(QMainWindow):
         self.wireless_scanning = False
         self.search_pending = False
         self.preferred_endpoint = None
+        self.verified_wireless = None
         self.detected = cutter.choice("Selected cutter", {"": "Select a cutter"}, changed=self.select_detected)
         self.connection_status = cutter.note("Cutter status not checked.")
         # Offered only while no cutter is available, as in Silhouette Studio.
@@ -741,7 +742,7 @@ class Window(QMainWindow):
 
     def settings_locked(self):
         """A sent job owns its settings until it ends."""
-        return self.active_job is not None or self.busy
+        return self.active_job is not None or self.sending
 
     def delete_selected_preset(self):
         if self.settings_locked():
@@ -916,7 +917,7 @@ class Window(QMainWindow):
         self.use_artwork(drawing, path.name + (f" · Page {page}" if page else ""))
 
     def reset_artwork(self):
-        if self.active_job is not None or self.busy:
+        if self.settings_locked():
             return
         self.clear_bundle()
         self.project_shapes = None
@@ -1036,9 +1037,9 @@ class Window(QMainWindow):
         return options
 
     def update_enabled_fields(self):
-        active = self.active_job is not None or self.busy
-        self.detected.setEnabled(not active)
-        self.tool_picker.setEnabled(not active and bool(self.connection()[1]))
+        active = self.settings_locked()
+        self.detected.setEnabled(not active and not self.checking_status)
+        self.tool_picker.setEnabled(not active and not self.checking_status and bool(self.connection()[1]))
         device = graphtec.device_by_name(self.choice("cutter"))
         holders = self.blade["holder"].holders
         holders.button(1).setEnabled(not active and device.two_tools)
@@ -1066,10 +1067,10 @@ class Window(QMainWindow):
             c.setEnabled(True)
         for c in self.controls.values():
             c.setEnabled(True)
-        self.cutter_model.setEnabled(True)
-        self.link.setEnabled(True)
-        self.identifier.setEnabled(True)
-        self.channel.setEnabled(True)
+        self.cutter_model.setEnabled(not self.checking_status)
+        self.link.setEnabled(not self.checking_status)
+        self.identifier.setEnabled(not self.checking_status)
+        self.channel.setEnabled(not self.checking_status)
         self.skip.setEnabled(True)
         for c in self.material_buttons():
             c.setEnabled(True)
@@ -1404,6 +1405,8 @@ class Window(QMainWindow):
             return refusal
         if not connection[1]:
             return "Select a cutter."
+        if refusal := cutters.wireless_refusal(connection, self.verified_wireless):
+            return refusal
         if scan_only and not plan.registration_steps():
             return "Enable registration to test the scan."
         if not scan_only and plan.settings.passes <= 0:
@@ -1430,7 +1433,7 @@ class Window(QMainWindow):
         self.guide_page.setVisible(self.tuning)
         self.update_stages(rebuild=False)
         self.review_button.setText(f"Review {'Cut Job' if target == 'Send' else target}")
-        editable = self.active_job is None and not self.busy
+        editable = not self.settings_locked()
         for control in (self.open_artwork_action, self.open_artwork_button):
             control.setEnabled(self.can_import_template())
         for control in (self.open_print_action, self.open_print_button):
@@ -1475,7 +1478,9 @@ class Window(QMainWindow):
         self.send_button.setEnabled(not reason)
         self.corner_button.setEnabled(not reason)
         self.scan_button.setEnabled(not self.send_refusal(self.job, self.connection(), scan_only=True))
-        self.test_button.setEnabled(not self.busy)
+        connection = self.connection()
+        self.test_button.setEnabled(not self.busy and (
+            not cutters.wireless_refusal(connection, self.verified_wireless)))
         can_check = not self.busy and bool(self.connection()[1])
         self.refresh_cutter.setEnabled(can_check)
         if self.bundle and self.report is not None and not self.bundle_checked:
@@ -1588,7 +1593,7 @@ class Window(QMainWindow):
 
     def update_sheet_controls(self):
         loaded = self.pdf is not None
-        editable = self.active_job is None and not self.busy
+        editable = not self.settings_locked()
         self.close_print.setEnabled(editable and loaded)
         self.close_print.setToolTip("Close the open PDF." if loaded else "No print file open.")
         checking = self.pdf_check_state == sheet.RegistrationDecision.CHECKING
@@ -1615,7 +1620,7 @@ class Window(QMainWindow):
         self.update_sheet_controls()
 
     def close_printed_sheet(self):
-        if self.active_job is not None or self.busy:
+        if self.settings_locked():
             return
         if self.bundle:
             self.reset_artwork()
@@ -1647,11 +1652,11 @@ class Window(QMainWindow):
                 self.message(str(error))
 
     def open_sheet(self):
-        if self.active_job is not None or self.busy:
+        if self.settings_locked():
             return
         path = self.select_open("Open Print File", "Print files (*.pdf *.PDF *.zip *.ZIP)",
                                 options=QFileDialog.Option.HideNameFilterDetails)
-        if not path or self.active_job is not None or self.busy:
+        if not path or self.settings_locked():
             return
         if path.suffix.casefold() == ".zip" or zipfile.is_zipfile(path):
             try:
@@ -1705,7 +1710,7 @@ class Window(QMainWindow):
         return self.bundle.rows[self.sheet_page_number.value() - 1] if self.bundle else None
 
     def change_sheet_page(self):
-        if self.loading or self.active_job is not None or self.busy:
+        if self.loading or self.settings_locked():
             return
         if self.bundle:
             row = self.current_bundle_row()
@@ -1720,7 +1725,7 @@ class Window(QMainWindow):
 
     def measure_sheet(self):
         path, matched, current = self.pdf, self.bundle, self.job
-        if self.loading or self.active_job is not None or self.busy or path is None or self.bundle_row_error:
+        if self.loading or self.settings_locked() or path is None or self.bundle_row_error:
             return
         if not matched and not current:
             self.message("Check the layout before measuring the sheet.")
@@ -1801,9 +1806,15 @@ class Window(QMainWindow):
 
     def _refresh_cutter_list(self):
         choices = {**cutters.usb_choices(), **self.wireless_choices}
+        if cutters.wireless_endpoint(self.preferred_endpoint) and self.preferred_endpoint not in choices:
+            self.preferred_endpoint = self.verified_wireless = None
         items = {"": "Select a cutter", **choices}
         if [(self.detected.itemData(i), self.detected.itemText(i)) for i in range(self.detected.count())] != list(items.items()):
-            selected = cutters.detected_choice(choices, self.preferred_endpoint) or ""
+            preferred = self.preferred_endpoint
+            if cutters.wireless_endpoint(preferred) and self.verified_wireless != (*preferred, None):
+                selected = ""
+            else:
+                selected = cutters.detected_choice(choices, preferred) or ""
             same_cutter = selected and (selected, choices[selected]) == (
                 self.detected.currentData(), self.detected.currentText())
             set_choices(self.detected, items, selected)
@@ -1821,7 +1832,11 @@ class Window(QMainWindow):
             self.search_pending = True   # run it once the window is free
             self._update_scan_ui()
             return
-        if self.busy or self.wireless_scanning or self.link.currentData() != "auto":
+        if self.busy or self.wireless_scanning:
+            return
+        if self.link.currentData() != "auto":
+            if not search and self.connection() == self.verified_wireless:
+                self.check_device()
             return
         self.wireless_scanning = True
         self._update_scan_ui()
@@ -1829,9 +1844,15 @@ class Window(QMainWindow):
 
     def _wireless_done(self, value, error):
         self.wireless_scanning = False
-        self.wireless_choices = value if not error else {}
+        selected = self.detected.currentData()
+        last_label = self.wireless_choices.get(selected)
+        self.wireless_choices = dict(value) if not error else {}
+        if last_label and cutters.wireless_endpoint(selected):
+            self.wireless_choices.setdefault(selected, last_label)
         self.refresh_usb()
         self._update_scan_ui()
+        if cutters.wireless_endpoint(self.detected.currentData()):
+            self.check_device()
 
     def on_scan_cutters(self):
         if self.link.currentData() == "auto":
@@ -1856,6 +1877,7 @@ class Window(QMainWindow):
     def change_connection(self):
         mode = self.link.currentData()
         self.preferred_endpoint = None
+        self.verified_wireless = None
         self.advanced_connection_form.setRowVisible(self.identifier, mode != "auto")
         self.advanced_connection_form.setRowVisible(self.channel, mode == "bluetooth")
         self.identifier.clear()
@@ -1968,8 +1990,23 @@ class Window(QMainWindow):
         self.tasks.run(work, done)
 
     def select_detected(self):
-        if self.link.currentData() == "auto":
-            self.preferred_endpoint = self.detected.currentData() or None
+        mode = self.link.currentData()
+        item = self.detected.currentData() or None
+        if mode == "auto":
+            self.preferred_endpoint = item
+            endpoint = item if cutters.wireless_endpoint(item) else None
+        else:
+            endpoint = (mode, item) if item else None
+        if endpoint:
+            blocked = self.detected.blockSignals(True)
+            self.detected.setCurrentIndex(0)
+            self.detected.blockSignals(blocked)
+            if mode != "auto":
+                self.identifier.clear()
+            self.change_target()
+            pending = "Pairing with cutter…" if cutters.unpaired(endpoint) else "Connecting…"
+            self.check_device(pending=pending, endpoint=endpoint)
+            return
         self.device_selected()
 
     def device_selected(self):
@@ -1994,14 +2031,11 @@ class Window(QMainWindow):
         self.detect_tools()
 
     def find_cutters(self):
-        from . import ble, rfcomm
-
         mode = self.link.currentData()
         if mode == "auto":
             self.refresh_usb()
             self.refresh_wireless(search=True)
             return
-        scanner = ble if mode == "ble" else rfcomm
         self.discover.setEnabled(False)
         self.manual_scanning = True
         self._update_scan_ui()
@@ -2021,7 +2055,7 @@ class Window(QMainWindow):
             self.connection_status.setText("Select a cutter from the list." if devices else "No cutters found.")
             self._update_scan_ui()
 
-        self.tasks.run(scanner.discover, done)
+        self.tasks.run(lambda: cutters.discover_desktop(mode), done)
 
     @staticmethod
     def _status_failure(error):
@@ -2029,8 +2063,10 @@ class Window(QMainWindow):
             return cutters.NOT_DETECTED_TEXT
         return f"Could not read cutter status. {error}"
 
-    def check_device(self, pending="Reading cutter status…"):
-        connection = self.connection()
+    def check_device(self, pending="Reading cutter status…", *, endpoint=None):
+        original = self.connection()
+        automatic = self.link.currentData() == "auto"
+        connection = (*endpoint, None if automatic else original[2]) if endpoint else original
         if self.busy or self.active_job is not None:
             return
         if connection[0] != "auto" and not connection[1]:
@@ -2050,7 +2086,31 @@ class Window(QMainWindow):
         def done(value, error):
             self.checking_status = False
             self.update_enabled_fields()
-            if connection == self.connection():
+            if original == self.connection():
+                if connection[0] in bluetooth.BLUETOOTH_MODES:
+                    self.verified_wireless = None if error else connection
+                    wireless = endpoint or self.detected.currentData()
+                    if error and automatic and cutters.wireless_endpoint(wireless):
+                        self.wireless_choices.pop(wireless, None)
+                        self.preferred_endpoint = None
+                        self._refresh_cutter_list()
+                        self._update_scan_ui()
+                    elif error and not automatic:
+                        index = self.detected.findData(connection[1])
+                        if index > 0:
+                            blocked = self.detected.blockSignals(True)
+                            self.detected.setCurrentIndex(0)
+                            self.detected.removeItem(index)
+                            self.detected.blockSignals(blocked)
+                            if self.identifier.text().strip() == connection[1]:
+                                self.identifier.clear()
+                    elif endpoint:
+                        blocked = self.detected.blockSignals(True)
+                        self.detected.setCurrentIndex(self.detected.findData(endpoint if automatic else endpoint[1]))
+                        self.detected.blockSignals(blocked)
+                        if not automatic:
+                            self.identifier.setText(endpoint[1])
+                        self.change_target()
                 self.set_cutter_status(self._status_failure(error) if error else value[1])
                 if not error and self.cutter_model.currentData() == cutters.AUTO:
                     self.select("cutter", value[0].name)
@@ -2161,6 +2221,7 @@ class Window(QMainWindow):
             lambda: self.tasks.result.emit(lambda *_: self.refresh_send(), None, None))
             if controllable else None)
         self.sending = True
+        self.update_enabled_fields()
         self.clear_scan_result()
         self.refresh_send()
 
@@ -2191,8 +2252,8 @@ class Window(QMainWindow):
         if self.tuning:
             self.sync_guide_slot()
         for field in (self.guide_apply, self.guide_next, self.guide_reset, self.guide_slot_choice):
-            field.setEnabled(not self.busy)
-        self.guide_next.setEnabled(not self.busy and (
+            field.setEnabled(not self.settings_locked())
+        self.guide_next.setEnabled(not self.settings_locked() and (
             state.placement is None or any(number != state.spot for number in state.fresh_spots())))
         used = state.current_spot
         sample_shape = state.trial.sheet.shape if state.trial else state.shape
@@ -2201,14 +2262,15 @@ class Window(QMainWindow):
             blocked = field.blockSignals(True)
             field.setCurrentIndex(field.findData(choice))
             field.blockSignals(blocked)
-            field.setEnabled(not self.busy)
+            field.setEnabled(not self.settings_locked())
         connected = starting_guide.has_cutter_endpoint(self.connection())
-        self.guide_send.setEnabled(not self.busy and connected and state.can_cut)
-        self.guide_use.setEnabled(not self.busy and state.tested_settings is not None)
+        self.guide_send.setEnabled(not self.busy and connected and state.can_cut
+                                   and not cutters.wireless_refusal(self.connection(), self.verified_wireless))
+        self.guide_use.setEnabled(not self.settings_locked() and state.tested_settings is not None)
         self.guide_use.setToolTip(state.mixed_reason or "Copy what this spot was cut with into Cut Settings, "
                                                        "and optionally save it as a material.")
-        self.guide_registration.setEnabled(not self.busy and not (state.spots or state.sheet_exported))
-        self.guide_marked_sheet.setEnabled(not self.busy and state.registered)
+        self.guide_registration.setEnabled(not self.settings_locked() and not (state.spots or state.sheet_exported))
+        self.guide_marked_sheet.setEnabled(not self.settings_locked() and state.registered)
         self.guide_send.setText(state.pass_label(self.job_options()))
         if hasattr(self, "guide_spot_selector"):
             blocked = self.guide_spot_selector.blockSignals(True)
@@ -2221,13 +2283,13 @@ class Window(QMainWindow):
         self.material_guide.setVisible(not self.tuning)
         if self.tuning:
             status = f"Spot {state.spot} · Cut Settings {self.guide_slot} · {state.sheet_status}"
-            if self.busy:
+            if self.settings_locked():
                 status = "Waiting for the cutter to finish…"
             elif not connected:
                 status = "Exit Material Test and select a cutter."
             self.footer_status.setText(status)
         status = state.summary(differ)
-        if self.busy:
+        if self.settings_locked():
             status += "\nWaiting for the cutter to finish…"
         elif not connected:
             status += "\nGo back to Send and select a cutter to run a test pass."
@@ -2238,13 +2300,13 @@ class Window(QMainWindow):
         blocked = self.guide_outcome.blockSignals(True)
         self.guide_outcome.setCurrentIndex(self.guide_outcome.findData(state.outcome))
         self.guide_outcome.blockSignals(blocked)
-        self.guide_outcome.setEnabled(not self.busy)
+        self.guide_outcome.setEnabled(not self.settings_locked())
         advice = state.advice()
         self.guide_advice.setText(advice)
         self.guide_advice.setVisible(bool(advice))
 
     def on_guide_spot_selected(self):
-        if self.busy:
+        if self.settings_locked():
             return
         value = int(self.guide_spot_selector.value())
         if value != self.guide.spot:
@@ -2259,7 +2321,7 @@ class Window(QMainWindow):
             self.update_tuning_preview()
 
     def on_preview_spot_clicked(self, x, y):
-        if not self.tuning or self.busy:
+        if not self.tuning or self.settings_locked():
             return False
         spot = self.guide.spot_for_point(x, y)
         if spot is not None:
@@ -2275,7 +2337,7 @@ class Window(QMainWindow):
         self.update_guide()
 
     def change_guide_sample(self):
-        if self.busy:
+        if self.settings_locked():
             return
         try:
             self.guide.configure_sample(self.guide_shape.currentData(), self.guide_size.currentData())
@@ -2321,7 +2383,7 @@ class Window(QMainWindow):
 
     def use_guide_settings(self):
         settings = self.guide.tested_settings
-        if self.busy or settings is None:
+        if self.settings_locked() or settings is None:
             return
         device = graphtec.device_by_name(self.choice("cutter"))
         holder = self.blade["holder"].value() if device.two_tools else 1
@@ -2353,7 +2415,7 @@ class Window(QMainWindow):
                 break
 
     def next_guide_spot(self):
-        if self.busy:
+        if self.settings_locked():
             return
         try:
             self.guide.next_spot()
@@ -2365,7 +2427,7 @@ class Window(QMainWindow):
         self.update_tuning_preview()
 
     def reset_guide(self):
-        if not self.busy and self.confirm("Start a New Test Sheet?", "Load a fresh test sheet to start at the first spot."):
+        if not self.settings_locked() and self.confirm("Start a New Test Sheet?", "Load a fresh test sheet to start at the first spot."):
             self.guide.reset()
             self.guide.placement = self.guide.make_placement(self.job, self.job_options())
             self.persist_guide()
@@ -2401,7 +2463,8 @@ class Window(QMainWindow):
             self.update_tuning_preview()
 
     def confirm_guide_pass(self):
-        if self.busy or not self.guide.can_cut:
+        if self.busy or not self.guide.can_cut or cutters.wireless_refusal(
+                self.connection(), self.verified_wireless):
             return
         try:
             trial = self.guide.prepare(self.connection(), self.job_options(), self.job)
@@ -2412,7 +2475,8 @@ class Window(QMainWindow):
             self.start_guide_pass(trial)
 
     def start_guide_pass(self, trial):
-        if self.busy or not self.guide.can_cut:
+        if self.busy or not self.guide.can_cut or cutters.wireless_refusal(
+                self.connection(), self.verified_wireless):
             return
         try:
             current = self.guide.prepare(self.connection(), self.job_options(), self.job)
@@ -2433,6 +2497,7 @@ class Window(QMainWindow):
                 self.message(f"Could not save the marked test sheet history. {error}")
                 return
         self.sending = True
+        self.update_enabled_fields()
         self.refresh_send()
 
         def work():
@@ -2444,6 +2509,7 @@ class Window(QMainWindow):
         def done(_sent, error):
             self.guide.record(trial, error, name)
             self.sending = False
+            self.update_enabled_fields()
             self.refresh_send()
             if self.persist_guide():
                 self.message(str(error) if error else "Pass complete.")
@@ -2452,7 +2518,7 @@ class Window(QMainWindow):
 
     def confirm_test_cut(self):
         connection, current = self.connection(), self.job
-        if self.busy or (connection[0] != "auto" and not connection[1]):
+        if self.busy or cutters.wireless_refusal(connection, self.verified_wireless):
             self.message("Connect an available cutter first.")
             return
         try:
@@ -2488,7 +2554,7 @@ class Window(QMainWindow):
             if dialog.clickedButton() == open_sheet:
                 self.tabs.setCurrentIndex(self.tab("Sheet"))
             return
-        if self.busy:
+        if self.settings_locked():
             self.message("Wait for the cutter operation to finish before opening Design.")
             return
         if self.design is None:

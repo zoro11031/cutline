@@ -16,9 +16,19 @@ These tests use fake transports to exercise failure paths without USB.
 import unittest
 from unittest import mock
 
-from cutline import (geometry, graphtec, job as job_mod, regmarks,
+from cutline import (cutters, geometry, graphtec, job as job_mod, regmarks,
                          template, transport)
 from cutline.graphtec import CutSettings, Step
+
+
+
+class TestWirelessVerification(unittest.TestCase):
+    def test_refuses_bluetooth_until_this_target_answers(self):
+        connection = ("bluetooth", "AA:BB:CC:00:11:22", None)
+        self.assertIn("Check the cutter", cutters.wireless_refusal(connection, None))
+        self.assertTrue(cutters.wireless_refusal(connection, ("bluetooth", "CC:00:11:AA:BB:22", None)))
+        self.assertFalse(cutters.wireless_refusal(connection, connection))
+        self.assertFalse(cutters.wireless_refusal(("auto", (1, 2), None), None))
 
 
 # --------------------------------------------------------------------------
