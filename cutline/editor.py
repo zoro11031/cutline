@@ -8,15 +8,16 @@ import threading
 import cairo
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
-from . import design_text, editor_model, geometry, graphtec, importer, regmarks, sticker_assets, sticker_print, sticker_trace, template
-from .design_tools import (ALIGNMENT_ROWS, COMMAND_ICONS, OBJECT_ICONS, ROTATE_MODES, SCALE_MODES,
-                           TOOL_GROUPS, TOOL_KEYS, TOOL_NAMES, TOOLS, TRANSFORM_ICONS, TRANSFORM_MODES,
-                           RotationHandle, rotation_handle, scale_from_corner)
+from . import design_text, editor_model, geometry, graphtec, importer, path_edit, regmarks, sticker_assets, sticker_print, sticker_trace, template
+from .design_tools import (ALIGNMENT_ROWS, CLICK_PATH_TOOLS, COMMAND_ICONS, OBJECT_ICONS, ROTATE_MODES, SCALE_MODES,
+                           GTK_TOOL_GROUPS as TOOL_GROUPS, GTK_TOOL_KEYS as TOOL_KEYS, GTK_TOOL_NAMES as TOOL_NAMES,
+                           GTK_TOOLS as TOOLS, TRANSFORM_ICONS, TRANSFORM_MODES,
+                           RotationHandle, contextual_hint, rotation_handle, scale_from_corner)
 from .editor_canvas import DesignCanvas, draw_strokes
 from .editor_model import (ACTIONS, ALIGNMENTS,
                            History, Registration, Shape,
-                           import_shapes, load_project, save_project)
-from .gtk_controls import (disclosure, menu_item, protect_settings_wheel, workspace_header, workspace_tools,
+                           load_project, save_project)
+from .gtk_controls import (choose_inkscape_page, disclosure, menu_item, protect_settings_wheel, workspace_header, workspace_tools,
                            zoom_controls)
 
 
@@ -67,6 +68,19 @@ def tool_image(tool, size=22):
     icon = Gtk.DrawingArea(content_width=size, content_height=size)
     icon.set_draw_func(draw_tool_icon, tool)
     return icon
+
+
+def ribbon_button(tool, label_text, callback, *, tip=''):
+    """Compact icon+label button for the GTK Design command ribbon."""
+    button = Gtk.Button()
+    content = Gtk.Box(spacing=5)
+    content.append(tool_image(tool, 16))
+    content.append(Gtk.Label(label=label_text))
+    button.set_child(content)
+    button.set_tooltip_text(tip or tool.tooltip)
+    button.update_property([Gtk.AccessibleProperty.LABEL], [label_text])
+    button.connect('clicked', callback)
+    return button
 
 
 def set_tool_button_icon(button, tool):
@@ -205,30 +219,90 @@ class DesignWorkspace:
         self.shortcuts = shortcuts = Gtk.ShortcutController(scope=Gtk.ShortcutScope.MANAGED)
         self.view.add_controller(shortcuts)
 
-        toolbar = workspace_tools(margin_start=12, margin_end=12, margin_bottom=8)
+        self.tools_bar = toolbar = workspace_tools(margin_start=12, margin_end=12, margin_bottom=8)
         self.view.add_top_bar(toolbar)
         history_tools = Gtk.Box(spacing=2)
         self.save_button = self.icon_button(history_tools, 'save', self.save)
+        self.save_button.set_tooltip_text('Save (Ctrl+S)\nSave the design.')
         self.undo_button = self.icon_button(history_tools, 'undo', lambda *_: self.change_history(self.history.undo))
+        self.undo_button.set_tooltip_text('Undo (Ctrl+Z)\nUndo the last change.')
         self.redo_button = self.icon_button(history_tools, 'redo', lambda *_: self.change_history(self.history.redo))
+        self.redo_button.set_tooltip_text('Redo (Ctrl+Y)\nRedo the last change.')
         toolbar.append(history_tools)
         toolbar.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL, margin_top=6, margin_bottom=6))
-        artwork = Gtk.Box(spacing=2)
-        self.add_button = self.icon_button(artwork, 'shape', self.add_shape)
+        artwork = Gtk.Box(spacing=4)
+        self.import_button = ribbon_button(COMMAND_ICONS['import'], 'Import', lambda *_: self.import_vector(None),
+                                           tip='Import Artwork… (Ctrl+I)\nImport an SVG, DXF, or Studio3 file.')
+        artwork.append(self.import_button)
+        self.add_button = ribbon_button(COMMAND_ICONS['shape'], 'Add Shape', self.add_shape)
+        artwork.append(self.add_button)
+        self.place_image_button = self.icon_button(artwork, 'image', lambda *_: self.place_sticker())
         self.text_button = self.icon_button(artwork, 'text', lambda *_: self.text_dialog())
-        self.icon_button(artwork, 'image', lambda *_: self.place_sticker())
-        self.trace_button = self.icon_button(artwork, 'trace', lambda *_: self.trace_sticker())
         toolbar.append(artwork)
-        toolbar.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL, margin_top=6, margin_bottom=6))
-        self.document_title = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.MIDDLE,
-                                        css_classes=["heading"])
-        toolbar.append(self.document_title)
+        self.selection_separator = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL, margin_top=6, margin_bottom=6,
+                                                 visible=False)
+        toolbar.append(self.selection_separator)
+        self.selection_tools = Gtk.Box(spacing=4, visible=False)
+        self.duplicate_ribbon_button = self.icon_button(self.selection_tools, 'duplicate', self.duplicate_shape)
+        self.duplicate_ribbon_button.set_tooltip_text('Duplicate (Ctrl+D)\nDuplicate the selected objects.')
+        self.delete_ribbon_button = self.icon_button(self.selection_tools, 'delete', self.delete_shape)
+        self.delete_ribbon_button.set_tooltip_text('Delete (Delete)\nDelete the selected objects.')
+        selection_inline = Gtk.Box(spacing=4)
+        self.group_ribbon_button = ribbon_button(COMMAND_ICONS['group'], 'Group', lambda *_: self.group_selected(),
+                                                 tip='Group selected objects (Ctrl+G)')
+        selection_inline.append(self.group_ribbon_button)
+        self.ungroup_ribbon_button = ribbon_button(COMMAND_ICONS['ungroup'], 'Ungroup',
+                                                   lambda *_: self.group_selected(release=True),
+                                                   tip='Ungroup selected objects (Ctrl+Shift+G)')
+        selection_inline.append(self.ungroup_ribbon_button)
+        align_box = Gtk.Box(spacing=5)
+        align_box.append(tool_image(COMMAND_ICONS['align'], 16))
+        align_box.append(Gtk.Label(label='Align'))
+        self.align_button = Gtk.MenuButton(child=align_box, tooltip_text='Align or space selected objects')
+        self.align_button.update_property([Gtk.AccessibleProperty.LABEL], ['Align'])
+        align_popover = Gtk.Popover()
+        align_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self.ribbon_align_buttons = {}
+        for icons in ALIGNMENT_ROWS:
+            for icon in icons:
+                def run_align(_btn, option=icon.name):
+                    align_popover.popdown()
+                    self.align_objects(option)
+
+                item = ribbon_button(icon, icon.name, run_align, tip=icon.name)
+                item.add_css_class('flat')
+                align_list.append(item)
+                self.ribbon_align_buttons[icon.name] = item
+        align_popover.set_child(align_list)
+        self.align_button.set_popover(align_popover)
+        selection_inline.append(self.align_button)
+        compact_menu = Gio.Menu()
+        self.selection_menu = Gtk.MenuButton(label='Selection', menu_model=compact_menu)
+        self.compact_selection = compact_menu
+        self.selection_squeezer = Adw.Squeezer(transition_type=Adw.SqueezerTransitionType.NONE)
+        self.selection_squeezer.add(selection_inline)
+        self.selection_squeezer.add(self.selection_menu)
+        self.selection_tools.append(self.selection_squeezer)
+        self.selection_squeezer.connect('notify::visible-child', self.selection_presentation)
+        self.trace_button = self.icon_button(self.selection_tools, 'trace', lambda *_: self.trace_sticker())
+        self.edit_text_ribbon_button = ribbon_button(COMMAND_ICONS['text'], 'Edit Text…',
+                                                     lambda *_: self.text_dialog(), tip='Edit the selected text')
+        self.selection_tools.append(self.edit_text_ribbon_button)
+        toolbar.append(self.selection_tools)
+        title_space = Gtk.Overlay(hexpand=True, child=Gtk.Box())
+        self.document_title = Gtk.Label(xalign=1, ellipsize=Pango.EllipsizeMode.MIDDLE, css_classes=["heading"])
+        title_space.add_overlay(self.document_title)
+        title_space.set_measure_overlay(self.document_title, False)
+        toolbar.append(title_space)
+        self.save_state = Gtk.Label(css_classes=['caption', 'dim-label'], visible=False)
+        toolbar.append(self.save_state)
         fit_button = design_icon_button(COMMAND_ICONS['fit'])
         fit_button.connect('clicked', self.fit)
         zoom, self.zoom_readout = zoom_controls(lambda factor: self.canvas.zoom_by(factor),
                                                lambda: self.fit(None), fit_button=fit_button)
         self.tools = TOOL_NAMES
         self.tool = GtkToolStrip(changed=self.tool_changed)
+        self.clipboard = ()
         self.options_bar = self.tool_options_bar()
         self.view.add_top_bar(self.options_bar)
         self.exporting_stickers = False
@@ -262,7 +336,19 @@ class DesignWorkspace:
         workspace_panes = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL, wide_handle=True,
                                     resize_start_child=True, resize_end_child=False,
                                     shrink_start_child=False, shrink_end_child=False, hexpand=True)
-        workspace_panes.set_start_child(self.canvas)
+        canvas_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.notice_bar = Gtk.Frame(visible=False, css_classes=['scc-notice'])
+        notice_row = Gtk.Box(spacing=8, margin_start=10, margin_end=6, margin_top=5, margin_bottom=5)
+        self.notice_label = Gtk.Label(xalign=0, hexpand=True, wrap=True)
+        dismiss = self.button(notice_row, 'Dismiss', lambda *_: self.clear_notice())
+        dismiss.update_property([Gtk.AccessibleProperty.LABEL], ['Dismiss notice'])
+        notice_row.append(self.notice_label)
+        notice_row.reorder_child_after(self.notice_label, None)
+        self.notice_bar.set_child(notice_row)
+        canvas_box.append(self.notice_bar)
+        self.canvas.set_vexpand(True)
+        canvas_box.append(self.canvas)
+        workspace_panes.set_start_child(canvas_box)
         workspace_panes.set_end_child(dock)
         workspace = Gtk.Box()
         workspace.append(self.tool)
@@ -277,7 +363,9 @@ class DesignWorkspace:
         footer.append(zoom)
         # As in Silhouette Studio, the Send switch sends the design; only a
         # sticker sheet has a step of its own, its Print & Cut export.
+        self.trace_next = self.button(footer, 'Trace and Bleed…', self.trace_next_sticker)
         self.review = self.button(footer, 'Export Print & Cut…', lambda *_: self.export_stickers())
+        self.trace_next.add_css_class('suggested-action')
         self.review.add_css_class('suggested-action')
         self.view.add_bottom_bar(footer)
         self.menu_bar = self.build_design_menus(shortcuts)
@@ -302,6 +390,14 @@ class DesignWorkspace:
             for name, icon in TRANSFORM_ICONS.items()
         }
         row.append(self.quick_transforms)
+        self.sides_option = Gtk.Box(visible=False)
+        self.sides = self.spin(self.sides_option, 'Sides', 3, 64, 5, step=1, digits=0)
+        self.sides.set_width_chars(3)
+        self.sides.update_property([Gtk.AccessibleProperty.LABEL], ['Sides'])
+        row.append(self.sides_option)
+        self.close_polygon = self.button(row, 'Close Shape', lambda *_: self.finish_polygon(closed=True))
+        self.close_polygon.set_visible(False)
+        self.close_polygon.set_tooltip_text('Close the outline. Double-click or Enter stops with it open.')
         self.tool_hint = Gtk.Label(label=TOOLS[0].hint, xalign=0, hexpand=True,
                                    css_classes=['dim-label', 'caption'], ellipsize=Pango.EllipsizeMode.END)
         self.tool_hint.set_tooltip_text(TOOLS[0].hint)
@@ -345,8 +441,10 @@ class DesignWorkspace:
         panel.append(header)
         self.objects = Gtk.ListBox(selection_mode=Gtk.SelectionMode.MULTIPLE, css_classes=['boxed-list'])
         self.objects.update_property([Gtk.AccessibleProperty.LABEL], ['Object list'])
-        self.objects.set_placeholder(Gtk.Label(label='No objects yet', margin_top=14, margin_bottom=14,
-                                               css_classes=['dim-label']))
+        placeholder = Gtk.Label(label='No objects yet. Draw on the page, click Add Shape, or Import.',
+                                margin_top=14, margin_bottom=14, margin_start=8, margin_end=8,
+                                wrap=True, justify=Gtk.Justification.CENTER, css_classes=['dim-label'])
+        self.objects.set_placeholder(placeholder)
         self.objects.connect('selected-rows-changed', self.select_shape)
         scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
         scroller.set_child(self.objects)
@@ -361,6 +459,7 @@ class DesignWorkspace:
         spin.set_value(value)
         spin.set_digits(digits)
         spin.set_numeric(True)
+        spin.update_property([Gtk.AccessibleProperty.LABEL], [label])
         row.append(spin)
         parent.append(row)
         return spin
@@ -479,7 +578,7 @@ class DesignWorkspace:
         self.menu_actions = Gio.SimpleActionGroup()
         self.view.insert_action_group('design', self.menu_actions)
 
-        def command(menu, label, name, callback, shortcut=None, field=None):
+        def command(menu, label, name, callback, shortcut=None, field=None, *, canvas=False):
             if field is None:
                 action = Gio.SimpleAction.new(name, None)
             else:
@@ -489,7 +588,7 @@ class DesignWorkspace:
             self.menu_actions.add_action(action)
             full_name = f'design.{name}'
             menu.append_item(menu_item(label, full_name, shortcut))
-            if shortcut:
+            if shortcut and not canvas:
                 shortcuts.add_shortcut(Gtk.Shortcut.new(
                     Gtk.ShortcutTrigger.parse_string(shortcut), Gtk.NamedAction.new(full_name)))
 
@@ -499,7 +598,7 @@ class DesignWorkspace:
                 ('Open…', 'open', '<Control>o', self.open_project),
                 ('Save', 'save', '<Control>s', self.save),
                 ('Save As…', 'save-as', '<Control><Shift>s', self.save_as),
-                ('Import Artwork…', 'import-artwork', None, self.import_vector)):
+                ('Import Artwork…', 'import-artwork', '<Control>i', self.import_vector)):
             command(files, label, name, lambda handler=callback: handler(None), shortcut)
         command(files, 'Place Image…', 'place-sticker', self.place_sticker)
         command(files, 'Export Print & Cut…', 'export-stickers', self.export_stickers)
@@ -508,6 +607,11 @@ class DesignWorkspace:
         command(edit, 'Redo', 'redo', lambda: self.change_history(self.history.redo))
         command(edit, 'Select All', 'select-all', lambda: self.set_selection(
             i for i, shape in enumerate(self.project.shapes) if shape.visible))
+        command(edit, 'Cut', 'cut', lambda: self.copy(cut=True), '<Control>x', canvas=True)
+        command(edit, 'Copy', 'copy', self.copy, '<Control>c', canvas=True)
+        command(edit, 'Paste', 'paste', self.paste, '<Control>v', canvas=True)
+        command(edit, 'Paste in Front', 'paste-front', lambda: self.paste(in_front=True),
+                '<Control><Shift>v', canvas=True)
         command(edit, 'Duplicate', 'duplicate', lambda: self.duplicate_shape(None))
         command(edit, 'Delete', 'delete', lambda: self.delete_shape(None))
 
@@ -599,9 +703,23 @@ class DesignWorkspace:
 
     def toggle_panels(self):
         show = not self.tool.get_visible()
-        for panel in (self.tool, self.rail_divider, self.options_bar, self.dock):
+        for panel in (self.tool, self.rail_divider, self.tools_bar, self.options_bar, self.dock):
             panel.set_visible(show)
         self.canvas.grab_focus()
+
+    def show_message(self, text, *, level='info'):
+        self.status.set_text(text)
+        self.notice_label.set_text(text)
+        if level == 'warning':
+            self.notice_bar.add_css_class('scc-notice-warning')
+        else:
+            self.notice_bar.remove_css_class('scc-notice-warning')
+        self.notice_bar.set_visible(bool(text))
+
+    def clear_notice(self):
+        self.notice_bar.set_visible(False)
+        self.notice_label.set_text('')
+        self.refresh_status()
 
     def rotate_page(self, clockwise):
         try:
@@ -785,18 +903,31 @@ class DesignWorkspace:
         header.pack_end(button)
         dialog.present(self.parent)
 
+    def trace_next_sticker(self, *_args):
+        _, index, _ = sticker_print.export_readiness(self.project)
+        if index is not None:
+            self.set_selection((index,))
+            self.trace_sticker()
+
     def export_stickers(self):
         if self.exporting_stickers:
+            return
+
+        _, _, requirement = sticker_print.export_readiness(self.project)
+        if requirement:
+            self.show_message(requirement, level='warning')
             return
 
         def chosen(path):
             target = sticker_print.destination(path)
             project, cutter = self.project, self.cutter.name
             self.exporting_stickers = True
+            self.refresh_status()
             self.status.set_text('Exporting Print & Cut…')
 
             def done(message):
                 self.exporting_stickers = False
+                self.refresh_status()
                 self.status.set_text(message)
                 return GLib.SOURCE_REMOVE
 
@@ -970,19 +1101,59 @@ class DesignWorkspace:
         p = self.project
         action = editor_model.send_action(p.shapes)
         count = len(p.artwork(action).paths) if action else 0
-        selection = len(self.selected_indices())
-        self.status.set_text(f'{p.width:g} × {p.height:g} mm · ' + ('1 path' if count == 1 else f'{count} paths')
-                             + (f' · {selection} selected' if selection else ''))
+        self.status.set_text(editor_model.document_summary(p, count, len(self.selected_indices())))
         name = self.project_path.name if self.project_path else self.source_name or "Untitled"
+        self.document_title.update_property([Gtk.AccessibleProperty.LABEL], [name])
         self.document_title.set_text(name + (" *" if self.dirty else ""))
         self.document_title.set_tooltip_text(f'{name} (unsaved changes)' if self.dirty else name)
+        badge = editor_model.save_state_label(self.project_path, self.dirty)
+        self.save_state.set_text(badge)
+        self.save_state.set_visible(bool(badge))
+        if self.dirty:
+            self.save_state.add_css_class('warning')
+        else:
+            self.save_state.remove_css_class('warning')
+        if action and self.notice_bar.get_visible() and self.notice_bar.has_css_class('scc-notice-warning'):
+            self.notice_bar.set_visible(False)
         self.save_button.set_sensitive(self.dirty or self.project_path is None)
         self.undo_button.set_sensitive(bool(self.history.past))
         self.redo_button.set_sensitive(bool(self.history.future))
         self.menu_actions.lookup_action('undo').set_enabled(bool(self.history.past))
         self.menu_actions.lookup_action('redo').set_enabled(bool(self.history.future))
-        self.review.set_visible(any(shape.visible and shape.sticker for shape in p.shapes))
+        stickers, next_trace, requirement = sticker_print.export_readiness(p)
+        self.review.set_visible(bool(stickers))
+        ready = not requirement and not self.exporting_stickers
+        self.review.set_sensitive(ready)
+        self.review.set_tooltip_text(requirement or None)
+        self.menu_actions.lookup_action('export-stickers').set_enabled(ready)
+        self.trace_next.set_visible(next_trace is not None)
+        if stickers and requirement:
+            self.status.set_text(requirement)
+        self.refresh_tool_hint()
         self.canvas.queue_draw()
+
+    def refresh_tool_hint(self):
+        tool = TOOLS[self.tool.get_selected()]
+        indices = self.selected_indices()
+        shapes = self.project.shapes
+        obj = shapes[indices[0]] if len(indices) == 1 else None
+        hint = contextual_hint(
+            tool,
+            shape_count=len(shapes),
+            selected_count=len(indices),
+            is_sticker=bool(obj and obj.sticker),
+            is_text=bool(obj and obj.text),
+            needs_trace=bool(obj and obj.sticker and not obj.contours),
+        )
+        self.tool_hint.set_label(hint)
+        self.tool_hint.set_tooltip_text(f'{tool.tooltip}\n{hint}' if hint != tool.hint else tool.tooltip)
+
+    def selection_presentation(self, picker, *_args):
+        focused = self.parent.get_focus()
+        if focused and focused.is_ancestor(picker):
+            target = picker.get_visible_child()
+            if target is not None:
+                target.child_focus(Gtk.DirectionType.TAB_FORWARD)
 
     def select_shape(self, *_args):
         if self.loading:
@@ -999,10 +1170,16 @@ class DesignWorkspace:
         self.trace_button.set_sensitive(can_trace)
         self.menu_actions.lookup_action('trace-sticker').set_enabled(can_trace)
         self.loading = True
+        box = editor_model.bounds(shapes[i] for i in indices) if len(indices) > 1 else None
+        bounds_fields = {'x': box.x, 'y': box.y, 'width': box.w, 'height': box.h} if box else {}
         for field, spin in self.fields.items():
             enabled = obj is not None and (field != 'radius' or obj.kind == 'Rounded rectangle')
-            spin.set_sensitive(enabled)
-            if obj is not None:
+            spin.set_sensitive(enabled or field in bounds_fields)
+            if field in bounds_fields:
+                if field in ('width', 'height'):
+                    spin.set_range(0.1, 1000)
+                spin.set_value(bounds_fields[field])
+            elif obj is not None:
                 if field in ('width', 'height'):
                     low = -1000 if obj.kind == 'Line' else 0 if obj.kind == 'Path' else 0.1
                     spin.set_range(low, 1000)
@@ -1035,29 +1212,61 @@ class DesignWorkspace:
                                  else Gtk.INVALID_LIST_POSITION)
         self.duplicate.set_sensitive(bool(indices))
         self.remove.set_sensitive(bool(indices))
-        self.menu_actions.lookup_action('duplicate').set_enabled(bool(indices))
-        self.menu_actions.lookup_action('delete').set_enabled(bool(indices))
+        for name in ('cut', 'copy', 'duplicate', 'delete'):
+            self.menu_actions.lookup_action(name).set_enabled(bool(indices))
+        for name in ('paste', 'paste-front'):
+            self.menu_actions.lookup_action(name).set_enabled(bool(self.clipboard))
         self.replicate_button.set_sensitive(bool(indices))
         self.group_button.set_sensitive(len(indices) >= 2 and
                                         (shapes[indices[0]].group is None or
                                          len({shapes[i].group for i in indices}) > 1))
         self.ungroup_button.set_sensitive(any(shapes[i].group is not None for i in indices))
         units = len(editor_model.selected_units(shapes, indices))
+        any_grouped = any(shapes[i].group is not None for i in indices)
+        self.selection_separator.set_visible(bool(indices))
+        self.selection_tools.set_visible(bool(indices))
+        self.group_ribbon_button.set_visible(units > 1)
+        self.ungroup_ribbon_button.set_visible(any_grouped)
+        self.align_button.set_visible(units >= 2)
+        self.selection_squeezer.set_visible(units > 1 or any_grouped)
+        self.compact_selection.remove_all()
+        if units > 1:
+            self.compact_selection.append('Group', 'design.group')
+        if any_grouped:
+            self.compact_selection.append('Ungroup', 'design.ungroup')
+        if units > 1:
+            align = Gio.Menu()
+            for index, label in enumerate(ALIGNMENTS):
+                align.append(label, f'design.align-{index}')
+            self.compact_selection.append_submenu('Align', align)
+        self.trace_button.set_visible(can_trace)
+        self.edit_text_ribbon_button.set_visible(bool(obj and obj.text))
         for command in (*self.transform_buttons.values(), *self.quick_transform_buttons.values()):
             command.set_sensitive(bool(indices))
         for option, command in self.alignment_buttons.items():
             space = option.startswith('Space ')
-            command.set_sensitive(units >= (3 if space else 2))
-            command.set_tooltip_text(f"{option}\nSelect {'three objects to space' if space else 'two objects to align'}."
-                                     if not command.get_sensitive() else option)
+            sensitive = units >= (3 if space else 2)
+            tip = (f"{option}\nSelect {'three objects to space' if space else 'two objects to align'}."
+                   if not sensitive else option)
+            command.set_sensitive(sensitive)
+            command.set_tooltip_text(tip)
+            self.menu_actions.lookup_action(f'align-{ALIGNMENTS.index(option)}').set_enabled(sensitive)
+            ribbon_align = self.ribbon_align_buttons[option]
+            ribbon_align.set_sensitive(sensitive)
+            ribbon_align.set_tooltip_text(tip)
         self.forward.set_sensitive(bool(indices) and indices[-1] + 1 < len(shapes))
         self.backward.set_sensitive(bool(indices) and indices[0] > 0)
         self.loading = False
         self.refresh_status()
 
     def commit(self, shapes, selection):
-        self.history.commit(replace(self.history.current, shapes=tuple(shapes)))
+        shapes = tuple(shapes)
+        self.history.commit(replace(self.history.current, shapes=shapes))
         self.refresh_objects(selection)
+        if not shapes:
+            self.panel_switcher.set_selected(0)
+        elif self.panel_switcher.get_selected() == 0 and selection:
+            self.panel_switcher.set_selected(1)
 
     def change_history(self, callback):
         indices = self.selected_indices()
@@ -1083,6 +1292,16 @@ class DesignWorkspace:
         value = spin.get_value()
         values = {field: value}
         indices = self.selected_indices()
+        if len(indices) > 1:
+            if field in ('x', 'y', 'width', 'height'):
+                try:
+                    shapes = editor_model.edit_selection_bounds(self.project.shapes, indices, field, value)
+                except ValueError as error:
+                    self.show_message(str(error), level='warning')
+                    self.select_shape()
+                else:
+                    self.commit(shapes, indices)
+            return
         if len(indices) == 1 and field in ('width', 'height') and self.lock_aspect.get_active():
             shape = self.project.shapes[indices[0]]
             if min(shape.width, shape.height) > 0 and value > 0:
@@ -1165,6 +1384,11 @@ class DesignWorkspace:
         p = self.project
         shape = Shape(editor_model.shape_to_add(self.active_tool), x=(p.width - 40) / 2, y=(p.height - 30) / 2)
         self.commit(p.shapes + (shape,), (len(p.shapes),))
+        if not self.dock.get_visible():
+            self.toggle_panels()
+        self.panel_switcher.set_selected(1)
+        self.fields['x'].grab_focus()
+        self.fields['x'].select_region(0, -1)
 
     def group_selected(self, *, release=False):
         shapes, indices = self.project.shapes, self.selected_indices()
@@ -1182,6 +1406,22 @@ class DesignWorkspace:
             self.commit(result, range(len(shapes), len(result)))
         except ValueError as error:
             self.status.set_text(str(error))
+
+    def copy(self, *, cut=False):
+        indices = self.selected_indices()
+        if not indices:
+            return
+        self.clipboard = tuple(self.project.shapes[i] for i in indices)
+        if cut:
+            self.delete_shape(None)
+        else:
+            self.select_shape()
+
+    def paste(self, *, in_front=False):
+        if self.clipboard:
+            shapes = self.project.shapes
+            pasted = editor_model.paste(shapes, self.clipboard, offset=not in_front)
+            self.commit(pasted, range(len(shapes), len(pasted)))
 
     def delete_shape(self, _button):
         shapes, indices = self.project.shapes, self.selected_indices()
@@ -1225,22 +1465,28 @@ class DesignWorkspace:
         self.canvas.set_cursor_from_name('default' if select_cursor else 'crosshair')
         self.option_snap.set_visible(tool.name not in ('Rotate', 'Scale'))
         self.quick_transforms.set_visible(transforming)
+        self.sides_option.set_visible(tool.name == "Regular Polygon")
+        self.close_polygon.set_visible(tool.name in CLICK_PATH_TOOLS)
         self.panel_transform_actions.set_visible(not transforming)
         self.orientation_heading.set_label('Rotation' if transforming else 'Rotate and Flip')
-        self.tool_hint.set_label(tool.hint)
-        self.tool_hint.set_tooltip_text(tool.hint)
+        self.refresh_tool_hint()
         if transforming:
             self.panel_switcher.set_selected(1)
 
     def pick_polygon_point(self, _gesture, presses, x, y):
-        if self.active_tool != 'Polygon':
+        if self.active_tool not in ('Polygon', 'Curve'):
             return
         self.canvas.grab_focus()
         left, top, scale = self.canvas.viewport(self.canvas.get_width(), self.canvas.get_height())
         point = self.grid_point((x-left)/scale, (y-top)/scale)
         if max(map(abs, point)) > editor_model.SHAPE_LIMIT:
             return
-        if len(self.polygon) >= 3 and math.dist(point, self.polygon[0]) <= 7 / scale:
+        curve = self.active_tool == "Curve"
+        if curve and presses >= 2:
+            if len(self.polygon) >= 2:
+                self.finish_polygon(closed=False)
+            return
+        if len(self.polygon) >= 3 and math.dist(point, self.polygon[0]) <= (6 if curve else 7) / scale:
             self.finish_polygon()
             return
         if not self.polygon or self.polygon[-1] != point:
@@ -1249,13 +1495,16 @@ class DesignWorkspace:
             self.finish_polygon()
         self.canvas.queue_draw()
 
-    def finish_polygon(self):
-        if len(set(self.polygon)) < 3:
-            self.status.set_text('Place at least three points, then press Enter to close the polygon.')
+    def finish_polygon(self, *, closed=True):
+        if len(set(self.polygon)) < (3 if closed else 2):
+            self.status.set_text("Place at least three points to close the outline." if closed
+                                 else "Place at least two points to draw a line.")
             return
         try:
-            path = template.CutPath(tuple(self.polygon), closed=True)
-            shape = editor_model.shape_from_path(path)
+            points = tuple(self.polygon)
+            nodes = (path_edit.from_clicks(points, closed=closed) if self.active_tool == 'Curve'
+                     else path_edit.Nodes(points, (), closed))
+            shape = path_edit.to_shape(nodes, Shape("Path"))
         except ValueError as error:
             self.status.set_text(str(error))
             return
@@ -1273,7 +1522,7 @@ class DesignWorkspace:
         left, top, scale = self.canvas.viewport(self.canvas.get_width(), self.canvas.get_height())
         x, y = (x-left)/scale, (y-top)/scale
         mode = self.active_tool
-        if mode == 'Polygon':
+        if mode in ('Polygon', 'Curve'):
             gesture.set_state(Gtk.EventSequenceState.DENIED)
             return
         if mode == 'Point Edit':
@@ -1329,7 +1578,7 @@ class DesignWorkspace:
             shape = self.project.shapes[index]
             if shape.visible and shape.kind in editor_model.POINT_EDIT_KINDS:
                 distance, vertex = editor_model.nearest_vertex(shape, (x, y))
-                if distance <= 7 / scale:
+                if distance <= (6 if self.active_tool == "Curve" else 7) / scale:
                     self.drag = Drag('point', x, y, scale, (index,), vertex=vertex)
                     return
         for index in reversed(range(len(self.project.shapes))):
@@ -1338,24 +1587,32 @@ class DesignWorkspace:
                 self.set_selection((index,))
                 break
 
-    def draw_shape(self, drag, x, y):
+    def draw_shape(self, drag, x, y, *, final=False, shift=False, alt=False):
         start = drag.points[0]
         end = self.grid_point(x, y)
-        if drag.mode == "Freehand":
+        if drag.mode in ("Freehand", "Smooth Freehand"):
             if end != drag.points[-1]:
                 drag.points.append(end)
             if len(drag.points) < 2:
                 return None
+            if drag.mode == "Smooth Freehand":
+                return path_edit.smooth_freehand(drag.points, drag.scale, final=final)
             path = template.CutPath(tuple(drag.points), closed=False)
             return editor_model.shape_from_path(path)
         if drag.mode == "Line":
             return Shape("Line", *start, end[0] - start[0], end[1] - start[1]) if end != start else None
+        if drag.mode == "Arc":
+            if min(abs(end[0] - start[0]), abs(end[1] - start[1])) < 0.1:
+                return None
+            return path_edit.to_shape(path_edit.arc(start, end), Shape("Path"))
+        if drag.mode == "Regular Polygon":
+            return path_edit.draw_regular_polygon(start, end, self.sides.get_value_as_int(), shift=shift, alt=alt)
         w, h = abs(end[0] - start[0]), abs(end[1] - start[1])
         if min(w, h) < 0.1:
             return None
         return Shape(drag.mode, min(start[0], end[0]), min(start[1], end[1]), w, h)
 
-    def drag_update(self, gesture, dx, dy):
+    def drag_update(self, gesture, dx, dy, *, final=False):
         drag = self.drag
         if drag is None or (self.draft is None and abs(dx) + abs(dy) < 2):
             return
@@ -1409,7 +1666,10 @@ class DesignWorkspace:
         else:
             limit = editor_model.SHAPE_LIMIT
             try:
-                shape = self.draw_shape(drag, x, y)
+                state = gesture.get_current_event_state() if gesture is not None and drag.mode == "Regular Polygon" else 0
+                shape = self.draw_shape(drag, x, y, final=final,
+                                        shift=bool(state & Gdk.ModifierType.SHIFT_MASK),
+                                        alt=bool(state & Gdk.ModifierType.ALT_MASK))
             except ValueError:
                 shape = None
             valid = shape is not None and max(abs(shape.x), abs(shape.y), abs(shape.width),
@@ -1420,8 +1680,8 @@ class DesignWorkspace:
     def drag_end(self, gesture, dx, dy):
         if self.drag is None:
             return
-        if dx or dy or self.drag.mode in ('rotate', 'scale'):
-            self.drag_update(gesture, dx, dy)
+        if dx or dy or self.drag.mode in ('rotate', 'scale', 'Smooth Freehand'):
+            self.drag_update(gesture, dx, dy, final=True)
         indices = self.selected_indices()
         if self.marquee is not None:
             region = self.marquee
@@ -1453,18 +1713,27 @@ class DesignWorkspace:
         ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
         indices = self.selected_indices()
         if key == Gdk.KEY_Escape:
-            transforming = self.drag is not None and self.drag.mode in ('rotate', 'scale')
+            in_progress = bool(self.drag is not None or self.polygon)
             self.cancel_drag()
-            if not transforming:
+            self.polygon.clear()
+            if in_progress:
+                self.canvas.queue_draw()
+            else:
                 self.set_selection(())
                 self.tool.set_selected(0)
         elif self.drag is not None and self.drag.mode in ('rotate', 'scale'):
             return True
-        elif self.active_tool == 'Polygon' and key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
-            self.finish_polygon()
+        elif self.active_tool in ('Polygon', 'Curve') and key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            self.finish_polygon(closed=self.active_tool == 'Polygon')
         elif not (state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK)) and (
                 tool_index := TOOL_KEYS.get(Gdk.keyval_to_upper(key))) is not None:
             self.tool.set_selected(tool_index)
+        elif ctrl and not state & Gdk.ModifierType.ALT_MASK and key in (
+                Gdk.KEY_x, Gdk.KEY_c, Gdk.KEY_v, Gdk.KEY_V):
+            if key in (Gdk.KEY_x, Gdk.KEY_c):
+                self.copy(cut=key == Gdk.KEY_x)
+            else:
+                self.paste(in_front=bool(state & Gdk.ModifierType.SHIFT_MASK))
         elif ctrl and key == Gdk.KEY_a:
             self.set_selection(i for i, shape in enumerate(self.project.shapes) if shape.visible)
         elif ctrl and key in (Gdk.KEY_g, Gdk.KEY_G):
@@ -1530,54 +1799,63 @@ class DesignWorkspace:
             except GLib.Error:
                 return
             except (OSError, ValueError) as error:
-                self.status.set_text(str(error))
+                self.show_message(str(error), level='warning')
 
         (dialog.save if save_name else dialog.open)(self.parent, None, finish)
+
+    def load_vector(self, path, opened, page=None):
+        try:
+            drawing = importer.load(path, page=page)
+            opened(drawing)
+        except importer.InkscapePageRequired as error:
+            choose_inkscape_page(self.parent, path, error.count,
+                                 lambda page: self.load_vector(path, opened, page))
+        except (OSError, ValueError) as error:
+            self.show_message(str(error), level='warning')
 
     def open_project(self, _button):
         def opened(path):
             native_project = path.suffix.lower() == '.scc-template'
-            if native_project:
-                project = load_project(path, legacy_registration=self.project.registration)
-                details = ''
-            else:
-                drawing = importer.load(path)
+            def replace_project(project, details=''):
+                def confirmed():
+                    self.replace_document(project, path if native_project else None, path.name)
+                    notice = design_text.unavailable_fonts(project) or details
+                    if notice:
+                        self.show_message(notice)
+                self.confirm_discard(confirmed)
+
+            def vector(drawing):
                 shapes, details = editor_model.editable_import(drawing)
                 size = drawing.page_size_mm or (self.project.width, self.project.height)
                 if not all(1 <= mm <= editor_model.SHAPE_LIMIT for mm in size):
                     raise ValueError('Design supports page dimensions from 1 to 1,000 mm.')
-                project = editor_model.Project(*size, shapes, mat=self.project.mat)
+                replace_project(editor_model.Project(*size, shapes, mat=self.project.mat), details)
 
-            def replace_project():
-                self.history = History(project)
-                self.saved = project
-                self.project_path = path if native_project else None
-                self.source_name = path.name
-                self.custom_page = False
-                if project.registration is not None:
-                    self.last_registration = project.registration
-                self.polygon.clear()
-                self.fit(None)
-                self.refresh_objects((0,))
-                notice = design_text.unavailable_fonts(project) or details
-                if notice:
-                    self.status.set_text(notice)
-
-            self.confirm_discard(replace_project)
+            if native_project:
+                replace_project(load_project(path, legacy_registration=self.project.registration))
+            else:
+                self.load_vector(path, vector)
 
         self.file_dialog('Open Design', opened, filters=('*.scc-template', '*.svg', '*.SVG',
                          '*.dxf', '*.DXF', '*.studio3', '*.STUDIO3'))
 
-    def new_project(self, _button):
-        def create():
-            project = replace(self.project, shapes=())
-            self.history = History(project)
-            self.saved = project
-            self.project_path = self.source_name = None
-            self.fit(None)
-            self.refresh_objects()
+    def replace_document(self, project, path=None, source=None):
+        self.cancel_drag()
+        self.polygon.clear()
+        self.notice_bar.set_visible(False)
+        self.notice_label.set_text('')
+        self.history = History(project)
+        self.saved = project
+        self.project_path, self.source_name = path, source
+        self.custom_page = False
+        if project.registration is not None:
+            self.last_registration = project.registration
+        self.fit(None)
+        self.refresh_objects((0,) if project.shapes else ())
+        self.panel_switcher.set_selected(1 if project.shapes else 0)
 
-        self.confirm_discard(create)
+    def new_project(self, _button):
+        self.confirm_discard(lambda: self.replace_document(replace(self.project, shapes=())))
 
     def save(self, _button, *, continuation=None):
         if self.project_path is None:
@@ -1595,33 +1873,26 @@ class DesignWorkspace:
         if path.suffix.lower() != '.scc-template':
             path = path.with_name(path.name + '.scc-template')
             if path.exists():
-                self.status.set_text(f'Choose the full name {path.name} to confirm replacement.')
+                self.show_message(f'Choose the full name {path.name} to confirm replacement.', level='warning')
                 return
         try:
             save_project(path, self.project)
         except (OSError, ValueError) as error:
-            self.status.set_text(f'Could not save {path.name}. {error}')
+            self.show_message(f'Could not save {path.name}. {error}', level='warning')
             return
         self.project_path = path
         self.saved = self.project
         self.refresh_status()
-        self.status.set_text(f'Saved {path.name}')
+        self.show_message(f'Saved {path.name}')
         if continuation:
             continuation()
 
     def import_vector(self, _button):
-        def opened(path):
-            shapes, details = import_shapes(path)
-            p_unit = 'path' if len(shapes) == 1 else 'paths'
-            alert = Adw.AlertDialog(heading='Place imported paths?',
-                                    body=f'{len(shapes)} {p_unit} · {path.name}\n{details}')
-            alert.add_response('cancel', 'Cancel')
-            alert.add_response('place', 'Place')
-            alert.set_close_response('cancel')
-            alert.connect('response', lambda _dialog, response: self.commit(
-                self.project.shapes + shapes, range(len(self.project.shapes),
-                                                    len(self.project.shapes) + len(shapes))) if response == 'place' else None)
-            alert.present(self.parent)
+        def opened(drawing):
+            shapes, details = editor_model.editable_import(drawing)
+            start = len(self.project.shapes)
+            self.commit(self.project.shapes + shapes, range(start, start + len(shapes)))
+            self.show_message(details)
 
-        self.file_dialog('Import cut geometry', opened, filters=('*.svg','*.dxf','*.SVG','*.DXF','*.studio3','*.STUDIO3'))
+        self.file_dialog('Import Artwork', lambda path: self.load_vector(path, opened), filters=('*.svg','*.dxf','*.SVG','*.DXF','*.studio3','*.STUDIO3'))
 

@@ -394,3 +394,27 @@ def stretch_selection(shapes, indices, anchor, axis, factor):
             raise ValueError("The shape is too small to stretch further.")
         result[index] = stretched
     return tuple(result)
+
+
+def draw_regular_polygon(start, end, sides, *, shift=False, alt=False):
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    if shift:
+        side = max(abs(dx), abs(dy))
+        dx, dy = math.copysign(side, dx or 1), math.copysign(side, dy or 1)
+    width, height = abs(dx), abs(dy)
+    if min(width, height) < 0.1:
+        return None
+    if alt:
+        left, top = start[0] - width, start[1] - height
+        width, height = width * 2, height * 2
+    else:
+        left, top = min(start[0], start[0] + dx), min(start[1], start[1] + dy)
+    return to_shape(regular_polygon(left, top, width, height, sides), model.Shape("Path"))
+
+
+def smooth_freehand(points, scale, *, final=False):
+    closed = final and len(points) > 3 and math.dist(points[0], points[-1]) <= 8 / scale
+    if closed:
+        points = points[:-1]
+    simple = model.simplified_points(tuple(points), max(0.3, 2 / scale), closed=closed)
+    return to_shape(from_clicks(simple, closed=closed and len(simple) >= 3), model.Shape("Path"))

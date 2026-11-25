@@ -15,52 +15,68 @@ verified commands (such as path ordering, weed paths, test cuts, action
 filtering, and end position) count as working; options whose protocol
 commands are not yet confirmed on hardware stay partial.
 
-**Parity: 79.0%** (58 ✅, 12 🟡, 11 ❌ across 81 features; ✅ counts 1, 🟡 counts ½).
+**Parity: 66.7%** (38 ✅, 32 🟡, 11 ❌ across 81 features; ✅ counts 1, 🟡 counts ½).
+
+## Design walkthrough
+
+The 2026-11-25 Qt and GTK walkthrough used simulated cutters. It covered
+keyboard import, numeric edits, save and reopen, sticker tracing and export,
+and mixed Cut and Score paths in Send. The keyboard flows saved identical
+projects. The mouse flows covered drawing, moving a node, pan, and zoom.
+Compact, wide, light, dark, and larger-text captures included 720 × 520.
+
+The next Design milestone is point editing across both frontends. Compare
+geometry and saved projects before moving on to transforms, tracing, and
+text editing. Studio3 export still needs complete files checked in Studio.
 
 ## Design: drawing and editing
 
+Coverage in these two sections refers to both Qt and GTK unless a row
+specifies a frontend. A capability with missing controls or behaviors in
+either frontend is partial.
+
 | Silhouette Studio | Cutline | |
 |---|---|---|
-| Select, move, scale and rotate | Select tool with a transform box, Shift for 15° steps | ✅ |
-| Point editing | Point Edit: add, delete, break, corner, smooth, make flat or curve | ✅ |
-| Line | Line, Shift for 45° steps | ✅ |
-| Rectangle and rounded rectangle | Both, Shift for squares, Alt from the centre | ✅ |
-| Ellipse | Ellipse, Shift for circles | ✅ |
-| Regular polygon | Regular Polygon with a side count | ✅ |
-| Polygon | Polygon, click to place points | ✅ |
-| Curve | Curve, smooth through clicked points | ✅ |
-| Arc | Arc | ✅ |
-| Freehand and smooth freehand | Both | ✅ |
-| Knife | Knife | ✅ |
-| Eraser | Eraser, with a size | ✅ |
-| Eyedropper | Eyedropper copies cut action, line and fill | ✅ |
-| Measure | Measure, then scale to a known length | ✅ |
-| Pan and zoom | Hand and Zoom tools, Space to pan | ✅ |
-| Undo, redo, cut, copy, paste, paste in front, duplicate | All | ✅ |
+| Select, move, scale and rotate | Both have selection and transforms; Qt has side stretch and on-canvas corner radius | 🟡 |
+| Point editing | Qt has the node toolbar and Bézier handles; GTK can drag existing points | 🟡 |
+| Line | Both draw lines; Qt has Shift angle constraints | 🟡 |
+| Rectangle and rounded rectangle | Both draw rectangles and rounded rectangles; Qt has Shift and Alt modifiers | 🟡 |
+| Ellipse | Both draw ellipses; Qt can constrain circles with Shift | 🟡 |
+| Regular polygon | Both have Regular Polygon with a side count and Shift and Alt modifiers | ✅ |
+| Polygon | Both place polygon vertices; Qt adds Shift constraints and can finish open | 🟡 |
+| Curve | Both draw editable smooth curves through clicked points | ✅ |
+| Arc | Both draw editable arcs from a drag | ✅ |
+| Freehand and smooth freehand | Both have smooth freehand; Qt also closes unsmoothed freehand strokes | 🟡 |
+| Knife | Qt | 🟡 |
+| Eraser | Qt, with a size | 🟡 |
+| Eyedropper | Qt Eyedropper copies cut action, line and fill | 🟡 |
+| Measure | Qt measures and scales to a known length | 🟡 |
+| Pan and zoom | Both zoom and pan; Qt also has Hand and Zoom tools and Space to pan | 🟡 |
+| Undo, redo, cut, copy, paste, paste in front, duplicate | Both | ✅ |
 | Select All and Select Same | Both, Select Same by line or fill colour | ✅ |
-| Basic shapes library (hearts, stars, arrows…) | Add Shape covers the drawing tools' shapes only | 🟡 |
+| Basic shapes library (hearts, stars, arrows…) | Keyboard-accessible Add Shape in Qt and GTK covers the basic drawing tools | 🟡 |
 
 ## Design: panels
 
 | Silhouette Studio | Cutline | |
 |---|---|---|
-| Page Setup: size, mat, registration marks | Page Setup panel and a named default card layout | ✅ |
-| Transform: move, rotate, scale, shear, mirror | Transform panel and Object → Transform | ✅ |
+| Page Setup: size, mat, registration marks | Page Setup in both panel pickers; blank designs open it in Qt | ✅ |
+| Transform: move, rotate, scale, shear, mirror | Both edit numeric selection bounds and expose flips. Qt adds shear | 🟡 |
 | Align and distribute | Align panel | ✅ |
 | Arrange (front and back) | Object → Arrange | ✅ |
 | Group and ungroup | Both | ✅ |
-| Replicate | Replicate panel | ✅ |
-| Modify: weld, subtract, intersect, divide, crop | All, plus Subtract All and Detach Lines | ✅ |
+| Replicate | Both replicate in rows and columns; Qt adds directional, rotated and path copies | 🟡 |
+| Modify: weld, subtract, intersect, divide, crop | Both expose path operations, including Subtract All and Detach Lines | ✅ |
 | Compound paths | Make and release compound paths | ✅ |
-| Offset and internal offset | Offset panel, corner or round | ✅ |
-| Trace: threshold, high pass, outer edge, detach | Trace panel, with a trace area | ✅ |
-| Nesting | Nesting panel: cut area or border, rotations, padding | ✅ |
-| Text Style: fonts, size, bold, italic, spacing, justification | Text Style panel | ✅ |
-| Text on a path | Text to Path and Release Path | ✅ |
+| Offset and internal offset | Both expose offset; Qt adds a separate Internal Offset action | 🟡 |
+| Trace: threshold, high pass, outer edge, detach | Both offer Trace and Bleed and show when sticker export can proceed. Qt adds trace-area preview and trace styles | 🟡 |
+| Nesting | Qt nests to the cut area or a selected border with rotation and padding | 🟡 |
+| Text Style: fonts, size, bold, italic, spacing, justification | Qt has the Text Style panel; GTK edits text in a dialog with font and size | 🟡 |
+| Text on a path | Qt has Text to Path and Release Path | 🟡 |
 | Text warp | — | ❌ |
 | Line and fill colour | Line and Fill panel | ✅ |
 | Pattern and gradient fills | — | ❌ |
-| Grid and snap | Grid panel and Snap to Grid | ✅ |
+| Grid and snap | Both have grid and snapping; Qt adds rulers, guides and crosshairs | 🟡 |
 | Layers | The Objects panel lists objects; there are no layers | 🟡 |
 | Image effects (brightness, colour) | — | ❌ |
 | Sketch and Rhinestone | — | ❌ |
@@ -71,8 +87,8 @@ commands are not yet confirmed on hardware stay partial.
 | Silhouette Studio | Cutline | |
 |---|---|---|
 | Open `.studio3` | Paths, compound paths, curves and page size; not registration, colours, images or effects | 🟡 |
-| Save `.studio3` | Rewrites a Card Maker template in place; Studio has not been seen opening one | 🟡 |
-| Import SVG (Designer edition) | Full SVG import with Inkscape layers and marks, available during startup cutter checks | ✅ |
+| Save `.studio3` | Card Maker template rewriter and native path-block encoder; Studio compatibility remains unverified | 🟡 |
+| Import SVG (Designer edition) | SVG import with Inkscape layers and marks in Send. Both Design frontends let you pick an Inkscape page to open or import. | ✅ |
 | Import DXF | DXF import | ✅ |
 | Export DXF | DXF export with true arcs (Studio opens it 2.84% too large) | ✅ |
 | Import PDF (Designer edition) | Open Print File on the Sheet tab checks PDF registration marks | 🟡 |
@@ -88,7 +104,7 @@ commands are not yet confirmed on hardware stay partial.
 | Registration marks on the page | Studio's patterns, Card Maker's geometry | ✅ |
 | Scan the marks on the cutter | Studio's captured sequence; found the marks from Linux | ✅ |
 | Print from Studio | Export a printable SVG or a matched Print & Cut ZIP; no direct printing | 🟡 |
-| Print bleed and print border | Trace and Bleed, print margin and border | ✅ |
+| Print bleed and print border | Both have Trace and Bleed, print margin and border; Qt shows trace prerequisites before export | ✅ |
 | Calibration | A stored offset from a pen test; no guided print-and-scan calibration | 🟡 |
 
 ## Send
@@ -98,7 +114,7 @@ commands are not yet confirmed on hardware stay partial.
 | Material list | Studio's own table, bundled, or imported from an installation | ✅ |
 | Custom materials | Save, update and delete presets | ✅ |
 | Force, speed, passes, blade depth | All, used on real cuts | ✅ |
-| Cut, score or no action per object | Cut, Score, None | ✅ |
+| Cut, score or no action per object | Cut, Score, None. Removing all cut paths from the active design blocks its Send handoff. | ✅ |
 | Send by line colour, fill colour or layer | Send by line or fill colour; layers from SVG and the command line | 🟡 |
 | Two tool holders | Tool Holder 1 and 2 per object, used on registered cuts | ✅ |
 | Tool detection | Reads both holders, over USB and Bluetooth | ✅ |

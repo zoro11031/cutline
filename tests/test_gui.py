@@ -199,6 +199,64 @@ class TestDesignWorkspace(unittest.TestCase):
             self.assertIsNone(win._connection()[1])
             self.assertFalse(win.cut_button.get_sensitive())
 
+    def test_draw_in_design_starts_blank_and_prompts_before_replacing(self):
+        win = self.make_window()
+        original = win.job
+        win.draw_in_design_btn.emit('clicked')
+        design = win.design
+        self.assertEqual(design.project.shapes, ())
+        self.assertEqual((design.project.width, design.project.height),
+                         (original.grid.sheet_w_mm, original.grid.sheet_h_mm))
+        self.assertEqual(design.project.mat, original.mat)
+        self.assertEqual(design.project.registration, editor_model.Registration.from_marks(original.marks))
+        self.assertIs(win.job, original)
+        design.add_shape(None)
+        design.send_workspace.emit('clicked')
+        project = design.project
+
+        def respond(response):
+            with mock.patch.object(gui.Adw.AlertDialog, 'present',
+                                   lambda dialog, _parent: dialog.emit('response', response)):
+                win.draw_in_design_btn.emit('clicked')
+
+        respond('cancel')
+        self.assertEqual(design.project, project)
+        self.assertIsNot(win.workspaces.get_visible_child(), design.view)
+        win.on_edit_template()
+        self.assertEqual(design.project, project)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'saved.scc-template'
+            with mock.patch.object(design, 'file_dialog', side_effect=lambda _title, save, **_: save(path)):
+                respond('save')
+            self.assertEqual(editor_model.load_project(path), project)
+        self.assertEqual(design.project.shapes, ())
+        design.add_shape(None)
+        respond('discard')
+        self.assertEqual(design.project.shapes, ())
+        win.on_edit_template(replace_design=True)
+        self.assertTrue(design.project.shapes)
+
+    def test_send_does_not_reuse_deleted_design_paths(self):
+        window = self.make_window()
+        window.draw_in_design_btn.emit('clicked')
+        design = window.design
+        design.commit((editor_model.Shape("Rectangle", 30, 30),), (0,))
+        design.send_workspace.emit('clicked')
+        self.assertEqual(len(window.job.paths), 1)
+        previous = window.reviewed_design
+        window.design_button.emit('clicked')
+        design.commit((), ())
+        design.send_workspace.emit('clicked')
+        self.assertIs(window.workspaces.get_visible_child(), design.view)
+        self.assertIn("No cut paths in this design", design.status.get_text())
+        self.assertTrue(design.notice_bar.get_visible())
+        self.assertIs(window.reviewed_design, previous)
+        design.change_history(design.history.undo)
+        self.assertFalse(design.notice_bar.get_visible())
+        design.send_workspace.emit('clicked')
+        self.assertEqual(len(window.job.paths), 1)
+        self.assertIs(window.reviewed_design, previous)
+
     def test_workspace_switch_leaves_an_empty_design_open_without_reviewing_it(self):
         win = self.make_window()
         original_job = win.job
@@ -465,6 +523,8 @@ class TestDesignWorkspace(unittest.TestCase):
             with mock.patch.object(design, 'file_dialog', side_effect=lambda _title, opened, **_: opened(image)):
                 design.place_sticker()
             self.assertTrue(design.trace_button.get_sensitive())
+            self.assertTrue(design.trace_next.get_visible())
+            self.assertFalse(design.review.get_sensitive())
             self.assertFalse(design.project.artwork().paths)
             design.trace_button.emit('clicked')
             dialog = win.get_visible_dialog()
@@ -482,6 +542,8 @@ class TestDesignWorkspace(unittest.TestCase):
             trace.emit('clicked')
             self.assertEqual(len(design.project.artwork().paths), 3)
             self.assertIn('Export Print', design.review.get_label())
+            self.assertTrue(design.review.get_sensitive())
+            self.assertFalse(design.trace_next.get_visible())
             target = Path(folder) / 'stickers.zip'
             with mock.patch.object(design, 'file_dialog', side_effect=lambda _title, opened, **_: opened(target)), \
                  mock.patch.object(gui.threading, 'Thread', side_effect=lambda target, **_: mock.Mock(start=target)):
@@ -817,10 +879,11 @@ class TestDesignWorkspace(unittest.TestCase):
         design = win.design
         palette = design.tool
         for button, name in ((design.save_button, 'Save'), (design.undo_button, 'Undo'),
-                             (design.redo_button, 'Redo'), (design.add_button, 'Add Shape'),
+                             (design.redo_button, 'Redo'),
                              (design.text_button, 'Add Text…'), (design.trace_button, 'Trace and Bleed…')):
             self.assertTrue(button.get_tooltip_text().startswith(name))
             self.assertIsInstance(button.get_child(), gui.Gtk.DrawingArea)
+        self.assertEqual(design.add_button.get_child().get_last_child().get_label(), 'Add Shape')
         self.assertEqual(palette.get_orientation(), gui.Gtk.Orientation.VERTICAL)
         no_modifiers = Gdk.ModifierType(0)
         rounded = palette.button_for('Rounded rectangle')
@@ -842,6 +905,99 @@ class TestDesignWorkspace(unittest.TestCase):
         count = len(design.project.shapes)
         self.assertTrue(design.canvas_key(None, Gdk.KEY_Delete, 0, no_modifiers))
         self.assertEqual(len(design.project.shapes), count - 1)
+
+    def test_design_vector_page_picker_cancels_and_imports_one_undo_step(self):
+        win = self.make_window()
+        win.present()
+        win.draw_in_design_btn.emit('clicked')
+        design = win.design
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / 'pages.svg'
+            source.write_text('<svg xmlns="http://www.w3.org/2000/svg" '
+                              'xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" '
+                              'xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" '
+                              'width="279.4mm" height="215.9mm" viewBox="0 0 279.4 215.9">'
+                              '<sodipodi:namedview><inkscape:page x="0" y="0" width="279.4" height="215.9"/>'
+                              '<inkscape:page x="310" y="0" width="215.9" height="279.4"/></sodipodi:namedview>'
+                              '<rect x="70" y="30" width="63" height="88"/>'
+                              '<rect x="360" y="45" width="63" height="88"/></svg>')
+            before = design.project
+            with mock.patch.object(design, 'file_dialog', side_effect=lambda _, opened, **kw: opened(source)):
+                design.view.activate_action('design.import-artwork', None)
+                picker = win.get_visible_dialog()
+                self.assertEqual(picker.get_extra_child().get_adjustment().get_upper(), 2)
+                picker.close()
+                self.assertEqual(design.project, before)
+                design.view.activate_action('design.import-artwork', None)
+                picker = win.get_visible_dialog()
+                picker.get_extra_child().set_value(2)
+                picker.emit('response', 'open')
+                picker.force_close()
+                self.assertEqual(len(design.project.shapes), 1)
+                self.assertAlmostEqual(design.project.shapes[0].x, 50)
+                self.assertEqual(len(design.history.past), 1)
+                with mock.patch.object(design, 'confirm_discard') as confirm:
+                    design.view.activate_action('design.open', None)
+                    picker = win.get_visible_dialog()
+                    picker.get_extra_child().set_value(2)
+                    picker.emit('response', 'open')
+                    picker.force_close()
+                    self.assertEqual(len(design.history.past), 1)
+                    confirm.call_args.args[0]()
+                self.assertAlmostEqual(design.project.width, 215.9)
+                self.assertAlmostEqual(design.project.shapes[0].x, 50)
+                self.assertFalse(design.history.past)
+                opened = design.project
+                source.write_text('<malformed')
+                design.view.activate_action('design.import-artwork', None)
+                self.assertEqual(design.project, opened)
+                self.assertTrue(design.notice_bar.get_visible())
+
+    def test_numeric_transform_moves_and_scales_selection_as_one_box(self):
+        win = self.make_window()
+        win.draw_in_design_btn.emit('clicked')
+        design = win.design
+        shapes = (editor_model.Shape('Rectangle', 20, 20, 60, 40),
+                  editor_model.Shape('Ellipse', 100, 30, 40, 40))
+        design.commit(shapes, (0, 1))
+        fields = design.fields
+        self.assertEqual([fields[k].get_value() for k in ('x', 'y', 'width', 'height')], [20, 20, 120, 50])
+        fields['x'].set_value(30)
+        fields['width'].set_value(240)
+        self.assertEqual([s.x for s in design.project.shapes], [30, 190])
+        self.assertEqual([s.height for s in design.project.shapes], [80, 80])
+        design.change_history(design.history.undo)
+        self.assertEqual([s.x for s in design.project.shapes], [30, 110])
+        design.change_history(design.history.undo)
+        self.assertEqual(design.project.shapes, shapes)
+        self.assertEqual(design.selected_indices(), (0, 1))
+
+    def test_design_ribbon_contextual_hints_and_save_badge(self):
+        from gi.repository import Gdk
+
+        win = self.make_window()
+        win.draw_in_design_btn.emit('clicked')
+        design = win.design
+        self.assertIn('Blank page', design.tool_hint.get_label())
+        self.assertFalse(design.selection_tools.get_visible())
+        self.assertFalse(design.save_state.get_visible())
+        self.assertTrue(design.import_button.get_visible())
+
+        design.tool.set_selected(design.tools.index('Polygon'))
+        self.assertTrue(design.close_polygon.get_visible())
+        design.tool.set_selected(0)
+        self.assertFalse(design.close_polygon.get_visible())
+
+        design.commit((editor_model.Shape('Rectangle', 20, 20, 40, 30),
+                       editor_model.Shape('Ellipse', 80, 20, 30, 30)), (0, 1))
+        self.assertTrue(design.selection_tools.get_visible())
+        self.assertTrue(design.group_ribbon_button.get_visible())
+        self.assertTrue(design.align_button.get_visible())
+        self.assertEqual(design.save_state.get_label(), 'Unsaved')
+        self.assertEqual(design.panel_switcher.get_selected(), 1)
+        self.assertIn('2 selected', design.tool_hint.get_label())
+        self.assertTrue(design.canvas_key(None, Gdk.KEY_Escape, 0, Gdk.ModifierType(0)))
+        self.assertFalse(design.selection_tools.get_visible())
 
     def test_transform_flyout_scales_and_remembers_tool(self):
         from gi.repository import Gdk
@@ -944,6 +1100,99 @@ class TestDesignWorkspace(unittest.TestCase):
         design.undo_button.emit('clicked')
         design.alignment_buttons['Align Left'].emit('clicked')
         self.assertEqual([shape.x for shape in design.project.shapes], [50, 50])
+
+    def test_vector_tools_commit_shared_geometry(self):
+        from cutline import path_edit
+        from gi.repository import Gdk
+
+        win = self.make_window()
+        win.draw_in_design_btn.emit('clicked')
+        design = win.design
+        gesture = mock.Mock()
+        gesture.get_current_event_state.return_value = Gdk.ModifierType(0)
+        points = ((40, 40), (60, 58), (80, 40))
+        with mock.patch.object(design.canvas, 'viewport', return_value=(0, 0, 2)):
+            for completion in ("enter", "double-click", "close"):
+                closed = completion == "close"
+                design.tool.set_selected(design.tools.index('Curve'))
+                for x, y in points:
+                    design.pick_polygon_point(gesture, 1, 2*x, 2*y)
+                if closed:
+                    design.pick_polygon_point(gesture, 1, 80, 80)
+                elif completion == "double-click":
+                    design.pick_polygon_point(gesture, 2, 160, 80)
+                else:
+                    design.canvas_key(None, Gdk.KEY_Return, 0, 0)
+                expected = path_edit.to_shape(path_edit.from_clicks(points, closed=closed), editor_model.Shape("Path"))
+                self.assertEqual(design.project.shapes[-1], expected)
+                self.assertEqual(design.selected_indices(), (0,))
+                design.change_history(design.history.undo)
+                self.assertEqual(design.project.shapes, ())
+            design.pick_polygon_point(gesture, 1, 80, 80)
+            design.canvas_key(None, Gdk.KEY_Return, 0, 0)
+            self.assertEqual(design.project.shapes, ())
+            design.canvas_key(None, Gdk.KEY_Escape, 0, 0)
+            self.assertEqual(design.polygon, [])
+
+            design.snap.set_active(True)
+            design.grid_spacing.set_value(5)
+            design.tool.set_selected(design.tools.index('Arc'))
+            design.drag_begin(gesture, 81, 81)
+            design.drag_end(gesture, 39, 0)
+            self.assertEqual(design.project.shapes, ())
+            design.drag_begin(gesture, 81, 81)
+            design.drag_end(gesture, 39, 39)
+            arc = path_edit.to_shape(path_edit.arc((40, 40), (60, 60)), editor_model.Shape("Path"))
+            self.assertEqual(design.project.shapes, (arc,))
+
+            design.tool.set_selected(design.tools.index('Regular Polygon'))
+            self.assertTrue(design.sides_option.get_visible())
+            design.sides.set_value(7)
+            gesture.get_current_event_state.return_value = Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.ALT_MASK
+            design.drag_begin(gesture, 81, 81)
+            design.drag_end(gesture, 39, 19)
+            expected = path_edit.draw_regular_polygon((40, 40), (60, 50), 7, shift=True, alt=True)
+            self.assertEqual(design.project.shapes[-1], expected)
+
+            design.tool.set_selected(design.tools.index('Smooth Freehand'))
+            design.drag_begin(gesture, 80, 80)
+            for dx, dy in ((40, 0), (40, 40), (0, 40)):
+                design.drag_update(gesture, dx, dy)
+            design.drag_end(gesture, 0, 0)
+            self.assertEqual(design.project.shapes[-1], path_edit.smooth_freehand(
+                ((40, 40), (60, 40), (60, 60), (40, 60), (40, 40)), 2, final=True))
+            self.assertTrue(design.project.shapes[-1].closed)
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'geometry.scc-template'
+            editor_model.save_project(path, design.project)
+            self.assertEqual(editor_model.load_project(path), design.project)
+
+    def test_canvas_clipboard_persists_across_documents(self):
+        from gi.repository import Gdk
+
+        win = self.make_window()
+        win.draw_in_design_btn.emit('clicked')
+        design = win.design
+        source = (editor_model.Shape('Rectangle', 20, 30, group=1),
+                  editor_model.Shape('Ellipse', 70, 30, group=1))
+        design.commit(source, (0, 1))
+        ctrl = Gdk.ModifierType.CONTROL_MASK
+        self.assertTrue(design.canvas_key(None, Gdk.KEY_x, 0, ctrl))
+        self.assertEqual(design.project.shapes, ())
+        design.change_history(design.history.undo)
+        self.assertEqual(design.project.shapes, source)
+        design.replace_document(editor_model.Project(215.9, 279.4, source))
+        self.assertTrue(design.canvas_key(None, Gdk.KEY_V, 0, ctrl | Gdk.ModifierType.SHIFT_MASK))
+        self.assertEqual([s.x for s in design.project.shapes[2:]], [20, 70])
+        self.assertEqual({s.group for s in design.project.shapes[2:]}, {2})
+        design.menu_actions.lookup_action('paste').activate(None)
+        self.assertEqual([s.x for s in design.project.shapes[-2:]], [112, 162])
+        design.change_history(design.history.undo)
+        self.assertEqual(len(design.project.shapes), 4)
+        design.change_history(design.history.redo)
+        self.assertEqual(len(design.project.shapes), 6)
+        self.assertNotIn('<Control>v', self.shortcuts(design.shortcuts))
 
     def test_design_drawing_points_selection_and_replicate_enter_history(self):
         from cutline.editor_model import Shape

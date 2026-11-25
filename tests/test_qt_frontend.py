@@ -303,6 +303,81 @@ class TestQtFrontend(unittest.TestCase):
         self.assertEqual(window.choice("layout_preset"), "")
         self.assertTrue(window.controls["card"].isEnabled())
 
+    def test_draw_in_design_replaces_only_after_confirmation(self):
+        window = self.window
+        original_job = window.job
+        window.draw_in_design_btn.click()
+        design = window.design
+        self.assertEqual(design.project.shapes, ())
+        self.assertEqual(design.dock.picker.currentText(), "Page Setup")
+        self.assertEqual((design.project.width, design.project.height),
+                         (original_job.grid.sheet_w_mm, original_job.grid.sheet_h_mm))
+        self.assertEqual(design.project.mat, original_job.mat)
+        self.assertEqual(design.project.registration, editor_model.Registration.from_marks(original_job.marks))
+        self.assertIs(window.job, original_job)
+        design.add_default_shape()
+        design.send_workspace.click()
+        previous = design.project
+        with mock.patch.object(qt_gui.QMessageBox, "question", return_value=qt_gui.QMessageBox.StandardButton.Cancel):
+            window.draw_in_design_btn.click()
+        self.assertEqual(design.project, previous)
+        self.assertIsNot(window.workspaces.currentWidget(), design)
+        window.open_design()
+        self.assertEqual(design.project, previous)
+        with mock.patch.object(qt_gui.QMessageBox, "question", return_value=qt_gui.QMessageBox.StandardButton.Discard):
+            window.draw_in_design_btn.click()
+        self.assertEqual(design.project.shapes, ())
+        design.add_default_shape()
+        previous = design.project
+        target = self.config_path / "saved.scc-template"
+        with mock.patch.object(qt_gui.QMessageBox, "question", return_value=qt_gui.QMessageBox.StandardButton.Save), \
+                mock.patch.object(QFileDialog, "getSaveFileName", return_value=(str(target), "")):
+            window.draw_in_design_btn.click()
+        self.assertEqual(editor_model.load_project(target), previous)
+        self.assertEqual(design.project.shapes, ())
+        window.open_design(replace_design=True)
+        self.assertTrue(design.project.shapes)
+
+    def test_add_shape_by_keyboard_focuses_transform_and_undoes(self):
+        window = self.window
+        window.show()
+        window.draw_in_design_btn.click()
+        design = window.design
+        design.tool.setCurrentText("Ellipse")
+        design.add_shape_button.setFocus()
+        QTest.keyClick(design.add_shape_button, Qt.Key.Key_Space)
+        self.app.processEvents()
+        shape, = design.project.shapes
+        self.assertEqual(shape.kind, "Ellipse")
+        self.assertEqual(design.selection(), (0,))
+        self.assertEqual(design.dock.picker.currentText(), "Transform")
+        self.assertTrue(design.fields["x"].hasFocus())
+        design.fields["x"].setValue(42)
+        self.assertEqual(design.project.shapes[0].x, 42)
+        design.undo()
+        design.undo()
+        self.assertEqual(design.project.shapes, ())
+
+    def test_sticker_readiness_follows_multiple_images_and_undo(self):
+        from dataclasses import replace
+        self.window.draw_in_design_btn.click()
+        design = self.window.design
+        image = self.config_path / "sticker.png"
+        make_image(image)
+        sticker = sticker_trace.place(image, design.project.width, design.project.height)
+        traced = sticker_trace.trace(sticker, source="Automatic", threshold=128, keep_holes=True, bleed_mm=0)
+        design.commit_shapes((traced, sticker), (0,))
+        self.assertFalse(design.export_action.isEnabled())
+        with mock.patch.object(design, "trace_sticker") as trace:
+            design.trace_next_button.click()
+            trace.assert_called_once()
+        self.assertEqual(design.selection(), (1,))
+        design.commit_shapes((traced, replace(sticker, action="None")), ())
+        self.assertTrue(design.export_action.isEnabled())
+        self.assertTrue(design.trace_next_button.isHidden())
+        design.undo()
+        self.assertFalse(design.export_action.isEnabled())
+
     def test_sticker_workspace_traces_exports_and_loads_paired_geometry(self):
         window = self.window
         window.open_design()
@@ -314,6 +389,17 @@ class TestQtFrontend(unittest.TestCase):
             design.place_sticker()
         self.assertTrue(design.trace_button.isEnabled())
         self.assertFalse(design.project.artwork().paths)
+        self.assertFalse(design.review_button.isEnabled())
+        design.select(())
+        self.assertIn("sticker.png", design.export_requirement.text())
+        window.show()
+        window.resize(720, 520)
+        self.app.processEvents()
+        self.assertEqual(window.size().toTuple(), (720, 520))
+        objects = design.sidebar.widget(1)
+        self.assertLess(design.dock.geometry().bottom(), objects.geometry().top())
+        self.assertTrue(design.objects.isVisible())
+        self.assertFalse(design.trace_next_button.isHidden())
 
         def apply_trace(dialog):
             buttons = dialog.findChild(QDialogButtonBox)
@@ -321,7 +407,8 @@ class TestQtFrontend(unittest.TestCase):
             return dialog.result()
 
         with mock.patch.object(QDialog, "exec", apply_trace):
-            design.trace_button.click()
+            design.trace_next_button.click()
+        self.assertTrue(design.review_button.isEnabled())
         self.assertEqual(len(design.project.artwork().paths), 3)
         self.assertIn("Export Print", design.review_button.text())
         target = self.config_path / "stickers.zip"
@@ -420,6 +507,28 @@ class TestQtFrontend(unittest.TestCase):
         self.assertCountEqual(window.job.paths, reopened.artwork().paths)
         self.assertEqual(len(window.job.paths), 4)
 
+    def test_send_does_not_reuse_deleted_design_paths(self):
+        window = self.window
+        window.show()
+        window.draw_in_design_btn.click()
+        design = window.design
+        design.commit_shapes((editor_model.Shape("Rectangle", 30, 30),), (0,))
+        design.send_workspace.click()
+        self.assertEqual(len(window.job.paths), 1)
+        previous = window.reviewed_design
+        window.design_button.click()
+        design.commit_shapes((), ())
+        design.send_workspace.click()
+        self.assertIs(window.workspaces.currentWidget(), design)
+        self.assertIn("No cut paths in this design", design.status.text())
+        self.assertTrue(design.notice_bar.isVisible())
+        self.assertIs(window.reviewed_design, previous)
+        design.undo()
+        self.assertFalse(design.notice_bar.isVisible())
+        design.send_workspace.click()
+        self.assertEqual(len(window.job.paths), 1)
+        self.assertIs(window.reviewed_design, previous)
+
     def test_workspace_switch_leaves_an_empty_design_open_without_reviewing_it(self):
         window = self.window
         original_job = window.job
@@ -496,7 +605,7 @@ class TestQtFrontend(unittest.TestCase):
         self.assertIs(window.workspaces.currentWidget(), window.design)
         # Nothing that moves the cutter is one keystroke away: these are all of them.
         self.assertEqual(sorted(action.text() for action in window.send_view.actions()),
-                         ["Cut Job", "Edit in Design", "Fit Preview", "Layout",
+                         ["Cut Job", "Edit Current Cut Template", "Fit Preview", "Layout",
                           "Open Cut Template…", "Open Print File…", "Sheet", "Zoom In", "Zoom Out"])
 
     def test_troubleshooting_opens_the_controls_its_advice_names(self):
@@ -1878,7 +1987,36 @@ class TestQtDesignEditor(unittest.TestCase):
     def click(self, canvas, point):
         QTest.mouseClick(canvas.viewport(), Qt.MouseButton.LeftButton, pos=canvas.mapFromScene(QPointF(*point)))
 
-    def test_studio_panels_dock_behind_an_icon_strip(self):
+    def test_design_ribbon_fits_and_preserves_selection_during_resize(self):
+        from PySide6.QtGui import QFont
+
+        shapes = (editor_model.Shape("Rectangle", 20, 20, 20, 10, group=1),
+                  editor_model.Shape("Rectangle", 50, 30, 20, 10, group=1),
+                  editor_model.Shape("Ellipse", 80, 40, 20, 15))
+        design = self.editor()
+        design.setFont(QFont(design.font().family(), 14))
+        title = "A long file name " * 20 + ".scc-template"
+        design.replace_document(editor_model.Project(216, 279, shapes), source=title)
+        design.resize(1280, 800)
+        design.show()
+        design.select((0, 1, 2))
+        self.app.processEvents()
+        self.assertTrue(design.group_ribbon_button.isVisible())
+        design.group_ribbon_button.setFocus()
+        design.resize(720, 520)
+        self.app.processEvents()
+        self.assertEqual(design.width(), 720)
+        self.assertTrue(design.adaptive_selection.overflow.isVisible())
+        self.assertTrue(design.adaptive_selection.overflow.hasFocus())
+        self.assertEqual(design.document_title.accessibleName(), title)
+        self.assertTrue(design.import_button.isVisible() and design.add_shape_button.isVisible())
+        self.assertTrue(design.objects.isVisible())
+        self.assertEqual(design.selection(), (0, 1, 2))
+        design.tool.setCurrentText("Point Edit")
+        self.app.processEvents()
+        self.assertTrue(design.adaptive_points.overflow.isVisible())
+
+    def test_design_inspector_switches_between_named_panels(self):
         shapes = (editor_model.Shape("Rectangle", 20, 20, 60, 40),
                   editor_model.Shape("Ellipse", 100, 30, 40, 40),
                   editor_model.Shape("Rounded rectangle", 40, 90, 30, 30, radius=4))
@@ -1889,18 +2027,25 @@ class TestQtDesignEditor(unittest.TestCase):
         self.app.processEvents()
         dock = design.dock
         self.assertEqual(list(dock.panels), ["page", "transform", "align", "replicate", "modify", "offset",
-                                             "trace", "nesting", "text", "line", "grid", "objects"])
-        self.assertEqual(dock.shown(), ["transform", "line", "objects"])
-        dock.toggles["replicate"].click()
-        self.assertIn("replicate", dock.shown())
-        dock.toggles["replicate"].click()
-        self.assertNotIn("replicate", dock.shown())
-        dock.panels["transform"].header.click()
-        self.assertFalse(dock.panels["transform"].body.isVisibleTo(design), "a panel collapses to its title bar")
+                                             "trace", "nesting", "text", "line", "grid"])
+        self.assertEqual(dock.shown(), ["transform"])
+        self.assertTrue(design.objects.isVisibleTo(design), "Objects stays visible alongside the inspector")
+        dock.picker.setCurrentIndex(dock.picker.findData("replicate"))
+        self.assertEqual(dock.shown(), ["replicate"])
+        self.assertTrue(dock.panels["replicate"].isVisibleTo(design))
+        self.assertTrue(design.objects.isVisibleTo(design))
         dock.open("transform")
+        self.assertEqual(dock.picker.currentText(), "Transform")
         self.assertTrue(dock.panels["transform"].body.isVisibleTo(design))
+        self.assertFalse(dock.panels["replicate"].isVisibleTo(design))
+
+        dock.open("line")
+        design.select((1,))
+        self.assertEqual(dock.shown(), ["line"], "selecting a shape keeps the user's chosen inspector panel")
+        dock.open("transform")
 
         # Controls follow the selection by enabling, not by moving.
+        design.select(())
         self.assertFalse(design.action.isEnabled())
         self.assertFalse(design.fields["x"].isEnabled())
         design.select((2,))
@@ -2012,11 +2157,25 @@ class TestQtDesignEditor(unittest.TestCase):
 
         canvas = design.canvas.mapTo(design, QPoint())
         dock = design.dock.mapTo(design, QPoint())
-        objects = design.objects.mapTo(design, QPoint())
         self.assertLess(palette.mapTo(design, QPoint()).x(), canvas.x())
         self.assertLess(canvas.x(), dock.x())
-        self.assertGreater(objects.y(), design.fields["x"].mapTo(design, QPoint()).y())
-        self.assertFalse(hasattr(design, "tools_bar"), "commands live in the menus, not a second toolbar")
+        self.assertEqual(design.dock.shown(), ["page"])
+        self.assertFalse(design.fields["x"].isVisibleTo(design))
+        self.assertTrue(design.tools_bar.isVisibleTo(design))
+        self.assertTrue(design.import_button.isVisibleTo(design))
+        self.assertTrue(design.add_shape_button.isVisibleTo(design))
+        self.assertTrue(design.undo_button.isVisibleTo(design))
+        self.assertFalse(design.selection_tools.isVisibleTo(design))
+        palette.setCurrentText("Select")
+        self.assertIn("Blank page", design.tool_hint.text())
+
+        design.commit_shapes((editor_model.Shape("Rectangle", 20, 20, 40, 30),
+                              editor_model.Shape("Ellipse", 80, 20, 30, 30)), (0, 1))
+        self.assertTrue(design.selection_tools.isVisibleTo(design))
+        self.assertTrue(design.group_ribbon_button.isVisibleTo(design))
+        self.assertTrue(design.align_button.isVisibleTo(design))
+        self.assertEqual(design.save_state.text(), "Unsaved")
+        self.assertEqual(design.dock.shown(), ["transform"])
 
     def test_new_shapes_take_the_options_bar_settings(self):
         design = self.editor()

@@ -38,7 +38,7 @@ CONTROL_HELP = {
 }
 
 SETUP_STEPS = (
-    "1. Open or draw: Open a template, import a print bundle, or draw in Design.\n\n"
+    "1. Open or draw: Open a template, import a print bundle, or choose Draw in Design for a blank page. Use Curve for smooth paths through clicked points.\n\n"
     "2. Choose material: In Send → Cut Job, connect your cutter and select a material.\n\n"
     "3. Test & cut: For printed sheets, choose Test Registration under Registration in Cut Job. Then choose Send to Cutter."
 )

@@ -8,7 +8,7 @@ import cairo
 
 from gi.repository import Adw, Gdk, Gtk
 
-from . import editor_model
+from . import editor_model, path_edit
 from .design_tools import ROTATE_MODES, SCALE_MODES, TRANSFORM_MODES, TURN_RIGHT, rotation_handle
 
 
@@ -184,9 +184,14 @@ class DesignCanvas(Gtk.DrawingArea):
                 for path in shape.paths():
                     self.draw_vertices(cr, path.points, scale)
         if editor.polygon:
-            cr.move_to(*editor.polygon[0])
-            for point in editor.polygon[1:]:
-                cr.line_to(*point)
+            points = editor.polygon
+            cr.move_to(*points[0])
+            handles = path_edit.from_clicks(points, closed=False).handles if editor.active_tool == "Curve" else ()
+            for index, point in enumerate(points[1:], 1):
+                if handles:
+                    cr.curve_to(*handles[index - 1][1], *handles[index][0], *point)
+                else:
+                    cr.line_to(*point)
             cr.set_source_rgb(0.16, 0.36, 0.73)
             cr.set_line_width(1.3 / scale)
             cr.stroke()

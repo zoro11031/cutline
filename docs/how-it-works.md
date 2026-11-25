@@ -146,7 +146,7 @@ marks are recognised by their shape.
 **DXF export** writes rounded cards as closed polylines with bulge corners and
 explicit millimetre units. Studio 5.0.556.1 opened one about 2.84% too large
 (2026-11-08). The cause wasn't isolated, so the writer is not compensated,
-and Cutline writes `.studio3` instead.
+and a template-based `.studio3` rewrite is available in the format module.
 
 **`.studio3`** is Studio's native document, and the only format the free
 edition opens with page and marks intact. It is a plain container, neither
@@ -154,7 +154,10 @@ compressed nor encrypted. Page size, registration marks and card outlines were
 decoded by comparing 32 Card Maker templates (2026-11-15). A few header fields
 remain unidentified. Cutline rewrites coordinates in place without changing
 the file's length, so undecoded fields stay valid; the card count cannot
-change. Whether Studio opens a rewritten file has not been checked.
+change. Whether Studio opens a rewritten file has not been checked. The path-block
+encoder supports open and closed compound outlines and relative Bézier handles.
+Writing a complete document also requires its local geometry, transforms and
+container metadata.
 
 **PixScan photos** are straightened using the mat's bar pattern, whose
 geometry was read out of Studio (2026-11-20). The fit is refused if it is

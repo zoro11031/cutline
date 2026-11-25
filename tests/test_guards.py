@@ -16,10 +16,29 @@ These tests use fake transports to exercise failure paths without USB.
 import unittest
 from unittest import mock
 
-from cutline import (cutters, geometry, graphtec, job as job_mod, regmarks,
+from cutline import (cutters, editor_model, geometry, graphtec, job as job_mod, regmarks,
                          template, transport)
 from cutline.graphtec import CutSettings, Step
 
+
+
+class TestEmptyDesignHandoff(unittest.TestCase):
+    def test_refuses_empty_edits_to_the_current_send_job(self):
+        blank = editor_model.Project(279.4, 215.9)
+        line = editor_model.Shape("Line", 30, 30, 10, 0)
+        applied = editor_model.Project(279.4, 215.9, (line,))
+        for shapes in ((), (editor_model.Shape("Line", 30, 30, 10, 0, action="None"),),
+                       (editor_model.Shape("Line", 30, 30, 10, 0, visible=False),)):
+            with self.subTest(shapes=shapes):
+                project = editor_model.Project(279.4, 215.9, shapes)
+                verdict, detail = editor_model.send_handoff(project, blank, applied)
+                self.assertEqual(verdict, "invalid")
+                self.assertIn("No cut paths in this design", detail)
+
+    def test_an_independent_send_job_is_still_accessible(self):
+        blank = editor_model.Project(279.4, 215.9)
+        origin = editor_model.Project(279.4, 215.9, (editor_model.Shape("Line", 30, 30, 10, 0),))
+        self.assertEqual(editor_model.send_handoff(blank, origin, None), ("empty", None))
 
 
 class TestWirelessVerification(unittest.TestCase):

@@ -135,15 +135,23 @@ def check_print_area(name, placed, marks):
             raise ValueError(f"Move {name} away from the registration marks or reduce its bleed.")
 
 
-def export(path, project, *, cutter):
+def export_readiness(project):
+    """Return the visible stickers, first sticker to trace, and any prerequisite."""
     stickers = tuple(shape for shape in project.shapes if shape.visible and shape.sticker)
     if not stickers:
-        raise ValueError("Place a sticker image before exporting Print & Cut.")
+        return stickers, None, "Place a sticker image before exporting Print & Cut."
+    for index, shape in enumerate(project.shapes):
+        if shape.visible and shape.sticker and shape.action == "Cut" and not shape.contours:
+            return stickers, index, f"Trace {shape.sticker.name} or set its action to None to print it without cutting."
     if not any(shape.action == "Cut" for shape in stickers):
-        raise ValueError("Set a traced sticker to Cut before exporting Print & Cut.")
-    untraced = next((shape for shape in stickers if shape.action == "Cut" and not shape.contours), None)
-    if untraced:
-        raise ValueError(f"Trace {untraced.sticker.name} or set its action to None to print it without cutting.")
+        return stickers, None, "Set a traced sticker to Cut before exporting Print & Cut."
+    return stickers, None, ""
+
+
+def export(path, project, *, cutter):
+    stickers, _, prerequisite = export_readiness(project)
+    if prerequisite:
+        raise ValueError(prerequisite)
     registration = project.registration or editor_model.Registration.from_marks(regmarks.marks(project.width, project.height))
     drawing = project.artwork()
     plan = job.build(cutter=cutter, imported=drawing, use_document_page=True, registration=True, mat=project.mat,

@@ -156,3 +156,29 @@ def load_vectors(data):
     if not paths:
         raise Studio3Error("No supported vector outlines found in the Studio3 document.")
     return page, paths
+
+
+def encode_path(outlines):
+    """Encode a Studio3 page-space path block from its ordered subpaths."""
+    def vector(pair):
+        try:
+            x, y = pair
+            if math.isfinite(x) and math.isfinite(y):
+                return struct.pack("<ff", x, y)
+        except (TypeError, ValueError, OverflowError, struct.error):
+            pass
+        raise Studio3Error("Invalid or unrepresentable Studio3 vector coordinate.")
+
+    def handle(pair):
+        return b"\x00" if pair is None else b"\x01" + vector(pair)
+
+    subpaths = []
+    for outline in outlines:
+        if type(outline.closed) is not bool or len(outline.vertices) < 2:
+            raise Studio3Error("A Studio3 subpath needs an open or closed flag and at least two vertices.")
+        vertices = b"".join(vector(vertex.point) + handle(vertex.incoming) + handle(vertex.outgoing)
+                            for vertex in outline.vertices)
+        subpaths.append(struct.pack("<IBi", 9 + len(vertices), outline.closed, len(outline.vertices) - 1)
+                        + vertices)
+    body = struct.pack("<i", len(subpaths) - 1) + b"".join(subpaths)
+    return b"\x01" + struct.pack("<I", len(body) + 4) + body

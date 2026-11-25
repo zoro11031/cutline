@@ -335,6 +335,19 @@ def scale_selection(shapes, indices, anchor, factor):
     return tuple(result)
 
 
+def edit_selection_bounds(shapes, selection, field, value):
+    """Move the selection or scale it proportionally about its top-left."""
+    area = bounds(shapes[i] for i in selection)
+    if field == "x":
+        return move(shapes, selection, value - area.x, 0)
+    if field == "y":
+        return move(shapes, selection, 0, value - area.y)
+    current = area.w if field == "width" else area.h
+    if current <= 0:
+        raise ValueError("The selection has no size in that direction to scale.")
+    return scale_selection(shapes, selection, (area.x, area.y), value / current)
+
+
 def matching_color(shapes, indices, field):
     colors = {getattr(shapes[index], field) for index in indices}
     return tuple(i for i, shape in enumerate(shapes) if shape.visible and getattr(shape, field) in colors)
@@ -683,8 +696,8 @@ def send_action(shapes):
 def send_handoff(project, origin, applied):
     """What switching to Send does with the design, as Silhouette Studio's
     SEND tab does: Send cuts the design. A design left as it was opened, or
-    already in Send, changes nothing, and neither does one with nothing to
-    cut, so a look at Design never replaces Send's artwork.
+    already in Send, changes nothing. If the edited design supplied Send's
+    current job, removing its last cut path blocks the handoff.
 
     Returns (verdict, action): "apply", "keep", "empty", "stickers" (those
     go through Export Print & Cut) or "invalid" (refused, with the reason
@@ -695,6 +708,8 @@ def send_handoff(project, origin, applied):
         return "stickers", None
     action = send_action(project.shapes)
     if action is None:
+        if applied is not None:
+            return "invalid", "No cut paths in this design. Add a cut path or undo the last edit."
         return "empty", None
     try:
         drawing = project.artwork(action)
@@ -901,8 +916,10 @@ def smooth_points(points, *, closed=True, steps=10):
     return tuple(curve)
 
 
-def paste(shapes, clipboard):
-    """Paste copied objects in place, giving their groups fresh numbers."""
+def paste(shapes, clipboard, *, offset=False):
+    """Paste copied objects, giving their groups fresh numbers."""
+    if offset and clipboard:
+        clipboard = move(clipboard, range(len(clipboard)), bounds(clipboard).w + 2, 0)
     groups = {}
     next_group = _next_group(shapes)
     pasted = []
@@ -1067,6 +1084,7 @@ def read_project(path, width, height):
 def object_name(shape: Shape) -> str:
     """Format an informative human-readable name for an object by kind and size."""
     kind_labels = {
+        "Rounded rectangle": "Rounded rect",
         "Rounded Rectangle": "Rounded rect",
         "Rectangle": "Rectangle",
         "Ellipse": "Ellipse",
@@ -1083,11 +1101,24 @@ def object_name(shape: Shape) -> str:
     if shape.kind == "Line":
         length = round((w * w + h * h) ** 0.5, 1)
         dim = f"{length:g} mm"
-    elif shape.kind == "Text" and shape.text and getattr(shape.text, "text", ""):
-        snippet = shape.text.text.strip().split("\n")[0][:12]
+    elif shape.kind == "Text" and shape.text and shape.text.value.strip():
+        snippet = shape.text.value.strip().split("\n")[0][:12]
         dim = f"‘{snippet}’"
     else:
         dim = f"{round(w, 1):g}×{round(h, 1):g}"
     return f"{label} {dim}"
+
+
+def save_state_label(path, dirty: bool) -> str:
+    """Short status badge for the document's save state."""
+    if dirty:
+        return "Unsaved changes" if path is not None else "Unsaved"
+    return "Saved" if path is not None else ""
+
+
+def document_summary(project: Project, cut_count: int, selected_count: int) -> str:
+    """Compact footer summary of page size, active cut paths, and selection."""
+    paths = "1 path" if cut_count == 1 else f"{cut_count} paths"
+    return f"{project.width:g} × {project.height:g} mm · {paths} · {selected_count} selected"
 
 

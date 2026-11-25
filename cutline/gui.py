@@ -45,7 +45,7 @@ from . import (actions, bluetooth, bundle, config, confirmation, corner_test, ge
 from .desktop_help import (BLADE_VALUE_TEXT, CONTROL_HELP, CUT_PROBLEMS, CUT_SETTINGS,  # noqa: E402
                            DIAL_IN, OPEN_SHEET, REGISTRATION_PROBLEM, SETUP_STEPS)
 from .editor_canvas import DesignCanvas, draw_feed_arrow  # noqa: E402
-from .gtk_controls import (disclosure, menu_item, protect_settings_wheel, workspace_header,  # noqa: E402
+from .gtk_controls import (choose_inkscape_page, disclosure, menu_item, protect_settings_wheel, workspace_header,  # noqa: E402
                            workspace_tools, zoom_controls)
 from .holder_settings import HolderSettings, for_holder  # noqa: E402
 
@@ -64,6 +64,15 @@ _CUT_SETTINGS_CSS = """
     color: mix(@window_fg_color, @window_bg_color, 0.25);
     background: alpha(@window_fg_color, 0.10);
     box-shadow: none;
+}
+.scc-notice {
+    border: 1px solid @accent_bg_color;
+    border-radius: 6px;
+    background: alpha(@accent_bg_color, 0.10);
+}
+.scc-notice.scc-notice-warning {
+    border-color: @error_color;
+    background: alpha(@error_color, 0.12);
 }
 """
 
@@ -756,7 +765,8 @@ class Window(Adw.ApplicationWindow):
         command(files, "Export Cut Templates…", "export-templates", self.on_export)
 
         edit = Gio.Menu()
-        command(edit, "Edit in Design", "design", self.on_edit_template, "<Control>F1")
+        command(edit, "Edit Current Cut Template", "design",
+                lambda: self.on_edit_template(replace_design=True), "<Control>F1")
         self.reset_layout_action = command(edit, "Use Generated Layout", "reset-layout", self.on_clear_artwork)
 
         view = Gio.Menu()
@@ -1181,7 +1191,7 @@ class Window(Adw.ApplicationWindow):
         open_btn.connect("clicked", self.on_open_artwork)
         self.draw_in_design_btn = draw_btn = Gtk.Button(label="Draw in Design")
         draw_btn.set_tooltip_text("Open the Design workspace to draw custom cut paths.")
-        draw_btn.connect("clicked", self.on_edit_template)
+        draw_btn.connect("clicked", lambda *_: self.on_edit_template(blank=True))
         self.use_generated = Gtk.Button(label="Use Generated Layout", sensitive=False)
         self.use_generated.connect("clicked", self.on_clear_artwork)
         actions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
@@ -2336,23 +2346,7 @@ class Window(Adw.ApplicationWindow):
         try:
             artwork = importer.load(path, page=page)
         except importer.InkscapePageRequired as exc:
-            dialog = Adw.AlertDialog(heading="Choose an Inkscape page",
-                                     body=f"{path.name} contains {exc.count} pages.")
-            selector = Gtk.SpinButton.new_with_range(1, exc.count, 1)
-            selector.set_tooltip_text("Page number")
-            selector.set_halign(Gtk.Align.CENTER)
-            dialog.set_extra_child(selector)
-            dialog.add_response("cancel", "Cancel")
-            dialog.add_response("open", "Open page")
-            dialog.set_default_response("open")
-            dialog.set_close_response("cancel")
-
-            def selected(_dialog, response):
-                if response == "open":
-                    self.load_artwork_file(path, selector.get_value_as_int())
-
-            dialog.connect("response", selected)
-            dialog.present(self)
+            choose_inkscape_page(self, path, exc.count, lambda page: self.load_artwork_file(path, page))
             return
         except Exception as exc:              # noqa: BLE001
             self.toast(f"Could not read {path.name}: {exc}")
@@ -2362,7 +2356,7 @@ class Window(Adw.ApplicationWindow):
         name = f"{path.name} · Page {page}" if page is not None else path.name
         self.set_artwork(artwork, name)
 
-    def on_edit_template(self, *_args):
+    def on_edit_template(self, *_args, blank=False, replace_design=False):
         if self.pdf_bundle:
             dialog = Adw.AlertDialog(
                 heading="Matched Cut Paths Locked",
@@ -2383,7 +2377,7 @@ class Window(Adw.ApplicationWindow):
         if self._sending:
             self.toast('Wait for the current job to finish before opening Design.')
             return
-        if self.design is not None:
+        if self.design is not None and not (blank or replace_design):
             self.workspaces.set_visible_child(self.design.view)
             return
         if self.job is None:
@@ -2393,29 +2387,39 @@ class Window(Adw.ApplicationWindow):
         from .editor_model import Project, Registration, editable_import, shapes_from_paths
 
         try:
-            shapes = self.template_shapes or (editable_import(self.imported)[0]
-                                             if self.imported else shapes_from_paths(self.job.paths))
+            shapes = () if blank else (self.template_shapes or (
+                editable_import(self.imported)[0] if self.imported else shapes_from_paths(self.job.paths)))
         except ValueError as error:
             self.toast(str(error))
             return
         grid = self.job.grid
         registration = Registration.from_marks(self.job.marks) if self.job.registration else None
         project = Project(grid.sheet_w_mm, grid.sheet_h_mm, shapes, registration, self.job.mat)
-        design = DesignWorkspace(self, project, self.send_from_design, self.review_design, cutter=self.job.device)
-        self.design_origin = project
-        self.workspaces.add_named(design.view, 'design')
-        self.design = design
-        self.workspaces.set_visible_child(design.view)
+        device = self.job.device
+
+        def open_document():
+            if self.design is not None:
+                self.design.replace_document(project)
+                self.design.cutter = device
+                self.design.menu_actions.lookup_action('holder-2').set_enabled(device.two_tools)
+            else:
+                self.design = DesignWorkspace(self, project, self.send_from_design, self.review_design, cutter=device)
+                self.workspaces.add_named(self.design.view, 'design')
+            self.forget_sent_design()
+            self.workspaces.set_visible_child(self.design.view)
+
+        if self.design is None:
+            open_document()
+        else:
+            self.design.confirm_discard(open_document)
 
     def send_from_design(self, *_args):
-        """Design's Send switch. As in Silhouette Studio, Send cuts the
-        design: an edited one replaces Send's artwork, while one left as it
-        was opened, or with nothing to cut, leaves Send as it is."""
+        """Hand off the current design or explain why it cannot be sent."""
         from .editor_model import send_handoff
 
         verdict, detail = send_handoff(self.design.project, self.design_origin, self.reviewed_design)
         if verdict == "invalid":
-            self.design.status.set_text(detail)
+            self.design.show_message(detail, level='warning')
             return
         if verdict == "apply":
             self.review_design(self.design.project, detail)
@@ -2469,7 +2473,7 @@ class Window(Adw.ApplicationWindow):
         from .editor_model import ALL_ACTIONS, holder_defaults
         artwork = project.artwork(action)
         if not artwork.paths or any(path.length_mm() <= 0 for path in artwork.paths):
-            self.design.status.set_text('Draw or resize the paths before reviewing.')
+            self.design.show_message('Draw or resize the paths before reviewing.', level='warning')
             return
         self.tuning = False
         group_defaults = holder_defaults(artwork)

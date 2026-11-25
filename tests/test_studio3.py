@@ -12,7 +12,7 @@ import struct
 import tempfile
 import unittest
 
-from cutline import cli, importer, job, studio3
+from cutline import cli, importer, job, studio3, studio3_paths
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "studio3"
 
@@ -40,7 +40,7 @@ class TestNativeImport(unittest.TestCase):
 
 
     @staticmethod
-    def vector_document(flags=1):
+    def vector_document(flags=1, encoded_path=None):
         def block(body):
             return b"\x01" + struct.pack("<I", len(body) + 4) + body
 
@@ -55,7 +55,8 @@ class TestNativeImport(unittest.TestCase):
             return struct.pack("<I", 4 + len(body)) + body
 
         def path(name, *segments):
-            payload = block(struct.pack("<i", len(segments) - 1) + b"".join(segments))
+            payload = encoded_path if encoded_path is not None else block(
+                struct.pack("<i", len(segments) - 1) + b"".join(segments))
             return (b"\x00" + block(b"") + bytes(65) + payload + b"\x01" + bytes(8)
                     + block(b"") + struct.pack("<I", len(name)) + name)
 
@@ -84,6 +85,37 @@ class TestNativeImport(unittest.TestCase):
         planned = job.build(imported=art, use_document_page=True, registration=False)
         self.assertEqual((planned.grid.sheet_w_mm, planned.grid.sheet_h_mm), art.page_size_mm)
         self.assertEqual(planned.blocked, [])
+
+    def test_encodes_native_compound_path(self):
+        outline, vertex = studio3_paths.Outline, studio3_paths.Vertex
+        paths = (
+            outline("Example", True, tuple(vertex(point, None, None) for point in ((65, 46), (75, 62), (51, 62)))),
+            outline("Example", False, (vertex((22, 25), None, (0, 20)), vertex((62, 25), (0, 20), None))),
+        )
+        document = self.vector_document(encoded_path=studio3_paths.encode_path(paths))
+        self.assertEqual(document, self.vector_document())
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder) / "Encoded.studio3"
+            path.write_bytes(document)
+            self.assertEqual([item.closed for item in importer.load(path).paths], [True, False])
+
+    def test_encoder_matches_fixture_blocks(self):
+        for name in KNOWN:
+            with self.subTest(template=name):
+                data = load(name)
+                _, paths = studio3_paths.load_vectors(data)
+                self.assertEqual(len(paths), KNOWN[name]["cards"])
+                for path in paths:
+                    self.assertIn(studio3_paths.encode_path((path,)), data)
+
+    def test_encoder_refuses_invalid_coordinates(self):
+        for coordinate in (float("nan"), float("inf"), 1e40, None):
+            with self.subTest(coordinate=coordinate):
+                path = studio3_paths.Outline("Invalid", False, (
+                    studio3_paths.Vertex((coordinate, 0), None, None),
+                    studio3_paths.Vertex((10, 10), None, None)))
+                with self.assertRaisesRegex(studio3.Studio3Error, "vector coordinate"):
+                    studio3_paths.encode_path((path,))
 
     def test_reports_invalid_geometry_and_truncated_document(self):
         with tempfile.TemporaryDirectory() as folder:

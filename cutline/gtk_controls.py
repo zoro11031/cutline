@@ -83,3 +83,19 @@ def menu_item(label, action, shortcut=None):
     if shortcut:
         item.set_attribute_value("accel", GLib.Variant.new_string(shortcut.split("|")[0]))
     return item
+
+def choose_inkscape_page(parent, path, count, opened):
+    dialog = Adw.AlertDialog(heading="Choose an Inkscape page",
+                             body=f"{path.name} contains {count} pages.")
+    selector = Gtk.SpinButton.new_with_range(1, count, 1)
+    selector.update_property([Gtk.AccessibleProperty.LABEL], ["Page number"])
+    selector.set_halign(Gtk.Align.CENTER)
+    dialog.set_extra_child(selector)
+    dialog.add_response("cancel", "Cancel")
+    dialog.add_response("open", "Open page")
+    dialog.set_default_response("open")
+    dialog.set_close_response("cancel")
+    dialog.connect("response", lambda _, response: opened(selector.get_value_as_int())
+                   if response == "open" else None)
+    dialog.present(parent)
+    selector.grab_focus()

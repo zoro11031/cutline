@@ -17,6 +17,7 @@ cheap: nine sub-suites of a few tests each.
 
 import io
 import unittest
+from unittest import mock
 
 from cutline import (actions, config, corner_test, pixscan, cutters, editor_model, graphtec, job, regmarks, rfcomm, sheet,
                          starting_guide, sticker_print, testcut, tooling, transport, verify)
@@ -346,6 +347,13 @@ class TestGuardsDiscriminate(unittest.TestCase):
                     broken, 0,
                     f"{description} - and every test still passed, so that "
                     f"guard's tests do not discriminate")
+
+    def test_empty_design_handoff_discriminates(self):
+        classes = ["tests.test_guards.TestEmptyDesignHandoff"]
+        for verdict in (("empty", None), ("invalid", "No cut paths in this design.")):
+            with self.subTest(verdict=verdict), mock.patch.object(editor_model, "send_handoff", return_value=verdict):
+                result = _run(classes)
+                self.assertGreater(len(result.failures), 0)
 
     def test_the_guards_are_restored_afterwards(self):
         # A discrimination run that leaked a stub would quietly disable a

@@ -83,6 +83,17 @@ def _set_windows_app_id():
         pass
 
 
+class Workspaces(QStackedWidget):
+    """Keep a hidden workspace from setting the window's minimum size."""
+    def __init__(self):
+        super().__init__()
+        self.currentChanged.connect(lambda _: self.updateGeometry())
+
+    def minimumSizeHint(self):
+        page = self.currentWidget()
+        return page.minimumSizeHint() if page else super().minimumSizeHint()
+
+
 class Window(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -121,7 +132,7 @@ class Window(QMainWindow):
         self.blade = {}
         self._initial_workspace_layout = True
 
-        self.workspaces = QStackedWidget()
+        self.workspaces = Workspaces()
         self.setCentralWidget(self.workspaces)
         self.workspaces.setStyleSheet(workspace_style(self.palette()))
         self.send_view = setup = QWidget()
@@ -299,7 +310,7 @@ class Window(QMainWindow):
         command(files, "Export Cut Templates…", self.export_job)
 
         edit = self.menu_bar.addMenu("&Edit")
-        command(edit, "Edit in Design", self.open_design, "Ctrl+F1")
+        command(edit, "Edit Current Cut Template", lambda: self.open_design(replace_design=True), "Ctrl+F1")
         self.reset_layout_action = command(edit, "Use Generated Layout", self.reset_artwork)
 
         view = self.menu_bar.addMenu("&View")
@@ -369,7 +380,7 @@ class Window(QMainWindow):
         source = page.group("Cut template")
         self.source_label = source.note("Generated card layout")
         self.open_artwork_button = source.push("Open Cut Template…", self.open_artwork)
-        self.draw_in_design_btn = source.push("Draw in Design", self.open_design)
+        self.draw_in_design_btn = source.push("Draw in Design", lambda: self.open_design(blank=True))
         self.use_generated = source.push("Use Generated Layout", self.reset_artwork)
         layout = page.group("Media and cards")
         self.choose(layout, "layout_preset", "Layout preset",
@@ -2588,7 +2599,7 @@ class Window(QMainWindow):
             else:
                 self.message("The settings or cutter connection changed. Review the test cut again.")
 
-    def open_design(self):
+    def open_design(self, *, blank=False, replace_design=False):
         if self.bundle:
             dialog = QMessageBox(self)
             dialog.setWindowTitle("Matched Cut Paths Locked")
@@ -2603,32 +2614,42 @@ class Window(QMainWindow):
         if self.settings_locked():
             self.message("Wait for the cutter operation to finish before opening Design.")
             return
-        if self.design is None:
+        if self.design is None or blank or replace_design:
             if self.job is None:
                 self.message("Check the layout before opening Design.")
                 return
             from .qt_design import Design
             plan = self.job
             try:
-                shapes = self.project_shapes or (editor_model.editable_import(self.artwork)[0] if self.artwork else
-                                                  editor_model.shapes_from_paths(plan.paths))
+                shapes = () if blank else (self.project_shapes or (
+                    editor_model.editable_import(self.artwork)[0] if self.artwork else
+                    editor_model.shapes_from_paths(plan.paths)))
             except ValueError as error:
                 self.message(str(error))
                 return
             registration = editor_model.Registration.from_marks(plan.marks) if plan.registration else None
             project = editor_model.Project(plan.grid.sheet_w_mm, plan.grid.sheet_h_mm, shapes, registration, plan.mat)
-            self.design = Design(project, plan.device, self.send_from_design, self.review_design)
-            self.design_origin = project
-            self.workspaces.addWidget(self.design)
+            if self.design is None:
+                self.design = Design(project, plan.device, self.send_from_design, self.review_design)
+                if self.can_update_windows:
+                    help_menu = self.design.menu_bar.addMenu("&Help")
+                    help_menu.addAction("Check for Updates…", self.check_for_updates)
+                self.workspaces.addWidget(self.design)
+            elif self.design.may_replace():
+                self.design.replace_document(project)
+            else:
+                return
+            self.design.device = plan.device
+            self.design.second_holder_action.setEnabled(plan.device.two_tools)
+            self.forget_sent_design()
         self.workspaces.setCurrentWidget(self.design)
 
     def send_from_design(self):
-        """Design's Send switch. As in Silhouette Studio, Send cuts the
-        design: an edited one replaces Send's artwork, while one left as it
-        was opened, or with nothing to cut, leaves Send as it is."""
+        """Hand off the current design or explain why it cannot be sent."""
+        self.design.finish_text()
         verdict, detail = editor_model.send_handoff(self.design.project, self.design_origin, self.reviewed_design)
         if verdict == "invalid":
-            self.design.message(detail)
+            self.design.message(detail, level="warning")
             return
         if verdict == "apply":
             self.review_design(self.design.project, detail)
@@ -2656,7 +2677,7 @@ class Window(QMainWindow):
     def review_design(self, project, action):
         artwork = project.artwork(action)
         if not artwork.paths or any(path.length_mm() <= 0 for path in artwork.paths):
-            self.design.message("Draw or resize the paths before reviewing.")
+            self.design.message("Draw or resize the paths before reviewing.", level="warning")
             return
         self.tuning = False
         self.project_shapes = project.shapes

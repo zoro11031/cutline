@@ -2,7 +2,7 @@
 
 import threading
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap, QPolygonF, QWheelEvent
 from PySide6.QtWidgets import (QAbstractScrollArea, QAbstractSpinBox, QApplication, QBoxLayout, QButtonGroup, QCheckBox,
                                QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QLayout,
@@ -24,7 +24,23 @@ QFrame#workspaceBar {
     border-radius: 9px;
 }
 QFrame#workspaceTools { border-bottom: 1px solid palette(midlight); }
+QFrame#designRibbon { background: palette(base); border: 1px solid palette(midlight); border-radius: 6px; }
 QFrame#designToolOptions { background: palette(base); border: 1px solid palette(midlight); border-radius: 6px; }
+QToolButton[role="designRibbon"] {
+    background: palette(button); border: 1px solid palette(midlight);
+    border-radius: 5px; padding: 2px 6px; min-height: 22px;
+}
+QToolButton[role="designRibbon"]:hover, QToolButton[role="designRibbon"]:focus { border-color: palette(highlight); }
+QToolButton[role="designRibbon"]:disabled { background: @disabled_button; color: @disabled_text; }
+QPushButton[role="compactTool"] { min-height: 22px; padding: 2px 6px; }
+QLabel[role="saveBadge"] {
+    font-size: 11px; padding: 2px 6px; border-radius: 4px;
+    background: palette(alternate-base); color: palette(window-text);
+}
+QLabel[role="saveBadge"][dirty="true"] { font-weight: 600; color: palette(highlight); }
+QFrame#designNotice { background: palette(alternate-base); border: 1px solid palette(highlight); border-radius: 5px; }
+QFrame#designNotice[level="warning"] { border-color: @destructive; }
+QFrame#designObjectsPane { border-left: 1px solid palette(midlight); border-top: 1px solid palette(midlight); }
 QScrollArea[role="settings"], QWidget[role="settingsPage"] { background: palette(window); }
 QTabWidget[role="settings"]::pane { border: 0; border-top: 1px solid palette(midlight); }
 QTabWidget[role="settings"] QTabBar::tab {
@@ -83,12 +99,6 @@ QTabBar[role="document"]::tab {
 }
 QLabel[role="panelTitle"] { font-weight: 600; padding: 2px 0 4px 2px; }
 QFrame#designDock { border-left: 1px solid palette(midlight); }
-QFrame#panelStrip { border-left: 1px solid palette(midlight); background: palette(window); }
-QFrame[role="dockPanel"] { border-bottom: 1px solid palette(midlight); }
-QToolButton[role="dockHeader"] {
-    border: 0; padding: 3px 6px; font-weight: 600; background: palette(button); text-align: left;
-}
-QToolButton[role="dockHeader"]:hover { background: palette(alternate-base); }
 QLabel[role="dockSection"] { font-size: 11px; font-weight: 600; padding-top: 3px; }
 QWidget[role="dockBody"] QAbstractSpinBox, QWidget[role="dockBody"] QComboBox,
 QWidget[role="dockBody"] QLineEdit, QWidget[role="dockBody"] QPushButton { min-height: 22px; }
@@ -671,6 +681,25 @@ def design_icon(tool, color, size=18):
     return QIcon(pixmap)
 
 
+def ribbon_button(tool, callback=None, *, label=None, menu=None, tip=""):
+    """Compact icon+text button for the Design command ribbon."""
+    widget = QToolButton()
+    widget.setProperty("role", "designRibbon")
+    widget.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+    widget.setText(label or tool.name)
+    widget.setAccessibleName(tool.name)
+    widget.setToolTip(tip or tool.tooltip)
+    widget.setIconSize(QSize(15, 15))
+    widget.setIcon(design_icon(tool, widget.palette().buttonText().color(), size=15))
+    widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+    if menu is not None:
+        widget.setMenu(menu)
+        widget.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+    elif callback is not None:
+        widget.clicked.connect(lambda _checked=False: callback())
+    return widget
+
+
 class DesignIconButton(QToolButton):
     def __init__(self, tool, *, checkable=False, action=None, size=34):
         super().__init__()
@@ -827,34 +856,19 @@ class ToolStrip(QFrame):
 
 
 class DockPanel(QFrame):
-    """One Photoshop-style panel: a thin title bar that collapses a dense body."""
+    """One inspector page with a title supplied by the panel chooser."""
 
-    def __init__(self, key, title, parent=None):
+    def __init__(self, title, parent=None):
         super().__init__(parent)
-        self.key = key
-        self.setProperty("role", "dockPanel")
         self.setAccessibleName(title)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        self.header = QToolButton(text=title, checkable=True, checked=True, arrowType=Qt.ArrowType.DownArrow,
-                                  toolButtonStyle=Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.header.setProperty("role", "dockHeader")
-        self.header.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.header.toggled.connect(self.set_expanded)
-        outer.addWidget(self.header)
         self.body = QWidget()
         self.body.setProperty("role", "dockBody")
         self.layout_ = QVBoxLayout(self.body)
         self.layout_.setContentsMargins(8, 4, 8, 8)
         self.layout_.setSpacing(4)
         outer.addWidget(self.body)
-
-    def set_expanded(self, expanded):
-        self.body.setVisible(expanded)
-        self.header.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
-        if self.header.isChecked() != expanded:
-            self.header.setChecked(expanded)
 
     def form(self, title=None):
         """A dense form, optionally under a small section caption."""
@@ -883,65 +897,45 @@ class DockPanel(QFrame):
 
 
 class PanelDock(QFrame):
-    """Panels stacked in a scrolling column, opened from an icon strip on the
-    outer edge, as Photoshop's and GIMP's docks are."""
+    """A labeled picker and one scrollable inspector page at a time."""
+
+    changed = Signal()
 
     def __init__(self):
         super().__init__()
         self.setObjectName("designDock")
         self.panels = {}
-        self.toggles = {}
-        row = QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(0)
-        self.column = QWidget()
-        self.stack = QVBoxLayout(self.column)
-        self.stack.setContentsMargins(0, 0, 0, 0)
-        self.stack.setSpacing(0)
-        self.stack.addStretch(1)
-        self.scroll = QScrollArea()
-        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.scroll.setWidget(self.column)
-        row.addWidget(self.scroll, 1)
-        strip = QFrame()
-        strip.setObjectName("panelStrip")
-        strip.setAccessibleName("Panels")
-        self.strip = QVBoxLayout(strip)
-        self.strip.setContentsMargins(3, 4, 3, 4)
-        self.strip.setSpacing(2)
-        self.strip.addStretch(1)
-        row.addWidget(strip)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self.picker = QComboBox()
+        self.picker.setAccessibleName("Design panel")
+        layout.addWidget(self.picker)
+        self.pages = QStackedWidget()
+        layout.addWidget(self.pages, 1)
+        self.picker.currentIndexChanged.connect(self.switch_panel)
 
-    def add(self, key, title, icon, *, shown=True):
-        panel = DockPanel(key, title)
+    def add(self, key, title, icon):
+        panel = DockPanel(title)
         self.panels[key] = panel
-        self.stack.insertWidget(self.stack.count() - 1, panel)
-        toggle = DesignIconButton(icon, checkable=True, size=30)
-        toggle.setAccessibleName(f"{title} panel")
-        toggle.setToolTip(title)
-        toggle.setChecked(shown)
-        toggle.toggled.connect(lambda on, key=key: self.set_shown(key, on))
-        self.toggles[key] = toggle
-        self.strip.insertWidget(self.strip.count() - 1, toggle)
-        panel.setVisible(shown)
+        scroll = QScrollArea()
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(panel)
+        self.pages.addWidget(scroll)
+        self.picker.addItem(design_icon(icon, self.palette().text().color()), title, key)
         return panel
 
-    def set_shown(self, key, shown):
-        panel = self.panels[key]
-        panel.setVisible(shown)
-        if self.toggles[key].isChecked() != shown:
-            self.toggles[key].setChecked(shown)
+    def switch_panel(self, index):
+        self.pages.setCurrentIndex(index)
+        self.changed.emit()
 
     def open(self, key):
-        """Show a panel expanded and scroll it into view."""
-        self.set_shown(key, True)
-        self.panels[key].set_expanded(True)
-        QTimer.singleShot(0, self, lambda: self.scroll.ensureWidgetVisible(self.panels[key], 0, 0))
+        self.picker.setCurrentIndex(self.picker.findData(key))
 
     def shown(self):
-        return [key for key, panel in self.panels.items() if not panel.isHidden()]
+        key = self.picker.currentData()
+        return [key] if key is not None else []
 
 
 # Studio's basic colour menu, a plain palette that reads on screen and in print.
