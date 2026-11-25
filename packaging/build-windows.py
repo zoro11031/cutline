@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tarfile
@@ -130,6 +131,61 @@ def pip_command():
                 "org.gnome.Sdk//50", "-m", "pip"]
 
 
+ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
+
+
+def build_ico(svg_path, ico_path):
+    """Render a multi-resolution Windows .ico from the app SVG, or copy the checked-in .ico."""
+    try:
+        from PIL import Image
+    except ImportError:
+        Image = None
+    if Image is None or not shutil.which("rsvg-convert"):
+        fallback = ROOT / "share/icons/cutline.ico"
+        if not fallback.is_file():
+            raise RuntimeError("Install rsvg-convert and Pillow (or provide share/icons/cutline.ico) to build the Windows icon.")
+        shutil.copy2(fallback, ico_path)
+        return ico_path
+
+    entries = []
+    for size in ICO_SIZES:
+        png = subprocess.check_output(["rsvg-convert", "-w", str(size), "-h", str(size), str(svg_path)])
+        if size == 256:
+            entries.append((size, png))
+            continue
+        image = Image.open(io.BytesIO(png)).convert("RGBA")
+        pixels = image.load()
+        row_stride = ((size + 31) // 32) * 4
+        xor_rows = []
+        and_rows = []
+        for y in range(size - 1, -1, -1):
+            row = bytearray()
+            mask = bytearray(row_stride)
+            for x in range(size):
+                r, g, b, a = pixels[x, y]
+                row.extend((b, g, r, a))
+                if a == 0:
+                    mask[x // 8] |= 1 << (7 - (x % 8))
+            xor_rows.append(bytes(row))
+            and_rows.append(bytes(mask))
+        xor_data = b"".join(xor_rows)
+        and_data = b"".join(and_rows)
+        header = struct.pack("<IiiHHIIiiII", 40, size, size * 2, 1, 32, 0,
+                             len(xor_data) + len(and_data), 0, 0, 0, 0)
+        entries.append((size, header + xor_data + and_data))
+
+    ico = bytearray(struct.pack("<HHH", 0, 1, len(entries)))
+    offset = 6 + 16 * len(entries)
+    for size, blob in entries:
+        dim = 0 if size == 256 else size
+        ico.extend(struct.pack("<BBBBHHII", dim, dim, 0, 0, 1, 32, len(blob), offset))
+        offset += len(blob)
+    for _, blob in entries:
+        ico.extend(blob)
+    ico_path.write_bytes(ico)
+    return ico_path
+
+
 def build(cache, output):
     wheel_dir = cache / "windows-wheels"
     subprocess.run([*pip_command(), "download", "--dest", wheel_dir,
@@ -141,7 +197,8 @@ def build(cache, output):
     with ThreadPoolExecutor(max_workers=8) as pool:
         archives = list(pool.map(lambda item: download(cache, MSYS2 + item[0], item[1]), packages.items()))
     with TemporaryDirectory(prefix="cutline-windows-") as stage:
-        app = Path(stage) / "Cutline"
+        stage_dir = Path(stage)
+        app = stage_dir / "Cutline"
         app.mkdir()
         with ZipFile(python_zip) as embedded:
             embedded.extractall(app)
@@ -156,6 +213,10 @@ def build(cache, output):
         shutil.copy2(ROOT / "packaging/windows-launcher.py", app / "launcher.py")
         shutil.copy2(ROOT / "LICENSE", app / "LICENSE")
         shutil.copy2(ROOT / "packaging/windows-readme.txt", app / "Start Here.txt")
+        icon_file = build_ico(ROOT / "share/icons/cutline.svg", stage_dir / "cutline.ico")
+        shutil.copy2(icon_file, app / "cutline.ico")
+        license_file = stage_dir / "LICENSE.txt"
+        license_file.write_bytes((ROOT / "LICENSE").read_text().replace("\n", "\r\n").encode("utf-8"))
         (app / "build-manifest.json").write_text(json.dumps({
             "python": {python_zip.name: sha256(python_zip)},
             "pypi_wheels": {wheel.name: sha256(wheel) for wheel in wheels},
@@ -168,7 +229,8 @@ def build(cache, output):
         with TemporaryDirectory(prefix="windows-setup-", dir=output) as folder:
             installer = Path(folder) / filename
             subprocess.run(["makensis", "-V3", f"-DAPP_VERSION={version}",
-                            f"-DPAYLOAD={app}", f"-DINSTALLER={installer}",
+                            f"-DPAYLOAD={app}", f"-DICON={icon_file}",
+                            f"-DLICENSE_FILE={license_file}", f"-DINSTALLER={installer}",
                             ROOT / "packaging/windows-installer.nsi"], check=True)
             installer.replace(output / filename)
         print(f"Windows installer: {output / filename}")

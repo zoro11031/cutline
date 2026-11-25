@@ -1,7 +1,8 @@
 Cutline for 64-bit Windows
 
-Open Cutline from the Start menu. Python and Qt are included.
-Settings and presets are stored in %LOCALAPPDATA%\Cutline.
+Open Cutline from the Start menu (or Desktop shortcut, if selected during setup).
+Python and Qt are included. Settings and presets are stored in %LOCALAPPDATA%\Cutline.
+Cutline is licensed under the GNU General Public License v3 (see LICENSE).
 You can remove the app from Windows Settings under Installed apps.
 
 For command-line diagnostics, open a terminal in this folder and run:

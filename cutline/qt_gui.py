@@ -59,13 +59,37 @@ BLADE_CHOICES = (
 )
 QUICK_NUMBERS = {"force", "speed", "passes", "acceleration", "depth"}
 
+
+def _app_icon():
+    icon = QIcon.fromTheme(APP_ID)
+    if not icon.isNull():
+        return icon
+    root = Path(__file__).resolve().parent.parent
+    for candidate in (root / "cutline.ico", root / "share/icons/cutline.ico", root / "share/icons/cutline.svg"):
+        if candidate.is_file():
+            icon = QIcon(str(candidate))
+            if not icon.isNull():
+                return icon
+    return QIcon()
+
+
+def _set_windows_app_id():
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+    except (AttributeError, OSError):
+        pass
+
+
 class Window(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Cutline")
         self.resize(1210, 800)
         self.settings_wheel = SettingsWheel(self)
-        self.setWindowIcon(QIcon.fromTheme(APP_ID))
+        self.setWindowIcon(_app_icon())
         self.tasks = Tasks(self)
         self.settings = config.load_settings()
         self.job = self.artwork = self.project_shapes = self.design = self.reviewed_design = self.design_origin = None
@@ -2659,9 +2683,13 @@ class Window(QMainWindow):
 
 
 def main(argv=None):
+    _set_windows_app_id()
     app = QApplication([sys.argv[0], *(argv or [])])
     app.setApplicationName("Cutline")
     app.setDesktopFileName(APP_ID)
+    icon = _app_icon()
+    if not icon.isNull():
+        app.setWindowIcon(icon)
     window = Window()
     window.show()
     return app.exec()

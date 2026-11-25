@@ -99,7 +99,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install NSIS
-        run: sudo apt-get update && sudo apt-get install -y nsis zstd libglib2.0-bin
+        run: sudo apt-get update && sudo apt-get install -y nsis zstd libglib2.0-bin librsvg2-bin python3-pil
       - name: Build the Windows installer
         run: python3 packaging/build-windows.py
       - uses: actions/upload-artifact@v7
@@ -118,11 +118,18 @@ jobs:
         shell: pwsh
         run: |
           $setup = (Get-ChildItem Cutline-*-Setup.exe).FullName
-          Start-Process $setup -ArgumentList '/S' -Wait
+          $proc = Start-Process $setup -ArgumentList '/S' -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { throw "Installer exited with code $($proc.ExitCode)" }
           $app = "$env:LOCALAPPDATA\Programs\Cutline\app"
+          if (-not (Test-Path "$app\cutline.ico")) { throw "Missing cutline.ico" }
+          if (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Cutline.lnk")) { throw "Missing Start Menu shortcut" }
+          $reg = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Cutline"
+          if ($reg.DisplayIcon -ne "$app\cutline.ico") { throw "Unexpected DisplayIcon: $($reg.DisplayIcon)" }
+          if (-not $reg.Publisher) { throw "Missing Publisher" }
+          if (-not $reg.EstimatedSize) { throw "Missing EstimatedSize" }
           & "$app\python.exe" "$app\launcher.py" cut --dry-run
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          & "$app\python.exe" -c "import sys; sys.path.insert(0, r'$app'); import PySide6.QtWidgets, cutline.qt_gui"
+          & "$app\python.exe" -c "import sys; sys.path.insert(0, r'$app'); from PySide6 import QtWidgets; import cutline.qt_gui as g; a = QtWidgets.QApplication([]); assert not g._app_icon().isNull()"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
   publish:
