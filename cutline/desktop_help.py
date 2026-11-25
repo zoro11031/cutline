@@ -12,10 +12,11 @@ CONTROL_HELP = {
     "holder": "The slot holding the tool.",
     "acceleration": "How quickly the cutter speeds up and slows down.",
     "blade_diameter_mm": "Helps a blade turn at corners. Use 0 for a pen.",
-    "sharpen_corners": "Lift the blade and extend the cuts at sharp corners.",
+    "sharpen_corners": "Slightly overcut straight corners for cleaner edges on thick stock or small sharp shapes. "
+                       "Has no effect on rounded edges.",
     "corner_start_mm": "How far to extend the start of the cut.",
     "corner_end_mm": "How far to extend the end of the cut.",
-    "track_enhancing": "Run the rollers before cutting. Use force 19 or higher.",
+    "track_enhancing": "Feed the sheet back and forth before cutting to grip thick stock and prevent slipping across passes.",
     "path_order": "Choose the order in which shapes are cut.",
     "pass_order": "Choose when the cutter repeats each cut.",
     "interior_first": "Cut holes before the outside edge.",

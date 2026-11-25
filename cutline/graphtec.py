@@ -486,8 +486,6 @@ class CutSettings:
                        "will not be sent")
         if self.sharpen_corners and (not device.cameo3_on or not self.blade_diameter_mm):
             out.append("Line Segment Overcut requires a blade on a cutter that accepts corner extensions.")
-        if self.track_enhancing and min(self.force, device.max_pressure) < 19:
-            out.append("The reference driver reports that Track Enhancing requires force 19 or higher.")
         return out
 
 
