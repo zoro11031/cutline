@@ -170,10 +170,11 @@ class ZoomControls(QWidget):
         self.in_button = button("+", lambda: canvas.zoom_by(1.25))
         self.fit_button = fit_button if fit_button is not None else button("Fit", canvas.fit)
         for widget in (self.out_button, self.in_button):
-            widget.setFixedWidth(30)
+            widget.setFixedSize(28, 28)
             widget.setProperty("role", "workspaceTool")
         if fit_button is None:
-            self.fit_button.setFixedWidth(49)
+            self.fit_button.setFixedHeight(28)
+            self.fit_button.setMinimumWidth(48)
             self.fit_button.setProperty("role", "workspaceTool")
         for widget, label in ((self.out_button, "Zoom out"), (self.in_button, "Zoom in"),
                               (self.fit_button, "Fit to view")):

@@ -426,3 +426,53 @@ class TestTemplateTracing(unittest.TestCase):
         self.assertEqual(result[0], existing[0])
         self.assertEqual([(s.x, s.y) for s in result[1:]], [(7, 8), (9, 9), (3, 3)])
         self.assertEqual([s.group for s in result[1:]], [2, 2, None])
+
+
+class TestObjectNamesLocksAndGroups(unittest.TestCase):
+    def test_custom_names_and_locks_round_trip_as_version_7(self):
+        plain = editor_model.Project(279.4, 215.9, (editor_model.Shape("Rectangle", 10, 10, 40, 30),))
+        self.assertEqual(editor_model.project_version(plain), 2)
+
+        named = editor_model.Shape("Rectangle", 10, 10, 40, 30, name="Card Frame", locked=True, group=1)
+        member = editor_model.Shape("Ellipse", 60, 10, 20, 20, group=1)
+        solo = editor_model.Shape("Line", 10, 60, 40, 0)
+        project = editor_model.Project(279.4, 215.9, (named, member, solo))
+        self.assertEqual(editor_model.project_version(project), 7)
+        self.assertEqual(editor_model.object_name(named), "Card Frame")
+        self.assertEqual(editor_model.object_name(member), "Ellipse 20×20")
+
+        with tempfile.TemporaryDirectory() as folder:
+            target = pathlib.Path(folder) / "objects-v7.scc-template"
+            editor_model.save_project(target, project)
+            reopened = editor_model.load_project(target)
+        self.assertEqual(reopened, project)
+
+        self.assertEqual(editor_model.object_rows(project.shapes),
+                         (("group", 1, (0, 1)), ("shape", 0, 1), ("shape", 1, 1), ("shape", 2, 0)))
+        self.assertEqual(editor_model.object_rows(project.shapes, collapsed_groups={1}),
+                         (("group", 1, (0, 1)), ("shape", 2, 0)))
+
+    def test_invalid_name_or_older_version_lock_is_refused(self):
+        with self.assertRaises(ValueError):
+            editor_model.clean_object_name("a" * 101)
+        with self.assertRaises(ValueError):
+            editor_model.clean_object_name("bad\0name")
+        project = editor_model.Project(279.4, 215.9, (editor_model.Shape("Rectangle", 10, 10, 40, 30, locked=True),))
+        doc = editor_model.project_document(project)
+        doc["version"] = 6
+        with tempfile.TemporaryDirectory() as folder:
+            target = pathlib.Path(folder) / "bad-v6.scc-template"
+            target.write_text(json.dumps(doc), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                editor_model.load_project(target)
+
+    def test_distinguishable_display_names_number_identical_objects(self):
+        cards = tuple(editor_model.Shape("Path", 10, 20, 63, 88,
+                                         points=((0, 0), (1, 0), (1, 1), (0, 1))) for _ in range(8))
+        labels = [editor_model.object_display_name(cards, i) for i in range(8)]
+        self.assertEqual(len(set(labels)), 8)
+        self.assertEqual(labels[0], "Path 1 · 63 × 88")
+        self.assertEqual(labels[7], "Path 8 · 63 × 88")
+        self.assertEqual(editor_model.object_display_name(cards, 0, unit="in"), "Path 1 · 2.48 × 3.46 in")
+        single = (editor_model.Shape("Rectangle", 0, 0, 40, 30),)
+        self.assertEqual(editor_model.object_display_name(single, 0), "Rectangle · 40 × 30")

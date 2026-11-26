@@ -102,6 +102,8 @@ class Shape:
     # or (in handle, out handle, smooth) in the same 0..1 frame as `points`
     # (handles may lie outside it). Empty for every other kind.
     handles: tuple = ()
+    name: str = ""
+    locked: bool = False
 
     def paths(self):
         if self.kind not in MULTI_CONTOUR_KINDS:
@@ -765,6 +767,8 @@ def project_version(project):
         version = 5
     if any(shape.handles or (shape.text and shape.text.styled) for shape in project.shapes):
         version = 6
+    if any(shape.name or shape.locked for shape in project.shapes):
+        version = 7
     return version
 
 
@@ -774,7 +778,7 @@ def project_document(project):
         fields = asdict(shape)
         for name, default in (("holder", None), ("line_style", "solid"), ("line_width_mm", 0.0),
                               ("text", None), ("contours", ()), ("sticker", None), ("layer", ""),
-                              ("handles", ())):
+                              ("handles", ()), ("name", ""), ("locked", False)):
             if fields[name] == default:
                 del fields[name]
         objects.append(fields)
@@ -844,7 +848,7 @@ def styled_contours(paths, original, *, compound=False):
     return replace(converted, stroke=original.stroke, fill=original.fill, visible=original.visible,
                    action=original.action, group=original.group, holder=original.holder,
                    line_style=original.line_style, line_width_mm=original.line_width_mm,
-                   layer=original.layer)
+                   layer=original.layer, name=original.name, locked=original.locked)
 
 
 def compound_shape(rings, *, text=None):
@@ -945,7 +949,7 @@ def paste(shapes, clipboard, *, offset=False):
 def erase(shapes, indices, stroke, radius):
     """Erase a brush stroke from the chosen shapes. A closed shape keeps its
     style in every piece left; a piece with holes becomes a compound path."""
-    chosen = [i for i in indices if shapes[i].visible and not shapes[i].sticker]
+    chosen = [i for i in indices if shapes[i].visible and not shapes[i].sticker and not shapes[i].locked]
     inputs = [(all(path.closed for path in shapes[i].paths()), tuple(path.points for path in shapes[i].paths()))
               for i in chosen]
     results = dict(zip(chosen, vector_regions.erase(inputs, stroke, radius)))
@@ -986,7 +990,7 @@ def _valid_handles(handles, count):
 
 def load_project(path, legacy_registration=None):
     document = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(document, dict) or document.get("version") not in (1, 2, 3, 4, 5, 6):
+    if not isinstance(document, dict) or document.get("version") not in (1, 2, 3, 4, 5, 6, 7):
         raise ValueError("Unsupported template project version.")
     page = document.get("page_mm")
     if not isinstance(page, list) or len(page) != 2 or not all(_number(v, 1) for v in page):
@@ -1024,7 +1028,7 @@ def load_project(path, legacy_registration=None):
             fields = {"kind", "x", "y", "width", "height", "radius"} if legacy else Shape.__dataclass_fields__.keys()
             required = fields if legacy else fields - {"stroke", "fill", "group", "holder", "line_style",
                                                         "line_width_mm", "contours", "text", "sticker", "layer",
-                                                        "handles"}
+                                                        "handles", "name", "locked"}
             if not isinstance(item, dict) or not required <= item.keys() <= fields:
                 raise TypeError("incomplete shape")
             shape = Shape(**item)
@@ -1042,6 +1046,9 @@ def load_project(path, legacy_registration=None):
                      (shape.group is None or (type(shape.group) is int and shape.group > 0)) and
                      isinstance(shape.layer, str) and len(shape.layer) <= 100 and "\0" not in shape.layer and
                      (not shape.layer or document["version"] >= 4) and
+                     isinstance(shape.name, str) and len(shape.name) <= 100 and "\0" not in shape.name and
+                     (not shape.name or document["version"] >= 7) and
+                     type(shape.locked) is bool and (not shape.locked or document["version"] >= 7) and
                      all(type(v) is bool for v in (shape.closed, shape.visible, shape.flip_x, shape.flip_y)))
             shape = replace(shape, stroke=stroke_color(shape.stroke), fill=stroke_color(shape.fill))
             if shape.kind == "Path":
@@ -1092,32 +1099,97 @@ def read_project(path, width, height):
     return project.shapes
 
 
-def object_name(shape: Shape) -> str:
-    """Format an informative human-readable name for an object by kind and size."""
-    kind_labels = {
-        "Rounded rectangle": "Rounded rect",
-        "Rounded Rectangle": "Rounded rect",
-        "Rectangle": "Rectangle",
-        "Ellipse": "Ellipse",
-        "Polygon": "Polygon",
-        "Line": "Line",
-        "Compound": "Compound path",
-        "Path": "Path",
-        "Sticker": "Sticker",
-        "Text": "Text",
-    }
-    label = kind_labels.get(shape.kind, shape.kind)
-    w = abs(shape.width)
-    h = abs(shape.height)
+LOCKED_MESSAGE = "Unlock the selected object before editing it."
+
+
+def has_locked(shapes, indices) -> bool:
+    return any(shapes[i].locked for i in indices)
+
+
+def clean_object_name(value: str) -> str:
+    text = value.strip()
+    if "\0" in text or len(text) > 100:
+        raise ValueError("Enter a name up to 100 characters long.")
+    return text
+
+
+def object_rows(shapes, collapsed_groups=()):
+    """Flat display rows for Objects: top-level shapes and collapsible groups."""
+    collapsed = set(collapsed_groups)
+    seen_groups = set()
+    rows = []
+    for index, shape in enumerate(shapes):
+        group = shape.group
+        if group is None:
+            rows.append(("shape", index, 0))
+            continue
+        if group in seen_groups:
+            continue
+        seen_groups.add(group)
+        members = tuple(i for i, item in enumerate(shapes) if item.group == group)
+        rows.append(("group", group, members))
+        if group not in collapsed:
+            for member in members:
+                rows.append(("shape", member, 1))
+    return tuple(rows)
+
+
+_KIND_LABELS = {
+    "Rounded rectangle": "Rounded rect",
+    "Rounded Rectangle": "Rounded rect",
+    "Rectangle": "Rectangle",
+    "Ellipse": "Ellipse",
+    "Polygon": "Polygon",
+    "Line": "Line",
+    "Compound": "Compound path",
+    "Path": "Path",
+    "Sticker": "Sticker",
+    "Text": "Text",
+}
+
+
+def _dimension_text(shape: Shape, *, unit: str = "mm", spaced: bool = False) -> str:
+    scale = 1 / 25.4 if unit == "in" else 1.0
+    digits = 2 if unit == "in" else 1
+    w = abs(shape.width) * scale
+    h = abs(shape.height) * scale
     if shape.kind == "Line":
-        length = round((w * w + h * h) ** 0.5, 1)
-        dim = f"{length:g} mm"
-    elif shape.kind == "Text" and shape.text and shape.text.value.strip():
+        length = round((w * w + h * h) ** 0.5, digits)
+        return f"{length:g} {unit}"
+    if shape.kind == "Text" and shape.text and shape.text.value.strip():
         snippet = shape.text.value.strip().split("\n")[0][:12]
-        dim = f"‘{snippet}’"
-    else:
-        dim = f"{round(w, 1):g}×{round(h, 1):g}"
-    return f"{label} {dim}"
+        return f"‘{snippet}’"
+    joiner = " × " if spaced else "×"
+    suffix = f" {unit}" if unit == "in" else ""
+    return f"{round(w, digits):g}{joiner}{round(h, digits):g}{suffix}"
+
+
+def object_name(shape: Shape) -> str:
+    """Format an informative human-readable name for an object by user name or kind and size."""
+    if shape.name.strip():
+        return shape.name.strip()
+    label = _KIND_LABELS.get(shape.kind, shape.kind)
+    return f"{label} {_dimension_text(shape)}"
+
+
+def object_display_name(shapes, index: int, *, unit: str = "mm") -> str:
+    """Format a distinguishable row label for *shapes[index]* in the Objects hierarchy.
+
+    Custom names are shown verbatim. Unnamed objects sharing a kind are numbered
+    sequentially (for example, `Path 1 · 63 × 88` through `Path 8 · 63 × 88`) so
+    identical shapes remain individually identifiable.
+    """
+    shape = shapes[index]
+    if shape.name.strip():
+        return shape.name.strip()
+    label = _KIND_LABELS.get(shape.kind, shape.kind)
+    same_kind = [i for i, item in enumerate(shapes)
+                 if not item.name.strip() and _KIND_LABELS.get(item.kind, item.kind) == label]
+    dim = _dimension_text(shape, unit=unit, spaced=True)
+    if len(same_kind) > 1:
+        ordinal = same_kind.index(index) + 1
+        return f"{label} {ordinal} · {dim}"
+    return f"{label} · {dim}"
 
 
 def save_state_label(path, dirty: bool) -> str:
@@ -1127,9 +1199,14 @@ def save_state_label(path, dirty: bool) -> str:
     return "Saved" if path is not None else ""
 
 
-def document_summary(project: Project, cut_count: int, selected_count: int) -> str:
+def document_summary(project: Project, cut_count: int, selected_count: int, *, unit: str = "mm") -> str:
     """Compact footer summary of page size, active cut paths, and selection."""
     paths = "1 path" if cut_count == 1 else f"{cut_count} paths"
-    return f"{project.width:g} × {project.height:g} mm · {paths} · {selected_count} selected"
+    if unit == "in":
+        w, h = round(project.width / 25.4, 2), round(project.height / 25.4, 2)
+        size = f"{w:g} × {h:g} in"
+    else:
+        size = f"{project.width:g} × {project.height:g} mm"
+    return f"{size} · {paths} · {selected_count} selected"
 
 

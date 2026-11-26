@@ -272,3 +272,31 @@ class TestEarlierNamesSettle(unittest.TestCase):
         self.assertFalse(newer.exists())
         self.assertTrue(self.old.exists(), "the older folder is left alone once one has moved")
 
+
+class TestDesignUiPersistence(unittest.TestCase):
+    def test_design_ui_round_trips_and_clamps_bounds(self):
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(config, "CONFIG_DIR", Path(folder)):
+            defaults = config.load_design_ui()
+            self.assertEqual(defaults["sidebar_width"], 300)
+            self.assertEqual(defaults["units"], "mm")
+            self.assertTrue(defaults["rulers"])
+            self.assertTrue(defaults["guides"])
+
+            config.save_design_ui({
+                "sidebar_width": 9999,
+                "properties_ratio": 0.99,
+                "sidebar_collapsed": True,
+                "active_panel": "offset",
+                "units": "in",
+                "rulers": False,
+                "guides": False,
+            })
+            loaded = config.load_design_ui()
+            self.assertEqual(loaded["sidebar_width"], 560)
+            self.assertEqual(loaded["properties_ratio"], 0.85)
+            self.assertTrue(loaded["sidebar_collapsed"])
+            self.assertEqual(loaded["active_panel"], "offset")
+            self.assertEqual(loaded["units"], "in")
+            self.assertFalse(loaded["rulers"])
+            self.assertFalse(loaded["guides"])
+

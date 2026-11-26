@@ -272,6 +272,10 @@ CASES += (
      ["tests.test_config.TestOldFoldersMoveForward"]),
     (config, "_moved_forward", lambda new, old: old, "settings always left in the old folder",
      ["tests.test_config.TestOldFoldersMoveForward"]),
+    (editor_model, "has_locked", lambda *_: False, "locked object guard always allows edits",
+     ["tests.test_guards.TestLockedObjectGuard"]),
+    (editor_model, "has_locked", lambda *_: True, "locked object guard always blocks edits",
+     ["tests.test_guards.TestLockedObjectGuard"]),
 )
 
 try:

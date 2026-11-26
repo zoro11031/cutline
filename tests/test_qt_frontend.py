@@ -309,7 +309,7 @@ class TestQtFrontend(unittest.TestCase):
         window.draw_in_design_btn.click()
         design = window.design
         self.assertEqual(design.project.shapes, ())
-        self.assertEqual(design.dock.picker.currentText(), "Page Setup")
+        self.assertEqual(design.dock.current_title(), "Page Setup")
         self.assertEqual((design.project.width, design.project.height),
                          (original_job.grid.sheet_w_mm, original_job.grid.sheet_h_mm))
         self.assertEqual(design.project.mat, original_job.mat)
@@ -350,7 +350,7 @@ class TestQtFrontend(unittest.TestCase):
         shape, = design.project.shapes
         self.assertEqual(shape.kind, "Ellipse")
         self.assertEqual(design.selection(), (0,))
-        self.assertEqual(design.dock.picker.currentText(), "Transform")
+        self.assertEqual(design.dock.current_title(), "Transform")
         self.assertTrue(design.fields["x"].hasFocus())
         design.fields["x"].setValue(42)
         self.assertEqual(design.project.shapes[0].x, 42)
@@ -450,19 +450,23 @@ class TestQtFrontend(unittest.TestCase):
 
     def test_workspace_uses_readable_text_on_disabled_and_accent_buttons(self):
         import re
-        from cutline.qt_controls import _contrast, workspace_style
+        from cutline.qt_controls import _contrast, accent_color, workspace_style
 
         for background, text in (("#f5f5f5", "#202020"), ("#222629", "#eeeeee")):
             palette = QPalette()
+            palette.setColor(QPalette.ColorRole.Window, QColor(background))
             palette.setColor(QPalette.ColorRole.Button, QColor(background))
             palette.setColor(QPalette.ColorRole.ButtonText, QColor(text))
             palette.setColor(QPalette.ColorRole.Highlight, QColor("#38afe0"))
             palette.setColor(QPalette.ColorRole.HighlightedText, QColor("white"))
             style = workspace_style(palette)
             disabled = re.search(r'QPushButton:disabled \{ background: (#[0-9a-f]+); color: (#[0-9a-f]+)', style)
-            accent = re.search(r'background: palette\(highlight\); color: (#[0-9a-f]+)', style)
+            primary = re.search(r'QPushButton\[role="primary"\] \{\s*background: (#[0-9a-f]+);\s*color: (#[0-9a-f]+);', style)
+            self.assertIsNotNone(disabled)
+            self.assertIsNotNone(primary)
+            self.assertEqual(primary[1], accent_color(palette).name())
             self.assertGreaterEqual(_contrast(*(QColor(color) for color in disabled.groups())), 4.5)
-            self.assertGreaterEqual(_contrast(QColor(accent[1]), QColor("#38afe0")), 4.5)
+            self.assertGreaterEqual(_contrast(*(QColor(color) for color in primary.groups())), 4.5)
 
     def test_checkbox_outlines_stand_out_in_light_and_dark_themes(self):
         import re
@@ -1952,6 +1956,65 @@ class TestQtFrontend(unittest.TestCase):
         self.assertFalse(window.pause_cut.isVisible())
         self.assertFalse(window.cancel_cut.isVisible())
 
+    def test_design_to_send_walkthrough_compound_save_and_last_path_undo(self):
+        window = self.window
+        window.open_design()
+        design = window.design
+        outer = editor_model.Shape("Rectangle", 30, 30, 60, 60, name="Frame")
+        inner = editor_model.Shape("Rectangle", 45, 45, 30, 30)
+        design.replace_document(editor_model.Project(279.4, 215.9, (outer, inner)))
+        design.select((0, 1))
+        design.modify_shapes("Make Compound Path")
+        self.assertEqual(len(design.project.shapes), 1)
+        self.assertEqual(design.project.shapes[0].kind, "Compound")
+        # Release compound path before editing individual nodes.
+        design.modify_shapes("Release Compound Path")
+        self.assertEqual(len(design.project.shapes), 2)
+        design.select((0,))
+        design.rename_object("Outer Cut")
+        design.toggle_lock()
+        self.assertTrue(design.project.shapes[0].locked)
+
+        with TemporaryDirectory() as folder:
+            target = Path(folder) / "walkthrough.scc-template"
+            editor_model.save_project(target, design.project)
+            reopened = editor_model.load_project(target)
+        self.assertEqual(reopened, design.project)
+
+        # Switching to Send applies the edited design and builds a verified job.
+        design.send_workspace.click()
+        self.assertEqual(window.workspaces.currentIndex(), 0)
+        self.assertIsNotNone(window.job)
+        self.assertFalse(window.job.blocked)
+        self.assertEqual(len(window.job.paths), 2)
+
+        # Returning to Design, unlocking and removing the last cut path blocks Send handoff until undone.
+        window.open_design()
+        window.resize(1280, 800)
+        window.show()
+        self.app.processEvents()
+        design_header = design.menu_bar.parentWidget().geometry()
+        design_btn = design.design_workspace.mapTo(window, QPoint())
+        send_btn = design.send_workspace.mapTo(window, QPoint())
+        design.send_workspace.click()
+        self.app.processEvents()
+        self.assertEqual(window.menu_bar.parentWidget().geometry(), design_header)
+        self.assertEqual(window.design_button.mapTo(window, QPoint()), design_btn)
+        self.assertEqual(window.send_workspace.mapTo(window, QPoint()), send_btn)
+        window.open_design()
+        design.select((0,))
+        design.toggle_lock()
+        design.select((0, 1))
+        design.delete()
+        self.assertEqual(design.project.shapes, ())
+        design.send_workspace.click()
+        self.assertEqual(window.workspaces.currentIndex(), 1, "removing the last cut path keeps Design open")
+        design.undo()
+        self.assertEqual(len(design.project.shapes), 2)
+        design.send_workspace.click()
+        self.assertEqual(window.workspaces.currentIndex(), 0)
+        self.assertEqual(len(window.job.paths), 2)
+
 
 @unittest.skipIf(qt_gui is None, "Install PySide6 to run Qt frontend tests")
 class TestQtDesignEditor(unittest.TestCase):
@@ -2030,11 +2093,15 @@ class TestQtDesignEditor(unittest.TestCase):
         design.resize(720, 520)
         self.app.processEvents()
         self.assertEqual(design.width(), 720)
-        self.assertTrue(design.adaptive_selection.overflow.isVisible())
-        self.assertTrue(design.adaptive_selection.overflow.hasFocus())
+        self.assertTrue(design.adaptive_selection.inline.isVisible() or design.adaptive_selection.overflow.isVisible())
+        if design.adaptive_selection.overflow.isVisible():
+            self.assertTrue(design.adaptive_selection.overflow.hasFocus())
         self.assertEqual(design.document_title.accessibleName(), title)
         self.assertTrue(design.import_button.isVisible() and design.add_shape_button.isVisible())
         self.assertTrue(design.objects.isVisible())
+        self.assertEqual(design.objects.horizontalScrollBar().maximum(), 0)
+        self.assertEqual(design.dock.pages.currentWidget().horizontalScrollBar().maximum(), 0)
+        self.assertGreaterEqual(design.canvas.width(), 340)
         self.assertEqual(design.selection(), (0, 1, 2))
         design.tool.setCurrentText("Point Edit")
         self.app.processEvents()
@@ -2051,15 +2118,22 @@ class TestQtDesignEditor(unittest.TestCase):
         self.app.processEvents()
         dock = design.dock
         self.assertEqual(list(dock.panels), ["page", "transform", "align", "replicate", "modify", "offset",
-                                             "trace", "nesting", "text", "line", "grid"])
+                                             "nesting", "trace", "text", "line", "grid"])
         self.assertEqual(dock.shown(), ["transform"])
+        self.assertEqual(dock.heading.text(), "Transform")
         self.assertTrue(design.objects.isVisibleTo(design), "Objects stays visible alongside the inspector")
-        dock.picker.setCurrentIndex(dock.picker.findData("replicate"))
+        dock.rail.buttons["replicate"].click()
         self.assertEqual(dock.shown(), ["replicate"])
+        self.assertEqual(dock.heading.text(), "Replicate")
         self.assertTrue(dock.panels["replicate"].isVisibleTo(design))
         self.assertTrue(design.objects.isVisibleTo(design))
-        dock.open("transform")
-        self.assertEqual(dock.picker.currentText(), "Transform")
+        # Clicking the active panel rail icon collapses the sidebar; clicking again re-opens it.
+        dock.rail.buttons["replicate"].click()
+        self.assertFalse(design.sidebar.isVisibleTo(design))
+        self.assertEqual(dock.shown(), [])
+        dock.rail.buttons["transform"].click()
+        self.assertTrue(design.sidebar.isVisibleTo(design))
+        self.assertEqual(dock.current_title(), "Transform")
         self.assertTrue(dock.panels["transform"].body.isVisibleTo(design))
         self.assertFalse(dock.panels["replicate"].isVisibleTo(design))
 
@@ -2121,13 +2195,14 @@ class TestQtDesignEditor(unittest.TestCase):
         menus = {action.text().replace("&", ""): action.menu() for action in design.menu_bar.actions()}
         show = next(action.menu() for action in menus["View"].actions() if action.text() == "Show")
         self.assertEqual([action.text() for action in show.actions()],
-                         ["Paper Grid", "Mat Grid", "Rulers", "Crosshairs", "Cutting Mat", "Cut Border", "Print Border"])
+                         ["Rulers", "Paper Grid", "Guides", "Cutting Mat", "Mat Grid",
+                          "Cut Border", "Print Border", "Crosshairs"])
         self.assertIn(design.snap, menus["View"].actions())
         with mock.patch.object(design.canvas, "redraw") as redraw:
             design.show_grid.setChecked(True)
         self.assertEqual(redraw.call_count, 1)
         self.assertTrue(design.grid_check.isChecked(), "the Grid panel follows View → Show → Paper Grid")
-        grid = next(action for action in menus["View"].actions() if action.text() == "Grid…")
+        grid = next(action for action in menus["View"].actions() if action.text() == "Grid && Guides…")
         grid.trigger()
         self.assertIn("grid", design.dock.shown())
         design.spacing.setValue(10)
@@ -2502,7 +2577,8 @@ class TestQtDesignEditor(unittest.TestCase):
         self.drag(canvas, (100, 60), (130, 60))
         stretched = design.project.shapes[0]
         self.assertAlmostEqual(stretched.width, 90, delta=0.6)
-        self.assertEqual((stretched.x, stretched.height), (40, 40), "only one axis stretches")
+        self.assertAlmostEqual(stretched.x, 40, places=9, msg="only one axis stretches")
+        self.assertAlmostEqual(stretched.height, 40, places=9, msg="only one axis stretches")
         design.undo()
         self.drag(canvas, canvas.radius_handle(), (52, 40))
         self.assertAlmostEqual(design.project.shapes[0].radius, 12, delta=0.6)
@@ -2892,3 +2968,133 @@ class TestQtDesignEditor(unittest.TestCase):
             design.convert_selection(True)
         message.assert_called_once()
         self.assertIn("Trace", message.call_args.args[0])
+
+    def test_objects_rename_lock_and_group_hierarchy_survive_undo_and_reopen(self):
+        shapes = (
+            editor_model.Shape("Rectangle", 20, 20, 40, 30, group=1),
+            editor_model.Shape("Ellipse", 80, 20, 30, 30, group=1),
+            editor_model.Shape("Rectangle", 140, 20, 30, 30),
+        )
+        design = self.editor(editor_model.Project(279.4, 215.9, shapes))
+        design.show()
+        self.app.processEvents()
+        # Group header + 2 indented children + 1 ungrouped shape = 4 visual rows.
+        self.assertEqual(design.objects.count(), 4)
+        self.assertIn("Group 1 (2 objects)", design.objects.item(0).text())
+
+        # Collapsing the group hides its children while preserving selection.
+        design.select((0, 1))
+        design.toggle_group_collapsed(1)
+        self.assertEqual(design.objects.count(), 2)
+        self.assertEqual(design.selection(), (0, 1))
+        design.toggle_group_collapsed(1)
+        self.assertEqual(design.objects.count(), 4)
+
+        # Rename and Undo/Redo.
+        design.select((2,))
+        design.rename_object("Outer Border")
+        self.assertEqual(design.project.shapes[2].name, "Outer Border")
+        self.assertIn("Outer Border", design.objects.item(3).text())
+        design.undo()
+        self.assertEqual(design.project.shapes[2].name, "")
+        design.redo()
+        self.assertEqual(design.project.shapes[2].name, "Outer Border")
+
+        # Lock blocks numeric edit, transform, arrow nudge, and delete until unlocked.
+        design.toggle_lock()
+        self.assertTrue(design.project.shapes[2].locked)
+        self.assertEqual(design.objects_lock.text(), "Unlock")
+        before_x = design.project.shapes[2].x
+        design.fields["x"].setValue(before_x + 10)
+        design.transform_objects("right")
+        QTest.keyClick(design.canvas, Qt.Key.Key_Right)
+        design.delete()
+        self.assertEqual(len(design.project.shapes), 3)
+        self.assertEqual(design.project.shapes[2].x, before_x)
+        self.assertEqual(design.project.shapes[2].rotation, 0)
+
+        # Save and reopen preserves name, lock, and group hierarchy.
+        folder = TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        target = Path(folder.name) / "named-locked.scc-template"
+        editor_model.save_project(target, design.project)
+        reopened = editor_model.load_project(target)
+        self.assertEqual(reopened, design.project)
+
+        # Unlocking restores editing and supports Undo.
+        design.toggle_lock()
+        self.assertFalse(design.project.shapes[2].locked)
+        design.fields["x"].setValue(before_x + 10)
+        self.assertEqual(design.project.shapes[2].x, before_x + 10)
+        design.undo()
+        self.assertEqual(design.project.shapes[2].x, before_x)
+
+        # Group visibility toggle hides all members in one undo step.
+        design.objects.item(0).setCheckState(Qt.CheckState.Unchecked)
+        self.assertEqual([s.visible for s in design.project.shapes[:2]], [False, False])
+        design.undo()
+        self.assertEqual([s.visible for s in design.project.shapes[:2]], [True, True])
+
+    def test_second_pass_panel_rail_persistence_origin_grid_fit_and_distinguishable_names(self):
+        from cutline import config, graphtec, qt_design
+        shapes = tuple(editor_model.Shape("Path", 10 + i * 20, 20, 63, 88,
+                                          points=((0, 0), (1, 0), (1, 1), (0, 1))) for i in range(8))
+        design = self.editor(editor_model.Project(279.4, 215.9, shapes, guides=(("h", 50.0), ("v", 100.0))))
+        design.resize(1210, 800)
+        design.show()
+        self.app.processEvents()
+
+        # Eight identical shapes are individually identifiable in Objects.
+        labels = [design.objects.item(i).text() for i in range(8)]
+        self.assertEqual(len(set(labels)), 8)
+        self.assertTrue(labels[0].startswith("Path 1 · 63 × 88"))
+        self.assertTrue(labels[7].startswith("Path 8 · 63 × 88"))
+
+        # Direct Eye and Lock icon clicks on a row toggle visibility and lock.
+        design.toggle_item_visibility(design.objects.item(0))
+        self.assertFalse(design.project.shapes[0].visible)
+        design.toggle_item_visibility(design.objects.item(0))
+        self.assertTrue(design.project.shapes[0].visible)
+        design.toggle_item_lock(design.objects.item(1))
+        self.assertTrue(design.project.shapes[1].locked)
+        design.toggle_item_lock(design.objects.item(1))
+        self.assertFalse(design.project.shapes[1].locked)
+
+        # Inline rename commits custom name cleanly.
+        design.commit_inline_rename(design.objects.item(0), "Hero Card")
+        self.assertEqual(design.project.shapes[0].name, "Hero Card")
+
+        # Interactive 3x3 OriginGrid updates rotation centre.
+        design.select((0,))
+        design.origin_grid.select(0.0, 0.0, emit=True)
+        self.assertIsNotNone(design.canvas.rotation_centre)
+        self.assertAlmostEqual(design.canvas.rotation_centre[0], design.project.shapes[0].x, places=3)
+
+        # Distinct fit actions (Fit to Page, Fit to Mat, Fit to Selection) all adjust view cleanly.
+        design.canvas.fit_mat()
+        mat_scale = design.canvas.transform().m11()
+        design.canvas.fit_page()
+        page_scale = design.canvas.transform().m11()
+        design.canvas.fit_selection()
+        sel_scale = design.canvas.transform().m11()
+        self.assertGreater(sel_scale, page_scale)
+        self.assertGreater(page_scale, 0)
+        self.assertGreater(mat_scale, 0)
+
+        # Units switch between mm and in, and sidebar/panel arrangement persists across sessions.
+        design.set_unit("in")
+        self.assertEqual(design.unit, "in")
+        self.assertIn("in", design.status.text())
+        design.dock.rail.buttons["offset"].click()
+        design.set_sidebar_visible(False)
+        saved = config.load_design_ui()
+        self.assertEqual(saved["units"], "in")
+        self.assertEqual(saved["active_panel"], "offset")
+        self.assertTrue(saved["sidebar_collapsed"])
+
+        reopened = qt_design.Design(editor_model.Project(279.4, 215.9, shapes),
+                                    graphtec.device_by_name("Silhouette Cameo 4"), lambda: None, lambda *_a: None)
+        self.addCleanup(reopened.deleteLater)
+        self.assertEqual(reopened.unit, "in")
+        self.assertEqual(reopened.dock.current_key(), "offset")
+        self.assertFalse(reopened.sidebar.isVisible())

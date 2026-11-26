@@ -53,36 +53,91 @@ APP_ID = "io.github.zoro11031.Cutline"
 PREVIEW_MODES = ("Cut paths", "Print PDF", "Overlay")
 
 _CUT_SETTINGS_CSS = """
-.scc-tabs button { min-width: 0; padding: 5px 10px; }
-.scc-cut-settings row > box.header { min-height: 34px; padding: 2px 12px; }
-.scc-cut-settings spinbutton button { min-width: 16px; min-height: 25px; padding: 0 3px; }
-.scc-cut-settings .holder-tabs { padding: 5px 8px; }
-.scc-cut-settings .cut-toggles { padding: 5px 12px; }
+@define-color cutline_accent #4c64ad;
+@define-color cutline_accent_fg #ffffff;
+.scc-tabs button { min-width: 0; padding: 6px 12px; }
+.scc-cut-settings row > box.header { min-height: 36px; padding: 4px 12px; }
+.scc-cut-settings spinbutton button { min-width: 18px; min-height: 28px; padding: 0 4px; }
+.scc-cut-settings .holder-tabs { padding: 6px 8px; }
+.scc-cut-settings .cut-toggles { padding: 6px 12px; }
 .scc-workspace button:disabled {
     opacity: 1;
     filter: none;
-    color: mix(@window_fg_color, @window_bg_color, 0.25);
-    background: alpha(@window_fg_color, 0.10);
+    color: mix(@window_fg_color, @window_bg_color, 0.35);
+    background: alpha(@window_fg_color, 0.08);
     box-shadow: none;
 }
-.scc-design-commands, .scc-design-sidebar {
+.scc-workspace headerbar button.toggle:checked,
+.scc-design .scc-design-rail button.toggle:checked,
+.scc-design .scc-design-rail button.flat:checked,
+.scc-design .scc-panel-rail button.toggle:checked,
+.scc-design .scc-panel-rail button.flat:checked,
+.scc-design .scc-origin-cell.active {
+    background-color: @cutline_accent;
+    background-image: none;
+    color: @cutline_accent_fg;
+}
+.scc-design-commands {
+    border: 0;
+    border-bottom: 1px solid alpha(@window_fg_color, 0.14);
+    border-radius: 0;
+    background: mix(@window_bg_color, @view_bg_color, 0.35);
+}
+.scc-design-sidebar {
     border: 0;
     border-radius: 0;
     background: @window_bg_color;
 }
-.scc-design-options { border: 0; }
-.scc-design-commands entry { min-height: 23px; padding: 0 4px; }
-.scc-design .boxed-list row:selected { background: alpha(#435aa2, 0.38); color: @view_fg_color; }
-.scc-design headerbar togglebutton:checked, .scc-design-rail togglebutton:checked {
-    background: #435aa2; color: white;
+.scc-design-rail, .scc-panel-rail {
+    background: mix(@window_bg_color, @view_bg_color, 0.35);
 }
-.scc-design-rail .scc-tool-flyout > button { min-width: 16px; padding: 0; }
-.scc-object-visibility:checked { background: transparent; }
-.scc-object-visibility { padding: 1px 4px; min-height: 24px; min-width: 22px; }
+.scc-design-options { border: 0; }
+.scc-design-commands entry, .scc-design-commands spinbutton {
+    min-height: 30px;
+    padding: 0 6px;
+}
+.scc-design .scc-objects-list {
+    background: @window_bg_color;
+    border: 0;
+    box-shadow: none;
+}
+.scc-design .scc-objects-list row {
+    min-height: 30px;
+    padding: 0;
+    border-radius: 4px;
+}
+.scc-design .scc-objects-list row:selected,
+.scc-design .boxed-list row:selected {
+    background: alpha(@cutline_accent, 0.28);
+    color: @view_fg_color;
+}
+.scc-design-rail button:focus-visible, .scc-panel-rail button:focus-visible,
+.scc-design-commands button:focus-visible,
+.scc-design-commands menubutton > button:focus-visible, .scc-design-sidebar button:focus-visible {
+    outline: 2px solid @cutline_accent;
+    outline-offset: -2px;
+}
+.scc-design-rail .scc-tool-flyout > button { min-width: 14px; padding: 0; }
+.scc-transform-grid spinbutton { min-height: 30px; min-width: 0; }
+.scc-transform-grid spinbutton > text { min-width: 48px; padding: 0 4px; }
+.scc-transform-grid spinbutton > button { min-width: 18px; min-height: 26px; padding: 0 2px; }
+.scc-origin-cell {
+    min-width: 16px;
+    min-height: 16px;
+    padding: 0;
+    border-radius: 2px;
+    background: alpha(@window_fg_color, 0.18);
+}
+.scc-object-visibility:checked, .scc-object-lock:checked { background: transparent; }
+.scc-object-visibility, .scc-object-lock { padding: 2px 4px; min-height: 24px; min-width: 24px; }
+.scc-object-lock { opacity: 0.32; }
+.scc-object-lock:hover { opacity: 0.85; }
+.scc-object-lock.locked { opacity: 1.0; color: @cutline_accent; }
 .scc-notice {
-    border: 1px solid @accent_bg_color;
-    border-radius: 6px;
-    background: alpha(@accent_bg_color, 0.10);
+    border: 0;
+    border-bottom: 1px solid @cutline_accent;
+    border-radius: 0;
+    background: alpha(@cutline_accent, 0.12);
 }
 .scc-notice.scc-notice-warning {
     border-color: @error_color;

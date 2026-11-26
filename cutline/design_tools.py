@@ -93,6 +93,21 @@ COMMAND_ICONS = {
                         (((2, 12), (5, 9), (9, 7), (15, 7), (19, 9), (22, 12),
                           (19, 15), (15, 17), (9, 17), (5, 15), (2, 12)),
                          ((12, 10), (14, 12), (12, 14), (10, 12), (12, 10)))),
+    "visibility_off": Tool("Hidden object", "", "Show this hidden object.",
+                           (((2, 12), (5, 9), (9, 7), (15, 7), (19, 9), (22, 12),
+                             (19, 15), (15, 17), (9, 17), (5, 15), (2, 12)),
+                            ((4, 20), (20, 4)))),
+    "plus": Tool("Add Shape", "", ADD_SHAPE_TIP,
+                 (((12, 5), (12, 19)), ((5, 12), (19, 12)))),
+    "rulers": Tool("Rulers", "", "Show or hide horizontal and vertical rulers.",
+                   (((3, 7), (21, 7), (21, 17), (3, 17), (3, 7)),
+                    ((7, 7), (7, 11)), ((11, 7), (11, 13)), ((15, 7), (15, 11)), ((19, 7), (19, 11)))),
+    "guides": Tool("Guides", "", "Show or hide alignment guides.",
+                   (((3, 8), (21, 8)), ((9, 3), (9, 21)), ((14, 14), (20, 14), (20, 20), (14, 20), (14, 14)))),
+    "mat": Tool("Cutting Mat", "", "Show or hide the cutting mat.",
+                (((4, 5), (20, 5), (20, 20), (4, 20), (4, 5)),
+                 ((12, 2), (10, 4.5), (14, 4.5), (12, 2)),
+                 ((9, 5), (9, 20)), ((15, 5), (15, 20)), ((4, 10), (20, 10)), ((4, 15), (20, 15)))),
     "save": Tool("Save", "", "Save the design.",
                  (((4, 4), (17, 4), (20, 7), (20, 20), (4, 20), (4, 4)),
                   ((8, 4), (8, 10), (16, 10), (16, 4)),
@@ -150,6 +165,12 @@ COMMAND_ICONS = {
     "align": Tool("Align", "", "Align or space the selected objects.",
                   (((4, 3), (4, 21)), ((7, 6), (17, 6), (17, 10), (7, 10), (7, 6)),
                    ((7, 14), (20, 14), (20, 18), (7, 18), (7, 14)))),
+    "lock": Tool("Lock object", "", "Lock or unlock the selected object.",
+                 (((6, 11), (18, 11), (18, 21), (6, 21), (6, 11)),
+                  ((8, 11), (8, 7), (9.5, 4.5), (12, 3.8), (14.5, 4.5), (16, 7), (16, 11)))),
+    "unlock": Tool("Unlocked object", "", "Lock this object to prevent accidental edits.",
+                   (((6, 11), (18, 11), (18, 21), (6, 21), (6, 11)),
+                    ((8, 11), (8, 7), (9.5, 4.5), (12, 3.8), (14.5, 4.5), (16, 6.2)))),
     "path": Tool("Path", "", "", (((5, 17), (11, 6), (19, 12), (15, 20), (5, 17)),)),
 }
 
@@ -217,10 +238,12 @@ WORKSPACE_TOOL_GROUPS = (
 )
 GTK_TOOL_GROUPS = (
     *TOOL_GROUPS[:3],
-    ("Shape tools", (*TOOL_GROUPS[3][1], REGULAR_POLYGON_TOOL)),
-    ("Path tools", (_tool("Polygon"), CURVE_TOOL, ARC_TOOL, _tool("Freehand"), SMOOTH_FREEHAND_TOOL)),
+    ("Shape tools", (RECT_TOOL, ROUNDED_TOOL, ELLIPSE_TOOL, REGULAR_POLYGON_TOOL, LINE_TOOL)),
+    ("Path tools", (POLYGON_TOOL, CURVE_TOOL, ARC_TOOL, FREEHAND_TOOL, SMOOTH_FREEHAND_TOOL)),
     ("Type", (Tool("Type", "Y", TYPE_TOOL.hint, TYPE_TOOL.strokes),)),
-    ("View tools", (HAND_TOOL, ZOOM_TOOL, MEASURE_TOOL)),
+    ("Cut tools", (KNIFE_TOOL, ERASER_TOOL)),
+    ("Sample tools", (EYEDROPPER_TOOL, MEASURE_TOOL)),
+    ("View tools", (HAND_TOOL, ZOOM_TOOL)),
 )
 GTK_TOOLS = tuple(tool for _, group in GTK_TOOL_GROUPS for tool in group)
 GTK_TOOL_NAMES = tuple(tool.name for tool in GTK_TOOLS)
@@ -317,6 +340,14 @@ class RotationHandle:
         return 15 * round(angle / 15) if snap else round(angle, 3)
 
 
+def constrain_angle(start, end):
+    """Snap a segment direction to the nearest 45° increment from `start`."""
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    length = math.hypot(dx, dy)
+    angle = round(math.atan2(dy, dx) / (math.pi / 4)) * (math.pi / 4)
+    return round(start[0] + length * math.cos(angle), 4), round(start[1] + length * math.sin(angle), 4)
+
+
 def scale_from_corner(start, end, anchor):
     """Project the pointer onto the corner diagonal to keep proportions."""
     x, y = start[0] - anchor[0], start[1] - anchor[1]
@@ -365,6 +396,15 @@ PANEL_ICONS = {
                     (((4, 8), (12, 4), (20, 8), (12, 12), (4, 8)), ((4, 12), (12, 16), (20, 12)),
                      ((4, 16), (12, 20), (20, 16)))),
 }
+
+# Logical grouping for the persistent far-right icon panel switcher.
+PANEL_GROUPS = (
+    ("page",),
+    ("transform", "align", "replicate"),
+    ("modify", "offset", "nesting"),
+    ("trace", "text", "line"),
+    ("grid",),
+)
 
 
 def segment_measurement(start, end):

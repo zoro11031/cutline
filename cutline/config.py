@@ -144,3 +144,66 @@ def save_cut_offset(dx: float, dy: float) -> pathlib.Path:
 def template_dir() -> pathlib.Path:
     TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
     return TEMPLATE_DIR
+
+
+DESIGN_UI_DEFAULTS = {
+    "sidebar_width": 300,
+    "sidebar_collapsed": False,
+    "properties_ratio": 0.52,
+    "active_panel": "transform",
+    "units": "mm",
+    "rulers": True,
+    "grid": False,
+    "guides": True,
+    "mat": True,
+    "mat_grid": True,
+    "cut_border": True,
+    "print_border": False,
+    "snap": False,
+    "smart_snap": False,
+}
+
+
+def load_design_ui() -> dict:
+    """Return persisted Design workspace layout and view preferences."""
+    raw = load_settings().get("design_ui")
+    state = dict(DESIGN_UI_DEFAULTS)
+    if not isinstance(raw, dict):
+        return state
+    if isinstance(raw.get("sidebar_width"), (int, float)) and not isinstance(raw.get("sidebar_width"), bool):
+        state["sidebar_width"] = max(220, min(560, int(round(raw["sidebar_width"]))))
+    if isinstance(raw.get("properties_ratio"), (int, float)) and not isinstance(raw.get("properties_ratio"), bool):
+        ratio = float(raw["properties_ratio"])
+        if math.isfinite(ratio):
+            state["properties_ratio"] = max(0.15, min(0.85, round(ratio, 3)))
+    if isinstance(raw.get("active_panel"), str) and raw["active_panel"]:
+        state["active_panel"] = raw["active_panel"]
+    if raw.get("units") in ("mm", "in"):
+        state["units"] = raw["units"]
+    for key in ("sidebar_collapsed", "rulers", "grid", "guides", "mat", "mat_grid",
+                "cut_border", "print_border", "snap", "smart_snap"):
+        if isinstance(raw.get(key), bool):
+            state[key] = raw[key]
+    return state
+
+
+def save_design_ui(updates: dict) -> pathlib.Path:
+    """Persist Design workspace layout and view preferences into settings.json."""
+    data = load_settings()
+    current = load_design_ui()
+    for key, value in updates.items():
+        if key not in DESIGN_UI_DEFAULTS:
+            continue
+        if key == "sidebar_width" and isinstance(value, (int, float)) and not isinstance(value, bool):
+            current[key] = max(220, min(560, int(round(value))))
+        elif key == "properties_ratio" and isinstance(value, (int, float)) and not isinstance(value, bool):
+            if math.isfinite(float(value)):
+                current[key] = max(0.15, min(0.85, round(float(value), 3)))
+        elif key == "active_panel" and isinstance(value, str) and value:
+            current[key] = value
+        elif key == "units" and value in ("mm", "in"):
+            current[key] = value
+        elif isinstance(DESIGN_UI_DEFAULTS[key], bool) and isinstance(value, bool):
+            current[key] = value
+    data["design_ui"] = current
+    return save_settings(data)

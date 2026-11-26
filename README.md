@@ -63,7 +63,7 @@ Cutline already handles everyday design, Print & Cut registration, and
 multi-pass cutting on a Cameo 4 over USB and Bluetooth, though some
 Silhouette Studio effects and other cutter models are still missing or
 untested. See the [Silhouette Studio parity chart](docs/studio-parity.md)
-(79.0% parity) for the full breakdown.
+(72.8% parity) for the full breakdown.
 
 ## Thanks
 

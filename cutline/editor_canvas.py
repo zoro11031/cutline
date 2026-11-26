@@ -90,8 +90,12 @@ class DesignCanvas(Gtk.DrawingArea):
         scroll.connect('scroll', self.scroll_zoom)
         self.add_controller(scroll)
 
+    RULER_BAND = 22
+
     def track_pointer(self, _motion, x, y):
         self.pointer = (x, y)
+        if self.editor.show_rulers.get_active():
+            self.queue_draw()
 
     def scroll_zoom(self, controller, _dx, dy):
         if not dy or not (controller.get_current_event_state() & Gdk.ModifierType.CONTROL_MASK):
@@ -104,7 +108,7 @@ class DesignCanvas(Gtk.DrawingArea):
         px, py = anchor if anchor is not None else (width / 2, height / 2)
         x, y, scale = self.viewport(width, height)
         paper_x, paper_y = (px - x) / scale, (py - y) / scale
-        self.zoom = max(0.5, min(8.0, self.zoom * factor))
+        self.zoom = max(0.25, min(8.0, self.zoom * factor))
         x, y, scale = self.viewport(width, height)
         self.pan = (self.pan[0] + px - x - paper_x * scale,
                     self.pan[1] + py - y - paper_y * scale)
@@ -115,22 +119,44 @@ class DesignCanvas(Gtk.DrawingArea):
         self.pan = self.pan_start[0] + x, self.pan_start[1] + y
         self.queue_draw()
 
+    def _fit_box(self, bx, by, bw, bh, pad_ratio=0.06):
+        width, height = self.get_width(), self.get_height()
+        if min(width, height) < 48 or bw <= 0 or bh <= 0:
+            return
+        band = self.RULER_BAND if self.editor.show_rulers.get_active() else 0
+        avail_w = max(40, width - band - 24)
+        avail_h = max(40, height - band - 24)
+        _, _, base_scale = self.viewport(width, height)
+        base_scale /= max(0.01, self.zoom)
+        margin = max(4.0, max(bw, bh) * pad_ratio)
+        desired = min(avail_w / (bw + 2 * margin), avail_h / (bh + 2 * margin))
+        self.zoom = max(0.25, min(8.0, desired / max(0.01, base_scale)))
+        self.pan = (0.0, 0.0)
+        left, top, scale = self.viewport(width, height)
+        cx = band + (width - band) / 2
+        cy = band + (height - band) / 2
+        self.pan = (cx - left - (bx + bw / 2) * scale,
+                    cy - top - (by + bh / 2) * scale)
+        self.editor.zoom_readout.set_label(f'{self.zoom:.0%}')
+        self.queue_draw()
+
+    def fit_page(self):
+        project = self.editor.project
+        self._fit_box(0, 0, project.width, project.height, pad_ratio=0.05)
+
+    def fit_mat(self):
+        mat = self.editor.mat_size
+        if not mat:
+            self.fit_page()
+            return
+        self._fit_box(-8, -13, mat[0] + 16, mat[1] + 21, pad_ratio=0.04)
+
     def fit_selection(self):
         indices = self.editor.selected_indices()
         if not indices:
             return
         box = editor_model.bounds(self.editor.project.shapes[i] for i in indices)
-        width, height = self.get_width(), self.get_height()
-        _, _, scale = self.viewport(width, height)
-        margin = max(4.0, box.w * 0.08, box.h * 0.08)
-        desired = min((width - 36) / (box.w + 2 * margin), (height - 36) / (box.h + 2 * margin))
-        self.zoom = max(0.5, min(8.0, self.zoom * desired / scale))
-        self.pan = (0.0, 0.0)
-        left, top, scale = self.viewport(width, height)
-        self.pan = (width / 2 - left - (box.x + box.w / 2) * scale,
-                    height / 2 - top - (box.y + box.h / 2) * scale)
-        self.editor.zoom_readout.set_label(f'{self.zoom:.0%}')
-        self.queue_draw()
+        self._fit_box(box.x, box.y, box.w, box.h, pad_ratio=0.08)
 
     def reveal_point(self, point):
         width, height = self.get_width(), self.get_height()
@@ -145,17 +171,22 @@ class DesignCanvas(Gtk.DrawingArea):
         project = self.editor.project
         mat = self.editor.mat_size if self.editor.show_mat.get_active() else None
         w, h = (max(a, b) for a, b in zip((project.width, project.height), mat or (0, 0)))
-        scale = max(0.01, min((width - 92) / w, (height - 92) / h)) * self.zoom
-        return ((width-w*scale)/2+self.pan[0], (height-h*scale)/2+self.pan[1], scale)
+        band = self.RULER_BAND if self.editor.show_rulers.get_active() else 0
+        avail_w = max(40, width - band - 48)
+        avail_h = max(40, height - band - 52)
+        scale = max(0.01, min(avail_w / w, avail_h / h)) * self.zoom
+        return (band + (width - band - w * scale) / 2 + self.pan[0],
+                band + (height - band - h * scale) / 2 + self.pan[1], scale)
 
     def draw(self, _area, cr, width, height):
         dark = Adw.StyleManager.get_default().get_dark()
-        cr.set_source_rgb(*(0.14, 0.15, 0.17) if dark else (0.83, 0.85, 0.87))
+        cr.set_source_rgb(*(0.11, 0.12, 0.14) if dark else (0.84, 0.86, 0.88))
         cr.paint()
         editor = self.editor
         project = editor.project
         x, y, scale = self.viewport(width, height)
         w, h = project.width, project.height
+        cr.save()
         cr.translate(x, y)
         cr.scale(scale, scale)
 
@@ -181,8 +212,20 @@ class DesignCanvas(Gtk.DrawingArea):
             spacing *= max(1, math.ceil(4 / (spacing * scale)))
             cr.set_source_rgb(0.89, 0.91, 0.93)
             _grid(cr, w, h, spacing)
-        if editor.show_rulers.get_active():
-            self.draw_rulers(cr, w, h, scale)
+        if getattr(editor, 'show_guides', None) and editor.show_guides.get_active() and project.guides:
+            cr.save()
+            cr.set_source_rgba(0.30, 0.45, 0.72, 0.85)
+            cr.set_line_width(1 / scale)
+            cr.set_dash([4 / scale, 3 / scale])
+            for orient, pos in project.guides:
+                if orient == 'h' and 0 <= pos <= h:
+                    cr.move_to(0, pos)
+                    cr.line_to(w, pos)
+                elif orient == 'v' and 0 <= pos <= w:
+                    cr.move_to(pos, 0)
+                    cr.line_to(pos, h)
+            cr.stroke()
+            cr.restore()
         if editor.show_cut_border.get_active() and (border := editor.cut_border):
             cr.rectangle(border.x, border.y, border.w, border.h)
             cr.set_source_rgba(0.81, 0.15, 0.15, 0.8)
@@ -200,8 +243,8 @@ class DesignCanvas(Gtk.DrawingArea):
         if indices and not editor.drawing and not point_edit:
             box = editor_model.bounds(project.shapes[i] for i in indices)
             cr.rectangle(box.x, box.y, box.w, box.h)
-            cr.set_source_rgba(0.16, 0.36, 0.73, 0.85)
-            cr.set_line_width(1 / scale)
+            cr.set_source_rgba(0.30, 0.39, 0.68, 0.9)
+            cr.set_line_width(1.2 / scale)
             cr.stroke()
         if mode in TRANSFORM_MODES:
             drag = editor.drag
@@ -222,6 +265,40 @@ class DesignCanvas(Gtk.DrawingArea):
             elif shape.visible and shape.kind in editor_model.POINT_EDIT_KINDS:
                 for path in shape.paths():
                     self.draw_vertices(cr, path.points, scale)
+        if editor.rotation_centre:
+            rx, ry = editor.rotation_centre
+            cr.save()
+            cr.set_source_rgb(0.12, 0.54, 0.30)
+            cr.set_line_width(1.4 / scale)
+            cr.arc(rx, ry, 5 / scale, 0, math.tau)
+            cr.stroke()
+            cr.move_to(rx - 9 / scale, ry)
+            cr.line_to(rx + 9 / scale, ry)
+            cr.move_to(rx, ry - 9 / scale)
+            cr.line_to(rx, ry + 9 / scale)
+            cr.stroke()
+            cr.restore()
+        if editor.knife:
+            (x1, y1), (x2, y2) = editor.knife
+            cr.save()
+            cr.set_source_rgb(0.82, 0.13, 0.18)
+            cr.set_line_width(1.6 / scale)
+            cr.set_dash([5 / scale, 3 / scale])
+            cr.move_to(x1, y1)
+            cr.line_to(x2, y2)
+            cr.stroke()
+            cr.restore()
+        if len(editor.eraser_stroke) > 1:
+            cr.save()
+            cr.set_source_rgba(0.82, 0.13, 0.18, 0.30)
+            cr.set_line_width(editor.eraser_size.get_value())
+            cr.set_line_cap(cairo.LINE_CAP_ROUND)
+            cr.set_line_join(cairo.LINE_JOIN_ROUND)
+            cr.move_to(*editor.eraser_stroke[0])
+            for point in editor.eraser_stroke[1:]:
+                cr.line_to(*point)
+            cr.stroke()
+            cr.restore()
         if editor.measurement:
             start, end = editor.measurement
             cr.save()
@@ -248,10 +325,13 @@ class DesignCanvas(Gtk.DrawingArea):
             self.draw_vertices(cr, editor.polygon, scale)
         if (box := editor.marquee) is not None:
             cr.rectangle(box.x, box.y, box.w, box.h)
-            cr.set_source_rgba(0.12, 0.38, 0.75, 0.15)
+            cr.set_source_rgba(0.30, 0.39, 0.68, 0.16)
             cr.fill_preserve()
-            cr.set_source_rgba(0.12, 0.38, 0.75, 0.85)
+            cr.set_source_rgba(0.30, 0.39, 0.68, 0.88)
             cr.stroke()
+        cr.restore()
+        if editor.show_rulers.get_active():
+            self.draw_rulers(cr, width, height, x, y, scale, dark, getattr(editor, 'unit', 'mm'))
 
     @staticmethod
     def draw_scale_handles(cr, handle, scale):
@@ -261,7 +341,7 @@ class DesignCanvas(Gtk.DrawingArea):
             cr.rectangle(x - half, y - half, 2 * half, 2 * half)
             cr.set_source_rgb(1, 1, 1)
             cr.fill_preserve()
-            cr.set_source_rgb(0.20, 0.44, 0.78)
+            cr.set_source_rgb(0.30, 0.39, 0.68)
             cr.stroke()
 
     @staticmethod
@@ -269,7 +349,7 @@ class DesignCanvas(Gtk.DrawingArea):
         edge, (x, y) = handle.positions(angle)
         cx, cy = handle.center
         tick = 4 / scale
-        color = (0.20, 0.44, 0.78)
+        color = (0.30, 0.39, 0.68)
         cr.save()
         cr.set_source_rgb(*color)
         cr.set_line_width(1.5 / scale)
@@ -304,25 +384,98 @@ class DesignCanvas(Gtk.DrawingArea):
             _grid(cr, width, height, max(25.4, 4/scale))
         draw_feed_arrow(cr, width, (0.32, 0.37, 0.41))
 
-    @staticmethod
-    def draw_rulers(cr, width, height, scale):
-        cr.set_source_rgb(0.22, 0.24, 0.26)
-        tick = 10 / scale
-        cr.set_font_size(9 / scale)
-        step = max(10, math.ceil(28 / (10 * scale)) * 10)
-        for value in range(0, int(width) + 1, step):
-            cr.move_to(value, 0)
-            cr.line_to(value, -tick / 2)
+    def draw_rulers(self, cr, view_w, view_h, origin_x, origin_y, scale, dark, unit='mm'):
+        band = self.RULER_BAND
+        bg = (0.15, 0.16, 0.19) if dark else (0.93, 0.94, 0.96)
+        tick = (0.78, 0.80, 0.84, 0.55) if dark else (0.18, 0.20, 0.24, 0.55)
+        label_ink = (0.85, 0.87, 0.90, 0.80) if dark else (0.15, 0.17, 0.21, 0.82)
+        hair = (0.85, 0.87, 0.90, 0.18) if dark else (0.15, 0.17, 0.21, 0.18)
+        cr.save()
+        cr.set_source_rgb(*bg)
+        cr.rectangle(0, 0, view_w, band)
+        cr.rectangle(0, 0, band, view_h)
+        cr.fill()
+
+        unit_mm = 25.4 if unit == 'in' else 1.0
+        px_per_unit = scale * unit_mm
+        if unit == 'in':
+            steps = (0.125, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0)
+            labels = (0.5, 1.0, 2.0, 5.0, 10.0, 20.0)
+        else:
+            steps = (1, 2, 5, 10, 20, 50, 100, 200)
+            labels = (5, 10, 20, 50, 100, 200, 500)
+        step = next((s for s in steps if s * px_per_unit >= 7), steps[-1])
+        label_every = next((s for s in labels if s * px_per_unit >= 44 and abs((s / step) - round(s / step)) < 1e-6),
+                           labels[-1])
+        ratio = max(1, round(label_every / step))
+        cr.set_font_size(9.5)
+        cr.set_line_width(1.0)
+
+        left = (band - origin_x) / px_per_unit
+        right = (view_w - origin_x) / px_per_unit
+        for idx in range(int(math.floor(left / step)), int(math.ceil(right / step)) + 1):
+            value = idx * step
+            px = round(origin_x + value * px_per_unit) + 0.5
+            if px < band:
+                continue
+            major = idx % ratio == 0
+            half = ratio % 2 == 0 and idx % (ratio // 2) == 0
+            cr.set_source_rgba(*tick)
+            cr.move_to(px, band)
+            cr.line_to(px, band - (9 if major else 6 if half else 4))
             cr.stroke()
-            cr.move_to(value + 2 / scale, -tick)
-            cr.show_text(str(value))
-        for value in range(step, int(height) + 1, step):
-            cr.move_to(0, value)
-            cr.line_to(-tick / 2, value)
+            if major:
+                cr.set_source_rgba(*label_ink)
+                cr.move_to(px + 2.5, 10.5)
+                cr.show_text(f'{value:g}')
+
+        top = (band - origin_y) / px_per_unit
+        bottom = (view_h - origin_y) / px_per_unit
+        for idx in range(int(math.floor(top / step)), int(math.ceil(bottom / step)) + 1):
+            value = idx * step
+            py = round(origin_y + value * px_per_unit) + 0.5
+            if py < band:
+                continue
+            major = idx % ratio == 0
+            half = ratio % 2 == 0 and idx % (ratio // 2) == 0
+            cr.set_source_rgba(*tick)
+            cr.move_to(band, py)
+            cr.line_to(band - (9 if major else 6 if half else 4), py)
             cr.stroke()
-            label = str(value)
-            cr.move_to(-tick / 2 - cr.text_extents(label).width - 2 / scale, value)
-            cr.show_text(label)
+            if major:
+                cr.save()
+                cr.set_source_rgba(*label_ink)
+                cr.translate(10.5, py - 2.5)
+                cr.rotate(-math.pi / 2)
+                cr.move_to(0, 0)
+                cr.show_text(f'{value:g}')
+                cr.restore()
+
+        if self.pointer is not None:
+            px, py = self.pointer
+            cr.set_source_rgb(0.30, 0.39, 0.68)
+            if px >= band:
+                cr.move_to(round(px) + 0.5, 0)
+                cr.line_to(round(px) + 0.5, band)
+            if py >= band:
+                cr.move_to(0, round(py) + 0.5)
+                cr.line_to(band, round(py) + 0.5)
+            cr.stroke()
+
+        cr.set_source_rgb(*bg)
+        cr.rectangle(0, 0, band, band)
+        cr.fill()
+        cr.set_source_rgba(*label_ink)
+        ext = cr.text_extents(unit)
+        cr.move_to((band - ext.width) / 2 - ext.x_bearing, (band + ext.height) / 2)
+        cr.show_text(unit)
+        cr.set_source_rgba(*hair)
+        cr.move_to(0, band - 0.5)
+        cr.line_to(view_w, band - 0.5)
+        cr.move_to(band - 0.5, 0)
+        cr.line_to(band - 0.5, view_h)
+        cr.stroke()
+        cr.restore()
 
     @staticmethod
     def draw_marks(cr, marks, scale):

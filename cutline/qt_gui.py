@@ -24,8 +24,9 @@ from .desktop_help import (BLADE_VALUE_TEXT, CONTROL_HELP, CUT_PROBLEMS, CUT_SET
 from .holder_settings import HolderSettings, for_holder
 from . import tooling
 from .qt_canvas import PREVIEW_MODES, Preview, ZoomControls
-from .qt_controls import (AdaptiveActions, Form, Page, SettingsWheel, Tasks, bar, button, set_choices,
-                          styled_label, workspace_header, workspace_layout, workspace_style, workspace_tools)
+from .qt_controls import (AdaptiveActions, Form, Page, SettingsWheel, Tasks, bar, button, footer_bar_widget,
+                          set_choices, styled_label, workspace_header, workspace_layout, workspace_style,
+                          workspace_tools)
 
 APP_ID = "io.github.zoro11031.Cutline"
 ARTWORK_FILTER = "Cut templates (*.svg *.SVG *.dxf *.DXF *.studio3 *.STUDIO3)"
@@ -144,7 +145,7 @@ class Window(QMainWindow):
         content.addWidget(header)
         self.workspace_split = split = QSplitter(Qt.Orientation.Horizontal)
         split.setChildrenCollapsible(False)
-        split.setHandleWidth(12)
+        split.setHandleWidth(4)
         self.tabs = QTabWidget()
         self.tabs.setProperty("role", "settings")
         self.tabs.setMinimumWidth(345)
@@ -218,7 +219,7 @@ class Window(QMainWindow):
         split.addWidget(self.tabs)
         split.setStretchFactor(0, 1)
 
-        footer_bar, footer = bar(setup)
+        footer_bar, footer = footer_bar_widget(setup)
         self.footer_status = styled_label(role="body")
         self.footer_status.setWordWrap(True)
         # The status gives way first: at compact widths it wraps and shrinks so

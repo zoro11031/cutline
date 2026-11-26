@@ -20,6 +20,14 @@ _APP_SERIAL = 0
 
 @unittest.skipUnless(gui is not None, 'GTK and PyGObject are required')
 class TestDesignWorkspace(unittest.TestCase):
+    def setUp(self):
+        from cutline import config
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        patcher = mock.patch.object(config, 'CONFIG_DIR', Path(folder.name))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def make_window(self):
         from gi.repository import Gdk
 
@@ -882,7 +890,8 @@ class TestDesignWorkspace(unittest.TestCase):
                              (design.trace_button, 'Trace and Bleed…')):
             self.assertTrue(button.get_tooltip_text().startswith(name))
             self.assertIsInstance(button.get_child(), gui.Gtk.DrawingArea)
-        self.assertEqual(design.add_button.get_child().get_last_child().get_label(), 'Add Shape')
+        self.assertIsInstance(design.add_button.get_child(), gui.Gtk.DrawingArea)
+        self.assertIn('Add the shape', design.add_button.get_tooltip_text())
         self.assertEqual(palette.get_orientation(), gui.Gtk.Orientation.VERTICAL)
         no_modifiers = Gdk.ModifierType(0)
         rounded = palette.button_for('Rounded rectangle')
@@ -1014,7 +1023,8 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertTrue(design.group_ribbon_button.get_visible())
         self.assertTrue(design.align_button.get_visible())
         self.assertEqual(design.save_state.get_label(), 'Unsaved')
-        self.assertEqual(design.panel_switcher.get_selected(), 1)
+        self.assertEqual(design.active_panel_index(), 1)
+        self.assertEqual(design.panel_heading.get_text(), 'Transform')
         self.assertIn('2 selected', design.tool_hint.get_label())
         self.assertTrue(design.canvas_key(None, Gdk.KEY_Escape, 0, Gdk.ModifierType(0)))
         self.assertFalse(design.selection_tools.get_visible())
@@ -1039,7 +1049,8 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertEqual(design.active_tool, 'Scale')
         self.assertTrue(design.context_transform.get_visible())
         self.assertFalse(design.option_snap.get_visible())
-        self.assertEqual(design.panel_switcher.get_selected(), 1)
+        self.assertEqual(design.active_panel_index(), 1)
+        self.assertEqual(design.panel_heading.get_text(), 'Transform')
         palette.slots['Select'].emit('clicked')
         palette.slots['Transform tools'].emit('clicked')
         self.assertEqual(design.active_tool, 'Scale')
@@ -1086,7 +1097,8 @@ class TestDesignWorkspace(unittest.TestCase):
         design.commit(shapes, (0, 1))
         self.assertTrue(design.canvas_key(None, Gdk.KEY_t, 0, Gdk.ModifierType(0)))
         self.assertEqual(design.active_tool, 'Transform')
-        self.assertEqual(design.panel_switcher.get_selected(), 1)
+        self.assertEqual(design.active_panel_index(), 1)
+        self.assertEqual(design.panel_heading.get_text(), 'Transform')
         self.assertTrue(design.alignment_buttons['Align Left'].get_sensitive())
         self.assertFalse(design.alignment_buttons['Space Horizontally'].get_sensitive())
         handle = rotation_handle(shapes, (0, 1), 2)
@@ -2319,6 +2331,264 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertFalse(win._sending)
         self.assertFalse(win.pause_cut.get_visible())
         self.assertFalse(win.cancel_cut.get_visible())
+
+    def test_gtk_objects_rename_lock_and_group_hierarchy_survive_undo_and_reopen(self):
+        from gi.repository import Gdk
+
+        win = self.make_window()
+        win.draw_in_design_btn.emit('clicked')
+        design = win.design
+        shapes = (
+            editor_model.Shape('Rectangle', 20, 20, 40, 30, group=1),
+            editor_model.Shape('Ellipse', 80, 20, 30, 30, group=1),
+            editor_model.Shape('Rectangle', 140, 20, 30, 30),
+        )
+        design.commit(shapes, (0, 1))
+        # Group header + 2 child rows + 1 ungrouped row = 4 rows.
+        def list_rows():
+            found = []
+            idx = 0
+            while (item := design.objects.get_row_at_index(idx)) is not None:
+                found.append(item)
+                idx += 1
+            return found
+
+        rows = list_rows()
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(rows[0]._object_entry[0], 'group')
+
+        # Collapse and expand preserve selection.
+        design.toggle_group_collapsed(1)
+        self.assertEqual(len(list_rows()), 2)
+        self.assertEqual(design.selected_indices(), (0, 1))
+        design.toggle_group_collapsed(1)
+
+        # Rename and Undo/Redo.
+        design.set_selection((2,))
+        design.rename_object('Cut Frame')
+        self.assertEqual(design.project.shapes[2].name, 'Cut Frame')
+        design.change_history(design.history.undo)
+        self.assertEqual(design.project.shapes[2].name, '')
+        design.change_history(design.history.redo)
+        self.assertEqual(design.project.shapes[2].name, 'Cut Frame')
+
+        # Lock blocks field edits, transforms, arrow nudge, and delete until unlocked.
+        design.toggle_lock()
+        self.assertTrue(design.project.shapes[2].locked)
+        self.assertEqual(design.lock_button.get_label(), 'Unlock')
+        before_x = design.project.shapes[2].x
+        design.fields['x'].set_value(before_x + 12)
+        design.transform_objects('right')
+        design.canvas_key(None, Gdk.KEY_Right, 0, Gdk.ModifierType(0))
+        design.delete_shape(None)
+        self.assertEqual(len(design.project.shapes), 3)
+        self.assertEqual(design.project.shapes[2].x, before_x)
+        self.assertEqual(design.project.shapes[2].rotation, 0)
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'gtk-v7.scc-template'
+            editor_model.save_project(path, design.project)
+            self.assertEqual(editor_model.load_project(path), design.project)
+
+        design.toggle_lock()
+        self.assertFalse(design.project.shapes[2].locked)
+        design.fields['x'].set_value(before_x + 12)
+        self.assertEqual(design.project.shapes[2].x, before_x + 12)
+
+    def test_gtk_drawing_constraints_transform_origin_and_cut_sample_tools(self):
+        from gi.repository import Gdk
+
+        win = self.make_window()
+        win.draw_in_design_btn.emit('clicked')
+        design = win.design
+        design.commit((), ())
+        gesture = mock.Mock()
+        shift = Gdk.ModifierType.SHIFT_MASK
+        shift_alt = shift | Gdk.ModifierType.ALT_MASK
+
+        with mock.patch.object(design.canvas, 'viewport', return_value=(0, 0, 2)):
+            # Shift-constrained Line snaps to 45 degrees.
+            design.tool.set_selected(design.tools.index('Line'))
+            gesture.get_current_event_state.return_value = shift
+            design.drag_begin(gesture, 40, 40)
+            design.drag_end(gesture, 40, 6)
+            line = design.project.shapes[0]
+            self.assertEqual(line.kind, 'Line')
+            self.assertAlmostEqual(line.height, 0, places=3)
+            self.assertGreater(line.width, 19)
+
+            # Shift+Alt Rectangle draws a centered square.
+            design.tool.set_selected(design.tools.index('Rectangle'))
+            gesture.get_current_event_state.return_value = shift_alt
+            design.drag_begin(gesture, 120, 120)
+            design.drag_end(gesture, 40, 20)
+            square = design.project.shapes[1]
+            self.assertAlmostEqual(square.width, square.height, places=3)
+            self.assertAlmostEqual(square.x + square.width / 2, 60, places=3)
+            self.assertAlmostEqual(square.y + square.height / 2, 60, places=3)
+
+            # Freehand closes when ending near start.
+            design.tool.set_selected(design.tools.index('Freehand'))
+            gesture.get_current_event_state.return_value = Gdk.ModifierType(0)
+            design.drag_begin(gesture, 200, 40)
+            for dx, dy in ((40, 0), (40, 40), (0, 40), (1, 1)):
+                design.drag_update(gesture, dx, dy)
+            design.drag_end(gesture, 1, 1)
+            self.assertTrue(design.project.shapes[2].closed)
+
+            # Polygon finishes open on Enter.
+            design.tool.set_selected(design.tools.index('Polygon'))
+            gesture.get_current_event_state.return_value = Gdk.ModifierType(0)
+            design.pick_polygon_point(gesture, 1, 20, 160)
+            gesture.get_current_event_state.return_value = shift
+            design.pick_polygon_point(gesture, 1, 60, 166)
+            design.canvas_key(None, Gdk.KEY_Return, 0, Gdk.ModifierType(0))
+            open_poly = design.project.shapes[3]
+            self.assertFalse(open_poly.closed)
+
+            # Transform origin rotates square around top-left corner.
+            design.set_selection((1,))
+            design.set_rotation_origin(0, 0)
+            self.assertEqual(design.rotation_centre, (square.x, square.y))
+            design.transform_objects('right')
+            rotated = design.project.shapes[1]
+            self.assertEqual(rotated.rotation, 90)
+            self.assertAlmostEqual(rotated.x + rotated.width / 2, square.x - square.height / 2, places=3)
+            design.change_history(design.history.undo)
+
+            # Eyedropper copies style and action onto selection.
+            styled = editor_model.Shape('Rectangle', 20, 20, 40, 40, stroke='#d0202e', fill='#f7c600', action='Score')
+            target = editor_model.Shape('Rectangle', 90, 20, 40, 40, stroke='', fill='', action='Cut')
+            design.commit((styled, target), (1,))
+            self.assertTrue(design.canvas_key(None, Gdk.KEY_i, 0, Gdk.ModifierType(0)))
+            self.assertEqual(design.active_tool, 'Eyedropper')
+            design.drag_begin(gesture, 80, 80)
+            copied = design.project.shapes[1]
+            self.assertEqual((copied.stroke, copied.fill, copied.action), ('#d0202e', '#f7c600', 'Score'))
+
+            # Knife splits a closed rectangle into two pieces.
+            design.set_selection((1,))
+            self.assertTrue(design.canvas_key(None, Gdk.KEY_k, 0, Gdk.ModifierType(0)))
+            self.assertEqual(design.active_tool, 'Knife')
+            gesture.get_current_event_state.return_value = Gdk.ModifierType(0)
+            design.drag_begin(gesture, 220, 20)
+            design.drag_end(gesture, 0, 120)
+            self.assertEqual(len(design.project.shapes), 3)
+            design.change_history(design.history.undo)
+            self.assertEqual(len(design.project.shapes), 2)
+
+            # Eraser removes material from a closed shape and undoes cleanly.
+            design.set_selection((1,))
+            self.assertTrue(design.canvas_key(None, Gdk.KEY_x, 0, Gdk.ModifierType(0)))
+            self.assertEqual(design.active_tool, 'Eraser')
+            self.assertTrue(design.eraser_options.get_visible())
+            design.eraser_size.set_value(6)
+            design.drag_begin(gesture, 220, 20)
+            design.drag_update(gesture, 0, 60)
+            design.drag_end(gesture, 0, 120)
+            self.assertGreaterEqual(len(design.project.shapes), 3)
+            design.change_history(design.history.undo)
+            self.assertEqual(len(design.project.shapes), 2)
+
+    def test_gtk_design_to_send_walkthrough_compound_save_and_last_path_undo(self):
+        win = self.make_window()
+        win.draw_in_design_btn.emit('clicked')
+        design = win.design
+        outer = editor_model.Shape('Rectangle', 30, 30, 60, 60, name='Frame')
+        inner = editor_model.Shape('Rectangle', 45, 45, 30, 30)
+        design.replace_document(editor_model.Project(279.4, 215.9, (outer, inner)))
+        design.set_selection((0, 1))
+        design.modify_shapes('Make Compound Path')
+        self.assertEqual(len(design.project.shapes), 1)
+        self.assertEqual(design.project.shapes[0].kind, 'Compound')
+        design.modify_shapes('Release Compound Path')
+        self.assertEqual(len(design.project.shapes), 2)
+        design.set_selection((0,))
+        design.rename_object('Outer Cut')
+        design.toggle_lock()
+        self.assertTrue(design.project.shapes[0].locked)
+
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / 'walkthrough.scc-template'
+            editor_model.save_project(target, design.project)
+            reopened = editor_model.load_project(target)
+        self.assertEqual(reopened, design.project)
+
+        design.send_workspace.emit('clicked')
+        self.assertEqual(win.workspaces.get_visible_child_name(), 'tools')
+        self.assertIsNotNone(win.job)
+        self.assertFalse(win.job.blocked)
+        self.assertEqual(len(win.job.paths), 2)
+
+        win.design_button.emit('clicked')
+        design.set_selection((0,))
+        design.toggle_lock()
+        design.set_selection((0, 1))
+        design.delete_shape(None)
+        self.assertEqual(design.project.shapes, ())
+        design.send_workspace.emit('clicked')
+        self.assertEqual(win.workspaces.get_visible_child_name(), 'design')
+        design.change_history(design.history.undo)
+        self.assertEqual(len(design.project.shapes), 2)
+        design.send_workspace.emit('clicked')
+        self.assertEqual(win.workspaces.get_visible_child_name(), 'tools')
+        self.assertEqual(len(win.job.paths), 2)
+
+    def test_gtk_second_pass_panel_rail_origin_grid_fit_and_persistence(self):
+        from cutline import config
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(config, 'CONFIG_DIR', Path(folder)):
+            win = self.make_window()
+            win.present()
+            win.design_button.emit('clicked')
+            design = win.design
+            shapes = tuple(editor_model.Shape('Path', 10 + i * 20, 20, 63, 88,
+                                              points=((0, 0), (1, 0), (1, 1), (0, 1))) for i in range(8))
+            design.commit(shapes, (0,))
+
+            # Eight identical shapes have distinguishable names in Objects.
+            row_labels = []
+            for idx in range(8):
+                row = design.objects.get_row_at_index(idx)
+                lbl = row.get_child().get_last_child()
+                row_labels.append(lbl.get_text())
+            self.assertEqual(len(set(row_labels)), 8)
+            self.assertTrue(row_labels[0].startswith('Path 1 · 63 × 88'))
+            self.assertTrue(row_labels[7].startswith('Path 8 · 63 × 88'))
+
+            # Panel rail switches panels and collapses/expands the sidebar.
+            design.panel_buttons['replicate'].emit('clicked')
+            self.assertEqual(design.active_panel_key(), 'replicate')
+            self.assertEqual(design.panel_heading.get_text(), 'Replicate')
+            design.panel_buttons['replicate'].emit('clicked')
+            self.assertFalse(design.dock.get_visible())
+            design.panel_buttons['transform'].emit('clicked')
+            self.assertTrue(design.dock.get_visible())
+            self.assertEqual(design.active_panel_key(), 'transform')
+
+            # Interactive 3x3 Origin Grid updates rotation centre.
+            design.origin_cells[(0.0, 0.0)].emit('clicked')
+            self.assertIsNotNone(design.rotation_centre)
+            self.assertAlmostEqual(design.rotation_centre[0], design.project.shapes[0].x, places=3)
+
+            # Inline rename + direct lock toggle.
+            design.commit_inline_name(0, 'Card One')
+            self.assertEqual(design.project.shapes[0].name, 'Card One')
+            design.set_object_locked(1, True)
+            self.assertTrue(design.project.shapes[1].locked)
+
+            # Units and layout preferences persist.
+            design.set_unit('in')
+            self.assertIn('in', design.status.get_text())
+            design.set_sidebar_visible(False)
+            saved = config.load_design_ui()
+            self.assertEqual(saved['units'], 'in')
+            self.assertTrue(saved['sidebar_collapsed'])
+            self.assertEqual(saved['active_panel'], 'transform')
+
+            # Distinct fit actions execute cleanly.
+            design.canvas.fit_mat()
+            design.canvas.fit_page()
+            design.canvas.fit_selection()
 
 
 @unittest.skipUnless(gui is not None, 'PyGObject is not installed')

@@ -1,7 +1,7 @@
 # Silhouette Studio parity
 
 How Cutline compares with Silhouette Studio 5.0.556.1, feature by feature, as
-of 2026-11-25.
+of 2026-11-26.
 
 | Mark | Meaning |
 |---|---|
@@ -15,7 +15,7 @@ verified commands (such as path ordering, weed paths, test cuts, action
 filtering, and end position) count as working; options whose protocol
 commands are not yet confirmed on hardware stay partial.
 
-**Parity: 67.9%** (40 ✅, 30 🟡, 11 ❌ across 81 features; ✅ counts 1, 🟡 counts ½).
+**Parity: 72.8%** (48 ✅, 22 🟡, 11 ❌ across 81 features; ✅ counts 1, 🟡 counts ½).
 
 ## Design walkthrough
 
@@ -37,10 +37,11 @@ Studio3 export still needs complete files checked in Studio.
 
 Document actions and tool options share a row when they fit and wrap at compact widths.
 The canvas sits between the drawing rail and the independently collapsible
-Properties and Objects panels. Paper and mat grids have separate toggles. Object visibility
-and reorder edits enter the undo history. Qt offers a nine-point origin for
-relative and pointer rotation. The current project model stores flat groups
-and generated object names.
+Properties and Objects panels. Paper and mat grids have separate toggles. Both
+frontends support custom object names, locking, collapsible group rows, visibility,
+and drag reordering in the undo history, persisted in version 7 template projects.
+Both offer a nine-point transform origin, Shift/Alt drawing constraints, and the
+Knife, Eraser, and Eyedropper tools.
 
 ## Design: drawing and editing
 
@@ -52,17 +53,17 @@ either frontend is partial.
 |---|---|---|
 | Select, move, scale and rotate | Both have selection and transforms; Qt has side stretch and on-canvas corner radius | 🟡 |
 | Point editing | Both support keyboard and pointer node edits, Bézier handles, node commands, and joining open ends. Release compound paths before editing individual points. | 🟡 |
-| Line | Both draw lines; Qt has Shift angle constraints | 🟡 |
-| Rectangle and rounded rectangle | Both draw rectangles and rounded rectangles; Qt has Shift and Alt modifiers | 🟡 |
-| Ellipse | Both draw ellipses; Qt can constrain circles with Shift | 🟡 |
+| Line | Both draw lines with Shift 45° angle constraints | ✅ |
+| Rectangle and rounded rectangle | Both draw rectangles and rounded rectangles with Shift and Alt modifiers | ✅ |
+| Ellipse | Both draw ellipses with Shift circle and Alt center modifiers | ✅ |
 | Regular polygon | Both have Regular Polygon with a side count and Shift and Alt modifiers | ✅ |
-| Polygon | Both place polygon vertices; Qt adds Shift constraints and can finish open | 🟡 |
+| Polygon | Both place polygon vertices with Shift constraints and can finish open | ✅ |
 | Curve | Both draw editable smooth curves through clicked points | ✅ |
 | Arc | Both draw editable arcs from a drag | ✅ |
-| Freehand and smooth freehand | Both have smooth freehand; Qt also closes unsmoothed freehand strokes | 🟡 |
-| Knife | Qt | 🟡 |
-| Eraser | Qt, with a size | 🟡 |
-| Eyedropper | Qt Eyedropper copies cut action, line and fill | 🟡 |
+| Freehand and smooth freehand | Both have freehand and smooth freehand and close strokes ending near the start | ✅ |
+| Knife | Both split closed shapes along a dragged line | ✅ |
+| Eraser | Both erase along a sized brush stroke | ✅ |
+| Eyedropper | Both copy cut action, line, and fill from another object | ✅ |
 | Measure | Both measure and scale to a known length | ✅ |
 | Pan and zoom | Both have Hand and Zoom tools, fit-to-selection, and temporary Space-drag panning | ✅ |
 | Undo, redo, cut, copy, paste, paste in front, duplicate | Both | ✅ |
@@ -90,7 +91,7 @@ either frontend is partial.
 | Line and fill colour | Line and Fill panel | ✅ |
 | Pattern and gradient fills | — | ❌ |
 | Grid and snap | Both have grid and snapping; Qt adds rulers, guides and crosshairs | 🟡 |
-| Layers | Objects supports visibility, selection, grouping, drag reordering, and context menus. Object groups appear in the list. Full layer hierarchies remain partial. | 🟡 |
+| Layers | Objects supports custom names, locking, visibility, collapsible groups, drag reordering, and context menus. Full multi-level layer hierarchies remain partial. | 🟡 |
 | Image effects (brightness, colour) | — | ❌ |
 | Sketch and Rhinestone | — | ❌ |
 | Emboss | — | ❌ |

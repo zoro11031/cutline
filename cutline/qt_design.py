@@ -8,23 +8,25 @@ import math
 from math import dist
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QSignalBlocker, QPointF, QRectF, QSize, Qt, Signal, QTimer
-from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence, QPainter, QPainterPath, QPixmap, QTransform
+from PySide6.QtCore import QEvent, QSignalBlocker, QPointF, QRect, QRectF, QSize, Qt, Signal, QTimer
+from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QTransform
 from PySide6.QtWidgets import (QAbstractButton, QAbstractItemView, QApplication, QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
                                QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLayout, QLineEdit, QListWidget,
                                QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit, QSizePolicy, QSpinBox, QSplitter,
-                               QStackedWidget, QToolButton, QVBoxLayout, QWidget, QWidgetAction)
+                               QStackedWidget, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QToolButton, QVBoxLayout, QWidget, QWidgetAction)
 
-from . import (design_text, editor_model as model, geometry, graphtec, importer, path_edit, pixscan, regmarks,
+from . import (config, design_text, editor_model as model, geometry, graphtec, importer, path_edit, pixscan, regmarks,
                transforms,
                sticker_assets,
                sticker_print, sticker_trace, template)
 from .design_tools import (ALIGNMENT_ROWS, CLICK_PATH_TOOLS, COMMAND_ICONS, DRAWING_TOOLS, OBJECT_ICONS, PANEL_ICONS,
                            TRANSFORM_FIELDS, TRANSFORM_ICONS, TURN_RIGHT, WORKSPACE_KEYS, WORKSPACE_TOOLS, contextual_hint,
                            rotation_handle, scale_from_corner, segment_measurement)
-from .qt_canvas import SheetView, ZoomControls, draw_contours, draw_feed_arrow, draw_marks, draw_paper, draw_path, pen, rect
-from .qt_controls import (ColorSwatch, DesignIconButton, DockPanel, PanelDock, Tasks, ToolStrip, bar, button, design_divider, design_icon,
-                          icon_outline, ribbon_button, set_choices, styled_label, workspace_header, workspace_layout)
+from .qt_canvas import (SheetView, ZoomControls, draw_contours, draw_feed_arrow, draw_guides, draw_marks, draw_paper,
+                        draw_path, pen, rect)
+from .qt_controls import (ColorSwatch, DesignIconButton, DockPanel, OriginGrid, PanelDock, Tasks, ToolStrip,
+                          accent_color, bar, button, design_divider, design_icon, footer_bar_widget, icon_outline,
+                          rail_scroll, ribbon_button, set_choices, styled_label, workspace_header, workspace_layout)
 
 DESIGN_FILTER = "Design projects (*.scc-template);;Cut templates (*.svg *.SVG *.dxf *.DXF *.studio3 *.STUDIO3)"
 ACTION_LABELS = {"Cut": "Cut", "Score": "Score", "None": "None (not cut)"}
@@ -32,14 +34,174 @@ ACTION_LABELS = {"Cut": "Cut", "Score": "Score", "None": "None (not cut)"}
 # can be pasted into a new one, as in Studio's template workflow.
 _clipboard = ()
 
+OBJECT_META_ROLE = Qt.ItemDataRole.UserRole + 1
+OBJECT_RENAME_ROLE = Qt.ItemDataRole.UserRole + 2
+
+
+class ObjectRowDelegate(QStyledItemDelegate):
+    """Render each Objects row with Eye, Lock, object-type icon, and clean name."""
+
+    ROW_HEIGHT = 30
+    EYE_WIDTH = 22
+    LOCK_WIDTH = 22
+    ICON_WIDTH = 20
+    INDENT_WIDTH = 16
+    DISCLOSURE_WIDTH = 16
+
+    def sizeHint(self, option, index):
+        hint = super().sizeHint(option, index)
+        height = max(self.ROW_HEIGHT, option.fontMetrics.height() + 10)
+        return QSize(hint.width(), height)
+
+    @classmethod
+    def hit_rects(cls, row_rect: QRect, meta: dict):
+        x = row_rect.left() + 6
+        if meta.get("indent"):
+            x += cls.INDENT_WIDTH
+        cy = row_rect.top()
+        h = row_rect.height()
+        disclosure = QRect()
+        if meta.get("is_group"):
+            disclosure = QRect(x, cy, cls.DISCLOSURE_WIDTH, h)
+            x += cls.DISCLOSURE_WIDTH
+        eye = QRect(x, cy, cls.EYE_WIDTH, h)
+        x += cls.EYE_WIDTH + 2
+        lock = QRect(x, cy, cls.LOCK_WIDTH, h)
+        x += cls.LOCK_WIDTH + 4
+        icon = QRect(x, cy, cls.ICON_WIDTH, h)
+        x += cls.ICON_WIDTH + 4
+        text = QRect(x, cy, max(20, row_rect.right() - x - 6), h)
+        return disclosure, eye, lock, icon, text
+
+    @staticmethod
+    def _draw_tool_glyph(painter, area: QRect, tool, color: QColor, size: int = 15):
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        scale = size / 24.0
+        painter.translate(area.center().x() - 12 * scale, area.center().y() - 12 * scale)
+        painter.scale(scale, scale)
+        painter.setPen(QPen(color, 1.7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(icon_outline(tool.strokes))
+        painter.restore()
+
+    def paint(self, painter, option, index):
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        meta = index.data(OBJECT_META_ROLE) or {}
+        painter.save()
+        # Draw background / selection / hover via style without default checkbox/text
+        opt.text = ""
+        opt.icon = opt.icon.__class__()
+        opt.features &= ~QStyleOptionViewItem.ViewItemFeature.HasCheckIndicator
+        opt.features &= ~QStyleOptionViewItem.ViewItemFeature.HasDecoration
+        opt.features &= ~QStyleOptionViewItem.ViewItemFeature.HasDisplay
+        style = opt.widget.style() if opt.widget else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
+
+        disclosure, eye, lock, icon_rect, text_rect = self.hit_rects(opt.rect, meta)
+        palette = opt.palette
+        base_ink = palette.text().color()
+        dim_ink = QColor(base_ink)
+        dim_ink.setAlphaF(0.40)
+        accent = accent_color(palette)
+
+        visible = meta.get("visible", True)
+        locked = meta.get("locked", False)
+
+        if meta.get("is_group"):
+            painter.setPen(base_ink)
+            chevron = "▸" if meta.get("collapsed") else "▾"
+            painter.drawText(disclosure, Qt.AlignmentFlag.AlignCenter, chevron)
+
+        eye_tool = COMMAND_ICONS["visibility"] if visible else COMMAND_ICONS["visibility_off"]
+        self._draw_tool_glyph(painter, eye, eye_tool, base_ink if visible else dim_ink, size=15)
+
+        lock_tool = COMMAND_ICONS["lock"] if locked else COMMAND_ICONS["unlock"]
+        lock_color = accent if locked else QColor(base_ink.red(), base_ink.green(), base_ink.blue(), 65)
+        if not locked and (opt.state & QStyle.StateFlag.State_MouseOver or opt.state & QStyle.StateFlag.State_Selected):
+            lock_color = dim_ink
+        self._draw_tool_glyph(painter, lock, lock_tool, lock_color, size=14)
+
+        kind = meta.get("kind", "Path")
+        type_tool = COMMAND_ICONS["group"] if meta.get("is_group") else OBJECT_ICONS.get(kind, COMMAND_ICONS["path"])
+        self._draw_tool_glyph(painter, icon_rect, type_tool, base_ink if visible else dim_ink, size=15)
+
+        label = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        text_color = base_ink if visible else dim_ink
+        painter.setPen(text_color)
+        font = opt.font
+        if meta.get("is_group"):
+            font.setWeight(font.Weight.DemiBold)
+        painter.setFont(font)
+        elided = painter.fontMetrics().elidedText(label, Qt.TextElideMode.ElideRight, text_rect.width())
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided)
+        painter.restore()
+
+    def createEditor(self, parent, option, index):
+        editor = QLineEdit(parent)
+        editor.setFrame(True)
+        return editor
+
+    def setEditorData(self, editor, index):
+        current = index.data(OBJECT_RENAME_ROLE)
+        if current is None:
+            current = index.data(Qt.ItemDataRole.EditRole) or ""
+        editor.setText(str(current))
+        editor.selectAll()
+
+    def updateEditorGeometry(self, editor, option, index):
+        meta = index.data(OBJECT_META_ROLE) or {}
+        _, _, _, _, text_rect = self.hit_rects(option.rect, meta)
+        editor.setGeometry(text_rect.adjusted(-2, 2, 2, -2))
+
+    def setModelData(self, editor, model_obj, index):
+        model_obj.setData(index, editor.text(), OBJECT_RENAME_ROLE)
+
 
 class ObjectsList(QListWidget):
     reordered = Signal(int)
+    eye_clicked = Signal(object)
+    lock_clicked = Signal(object)
+    disclosure_clicked = Signal(object)
+    inline_renamed = Signal(object, str)
 
     def __init__(self):
         super().__init__()
         self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.setMouseTracking(True)
+        self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._delegate = ObjectRowDelegate(self)
+        self.setItemDelegate(self._delegate)
+        self._delegate.commitData.connect(self._on_inline_commit)
+
+    def _on_inline_commit(self, editor):
+        item = self.currentItem()
+        if item is not None:
+            self.inline_renamed.emit(item, editor.text())
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            pos = event.position().toPoint()
+            item = self.itemAt(pos)
+            if item is not None:
+                meta = item.data(OBJECT_META_ROLE) or {}
+                row_rect = self.visualItemRect(item)
+                disclosure, eye, lock, _, _ = ObjectRowDelegate.hit_rects(row_rect, meta)
+                if meta.get("is_group") and disclosure.contains(pos):
+                    self.disclosure_clicked.emit(item)
+                    event.accept()
+                    return
+                if eye.contains(pos):
+                    self.eye_clicked.emit(item)
+                    event.accept()
+                    return
+                if lock.contains(pos):
+                    self.lock_clicked.emit(item)
+                    event.accept()
+                    return
+        super().mousePressEvent(event)
 
     def dragMoveEvent(self, event):
         super().dragMoveEvent(event)
@@ -264,7 +426,7 @@ class Canvas(SheetView):
         if handle is None:
             return
         scale = self.transform().m11()
-        outline = "#3271c8"
+        outline = accent_color(self.palette()).name()
         painter.save()
         painter.setPen(pen(outline, 1.3 / scale, dashed=True))
         painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -297,53 +459,104 @@ class Canvas(SheetView):
         if self.design.crosshairs.isChecked() and self.pointer is not None:
             rect_ = self.sceneRect()
             painter.save()
-            painter.setPen(pen("#3c70c5", 1 / scale, dashed=True))
+            painter.setPen(pen(accent_color(self.palette()).name(), 1 / scale, dashed=True))
             painter.drawLine(QPointF(rect_.left(), self.pointer.y()), QPointF(rect_.right(), self.pointer.y()))
             painter.drawLine(QPointF(self.pointer.x(), rect_.top()), QPointF(self.pointer.x(), rect_.bottom()))
             painter.restore()
         if self.design.rulers.isChecked():
             self.paint_rulers(painter)
 
+    RULER_BAND = 22
+
     def paint_rulers(self, painter):
-        """Edge rulers in millimetres, fixed to the view as in Photoshop and Studio."""
+        """Edge rulers in the project's selected measurement units (mm or in)."""
         painter.save()
         painter.resetTransform()
         view = self.viewport().rect()
-        band = 18
-        background, ink = self.palette().window().color(), self.palette().windowText().color()
+        band = self.RULER_BAND
+        window = self.palette().window().color()
+        dark = window.lightnessF() <= 0.5
+        background = window.darker(108) if dark else window.lighter(102)
+        ink = self.palette().windowText().color()
+        tick_ink = QColor(ink)
+        tick_ink.setAlphaF(0.55)
+        label_ink = QColor(ink)
+        label_ink.setAlphaF(0.75)
+        hairline = QColor(ink)
+        hairline.setAlphaF(0.18)
+
         painter.fillRect(0, 0, view.width(), band, background)
         painter.fillRect(0, 0, band, view.height(), background)
         scale = self.transform().m11()
-        step = next(s for s in (1, 2, 5, 10, 20, 50, 100, 200) if s * scale >= 7)
-        label_every = next(s for s in (5, 10, 20, 50, 100, 200, 500) if s * scale >= 45 and s % step == 0)
-        left, top = self.mapToScene(0, 0).x(), self.mapToScene(0, 0).y()
-        right, bottom = self.mapToScene(view.width(), view.height()).x(), self.mapToScene(view.width(), view.height()).y()
-        painter.setPen(ink)
+        unit = self.design.unit
+        unit_mm = 25.4 if unit == "in" else 1.0
+        px_per_unit = scale * unit_mm
+        if unit == "in":
+            steps = (0.125, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0)
+            labels = (0.5, 1.0, 2.0, 5.0, 10.0, 20.0)
+        else:
+            steps = (1, 2, 5, 10, 20, 50, 100, 200)
+            labels = (5, 10, 20, 50, 100, 200, 500)
+        step = next((s for s in steps if s * px_per_unit >= 7), steps[-1])
+        label_every = next((s for s in labels if s * px_per_unit >= 44 and abs((s / step) - round(s / step)) < 1e-6),
+                           labels[-1])
+        left = self.mapToScene(band, 0).x() / unit_mm
+        top = self.mapToScene(0, band).y() / unit_mm
+        right = self.mapToScene(view.width(), view.height()).x() / unit_mm
+        bottom = self.mapToScene(view.width(), view.height()).y() / unit_mm
+
         font = painter.font()
-        font.setPointSizeF(7)
+        font.setPointSizeF(max(7.5, font.pointSizeF() * 0.78))
         painter.setFont(font)
-        for value in range(int(left // step) * step, int(right) + step, step):
-            x = round(self.mapFromScene(QPointF(value, 0)).x())
+
+        start_x = int(math.floor(left / step))
+        end_x = int(math.ceil(right / step))
+        ratio = max(1, round(label_every / step))
+        for idx in range(start_x, end_x + 1):
+            value = idx * step
+            x = round(self.mapFromScene(QPointF(value * unit_mm, 0)).x())
             if x < band:
                 continue
-            long = value % label_every == 0
-            painter.drawLine(x, band, x, band - (8 if long else 4))
-            if long:
-                painter.drawText(x + 2, 9, str(value))
-        for value in range(int(top // step) * step, int(bottom) + step, step):
-            y = round(self.mapFromScene(QPointF(0, value)).y())
+            major = idx % ratio == 0
+            half = ratio % 2 == 0 and idx % (ratio // 2) == 0
+            painter.setPen(tick_ink)
+            painter.drawLine(x, band, x, band - (9 if major else 6 if half else 4))
+            if major:
+                painter.setPen(label_ink)
+                text = f"{value:g}"
+                painter.drawText(x + 3, 11, text)
+
+        start_y = int(math.floor(top / step))
+        end_y = int(math.ceil(bottom / step))
+        for idx in range(start_y, end_y + 1):
+            value = idx * step
+            y = round(self.mapFromScene(QPointF(0, value * unit_mm)).y())
             if y < band:
                 continue
-            long = value % label_every == 0
-            painter.drawLine(band, y, band - (8 if long else 4), y)
-            if long:
-                painter.drawText(1, y - 2, str(value))
+            major = idx % ratio == 0
+            half = ratio % 2 == 0 and idx % (ratio // 2) == 0
+            painter.setPen(tick_ink)
+            painter.drawLine(band, y, band - (9 if major else 6 if half else 4), y)
+            if major:
+                painter.save()
+                painter.setPen(label_ink)
+                painter.translate(11, y - 3)
+                painter.rotate(-90)
+                painter.drawText(0, 0, f"{value:g}")
+                painter.restore()
+
         if self.pointer is not None:
-            painter.setPen(QColor("#d0202e"))
+            painter.setPen(accent_color(self.palette()))
             at = self.mapFromScene(self.pointer)
-            painter.drawLine(at.x(), 0, at.x(), band)
-            painter.drawLine(0, at.y(), band, at.y())
-        painter.setPen(self.palette().mid().color())
+            if at.x() >= band:
+                painter.drawLine(round(at.x()), 0, round(at.x()), band)
+            if at.y() >= band:
+                painter.drawLine(0, round(at.y()), band, round(at.y()))
+
+        painter.fillRect(0, 0, band, band, background)
+        painter.setPen(label_ink)
+        painter.drawText(QRect(0, 0, band, band), Qt.AlignmentFlag.AlignCenter, unit)
+        painter.setPen(hairline)
         painter.drawLine(0, band, view.width(), band)
         painter.drawLine(band, 0, band, view.height())
         painter.restore()
@@ -394,15 +607,16 @@ class Canvas(SheetView):
             painter.drawPath(outline)
         count = len(nodes.points)
         near = set() if chosen is None else {chosen, (chosen - 1) % count, (chosen + 1) % count}
+        accent = accent_color(self.palette()).name()
         for i in near:
             if not nodes.handles or not nodes.handles[i]:
                 continue
             p = nodes.points[i]
             for q in nodes.handles[i][:2]:
                 if q != p:
-                    painter.setPen(pen("#3d7be0", 1 / scale))
+                    painter.setPen(pen(accent, 1 / scale))
                     painter.drawLine(QPointF(*p), QPointF(*q))
-                    painter.setBrush(QColor("#3d7be0"))
+                    painter.setBrush(QColor(accent))
                     painter.drawEllipse(QPointF(*q), 3 / scale, 3 / scale)
         half = 3.2 / scale
         for i, (x, y) in enumerate(nodes.points):
@@ -413,7 +627,48 @@ class Canvas(SheetView):
 
     def drawBackground(self, painter, exposed):
         base = self.palette().window().color()
-        painter.fillRect(exposed, base.darker(116 if base.lightness() < 128 else 105))
+        dark = base.lightnessF() <= 0.5
+        painter.fillRect(exposed, base.darker(132) if dark else base.darker(108))
+
+    def _fit_target(self, target: QRectF, *, mark_fitted=False):
+        if target.isEmpty():
+            return
+        view = self.viewport().rect()
+        band = self.RULER_BAND if self.design.rulers.isChecked() else 0
+        avail_w = max(40, view.width() - band)
+        avail_h = max(40, view.height() - band)
+        if band and avail_w > 0 and avail_h > 0:
+            # Expand the fit rectangle toward top-left so the content centers
+            # cleanly inside the open area beside the horizontal and vertical rulers.
+            extra_left = target.width() * (band / avail_w)
+            extra_top = target.height() * (band / avail_h)
+            target = target.adjusted(-extra_left, -extra_top, 0, 0)
+        self.fitInView(target, Qt.AspectRatioMode.KeepAspectRatio)
+        scale = self.transform().m11()
+        if mark_fitted:
+            self.fitted = True
+            self.fit_scale = max(0.01, scale)
+            self.zoom_changed.emit(100)
+        else:
+            self.fitted = False
+            self.zoom_changed.emit(round(100 * scale / max(0.01, self.fit_scale)))
+
+    def fit(self):
+        if not self.page_bounds.isEmpty():
+            self._fit_target(self.page_bounds, mark_fitted=True)
+
+    def fit_page(self):
+        project = self.design.project
+        page = QRectF(0, 0, project.width, project.height)
+        pad = max(6.0, min(page.width(), page.height()) * 0.05)
+        self._fit_target(page.adjusted(-pad, -pad, pad, pad), mark_fitted=False)
+
+    def fit_mat(self):
+        mat = self.design.mat_bounds()
+        if mat is None:
+            self.fit_page()
+            return
+        self._fit_target(mat.adjusted(-12, -16, 12, 12), mark_fitted=False)
 
     def fit_selection(self):
         shapes = [self.design.project.shapes[i] for i in self.design.selection()]
@@ -421,9 +676,7 @@ class Canvas(SheetView):
             return
         box = rect(model.bounds(shapes))
         margin = max(4.0, box.width() * 0.08, box.height() * 0.08)
-        self.fitInView(box.adjusted(-margin, -margin, margin, margin), Qt.AspectRatioMode.KeepAspectRatio)
-        self.fitted = False
-        self.zoom_changed.emit(round(100 * self.transform().m11() / self.fit_scale))
+        self._fit_target(box.adjusted(-margin, -margin, margin, margin), mark_fitted=False)
 
     def redraw(self):
         editor, scene = self.design, self.scene()
@@ -432,7 +685,7 @@ class Canvas(SheetView):
         mat = editor.mat_bounds()
         mat_visible = editor.show_mat.isChecked() and mat is not None
         sizes = page.united(mat) if mat_visible else page
-        bounds = sizes.adjusted(-19, -19, 12, 12)
+        bounds = sizes.adjusted(-11, -15, 11, 11)
         refit = self.set_page_bounds(bounds)
         scene.clear()
         if mat_visible:
@@ -448,6 +701,8 @@ class Canvas(SheetView):
                 scene.addRect(print_area, pen("#4273a1", dashed=True))
         if editor.show_grid.isChecked():
             self.page_grid(scene, page)
+        if editor.show_guides.isChecked() and project.guides:
+            draw_guides(scene, page, project.guides)
         marks = project.registration.on_page(project.width, project.height) if project.registration else None
         if marks:
             draw_marks(scene, marks)
@@ -461,6 +716,7 @@ class Canvas(SheetView):
                 scene.addRect(border, pen("#be404a"))
         selection = [] if self.edit == "draw" else list(editor.selection())
         point_edit = editor.tool.currentData() == "Point Edit"
+        accent = accent_color(self.palette()).name()
         for index, shape in enumerate(project.shapes):
             if not shape.visible:
                 continue
@@ -472,7 +728,7 @@ class Canvas(SheetView):
                 item.setTransform(QTransform((rx - x) / pixmap.width(), (ry - y) / pixmap.width(),
                                              (bx - x) / pixmap.height(), (by - y) / pixmap.height(), x, y))
                 if index in selection:
-                    draw_path(scene, shape.frame(), pen("#2264aa", dashed=True))
+                    draw_path(scene, shape.frame(), pen(accent, dashed=True))
                     if self.trace_preview_wanted(selection):
                         try:
                             overlay = _trace_preview(shape.sticker, self.trace_area, editor.trace_threshold.value(),
@@ -486,7 +742,7 @@ class Canvas(SheetView):
                                                          (bx - x) / overlay.height(), (by - y) / overlay.height(),
                                                          x, y))
             selected = index in selection and not (point_edit and path_edit.editable(shape))
-            color = "#3c70c5" if selected else shape.stroke or {1: "#b2323a", 2: "#244b9a"}.get(shape.holder, "#313945")
+            color = accent if selected else shape.stroke or {1: "#b2323a", 2: "#244b9a"}.get(shape.holder, "#313945")
             fill = QColor(shape.fill) if shape.closed and shape.fill else Qt.BrushStyle.NoBrush
             line = pen(color, shape.line_width_mm, dashed=shape.action == "Score" or shape.line_style == "dashed")
             if shape.line_style == "dotted":
@@ -672,6 +928,11 @@ class Canvas(SheetView):
     def mousePressEvent(self, event):
         editor = self.design
         tool = editor.tool.currentData()
+        if (editor.rulers.isChecked() and event.button() == Qt.MouseButton.LeftButton
+                and event.position().x() <= self.RULER_BAND and event.position().y() <= self.RULER_BAND):
+            editor.set_unit("in" if editor.unit == "mm" else "mm")
+            event.accept()
+            return
         if self.tracing_area and event.button() == Qt.MouseButton.LeftButton:
             self.start = self.mapToScene(event.position().toPoint())
             self.anchor = event.position().toPoint()
@@ -766,6 +1027,11 @@ class Canvas(SheetView):
         else:
             self.edit = "move"
         self.active = self.design.selection()
+        if self.edit in ("rotate", "scale", "stretch", "radius", "move") and model.has_locked(
+                self.design.project.shapes, self.active):
+            self.edit = self.rotation = self.scale_anchor = None
+            self.design.message(model.LOCKED_MESSAGE, level="warning")
+            return
         if self.edit in ("rotate", "scale", "stretch", "radius", "centre"):
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
@@ -777,6 +1043,10 @@ class Canvas(SheetView):
         found = self.edited_nodes()
         if found:
             index, nodes = found
+            if editor.project.shapes[index].locked:
+                editor.message(model.LOCKED_MESSAGE, level="warning")
+                self.start = None
+                return
             distance, kind, i, side = path_edit.nearest_node(nodes, position)
             if distance <= self.px(7):
                 self.node_point = i
@@ -1108,8 +1378,10 @@ class Canvas(SheetView):
         if key in arrows:
             if self.node_point is None or self.node_point >= len(outline.points):
                 return True
-            x, y = arrows[key]
             editor = self.design
+            if editor.refuse_locked((index,)):
+                return True
+            x, y = arrows[key]
             step = editor.spacing.value() if editor.snap.isChecked() else editor.nudge_step()
             shapes = editor.project.shapes
             try:
@@ -1162,6 +1434,8 @@ class Canvas(SheetView):
                 event.key(), arrows):
             return
         if event.key() in arrows and editor.selection():
+            if editor.refuse_locked():
+                return
             x, y = arrows[event.key()]
             distance = editor.spacing.value() if editor.snap.isChecked() else editor.nudge_step()
             editor.commit_shapes(model.move(editor.project.shapes, editor.selection(),
@@ -1217,6 +1491,11 @@ class Design(QWidget):
         self.source = None
         self.device = device
         self.loading = False
+        self._restoring_ui = True
+        self._ui_state = config.load_design_ui()
+        self.unit = self._ui_state["units"]
+        self._saved_sidebar_width = self._ui_state["sidebar_width"]
+        self.collapsed_groups = set()
         self.on_review = review
         self.last_marks = project.registration or model.Registration.from_marks(
             regmarks.marks(project.width, project.height))
@@ -1224,12 +1503,10 @@ class Design(QWidget):
         self.setObjectName("workspace")
 
         body = workspace_layout(self)
-        # Photoshop and GIMP run their panels edge to edge.
-        body.setContentsMargins(6, 4, 6, 6)
-        body.setSpacing(4)
         document = QWidget()
         title_row = QHBoxLayout(document)
         title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(8)
         self.document_title = ElidedLabel("Untitled")
         self.document_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.document_title.setProperty("role", "heading")
@@ -1240,7 +1517,6 @@ class Design(QWidget):
         title_row.addWidget(self.save_state)
         header, self.menu_bar, self.design_workspace, self.send_workspace = workspace_header(
             self, lambda: self.canvas.setFocus(), open_send, active="Design", document=document)
-        header.setProperty("designHeader", True)
         body.addWidget(header)
         new = self.command("New", self.new_project, QKeySequence.StandardKey.New)
         open_file = self.command("Open…", self.open_project, QKeySequence.StandardKey.Open)
@@ -1251,11 +1527,9 @@ class Design(QWidget):
         self.undo_action = self.command("Undo", self.undo, QKeySequence.StandardKey.Undo, tip="Undo (Ctrl+Z)")
         self.redo_action = self.command("Redo", self.redo, QKeySequence.StandardKey.Redo, tip="Redo (Ctrl+Y)")
 
-        # Toolbox picks what the mouse does; the command ribbon holds document
-        # and selection actions; the options bar holds the active tool's settings.
         self.tool = ToolStrip(changed=self.change_tool)
         self.canvas = Canvas(self)
-        self.canvas.setMinimumWidth(220)
+        self.canvas.setMinimumWidth(240)
         self.view_options()
         self.tools_bar = self.command_ribbon(new, open_file)
         self.options_bar = self.tool_options_bar()
@@ -1264,13 +1538,14 @@ class Design(QWidget):
         body.addWidget(self.commands)
 
         workspace = QHBoxLayout()
-        workspace.setSpacing(4)
-        workspace.addWidget(self.tool)
-        panes = QSplitter(Qt.Orientation.Horizontal)
+        workspace.setContentsMargins(0, 0, 0, 0)
+        workspace.setSpacing(0)
+        self.tool_scroll = rail_scroll(self.tool, 48)
+        workspace.addWidget(self.tool_scroll)
+        panes = self.panes = QSplitter(Qt.Orientation.Horizontal)
         panes.setChildrenCollapsible(False)
-        panes.setHandleWidth(4)
+        panes.setHandleWidth(3)
         workspace.addWidget(panes, 1)
-        body.addLayout(workspace, 1)
         self.export_tasks = Tasks(self)
         self.exporting_stickers = False
         panes.addWidget(self.document_frame())
@@ -1278,34 +1553,53 @@ class Design(QWidget):
         self.sidebar = QSplitter(Qt.Orientation.Vertical)
         self.sidebar.setObjectName("designSidebar")
         self.sidebar.setChildrenCollapsible(False)
-        self.sidebar.setHandleWidth(4)
-        self.sidebar.setMinimumWidth(250)
+        self.sidebar.setHandleWidth(3)
+        self.sidebar.setMinimumWidth(260)
         self.sidebar.addWidget(self.build_dock())
-        self.align_properties.setMenu(self.align_button.menu())
         self.sidebar.addWidget(self.objects_pane())
         self.sidebar.setStretchFactor(0, 1)
         self.sidebar.setStretchFactor(1, 1)
-        self.sidebar.setSizes([270, 330])
+        ratio = self._ui_state["properties_ratio"]
+        self.sidebar.setSizes([round(600 * ratio), round(600 * (1 - ratio))])
         panes.addWidget(self.sidebar)
         panes.setStretchFactor(0, 1)
         panes.setStretchFactor(1, 0)
-        panes.setSizes([860, 290])
+        panes.setSizes([900, self._saved_sidebar_width])
+        workspace.addWidget(self.dock.rail_scroll)
+        body.addLayout(workspace, 1)
+
+        self.panes.splitterMoved.connect(self._on_panes_resized)
+        self.sidebar.splitterMoved.connect(self._on_sidebar_split)
+        self.dock.sidebar_toggled.connect(self.set_sidebar_visible)
+        self.dock.changed.connect(self._on_panel_changed)
         self.build_design_menus((new, open_file, self.save_action, save_as, import_art))
 
-        footer_bar, footer_body = bar(self, (8, 6, 8, 6))
+        footer_bar, footer_body = footer_bar_widget(self)
         footer_column = QVBoxLayout()
+        footer_column.setContentsMargins(0, 0, 0, 0)
         footer_column.setSpacing(4)
         footer_body.addLayout(footer_column)
         self.export_requirement = styled_label(role="caption")
         self.export_requirement.setWordWrap(True)
         footer_column.addWidget(self.export_requirement)
         footer = QHBoxLayout()
-        footer.setSpacing(5)
+        footer.setContentsMargins(0, 0, 0, 0)
+        footer.setSpacing(8)
         footer_column.addLayout(footer)
         self.status = styled_label(role="body")
         self.status.setWordWrap(True)
         footer.addWidget(self.status, 1)
-        self.zoom = ZoomControls(self.canvas, fit_button=self.icon_button("fit", self.canvas.fit))
+        self.fit_button = DesignIconButton(COMMAND_ICONS["fit"], size=28, icon_size=16)
+        self.fit_button.setToolTip("Fit view (click for menu: Fit to Page, Fit to Mat, Fit to Selection)")
+        self.fit_menu = QMenu(self.fit_button)
+        self.fit_menu.addAction("Fit to Page\tCtrl+0", self.canvas.fit_page)
+        self.fit_menu.addAction("Fit to Mat\tCtrl+Alt+0", self.canvas.fit_mat)
+        self.fit_menu.addAction("Fit to Selection\tCtrl+Shift+0", self.canvas.fit_selection)
+        self.fit_menu.addSeparator()
+        self.fit_menu.addAction("Fit All", self.canvas.fit)
+        self.fit_button.setMenu(self.fit_menu)
+        self.fit_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.zoom = ZoomControls(self.canvas, fit_button=self.fit_button)
         footer.addWidget(self.zoom)
         self.trace_next_button = button("Trace and Bleed…", self.trace_next_sticker, primary=True)
         footer.addWidget(self.trace_next_button)
@@ -1316,86 +1610,246 @@ class Design(QWidget):
         body.addWidget(footer_bar)
 
         for label, key, callback in (("Group", "Ctrl+G", self.group),
-                                    ("Ungroup", "Ctrl+Shift+G", lambda: self.group(release=True))):
+                                     ("Ungroup", "Ctrl+Shift+G", lambda: self.group(release=True))):
             action = QAction(label, self)
             action.setShortcut(QKeySequence(key))
             action.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
             action.triggered.connect(lambda checked=False, call=callback: call())
             self.canvas.addAction(action)
+
+        # Restore persisted panel/collapsed state after widgets exist
+        saved_panel = self._ui_state["active_panel"]
+        if project.shapes and saved_panel in self.dock.panels:
+            self.dock.open(saved_panel)
+        else:
+            self.dock.open("transform" if project.shapes else "page")
+        if self._ui_state["sidebar_collapsed"]:
+            self.set_sidebar_visible(False, persist=False)
+
         self.change_tool()
         self.refresh((0,) if project.shapes else ())
+        self._restoring_ui = False
+
+    def _persist_ui(self, **updates):
+        if self._restoring_ui:
+            return
+        try:
+            config.save_design_ui(updates)
+        except OSError:
+            pass
+
+    def _on_panes_resized(self, _pos=0, _index=0):
+        sizes = self.panes.sizes()
+        if len(sizes) == 2 and self.sidebar.isVisible() and sizes[1] >= 220:
+            self._saved_sidebar_width = sizes[1]
+            self._persist_ui(sidebar_width=sizes[1])
+
+    def _on_sidebar_split(self, _pos=0, _index=0):
+        sizes = self.sidebar.sizes()
+        total = sum(sizes)
+        if len(sizes) == 2 and total > 0:
+            self._persist_ui(properties_ratio=sizes[0] / total)
+
+    def _on_panel_changed(self):
+        key = self.dock.current_key()
+        if key:
+            self._persist_ui(active_panel=key)
+
+    def set_sidebar_visible(self, visible, *, persist=True):
+        visible = bool(visible)
+        if not visible and self.sidebar.isVisible():
+            sizes = self.panes.sizes()
+            if len(sizes) == 2 and sizes[1] >= 220:
+                self._saved_sidebar_width = sizes[1]
+        self.sidebar.setVisible(visible)
+        self.dock.set_sidebar_open(visible)
+        if visible:
+            total = max(600, sum(self.panes.sizes()) or self.width())
+            side = min(max(260, self._saved_sidebar_width), max(260, total - 260))
+            self.panes.setSizes([max(240, total - side), side])
+        if persist:
+            self._persist_ui(sidebar_collapsed=not visible)
+
+    def set_unit(self, unit: str, *, persist=True):
+        if unit not in ("mm", "in"):
+            return
+        self.unit = unit
+        if hasattr(self, "unit_button"):
+            self.unit_button.setText(unit)
+        if hasattr(self, "unit_choice"):
+            with QSignalBlocker(self.unit_choice):
+                self.unit_choice.setCurrentIndex(self.unit_choice.findData(unit))
+        if hasattr(self, "unit_actions"):
+            for key, action in self.unit_actions.items():
+                with QSignalBlocker(action):
+                    action.setChecked(key == unit)
+        if hasattr(self, "transform_unit_label"):
+            self.transform_unit_label.setText(f"Position and size ({unit})")
+        self._update_context_field_widths()
+        if hasattr(self, "objects"):
+            self.refresh(self.selection())
+        if persist:
+            self._persist_ui(units=unit)
+
+    def _to_unit(self, mm: float) -> float:
+        return mm / 25.4 if self.unit == "in" else mm
+
+    def _from_unit(self, value: float) -> float:
+        return value * 25.4 if self.unit == "in" else value
+
+    def _update_context_field_widths(self):
+        if not hasattr(self, "context_fields"):
+            return
+        for field, spin in self.context_fields.items():
+            prefix = next(p for f, p, _ in TRANSFORM_FIELDS if f == field)
+            sample = "↻ -180.00°" if field == "rotation" else f"{prefix} 279.40"
+            width = max(86, spin.fontMetrics().horizontalAdvance(sample) + 22)
+            spin.setMinimumWidth(width)
+            spin.setMaximumWidth(max(116, width + 18))
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in (QEvent.Type.PaletteChange, QEvent.Type.StyleChange, QEvent.Type.ApplicationPaletteChange):
+            if hasattr(self, "objects"):
+                self.refresh(self.selection())
+        if event.type() in (QEvent.Type.FontChange, QEvent.Type.ApplicationFontChange, QEvent.Type.StyleChange):
+            self._update_context_field_widths()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "panes") and self.sidebar.isVisible() and self.width() <= 850:
+            sizes = self.panes.sizes()
+            if len(sizes) == 2 and sizes[1] > 268:
+                total = sum(sizes)
+                side = min(268, max(250, total // 3))
+                self.panes.setSizes([max(240, total - side), side])
 
     @staticmethod
-    def icon_button(icon, callback):
-        widget = DesignIconButton(COMMAND_ICONS[icon] if isinstance(icon, str) else icon)
+    def icon_button(icon, callback, *, size=32, icon_size=18):
+        widget = DesignIconButton(COMMAND_ICONS[icon] if isinstance(icon, str) else icon,
+                                  size=size, icon_size=icon_size)
         widget.clicked.connect(lambda _checked: callback())
         return widget
 
     def view_options(self):
-        """What the canvas shows lives in View, as Photoshop's Extras do."""
-        def toggle(label, checked, tip=""):
+        """Independent canvas overlay and snapping controls."""
+        state = self._ui_state
+
+        def toggle(label, state_key, tip="", *, refit=False):
             action = QAction(label, self)
             action.setCheckable(True)
-            action.setChecked(checked)
+            action.setChecked(state[state_key])
             action.setToolTip(tip or label)
-            action.toggled.connect(lambda _on: self.canvas.redraw())
+
+            def on_toggle(checked):
+                self._persist_ui(**{state_key: bool(checked)})
+                self.canvas.redraw()
+                if refit and self.canvas.fitted:
+                    self.canvas.fit()
+
+            action.toggled.connect(on_toggle)
             return action
 
-        self.show_grid = toggle("Paper Grid", False)
-        self.show_mat_grid = toggle("Mat Grid", True)
-        self.rulers = toggle("Rulers", False)
-        self.crosshairs = toggle("Crosshairs", False, "Lines through the pointer across the whole page.")
-        self.show_mat = toggle("Cutting Mat", True)
-        self.cut_border = toggle("Cut Border", True)
-        self.print_border = toggle("Print Border", False, "Show the margin your printer cannot reach.")
-        self.snap = toggle("Snap to Grid", False, "Snap drawn points and object moves to the grid spacing.")
-        self.smart_snap = toggle("Smart Snapping", False, "Line up moving shapes with nearby edges or centers.")
-
+        self.show_grid = toggle("Paper Grid", "grid")
+        self.show_mat_grid = toggle("Mat Grid", "mat_grid")
+        self.rulers = toggle("Rulers", "rulers", "Show horizontal and vertical rulers.", refit=True)
+        self.show_guides = toggle("Guides", "guides", "Show alignment guides on the page.")
+        self.crosshairs = QAction("Crosshairs", self)
+        self.crosshairs.setCheckable(True)
+        self.crosshairs.setChecked(False)
+        self.crosshairs.setToolTip("Lines through the pointer across the whole page.")
+        self.crosshairs.toggled.connect(lambda _on: self.canvas.redraw())
+        self.show_mat = toggle("Cutting Mat", "mat", refit=True)
+        self.cut_border = toggle("Cut Border", "cut_border")
+        self.print_border = toggle("Print Border", "print_border", "Show the margin your printer cannot reach.")
+        self.snap = toggle("Snap to Grid", "snap", "Snap drawn points and object moves to the grid spacing.")
+        self.smart_snap = toggle("Smart Snapping", "smart_snap", "Line up moving shapes with nearby edges or centers.")
 
     def command_ribbon(self, new, open_file):
-        ribbon, row = bar(self, (6, 3, 6, 3))
-        ribbon.setObjectName("designRibbon")
+        ribbon, row = bar(self, (8, 4, 8, 4), name="designRibbon")
         ribbon.setAccessibleName("Design commands")
-        row.setSpacing(3)
-        self.save_button = DesignIconButton(COMMAND_ICONS["save"], action=self.save_action, size=28)
-        self.undo_button = DesignIconButton(COMMAND_ICONS["undo"], action=self.undo_action, size=28)
-        self.redo_button = DesignIconButton(COMMAND_ICONS["redo"], action=self.redo_action, size=28)
+        row.setSpacing(4)
+
+        # Group 1: Global document & artwork insertion icons (36x36, 20px icons)
         for name, action in (("new", new), ("open", open_file)):
-            widget = DesignIconButton(COMMAND_ICONS[name], size=28)
+            widget = DesignIconButton(COMMAND_ICONS[name], size=36, icon_size=20)
             widget.clicked.connect(lambda _checked=False, command=action: command.trigger())
             row.addWidget(widget)
-        for widget in (self.save_button, self.undo_button, self.redo_button):
-            row.addWidget(widget)
-        row.addWidget(design_divider(vertical=True))
+        self.save_button = DesignIconButton(COMMAND_ICONS["save"], action=self.save_action, size=36, icon_size=20)
+        row.addWidget(self.save_button)
+        self.import_button = DesignIconButton(COMMAND_ICONS["import"], size=36, icon_size=20)
+        self.import_button.setToolTip("Import Artwork… (Ctrl+I)\nImport an SVG, DXF, or Studio3 file onto the page.")
+        self.import_button.clicked.connect(lambda _checked=False: self.import_art())
+        row.addWidget(self.import_button)
 
-        self.import_button = ribbon_button(COMMAND_ICONS["import"], self.import_art, label="Import",
-                                           tip="Import Artwork… (Ctrl+I)")
-        self.add_shape_button = ribbon_button(COMMAND_ICONS["shape"], self.add_default_shape, label="Add Shape",
-                                              tip=model.ADD_SHAPE_TIP)
-        self.place_image_button = DesignIconButton(COMMAND_ICONS["image"], size=30)
+        self.place_image_button = DesignIconButton(COMMAND_ICONS["image"], size=38, icon_size=22)
         self.place_image_button.clicked.connect(lambda _checked: self.place_sticker())
         rail = self.tool.layout()
         rail.insertWidget(rail.indexOf(self.tool.slots["Type"]) + 1, self.place_image_button)
-        for widget in (self.import_button, self.add_shape_button):
+
+        row.addWidget(design_divider(vertical=True))
+
+        # Group 2: Undo / Redo & Quick Edit icons
+        self.undo_button = DesignIconButton(COMMAND_ICONS["undo"], action=self.undo_action, size=36, icon_size=20)
+        self.redo_button = DesignIconButton(COMMAND_ICONS["redo"], action=self.redo_action, size=36, icon_size=20)
+        self.duplicate_ribbon_button = DesignIconButton(COMMAND_ICONS["duplicate"], size=36, icon_size=20)
+        self.duplicate_ribbon_button.setToolTip("Duplicate (Ctrl+D)")
+        self.duplicate_ribbon_button.clicked.connect(lambda _checked: self.duplicate())
+        self.delete_ribbon_button = DesignIconButton(COMMAND_ICONS["delete"], size=36, icon_size=20)
+        self.delete_ribbon_button.setToolTip("Delete (Delete)")
+        self.delete_ribbon_button.clicked.connect(lambda _checked: self.delete())
+        for widget in (self.undo_button, self.redo_button, self.duplicate_ribbon_button, self.delete_ribbon_button):
             row.addWidget(widget)
 
         self.selection_divider = design_divider(vertical=True)
         row.addWidget(self.selection_divider)
+        row.addStretch(1)
+        return ribbon
+
+    def tool_options_bar(self):
+        options, row = bar(self, (8, 4, 12, 4), name="designToolOptions")
+        options.setAccessibleName("Tool options")
+        row.setSpacing(8)
+
+        # Contextual Select + Selection transformation bar (matches mockup)
+        self.context_transform = QWidget()
+        fields = QHBoxLayout(self.context_transform)
+        fields.setContentsMargins(0, 0, 0, 0)
+        fields.setSpacing(6)
+        self.context_fields = {}
+        for field, prefix, name in TRANSFORM_FIELDS:
+            rotation = field == "rotation"
+            spin = QDoubleSpinBox(decimals=2, minimum=-360 if rotation else -1000, maximum=360 if rotation else 1000,
+                                  keyboardTracking=False,
+                                  prefix="↻ " if rotation else f"{prefix} ",
+                                  suffix="°" if rotation else "",
+                                  buttonSymbols=QDoubleSpinBox.ButtonSymbols.NoButtons)
+            spin.setAccessibleName(name)
+            spin.setToolTip(name)
+            spin.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+            spin.valueChanged.connect(lambda value, key=field: self.fields[key].setValue(value))
+            fields.addWidget(spin)
+            self.context_fields[field] = spin
+            if field == "height":
+                self.context_lock_ratio = DesignIconButton(COMMAND_ICONS["lock_ratio"], checkable=True,
+                                                           size=30, icon_size=16)
+                self.context_lock_ratio.setToolTip("Lock aspect ratio")
+                fields.addWidget(self.context_lock_ratio)
+        self._update_context_field_widths()
+        row.addWidget(self.context_transform)
+
+        # Contextual selection actions (only exposed when relevant to selection)
         self.selection_tools = QWidget()
         selected = QHBoxLayout(self.selection_tools)
         selected.setContentsMargins(0, 0, 0, 0)
-        selected.setSpacing(3)
-        self.duplicate_ribbon_button = DesignIconButton(COMMAND_ICONS["duplicate"], size=28)
-        self.duplicate_ribbon_button.setToolTip("Duplicate (Ctrl+D)")
-        self.duplicate_ribbon_button.clicked.connect(lambda _checked: self.duplicate())
-        self.delete_ribbon_button = DesignIconButton(COMMAND_ICONS["delete"], size=28)
-        self.delete_ribbon_button.setToolTip("Delete (Delete)")
-        self.delete_ribbon_button.clicked.connect(lambda _checked: self.delete())
-        self.group_ribbon_button = ribbon_button(COMMAND_ICONS["group"], self.group, label="Group",
-                                                 tip="Group selected objects (Ctrl+G)")
-        self.ungroup_ribbon_button = ribbon_button(COMMAND_ICONS["ungroup"], lambda: self.group(release=True),
-                                                   label="Ungroup", tip="Ungroup selected objects (Ctrl+Shift+G)")
-        align_menu = QMenu(ribbon)
+        selected.setSpacing(4)
+        self.group_ribbon_button = DesignIconButton(COMMAND_ICONS["group"], size=32, icon_size=18)
+        self.group_ribbon_button.setToolTip("Group selected objects (Ctrl+G)")
+        self.group_ribbon_button.clicked.connect(lambda _checked=False: self.group())
+        self.ungroup_ribbon_button = DesignIconButton(COMMAND_ICONS["ungroup"], size=32, icon_size=18)
+        self.ungroup_ribbon_button.setToolTip("Ungroup selected objects (Ctrl+Shift+G)")
+        self.ungroup_ribbon_button.clicked.connect(lambda _checked=False: self.group(release=True))
+        align_menu = QMenu(options)
         self.ribbon_align_actions = {}
         for icons in ALIGNMENT_ROWS:
             for icon in icons:
@@ -1406,65 +1860,53 @@ class Design(QWidget):
             action.setIcon(design_icon(action.data(), align_menu.palette().text().color(), size=16))
             for action in self.ribbon_align_actions.values()
         ])
-        self.align_button = ribbon_button(COMMAND_ICONS["align"], label="Align", menu=align_menu,
-                                          tip="Align or space selected objects")
+        self.align_button = DesignIconButton(COMMAND_ICONS["align"], size=32, icon_size=18)
+        self.align_button.setToolTip("Align or space selected objects")
+        self.align_button.setMenu(align_menu)
+        self.align_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.trace_ribbon_button = ribbon_button(COMMAND_ICONS["trace"], self.trace_sticker, label="Trace and Bleed…",
                                                  tip="Create a cut outline and print bleed for the selected image")
         self.edit_text_ribbon_button = ribbon_button(COMMAND_ICONS["text"], self.text_dialog, label="Edit Text…",
                                                      tip="Edit the selected text")
-        for widget in (self.duplicate_ribbon_button, self.delete_ribbon_button):
-            selected.addWidget(widget)
         inline = QWidget()
         inline_row = QHBoxLayout(inline)
         inline_row.setContentsMargins(0, 0, 0, 0)
-        inline_row.setSpacing(3)
+        inline_row.setSpacing(4)
         for widget in (self.group_ribbon_button, self.ungroup_ribbon_button, self.align_button):
             inline_row.addWidget(widget)
-        menu = QMenu(ribbon)
+        menu = QMenu(options)
         self.compact_group = menu.addAction("Group", self.group)
         self.compact_ungroup = menu.addAction("Ungroup", lambda: self.group(release=True))
         align_menu.setTitle("Align")
         self.compact_align = menu.addMenu(align_menu)
         overflow = QToolButton(text="Selection", popupMode=QToolButton.ToolButtonPopupMode.InstantPopup)
+        overflow.setProperty("role", "compactMenu")
+        overflow.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         overflow.setMenu(menu)
         self.adaptive_selection = AdaptiveCommands(inline, overflow)
         selected.addWidget(self.adaptive_selection)
         selected.addWidget(self.trace_ribbon_button)
         selected.addWidget(self.edit_text_ribbon_button)
         row.addWidget(self.selection_tools)
-        row.addStretch(1)
-        return ribbon
 
-    def tool_options_bar(self):
-        options, row = bar(self, (10, 3, 8, 3))
-        options.setObjectName("designToolOptions")
-        options.setAccessibleName("Tool options")
-        row.setSpacing(8)
-        row.addWidget(self.tool.active_label)
-        row.addWidget(design_divider(vertical=True))
-
-        self.context_transform = QWidget()
-        fields = QHBoxLayout(self.context_transform)
-        fields.setContentsMargins(0, 0, 0, 0)
-        fields.setSpacing(4)
-        self.context_fields = {}
-        for field, prefix, name in TRANSFORM_FIELDS:
-            spin = QDoubleSpinBox(decimals=3, minimum=-1000, maximum=1000, keyboardTracking=False,
-                                  prefix=f"{prefix} ", buttonSymbols=QDoubleSpinBox.ButtonSymbols.NoButtons)
-            spin.setAccessibleName(name)
-            spin.setToolTip(name)
-            spin.setMinimumWidth(54)
-            spin.setMaximumWidth(100)
-            spin.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-            spin.valueChanged.connect(lambda value, key=field: self.fields[key].setValue(value))
-            fields.addWidget(spin, 1)
-            self.context_fields[field] = spin
-        row.addWidget(self.context_transform, 1)
+        # Contextual view quick toggles when Select has no selection
+        self.view_quick_bar = QWidget()
+        vq = QHBoxLayout(self.view_quick_bar)
+        vq.setContentsMargins(0, 0, 0, 0)
+        vq.setSpacing(4)
+        for icon_key, action in (("rulers", self.rulers), ("guides", self.show_guides), ("mat", self.show_mat)):
+            btn = DesignIconButton(COMMAND_ICONS[icon_key], checkable=True, size=32, icon_size=18)
+            btn.setChecked(action.isChecked())
+            btn.setToolTip(action.toolTip())
+            btn.toggled.connect(action.setChecked)
+            action.toggled.connect(btn.setChecked)
+            vq.addWidget(btn)
+        row.addWidget(self.view_quick_bar)
 
         self.context_text = QWidget()
         text = QHBoxLayout(self.context_text)
         text.setContentsMargins(0, 0, 0, 0)
-        text.setSpacing(4)
+        text.setSpacing(6)
         self.context_font = QComboBox()
         self.context_font.setAccessibleName("Font")
         self.context_font.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
@@ -1485,7 +1927,7 @@ class Design(QWidget):
         self.draw_options = QWidget()
         draw = QHBoxLayout(self.draw_options)
         draw.setContentsMargins(0, 0, 0, 0)
-        draw.setSpacing(6)
+        draw.setSpacing(8)
         self.new_action = QComboBox()
         set_choices(self.new_action, ACTION_LABELS, "Cut")
         self.new_action.setAccessibleName("Action for new objects")
@@ -1496,18 +1938,18 @@ class Design(QWidget):
         draw.addWidget(self.new_action)
         self.radius_option = QWidget()
         radius = QHBoxLayout(self.radius_option)
-        radius.setContentsMargins(6, 0, 0, 0)
+        radius.setContentsMargins(4, 0, 0, 0)
         radius.setSpacing(6)
         self.new_radius = QDoubleSpinBox(decimals=2, minimum=0, maximum=100, singleStep=0.5, value=3, suffix=" mm")
         self.new_radius.setAccessibleName("Corner radius for new rectangles")
-        caption = QLabel("Corner radius")
+        caption = QLabel("Radius")
         caption.setBuddy(self.new_radius)
         radius.addWidget(caption)
         radius.addWidget(self.new_radius)
         draw.addWidget(self.radius_option)
         self.sides_option = QWidget()
         sides = QHBoxLayout(self.sides_option)
-        sides.setContentsMargins(6, 0, 0, 0)
+        sides.setContentsMargins(4, 0, 0, 0)
         sides.setSpacing(6)
         self.sides = QSpinBox(minimum=3, maximum=64, value=5)
         self.sides.setAccessibleName("Sides")
@@ -1534,21 +1976,23 @@ class Design(QWidget):
         eraser.addWidget(self.eraser_size)
         row.addWidget(self.eraser_options)
 
-        # Studio's Point Editing toolbar, shown while Point Edit is the tool.
+        # Point Editing contextual toolbar
         self.point_options = QWidget()
         points = QHBoxLayout(self.point_options)
         points.setContentsMargins(0, 0, 0, 0)
-        points.setSpacing(3)
+        points.setSpacing(4)
         self.point_buttons = {}
         for label in self.POINT_ACTIONS:
             widget = button(label, lambda name=label: self.point_action(name), role="compactTool")
-            widget.setMinimumHeight(24)
+            widget.setMinimumHeight(28)
             self.point_buttons[label] = widget
             points.addWidget(widget)
         menu = QMenu(options)
         for label in self.POINT_ACTIONS:
             menu.addAction(label, lambda name=label: self.point_action(name))
         overflow = QToolButton(text="Point Actions", popupMode=QToolButton.ToolButtonPopupMode.InstantPopup)
+        overflow.setProperty("role", "compactMenu")
+        overflow.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         overflow.setMenu(menu)
         self.adaptive_points = AdaptiveCommands(self.point_options, overflow)
         row.addWidget(self.adaptive_points)
@@ -1569,12 +2013,20 @@ class Design(QWidget):
         self.tool_hint.setProperty("role", "caption")
         self.tool_hint.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         row.addWidget(self.tool_hint, 1)
-        row.addStretch(1)
-        self.option_snap = DesignIconButton(COMMAND_ICONS["snap"], checkable=True)
+
+        self.option_snap = DesignIconButton(COMMAND_ICONS["snap"], checkable=True, size=32, icon_size=18)
         self.option_snap.setChecked(self.snap.isChecked())
         self.option_snap.toggled.connect(self.snap.setChecked)
         self.snap.toggled.connect(self.option_snap.setChecked)
-        row.insertWidget(2, self.option_snap)
+        row.addWidget(self.option_snap)
+
+        self.unit_button = QToolButton(text=self.unit)
+        self.unit_button.setProperty("role", "designRibbon")
+        self.unit_button.setAccessibleName("Measurement units")
+        self.unit_button.setToolTip("Click to switch display units between mm and inches")
+        self.unit_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.unit_button.clicked.connect(lambda _checked=False: self.set_unit("in" if self.unit == "mm" else "mm"))
+        row.addWidget(self.unit_button)
         return options
 
     def context_text_family(self, family):
@@ -1587,12 +2039,17 @@ class Design(QWidget):
         selection = self.selection()
         transform = tool == "Select" and bool(selection)
         self.context_transform.setVisible(transform)
+        self.view_quick_bar.setVisible(tool == "Select" and not selection)
         for key, spin in self.context_fields.items():
             source = self.fields[key]
             with QSignalBlocker(spin):
                 spin.setRange(source.minimum(), source.maximum())
                 spin.setValue(source.value())
                 spin.setVisible(source.isEnabled())
+        if hasattr(self, "context_lock_ratio"):
+            with QSignalBlocker(self.context_lock_ratio):
+                self.context_lock_ratio.setEnabled(self.lock_ratio.isEnabled())
+                self.context_lock_ratio.setChecked(self.lock_ratio.isChecked())
         self.context_text.setVisible(tool == "Type")
         if tool != "Type":
             return
@@ -1657,7 +2114,7 @@ class Design(QWidget):
 
     def build_dock(self):
         self.dock = dock = PanelDock()
-        dock.setMinimumWidth(250)
+        dock.setMinimumWidth(260)
         for key, title, build in (
                 ("page", "Page Setup", self.page_panel),
                 ("transform", "Transform", self.transform_panel),
@@ -1665,11 +2122,11 @@ class Design(QWidget):
                 ("replicate", "Replicate", self.replicate_panel),
                 ("modify", "Modify", self.modify_panel),
                 ("offset", "Offset", self.offset_panel),
-                ("trace", "Trace", self.trace_panel),
                 ("nesting", "Nesting", self.nesting_panel),
+                ("trace", "Trace", self.trace_panel),
                 ("text", "Text Style", self.text_panel),
                 ("line", "Line and Fill", self.style_panel),
-                ("grid", "Grid", self.grid_panel)):
+                ("grid", "Grid & Guides", self.grid_panel)):
             panel = dock.add(key, title, PANEL_ICONS[key])
             build(panel)
             panel.layout_.addStretch(1)
@@ -1678,14 +2135,14 @@ class Design(QWidget):
         return dock
 
     def small_button(self, icon, callback):
-        widget = DesignIconButton(COMMAND_ICONS[icon] if isinstance(icon, str) else icon, size=26)
+        widget = DesignIconButton(COMMAND_ICONS[icon] if isinstance(icon, str) else icon, size=30, icon_size=18)
         widget.clicked.connect(lambda _checked: callback())
         return widget
 
     @staticmethod
     def dock_button(label, callback):
         widget = button(label, callback)
-        widget.setMinimumHeight(24)
+        widget.setMinimumHeight(28)
         return widget
 
     def page_panel(self, panel):
@@ -1698,6 +2155,8 @@ class Design(QWidget):
         self.media_width = media.number("Width (mm)", 100, 1, 1000, 0.1, 3, self.change_dimensions)
         self.media_height = media.number("Height (mm)", 100, 1, 1000, 0.1, 3, self.change_dimensions)
         self.mat = media.choice("Cutting mat", graphtec.MAT_OPTIONS, changed=self.change_mat)
+        self.unit_choice = media.choice("Units", {"mm": "Millimetres (mm)", "in": "Inches (in)"},
+                                        self.unit, changed=lambda: self.set_unit(self.unit_choice.currentData()))
         printing = panel.form("Print")
         self.print_margin = printing.number("Print margin (mm)", 5, 0, 25, 0.5, 1, self.canvas.redraw)
         self.print_margin.setToolTip("Set the margin you use on your printer. View → Show → Print Border shows it.")
@@ -1708,9 +2167,9 @@ class Design(QWidget):
                                     changed=self.change_marks)
         self.inset = marks.number("Inset (mm)", 10, 2, 40, 0.1, 3, self.change_marks)
         self.length = marks.number("Length (mm)", 20, regmarks.MIN_LENGTH_MM,
-                                  regmarks.MAX_LENGTH_MM, 0.1, 4, self.change_marks)
+                                   regmarks.MAX_LENGTH_MM, 0.1, 4, self.change_marks)
         self.thickness = marks.number("Thickness (mm)", 1, regmarks.MIN_THICKNESS_MM,
-                                     regmarks.MAX_THICKNESS_MM, 0.05, 3, self.change_marks)
+                                      regmarks.MAX_THICKNESS_MM, 0.05, 3, self.change_marks)
 
     POINTS_PER_MM = 72 / 25.4  # Studio sizes text in points: 72 pt is about an inch
 
@@ -1963,6 +2422,8 @@ class Design(QWidget):
     def apply_transform(self, operation, *args, **kwargs):
         """Run a chapter 06 operation on the selection as one undoable step."""
         selection = self.selection()
+        if self.refuse_locked(selection):
+            return
         try:
             result = operation(self.project.shapes, selection, *args, **kwargs)
         except ValueError as error:
@@ -1975,37 +2436,66 @@ class Design(QWidget):
             self.commit_shapes(result, selection)
 
     def transform_panel(self, panel):
-        panel.layout_.addWidget(styled_label("Transform · mm", role="dockSection"))
         self.fields = {}
+        grid_holder = QWidget()
+        grid = QGridLayout(grid_holder)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(8)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(2, 0)
         for field, prefix, name in TRANSFORM_FIELDS:
             rotation = field == "rotation"
             limit = 360 if rotation else 1000
-            spin = QDoubleSpinBox(decimals=3, minimum=-limit, maximum=limit,
+            spin = QDoubleSpinBox(decimals=2, minimum=-limit, maximum=limit,
                                   singleStep=1 if rotation else 0.1, keyboardTracking=False,
-                                  prefix=f"{prefix} ", buttonSymbols=QDoubleSpinBox.ButtonSymbols.NoButtons)
+                                  prefix="Rotation " if rotation else f"{prefix} ",
+                                  suffix="°" if rotation else "",
+                                  buttonSymbols=QDoubleSpinBox.ButtonSymbols.NoButtons)
             spin.setAccessibleName(name)
             spin.setToolTip(name)
-            spin.setMinimumWidth(55)
+            spin.setMinimumWidth(72)
             spin.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             spin.valueChanged.connect(lambda _value, key=field: self.change_number(key))
             self.fields[field] = spin
-        panel.row(self.fields["x"], self.fields["y"], stretch=False)
-        self.lock_ratio = DesignIconButton(COMMAND_ICONS["lock_ratio"], checkable=True, size=27)
-        panel.row(self.fields["width"], self.fields["height"], self.lock_ratio, stretch=False)
-        self.origin_button = self.rotation_origin_menu()
-        panel.row(self.fields["rotation"], self.origin_button, stretch=False)
+        grid.addWidget(self.fields["x"], 0, 0)
+        grid.addWidget(self.fields["y"], 0, 1)
+        self.lock_ratio = DesignIconButton(COMMAND_ICONS["lock_ratio"], checkable=True, size=30, icon_size=16)
+        self.lock_ratio.toggled.connect(lambda checked: self.context_lock_ratio.setChecked(checked)
+                                        if hasattr(self, "context_lock_ratio") else None)
+        if hasattr(self, "context_lock_ratio"):
+            self.context_lock_ratio.toggled.connect(self.lock_ratio.setChecked)
+        grid.addWidget(self.fields["width"], 1, 0)
+        grid.addWidget(self.fields["height"], 1, 1)
+        grid.addWidget(self.lock_ratio, 1, 2)
+        grid.addWidget(self.fields["rotation"], 2, 0, 1, 3)
+        panel.layout_.addWidget(grid_holder)
+
+        origin_row = QWidget()
+        origin_layout = QHBoxLayout(origin_row)
+        origin_layout.setContentsMargins(0, 0, 0, 0)
+        origin_layout.setSpacing(12)
+        origin_label = QLabel("Transform origin")
+        origin_layout.addWidget(origin_label, 1)
+        self.origin_grid = OriginGrid()
+        self.origin_grid.picked.connect(self.set_rotation_origin)
+        origin_layout.addWidget(self.origin_grid)
+        panel.layout_.addWidget(origin_row)
+
         self.transform_buttons = {
             name: self.small_button(icon, lambda operation=name: self.transform_objects(operation))
             for name, icon in TRANSFORM_ICONS.items()
         }
         panel.row(*self.transform_buttons.values())
-        self.align_properties = QToolButton(text="Align", popupMode=QToolButton.ToolButtonPopupMode.InstantPopup)
-        panel.row(self.align_properties)
 
         advanced = DockPanel("Advanced Transform")
         advanced.hide()
-        more = QToolButton(text="Advanced Transform", checkable=True, arrowType=Qt.ArrowType.RightArrow,
+        more = QToolButton(text="More Options", checkable=True, arrowType=Qt.ArrowType.RightArrow,
                            toolButtonStyle=Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        more.setProperty("role", "disclosure")
+        more.setAccessibleName("Advanced Transform")
+        more.setToolTip("Show Move, Rotate, Scale, and Shear options")
         more.toggled.connect(advanced.setVisible)
         more.toggled.connect(lambda expanded: more.setArrowType(
             Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow))
@@ -2069,31 +2559,9 @@ class Design(QWidget):
         panel.row(self.shear_button)
         self.shear_buttons = presets
 
-    def rotation_origin_menu(self):
-        picker = QToolButton(text="Origin", popupMode=QToolButton.ToolButtonPopupMode.InstantPopup)
-        picker.setAccessibleName("Rotation origin")
-        picker.setToolTip("Origin for Rotate By and drag rotation")
-        menu = QMenu(picker)
-        grid = QWidget()
-        layout = QGridLayout(grid)
-        layout.setSpacing(2)
-        for row, vertical in enumerate(("Top", "Middle", "Bottom")):
-            for column, horizontal in enumerate(("left", "center", "right")):
-                point = QToolButton(text="·")
-                label = f"{vertical} {horizontal}"
-                point.setAccessibleName(label)
-                point.setToolTip(label)
-                point.clicked.connect(lambda _checked=False, x=column / 2, y=row / 2:
-                                      self.set_rotation_origin(x, y, menu))
-                layout.addWidget(point, row, column)
-        action = QWidgetAction(menu)
-        action.setDefaultWidget(grid)
-        menu.addAction(action)
-        picker.setMenu(menu)
-        return picker
-
-    def set_rotation_origin(self, x, y, menu):
-        menu.close()
+    def set_rotation_origin(self, x, y, menu=None):
+        if menu is not None:
+            menu.close()
         shapes = [self.project.shapes[i] for i in self.selection()]
         if shapes:
             box = model.bounds(shapes)
@@ -2220,12 +2688,27 @@ class Design(QWidget):
         self.snap_check = form.check("Snap to grid", self.snap.isChecked(),
                                      lambda: self.snap.setChecked(self.snap_check.isChecked()))
         self.snap.toggled.connect(self.snap_check.setChecked)
+        self.smart_snap_check = form.check("Smart snapping", self.smart_snap.isChecked(),
+                                           lambda: self.smart_snap.setChecked(self.smart_snap_check.isChecked()))
+        self.smart_snap.toggled.connect(self.smart_snap_check.setChecked)
         self.ruler_check = form.check("Rulers", self.rulers.isChecked(),
                                       lambda: self.rulers.setChecked(self.ruler_check.isChecked()))
         self.rulers.toggled.connect(self.ruler_check.setChecked)
+        self.guides_check = form.check("Guides", self.show_guides.isChecked(),
+                                       lambda: self.show_guides.setChecked(self.guides_check.isChecked()))
+        self.show_guides.toggled.connect(self.guides_check.setChecked)
         self.crosshair_check = form.check("Crosshairs", self.crosshairs.isChecked(),
                                           lambda: self.crosshairs.setChecked(self.crosshair_check.isChecked()))
         self.crosshairs.toggled.connect(self.crosshair_check.setChecked)
+        self.mat_check = form.check("Cutting mat", self.show_mat.isChecked(),
+                                    lambda: self.show_mat.setChecked(self.mat_check.isChecked()))
+        self.show_mat.toggled.connect(self.mat_check.setChecked)
+        self.print_border_check = form.check("Print border", self.print_border.isChecked(),
+                                             lambda: self.print_border.setChecked(self.print_border_check.isChecked()))
+        self.print_border.toggled.connect(self.print_border_check.setChecked)
+        self.cut_border_check = form.check("Cut border", self.cut_border.isChecked(),
+                                           lambda: self.cut_border.setChecked(self.cut_border_check.isChecked()))
+        self.cut_border.toggled.connect(self.cut_border_check.setChecked)
 
     # ---- chapter 06 actions ------------------------------------------------------
     def cut_area(self):
@@ -2301,22 +2784,43 @@ class Design(QWidget):
         pane = QFrame()
         pane.setObjectName("designObjectsPane")
         pane.setAccessibleName("Objects")
-        pane.setMinimumHeight(108)
+        pane.setMinimumHeight(120)
         layout = QVBoxLayout(pane)
-        layout.setContentsMargins(8, 6, 8, 8)
-        layout.setSpacing(4)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
         header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(3)
+        header.setContentsMargins(4, 0, 0, 0)
+        header.setSpacing(4)
         disclosure = QToolButton(text="Objects", checkable=True, checked=True, arrowType=Qt.ArrowType.DownArrow,
                                  toolButtonStyle=Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        disclosure.setProperty("role", "panelHeaderAction")
         disclosure.setAccessibleName("Show objects")
         header.addWidget(disclosure)
         header.addStretch(1)
-        options = DesignIconButton(COMMAND_ICONS["more"], size=26)
+
+        self.add_shape_button = DesignIconButton(COMMAND_ICONS["plus"], size=28, icon_size=16)
+        self.add_shape_button.setToolTip(model.ADD_SHAPE_TIP)
+        self.add_shape_button.clicked.connect(lambda _checked=False: self.add_default_shape())
+        self.objects_dup_btn = DesignIconButton(COMMAND_ICONS["duplicate"], size=28, icon_size=15)
+        self.objects_dup_btn.setToolTip("Duplicate selected objects (Ctrl+D)")
+        self.objects_dup_btn.clicked.connect(lambda _checked=False: self.duplicate())
+        self.objects_grp_btn = DesignIconButton(COMMAND_ICONS["group"], size=28, icon_size=15)
+        self.objects_grp_btn.setToolTip("Group selected objects (Ctrl+G)")
+        self.objects_grp_btn.clicked.connect(lambda _checked=False: self.group())
+        self.objects_del_btn = DesignIconButton(COMMAND_ICONS["delete"], size=28, icon_size=15)
+        self.objects_del_btn.setToolTip("Delete selected objects (Delete)")
+        self.objects_del_btn.clicked.connect(lambda _checked=False: self.delete())
+        for btn in (self.add_shape_button, self.objects_dup_btn, self.objects_grp_btn, self.objects_del_btn):
+            header.addWidget(btn)
+
+        options = DesignIconButton(COMMAND_ICONS["more"], size=28, icon_size=16)
         menu = QMenu(options)
         self.group_button = self.command("Group", self.group)
         self.ungroup_button = self.command("Ungroup", lambda: self.group(release=True))
+        self.objects_rename = menu.addAction("Rename…", self.begin_inline_rename)
+        self.objects_lock = menu.addAction("Lock", self.toggle_lock)
+        self.objects_toggle_group = menu.addAction("Collapse Group", self.toggle_selected_group)
+        menu.addSeparator()
         self.objects_duplicate = menu.addAction("Duplicate", self.duplicate)
         self.objects_delete = menu.addAction("Delete", self.delete)
         menu.addSeparator()
@@ -2331,16 +2835,28 @@ class Design(QWidget):
         layout.addLayout(header)
         self.objects = ObjectsList()
         self.objects.reordered.connect(self.reorder_objects)
+        self.objects.eye_clicked.connect(self.toggle_item_visibility)
+        self.objects.lock_clicked.connect(self.toggle_item_lock)
+        self.objects.disclosure_clicked.connect(self.activate_object_item)
+        self.objects.inline_renamed.connect(self.commit_inline_rename)
         self.objects.setIconSize(QSize(16, 16))
         self.objects.setAccessibleName("Object list")
         self.objects.setProperty("role", "designObjects")
         self.objects.setMinimumHeight(60)
+        self.objects.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.objects.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.objects.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.objects.itemSelectionChanged.connect(self.refresh_selection)
         self.objects.itemChanged.connect(self.change_object_visibility)
+        self.objects.itemDoubleClicked.connect(self.activate_object_item)
+        rename_shortcut = QAction("Rename Object", self.objects)
+        rename_shortcut.setShortcut(QKeySequence("F2"))
+        rename_shortcut.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
+        rename_shortcut.triggered.connect(lambda _checked=False: self.begin_inline_rename())
+        self.objects.addAction(rename_shortcut)
         self.objects.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.objects.customContextMenuRequested.connect(lambda at: self.open_objects_menu(at, menu))
-        empty = styled_label("No objects yet. Draw on the page, click Add Shape, or Import.", role="caption")
+        empty = styled_label("No objects yet. Draw with a tool, click +, or Import.", role="caption")
         empty.setWordWrap(True)
         empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.object_list = QStackedWidget()
@@ -2351,7 +2867,7 @@ class Design(QWidget):
         def show_objects(expanded):
             self.object_list.setVisible(expanded)
             disclosure.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
-            pane.setMinimumHeight(108 if expanded else 0)
+            pane.setMinimumHeight(120 if expanded else 0)
             pane.setMaximumHeight(16777215 if expanded else layout.minimumSize().height())
 
         disclosure.toggled.connect(show_objects)
@@ -2421,20 +2937,30 @@ class Design(QWidget):
         zoom = view.addMenu("Zoom")
         for label, callback, keys in (("Zoom In", lambda: self.canvas.zoom_by(1.25), ("Ctrl+=", "Ctrl++")),
                                       ("Zoom Out", lambda: self.canvas.zoom_by(0.8), ("Ctrl+-",)),
-                                      ("Fit on Screen", self.canvas.fit, ("Ctrl+0",))):
+                                      ("Fit to Page", self.canvas.fit_page, ("Ctrl+0",))):
             action = self.command(label, callback, keys[0])
             action.setShortcuts([QKeySequence(key) for key in keys])
             zoom.addAction(action)
-        zoom.addAction(self.command("Fit Selection", self.canvas.fit_selection, "Ctrl+Shift+0"))
+        zoom.addAction(self.command("Fit to Mat", self.canvas.fit_mat, "Ctrl+Alt+0"))
+        zoom.addAction(self.command("Fit to Selection", self.canvas.fit_selection, "Ctrl+Shift+0"))
+        zoom.addSeparator()
+        command(zoom, "Fit All", self.canvas.fit)
         rotate = view.addMenu("Rotate Page")
         command(rotate, "Left", lambda: self.rotate_page(False))
         command(rotate, "Right", lambda: self.rotate_page(True))
+        units_menu = view.addMenu("Units")
+        self.unit_actions = {}
+        for key, title in (("mm", "Millimetres (mm)"), ("in", "Inches (in)")):
+            action = units_menu.addAction(title, lambda u=key: self.set_unit(u))
+            action.setCheckable(True)
+            action.setChecked(self.unit == key)
+            self.unit_actions[key] = action
         view.addSeparator()
         show = view.addMenu("Show")
-        show.addActions((self.show_grid, self.show_mat_grid, self.rulers, self.crosshairs, self.show_mat, self.cut_border,
-                         self.print_border))
+        show.addActions((self.rulers, self.show_grid, self.show_guides, self.show_mat, self.show_mat_grid,
+                         self.cut_border, self.print_border, self.crosshairs))
         view.addActions((self.snap, self.smart_snap))
-        command(view, "Grid…", lambda: self.dock.open("grid"))
+        command(view, "Grid && Guides…", lambda: self.dock.open("grid"))
         view.addSeparator()
         view.addAction(self.command("Show or Hide Panels", self.toggle_panels, "F9"))
         command(view, "Document Properties", self.show_document, "Ctrl+F1")
@@ -2479,9 +3005,10 @@ class Design(QWidget):
         self.dock.open("page")
 
     def toggle_panels(self):
-        show = self.tool.isHidden()
-        for panel in (self.tool, self.commands, self.sidebar):
+        show = self.tool_scroll.isHidden()
+        for panel in (self.tool_scroll, self.tool, self.commands, self.dock.rail_scroll, self.dock.rail):
             panel.setVisible(show)
+        self.set_sidebar_visible(show, persist=False)
         self.canvas.setFocus()
 
     def rotate_page(self, clockwise):
@@ -2494,6 +3021,8 @@ class Design(QWidget):
         self.refresh(self.selection())
 
     def transform_objects(self, operation):
+        if self.refuse_locked():
+            return
         try:
             shapes = model.transform_selection(self.project.shapes, self.selection(), operation)
         except ValueError as error:
@@ -2503,6 +3032,8 @@ class Design(QWidget):
 
     def align_objects(self, option):
         selection = self.selection()
+        if self.refuse_locked(selection):
+            return
         try:
             shapes = model.align(self.project.shapes, selection, option)
         except ValueError as error:
@@ -2515,6 +3046,8 @@ class Design(QWidget):
 
     def convert_selection(self, simplify=False):
         selected = self.selection()
+        if self.refuse_locked(selected):
+            return
         try:
             shapes = tuple(model.convert_path(shape, simplify) if index in selected else shape
                            for index, shape in enumerate(self.project.shapes))
@@ -2539,6 +3072,8 @@ class Design(QWidget):
             self.commit_shapes(before + copies, range(len(before), len(before) + len(copies)))
 
     def modify_shapes(self, operation):
+        if self.refuse_locked():
+            return
         if operation == "Detach Lines":
             try:
                 shapes, made = model.detach_lines(self.project.shapes, self.selection())
@@ -2713,52 +3248,231 @@ class Design(QWidget):
 
         self.export_tasks.run(lambda: sticker_print.export(target, project, cutter=cutter), done)
 
+    def refuse_locked(self, indices=None):
+        indices = self.selection() if indices is None else tuple(indices)
+        if model.has_locked(self.project.shapes, indices):
+            self.message(model.LOCKED_MESSAGE, level="warning")
+            return True
+        return False
+
     def selection(self):
-        return tuple(sorted(index.row() for index in self.objects.selectedIndexes()))
+        chosen = set()
+        for item in self.objects.selectedItems():
+            entry = item.data(Qt.ItemDataRole.UserRole)
+            if not entry:
+                continue
+            if entry[0] == "group":
+                chosen.update(entry[2])
+            else:
+                chosen.add(entry[1])
+        return tuple(sorted(chosen))
 
     def select(self, indices):
+        chosen = set(indices)
         old = self.objects.blockSignals(True)
         self.objects.clearSelection()
-        for index in indices:
-            if 0 <= index < self.objects.count():
-                self.objects.item(index).setSelected(True)
+        for row in range(self.objects.count()):
+            item = self.objects.item(row)
+            entry = item.data(Qt.ItemDataRole.UserRole)
+            if not entry:
+                continue
+            if entry[0] == "shape":
+                if entry[1] in chosen:
+                    item.setSelected(True)
+            elif entry[1] in self.collapsed_groups and set(entry[2]) <= chosen:
+                item.setSelected(True)
         self.objects.blockSignals(old)
         self.refresh_selection()
 
+    def _shape_destination(self, visual_destination):
+        if visual_destination >= self.objects.count():
+            return len(self.project.shapes)
+        item = self.objects.item(visual_destination)
+        entry = item.data(Qt.ItemDataRole.UserRole) if item else None
+        if not entry:
+            return len(self.project.shapes)
+        return entry[2][0] if entry[0] == "group" else entry[1]
+
     def reorder_objects(self, destination):
-        shapes, selected = model.reorder_objects(self.project.shapes, self.selection(), destination)
+        shapes, selected = model.reorder_objects(self.project.shapes, self.selection(),
+                                                 self._shape_destination(destination))
         self.commit_shapes(shapes, selected)
 
     def open_objects_menu(self, point, menu):
         item = self.objects.itemAt(point)
         if item and not item.isSelected():
-            self.select((self.objects.row(item),))
+            entry = item.data(Qt.ItemDataRole.UserRole)
+            if entry:
+                self.select(entry[2] if entry[0] == "group" else (entry[1],))
         menu.popup(self.objects.viewport().mapToGlobal(point))
+
+    def activate_object_item(self, item):
+        entry = item.data(Qt.ItemDataRole.UserRole)
+        if not entry:
+            return
+        if entry[0] == "group":
+            self.toggle_group_collapsed(entry[1])
+        else:
+            self.objects.setCurrentItem(item)
+            self.objects.editItem(item)
+
+    def toggle_item_visibility(self, item):
+        entry = item.data(Qt.ItemDataRole.UserRole)
+        if not entry:
+            return
+        targets = set(entry[2]) if entry[0] == "group" else {entry[1]}
+        shapes = self.project.shapes
+        visible = not any(shapes[i].visible for i in targets)
+        updated = tuple(replace(shape, visible=visible) if i in targets else shape for i, shape in enumerate(shapes))
+        self.commit_shapes(updated, self.selection())
+
+    def toggle_item_lock(self, item):
+        entry = item.data(Qt.ItemDataRole.UserRole)
+        if not entry:
+            return
+        targets = set(entry[2]) if entry[0] == "group" else {entry[1]}
+        shapes = self.project.shapes
+        lock = not all(shapes[i].locked for i in targets)
+        updated = tuple(replace(shape, locked=lock) if i in targets else shape for i, shape in enumerate(shapes))
+        self.commit_shapes(updated, self.selection())
+
+    def begin_inline_rename(self):
+        selection = self.selection()
+        if len(selection) != 1:
+            return
+        target = selection[0]
+        for row in range(self.objects.count()):
+            item = self.objects.item(row)
+            entry = item.data(Qt.ItemDataRole.UserRole)
+            if entry and entry[0] == "shape" and entry[1] == target:
+                self.objects.setCurrentItem(item)
+                self.objects.editItem(item)
+                return
+
+    def commit_inline_rename(self, item, text):
+        entry = item.data(Qt.ItemDataRole.UserRole)
+        if not entry or entry[0] != "shape":
+            return
+        index = entry[1]
+        if index >= len(self.project.shapes):
+            return
+        shape = self.project.shapes[index]
+        default_display = model.object_display_name(self.project.shapes, index, unit=self.unit)
+        # Leaving an unchanged automatic display name keeps name="" so numbering stays automatic
+        if not shape.name and text.strip() == default_display:
+            return
+        try:
+            cleaned = model.clean_object_name(text)
+        except ValueError as error:
+            self.message(str(error), level="warning")
+            self.refresh(self.selection())
+            return
+        shapes = self.project.shapes
+        self.commit_shapes(shapes[:index] + (replace(shape, name=cleaned),) + shapes[index + 1:], (index,))
+
+    def toggle_group_collapsed(self, group_id):
+        selection = self.selection()
+        if group_id in self.collapsed_groups:
+            self.collapsed_groups.remove(group_id)
+        else:
+            self.collapsed_groups.add(group_id)
+        self.refresh(selection)
+
+    def toggle_selected_group(self):
+        groups = sorted({self.project.shapes[i].group for i in self.selection()
+                         if self.project.shapes[i].group is not None})
+        if not groups:
+            return
+        if all(g in self.collapsed_groups for g in groups):
+            self.collapsed_groups.difference_update(groups)
+        else:
+            self.collapsed_groups.update(groups)
+        self.refresh(self.selection())
+
+    def rename_object(self, name=None):
+        selection = self.selection()
+        if len(selection) != 1:
+            return
+        index = selection[0]
+        shape = self.project.shapes[index]
+        if name is None:
+            entered, ok = QInputDialog.getText(
+                self, "Rename Object", "Object name (leave blank for automatic name):",
+                text=shape.name or model.object_display_name(self.project.shapes, index, unit=self.unit))
+            if not ok:
+                return
+            name = entered
+        try:
+            cleaned = model.clean_object_name(name)
+        except ValueError as error:
+            self.message(str(error), level="warning")
+            return
+        shapes = self.project.shapes
+        self.commit_shapes(shapes[:index] + (replace(shape, name=cleaned),) + shapes[index + 1:], selection)
+
+    def toggle_lock(self):
+        selection = self.selection()
+        if not selection:
+            return
+        shapes = self.project.shapes
+        lock = not all(shapes[i].locked for i in selection)
+        updated = tuple(replace(shape, locked=lock) if i in selection else shape for i, shape in enumerate(shapes))
+        self.commit_shapes(updated, selection)
 
     def change_object_visibility(self, item):
         if self.loading:
             return
-        index = self.objects.row(item)
+        entry = item.data(Qt.ItemDataRole.UserRole)
+        if not entry:
+            return
+        targets = set(entry[2]) if entry[0] == "group" else {entry[1]}
         shapes = self.project.shapes
         visible = item.checkState() == Qt.CheckState.Checked
-        self.commit_shapes(shapes[:index] + (replace(shapes[index], visible=visible),) + shapes[index + 1:],
-                           self.selection())
+        if all(shapes[i].visible == visible for i in targets):
+            return
+        updated = tuple(replace(shape, visible=visible) if i in targets else shape for i, shape in enumerate(shapes))
+        self.commit_shapes(updated, self.selection())
 
     def refresh(self, selection):
         prev, self.loading = self.loading, True
         self.objects.clear()
         shapes = self.project.shapes
-        color = self.objects.palette().text().color()
-        icons = {kind: design_icon(OBJECT_ICONS.get(kind, COMMAND_ICONS["path"]), color)
-                 for kind in {shape.kind for shape in shapes}}
-        for shape in shapes:
-            details = f" · Group {shape.group}" if shape.group else ""
-            if shape.holder:
-                details += f" · Tool {shape.holder}"
-            name = f"{model.object_name(shape)}{details}"
-            item = QListWidgetItem(icons[shape.kind], name)
-            item.setToolTip(name)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        active_groups = {shape.group for shape in shapes if shape.group is not None}
+        self.collapsed_groups &= active_groups
+        for row in model.object_rows(shapes, self.collapsed_groups):
+            if row[0] == "group":
+                _, gid, members = row
+                collapsed = gid in self.collapsed_groups
+                all_locked = all(shapes[m].locked for m in members)
+                any_visible = any(shapes[m].visible for m in members)
+                count = "1 object" if len(members) == 1 else f"{len(members)} objects"
+                label = f"Group {gid} ({count})"
+                item = QListWidgetItem(label)
+                item.setToolTip(f"{label} — click chevron or double-click to {'expand' if collapsed else 'collapse'}")
+                item.setData(Qt.ItemDataRole.UserRole, ("group", gid, members))
+                item.setData(OBJECT_META_ROLE, {
+                    "is_group": True, "collapsed": collapsed, "indent": 0,
+                    "visible": any_visible, "locked": all_locked, "kind": "Group",
+                })
+                item.setFlags((item.flags() | Qt.ItemFlag.ItemIsUserCheckable) & ~Qt.ItemFlag.ItemIsEditable)
+                item.setCheckState(Qt.CheckState.Checked if any_visible else Qt.CheckState.Unchecked)
+                self.objects.addItem(item)
+                continue
+            _, index, indent = row
+            shape = shapes[index]
+            display = model.object_display_name(shapes, index, unit=self.unit)
+            details = f" · Tool {shape.holder}" if shape.holder else ""
+            tip = display + (f" · Group {shape.group}" if shape.group else "") + details + (
+                " · Locked" if shape.locked else "")
+            item = QListWidgetItem(f"{display}{details}")
+            item.setToolTip(tip)
+            item.setData(Qt.ItemDataRole.UserRole, ("shape", index))
+            item.setData(OBJECT_META_ROLE, {
+                "is_group": False, "collapsed": False, "indent": indent,
+                "visible": shape.visible, "locked": shape.locked, "kind": shape.kind,
+            })
+            item.setData(OBJECT_RENAME_ROLE, shape.name or display)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEditable)
             item.setCheckState(Qt.CheckState.Checked if shape.visible else Qt.CheckState.Unchecked)
             self.objects.addItem(item)
         self.object_list.setCurrentIndex(0 if self.objects.count() else 1)
@@ -2817,8 +3531,7 @@ class Design(QWidget):
         self.replicate_button.setEnabled(bool(indices))
         for name, command in self.modify_buttons.items():
             command.setEnabled(len(indices) >= (1 if name in ("Release Compound Path", "Detach Lines") else 2))
-        self.origin_button.setEnabled(bool(indices))
-        self.align_properties.setVisible(units >= 2)
+        self.origin_grid.setEnabled(bool(indices))
         for widget in (*self.rotate_buttons.values(), self.rotate_by_button, *self.scale_buttons.values(),
                        self.scale_button, self.shear_button, *self.shear_buttons.values(), self.move_by_button,
                        *self.replicate_buttons.values(), self.direction_button, self.nest_button):
@@ -2841,13 +3554,15 @@ class Design(QWidget):
             if values is not None:
                 if key in ("width", "height"):
                     low = -1000 if shape and shape.kind == "Line" else 0 if shape and shape.kind == "Path" else 0.1
-                    field.setRange(low, 1000)
-                field.setValue(values[key] if area else getattr(shape, key))
+                    field.setRange(self._to_unit(low), self._to_unit(1000))
+                elif key in ("x", "y"):
+                    field.setRange(self._to_unit(-1000), self._to_unit(1000))
+                raw_val = values[key] if area else getattr(shape, key)
+                field.setValue(raw_val if key == "rotation" else self._to_unit(raw_val))
         if values is None:
             for field in self.fields.values():
                 field.setValue(0)
         radius = bool(shape and shape.kind == "Rounded rectangle")
-        self.fields["rotation"].setVisible(shape is not None)
         self.fields["radius"].setEnabled(radius)
         self.fields["radius"].parentWidget().layout().setRowVisible(self.fields["radius"], radius)
         self.lock_ratio.setEnabled(shape is not None and min(shape.width, shape.height) > 0)
@@ -2859,17 +3574,31 @@ class Design(QWidget):
         styles = {shapes[i].line_style for i in indices}
         self.line_style.setCurrentIndex(self.line_style.findData(styles.pop()) if len(styles) == 1 else -1)
         self.line_width.setValue(shape.line_width_mm if shape else 0)
+        self.objects_rename.setEnabled(len(indices) == 1)
+        self.objects_lock.setEnabled(bool(indices))
+        all_locked = bool(indices) and all(shapes[i].locked for i in indices)
+        self.objects_lock.setText("Unlock" if all_locked else "Lock")
+        selected_groups = sorted({shapes[i].group for i in indices if shapes[i].group is not None})
+        self.objects_toggle_group.setVisible(bool(selected_groups))
+        self.objects_toggle_group.setEnabled(bool(selected_groups))
+        if selected_groups:
+            collapsed = all(g in self.collapsed_groups for g in selected_groups)
+            self.objects_toggle_group.setText("Expand Group" if collapsed else "Collapse Group")
         for widget in (self.objects_duplicate, self.objects_delete, self.duplicate_action, self.delete_action,
+                       self.duplicate_ribbon_button, self.delete_ribbon_button,
+                       self.objects_dup_btn, self.objects_del_btn,
                        self.cut_action, self.copy_action):
             widget.setEnabled(bool(indices))
+        self.objects_grp_btn.setEnabled(units > 1)
         self.paste_action.setEnabled(bool(_clipboard))
         self.paste_front_action.setEnabled(bool(_clipboard))
         self.measured()
         self.group_button.setEnabled(units > 1)
         has_selection = bool(indices)
         any_grouped = any(shapes[i].group for i in indices)
-        self.selection_divider.setVisible(has_selection)
-        self.selection_tools.setVisible(has_selection)
+        show_selection_bar = units > 1 or any_grouped or can_trace or is_text
+        self.selection_divider.setVisible(True)
+        self.selection_tools.setVisible(show_selection_bar)
         self.group_ribbon_button.setVisible(units > 1)
         self.ungroup_ribbon_button.setVisible(any_grouped)
         self.align_button.setVisible(units >= 2)
@@ -2920,7 +3649,7 @@ class Design(QWidget):
         self.save_state.setVisible(bool(badge))
         if action and self.notice_bar.isVisible() and self.notice_bar.property("level") == "warning":
             self.notice_bar.hide()
-        self.status.setText(model.document_summary(project, count, len(self.selection())))
+        self.status.setText(model.document_summary(project, count, len(self.selection()), unit=self.unit))
         self.refresh_tool_hint()
 
     def change_size(self):
@@ -2967,6 +3696,9 @@ class Design(QWidget):
             return
         selection = self.selection()
         if selection:
+            if self.refuse_locked(selection):
+                self.refresh_selection()
+                return
             self.commit_shapes(tuple(replace(shape, **updates) if index in selection else shape
                                      for index, shape in enumerate(self.project.shapes)), selection)
 
@@ -2974,7 +3706,11 @@ class Design(QWidget):
         if self.loading:
             return
         selection = self.selection()
-        value = self.fields[field].value()
+        if selection and self.refuse_locked(selection):
+            self.refresh_selection()
+            return
+        raw = self.fields[field].value()
+        value = raw if field == "rotation" else self._from_unit(raw)
         if len(selection) > 1:
             self.change_selection_box(selection, field, value)
             return
@@ -2986,7 +3722,8 @@ class Design(QWidget):
                 shape.width, shape.height) > 0:
             other = "width" if field == "height" else "height"
             ratio = getattr(shape, other) / getattr(shape, field)
-            value = max(self.fields[other].minimum() / ratio, min(value, 1000 / ratio))
+            low_mm = self._from_unit(self.fields[other].minimum())
+            value = max(low_mm / ratio, min(value, 1000 / ratio))
             updates = {field: value, other: value * ratio}
         self.change_selected(**updates)
 
@@ -3014,7 +3751,7 @@ class Design(QWidget):
         self.refresh(selection)
         if not shapes:
             self.dock.open("page")
-        elif self.dock.picker.currentData() == "page" and selection:
+        elif self.dock.current_key() == "page" and selection:
             first = shapes[selection[0]]
             if len(selection) == 1 and first.sticker:
                 self.dock.open("trace")
@@ -3033,8 +3770,10 @@ class Design(QWidget):
         self.add_shape(model.Shape(model.shape_to_add(self.tool.currentData()),
                                    (self.project.width - width) / 2, (self.project.height - height) / 2,
                                    width, height))
-        if self.sidebar.isHidden():
+        if self.tool_scroll.isHidden():
             self.toggle_panels()
+        if self.sidebar.isHidden():
+            self.set_sidebar_visible(True)
         self.dock.open("transform")
         field = self.fields["x"]
 
@@ -3052,6 +3791,8 @@ class Design(QWidget):
         global _clipboard
         selection = self.selection()
         if not selection:
+            return
+        if cut and self.refuse_locked(selection):
             return
         _clipboard = tuple(self.project.shapes[i] for i in selection)
         if cut:
@@ -3136,6 +3877,8 @@ class Design(QWidget):
 
     def point_action(self, name):
         """One of Studio's Point Editing toolbar actions on the chosen point."""
+        if self.refuse_locked():
+            return
         if name == "Simplify":
             self.convert_selection(True)
             return
@@ -3179,7 +3922,8 @@ class Design(QWidget):
         try:
             for index, shape in enumerate(shapes):
                 pieces = (model.slice_shape(shape, start, end) if index in targets and shape.visible
-                          and shape.closed and not shape.sticker and shape.kind != "Line" else (shape,))
+                          and not shape.locked and shape.closed and not shape.sticker and shape.kind != "Line"
+                          else (shape,))
                 if len(pieces) > 1:
                     made.extend(range(len(out), len(out) + len(pieces)))
                 out.extend(pieces)
@@ -3319,6 +4063,8 @@ class Design(QWidget):
         self.refresh(selection)
 
     def delete(self):
+        if self.refuse_locked():
+            return
         if self.tool.currentData() == "Point Edit" and self.canvas.node_point is not None \
                 and self.canvas.edited_nodes():
             self.point_action("Delete Point")
@@ -3423,6 +4169,7 @@ class Design(QWidget):
         self.notice_bar.hide()
         self.notice_label.setText("")
         self.path, self.source = path, source
+        self.collapsed_groups.clear()
         self.history = model.History(project)
         self.saved = project
         if project.registration:

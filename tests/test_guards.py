@@ -587,3 +587,22 @@ class TestEveryForceIsChecked(unittest.TestCase):
         d = verify.decode(job.stream)
         self.assertGreater(len(d.forces), 1)
         self.assertEqual(set(d.forces), {job.settings.force})
+
+
+class TestLockedObjectGuard(unittest.TestCase):
+    """Locked shapes are refused by the shared lock check; unlocked ones pass."""
+
+    def test_locked_selection_fires_and_unlocked_selection_passes(self):
+        from cutline import editor_model
+        shapes = (
+            editor_model.Shape("Rectangle", 10, 10, 40, 30, locked=True),
+            editor_model.Shape("Ellipse", 70, 10, 30, 30, locked=False),
+        )
+        self.assertTrue(editor_model.has_locked(shapes, (0,)))
+        self.assertTrue(editor_model.has_locked(shapes, (0, 1)))
+        self.assertFalse(editor_model.has_locked(shapes, (1,)))
+        self.assertFalse(editor_model.has_locked(shapes, ()))
+        # Eraser also leaves locked objects intact.
+        out, changed = editor_model.erase(shapes, (0,), ((5, 25), (55, 25)), 3.0)
+        self.assertFalse(changed)
+        self.assertEqual(out, shapes)
