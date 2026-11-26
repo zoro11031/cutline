@@ -1703,9 +1703,9 @@ class Design(QWidget):
         for field, spin in self.context_fields.items():
             prefix = next(p for f, p, _ in TRANSFORM_FIELDS if f == field)
             sample = "↻ -180.00°" if field == "rotation" else f"{prefix} 279.40"
-            width = max(86, spin.fontMetrics().horizontalAdvance(sample) + 22)
-            spin.setMinimumWidth(width)
-            spin.setMaximumWidth(max(116, width + 18))
+            ideal = max(88, spin.fontMetrics().horizontalAdvance(sample) + 20)
+            spin.setMinimumWidth(min(74, ideal))
+            spin.setMaximumWidth(max(114, ideal + 14))
 
     def changeEvent(self, event):
         super().changeEvent(event)
@@ -1826,7 +1826,7 @@ class Design(QWidget):
                                   buttonSymbols=QDoubleSpinBox.ButtonSymbols.NoButtons)
             spin.setAccessibleName(name)
             spin.setToolTip(name)
-            spin.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+            spin.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
             spin.valueChanged.connect(lambda value, key=field: self.fields[key].setValue(value))
             fields.addWidget(spin)
             self.context_fields[field] = spin
@@ -2475,8 +2475,9 @@ class Design(QWidget):
         origin_row = QWidget()
         origin_layout = QHBoxLayout(origin_row)
         origin_layout.setContentsMargins(0, 0, 0, 0)
-        origin_layout.setSpacing(12)
+        origin_layout.setSpacing(8)
         origin_label = QLabel("Transform origin")
+        origin_label.setWordWrap(True)
         origin_layout.addWidget(origin_label, 1)
         self.origin_grid = OriginGrid()
         self.origin_grid.picked.connect(self.set_rotation_origin)
