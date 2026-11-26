@@ -35,7 +35,7 @@ TOOL_GROUPS = (
              (((5, 3), (5, 19), (9, 15), (12, 21), (15, 19), (12, 13), (18, 13), (5, 3)),)),
     )),
     ("Point Edit", (
-        Tool("Point Edit", "A", "Drag a point, or choose one with [ or ] and move it with the arrow keys.",
+        Tool("Point Edit", "A", "Drag a point or handle. Click the outline to insert a point. Use [ or ] to select a point.",
              (((5, 17), (12, 6), (19, 15)),
               ((3, 16), (7, 16), (7, 20), (3, 20), (3, 16)),
               ((10, 4), (14, 4), (14, 8), (10, 8), (10, 4)),

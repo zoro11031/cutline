@@ -329,14 +329,23 @@ def corner(nodes, i):
     return _with(nodes, handles=handles)
 
 
-def nearest_node(nodes, position):
+def adjacent_points(outline, index):
+    if index is None:
+        return ()
+    count = len(outline.points)
+    if outline.closed:
+        return ((index - 1) % count, index, (index + 1) % count)
+    return range(max(0, index - 1), min(count, index + 2))
+
+
+def nearest_node(nodes, position, *, handle_indices=None):
     """(distance, kind, index, side): kind is "point" or "handle"."""
     best = (math.inf, None, None, None)
     for i, p in enumerate(nodes.points):
         d = math.dist(p, position)
         if d < best[0]:
             best = (d, "point", i, None)
-        if nodes.handles and nodes.handles[i]:
+        if nodes.handles and nodes.handles[i] and (handle_indices is None or i in handle_indices):
             for side in (0, 1):
                 q = nodes.handles[i][side]
                 if q != p:

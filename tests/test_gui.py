@@ -1194,6 +1194,49 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertEqual(len(design.project.shapes), 6)
         self.assertNotIn('<Control>v', self.shortcuts(design.shortcuts))
 
+    def test_pointer_point_edit_moves_a_handle_and_inserts_one_undoable_node(self):
+        from cutline import path_edit
+
+        win = self.make_window()
+        win.draw_in_design_btn.emit('clicked')
+        design = win.design
+        shape = editor_model.Shape('Ellipse', 20, 25, 30, 20)
+        design.commit((shape,), (0,))
+        design.tool.set_selected(design.tools.index('Point Edit'))
+        before = path_edit.nodes(shape)
+        scale = 4
+        design.begin_point_edit(*before.points[0], scale)
+        design.drag_end(None, 0, 0)
+        self.assertEqual(design.active_node(shape), 0)
+
+        handle = before.handles[0][0]
+        step = (8, -4)
+        design.begin_point_edit(*handle, scale)
+        self.assertEqual(design.drag.node[1], 'handle')
+        design.drag_end(None, *step)
+        edited = path_edit.nodes(design.project.shapes[0])
+        expected = path_edit.move_handle(before, 0, 0, (round(handle[0] + 2, 4), round(handle[1] - 1, 4)))
+        self.assertEqual(edited.points, before.points)
+        self.assertAlmostEqual(edited.handles[0][0][0], expected.handles[0][0][0])
+        self.assertAlmostEqual(edited.handles[0][1][1], expected.handles[0][1][1])
+        design.change_history(design.history.undo)
+        self.assertEqual(design.project.shapes, (shape,))
+
+        rectangle = editor_model.Shape('Rectangle', 20, 25, 30, 20)
+        design.commit((rectangle,), (0,))
+        depth = len(design.history.past)
+        design.begin_point_edit(35, 25, scale)
+        self.assertEqual(len(path_edit.nodes(design.draft.shapes[0]).points), 5)
+        design.cancel_drag()
+        self.assertEqual(design.project.shapes, (rectangle,))
+        self.assertEqual(len(design.history.past), depth)
+        design.begin_point_edit(35, 25, scale)
+        design.drag_end(None, 0, 0)
+        self.assertEqual(len(path_edit.nodes(design.project.shapes[0]).points), 5)
+        self.assertEqual(len(design.history.past), depth + 1)
+        design.change_history(design.history.undo)
+        self.assertEqual(design.project.shapes, (rectangle,))
+
     def test_keyboard_point_edit_moves_a_curve_node_without_flattening(self):
         from gi.repository import Gdk
         from cutline import path_edit
@@ -1212,7 +1255,7 @@ class TestDesignWorkspace(unittest.TestCase):
         key(Gdk.KEY_Right)
         self.assertEqual(design.project.shapes, (shape,))
         key(Gdk.KEY_bracketleft)
-        self.assertEqual(design.active_keyboard_node(shape), len(before.points) - 1)
+        self.assertEqual(design.active_node(shape), len(before.points) - 1)
         key(Gdk.KEY_bracketright)
         key(Gdk.KEY_Right)
         after = path_edit.nodes(design.project.shapes[0])

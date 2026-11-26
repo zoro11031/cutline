@@ -30,6 +30,7 @@ class Drag:
     indices: tuple[int, ...] = ()
     points: list | None = None
     vertex: tuple[int, int] | None = None
+    node: tuple[path_edit.Nodes, str, int, int | None] | None = None
     rotation: RotationHandle | None = None
     angle: float = 0
     scale_anchor: tuple[float, float] | None = None
@@ -209,7 +210,7 @@ class DesignWorkspace:
         self.drawing = False
         self.custom_page = False
         self.polygon = []
-        self.keyboard_node = None
+        self.selected_node = None
         self.cutter = cutter or graphtec.device_by_name("Silhouette Cameo 4")
         self.last_registration = project.registration or Registration.from_marks(
             regmarks.marks(project.width, project.height))
@@ -1145,7 +1146,7 @@ class DesignWorkspace:
             is_sticker=bool(obj and obj.sticker),
             is_text=bool(obj and obj.text),
             needs_trace=bool(obj and obj.sticker and not obj.contours),
-            node_selected=obj is not None and self.active_keyboard_node(obj) is not None,
+            node_selected=obj is not None and self.active_node(obj) is not None,
         )
         self.tool_hint.set_label(hint)
         self.tool_hint.set_tooltip_text(f'{tool.tooltip}\n{hint}' if hint != tool.hint else tool.tooltip)
@@ -1459,7 +1460,7 @@ class DesignWorkspace:
 
     def tool_changed(self):
         self.canvas.grab_focus()
-        self.keyboard_node = None
+        self.selected_node = None
         self.polygon.clear()
         self.cancel_drag()
         tool = TOOLS[self.tool.get_selected()]
@@ -1575,21 +1576,46 @@ class DesignWorkspace:
         self.drag = Drag('marquee', x, y, scale, indices if extend else ())
 
     def begin_point_edit(self, x, y, scale):
-        self.keyboard_node = None
+        position = (x, y)
         indices = self.selected_indices()
         if len(indices) == 1:
             index = indices[0]
             shape = self.project.shapes[index]
-            if shape.visible and shape.kind in editor_model.POINT_EDIT_KINDS:
-                distance, vertex = editor_model.nearest_vertex(shape, (x, y))
-                if distance <= (6 if self.active_tool == "Curve" else 7) / scale:
-                    self.drag = Drag('point', x, y, scale, (index,), vertex=vertex)
+            if path_edit.editable(shape):
+                outline = path_edit.nodes(shape)
+                shown = path_edit.adjacent_points(outline, self.active_node(shape))
+                distance, kind, point, side = path_edit.nearest_node(outline, position, handle_indices=shown)
+                if distance <= 7 / scale:
+                    self.selected_node = (shape, point)
+                    self.drag = Drag('node', x, y, scale, indices, node=(outline, kind, point, side))
+                    self.refresh_tool_hint()
+                    self.canvas.queue_draw()
                     return
+                try:
+                    added, point = path_edit.insert_point(outline, position, 5 / scale)
+                    edited = path_edit.to_shape(added, shape)
+                except ValueError:
+                    pass
+                else:
+                    shapes = self.project.shapes
+                    self.draft = replace(self.project, shapes=shapes[:index] + (edited,) + shapes[index + 1:])
+                    self.drag = Drag('node', x, y, scale, indices, node=(added, 'point', point, None))
+                    self.canvas.queue_draw()
+                    return
+            elif shape.visible and shape.kind in editor_model.POINT_EDIT_KINDS:
+                distance, vertex = editor_model.nearest_vertex(shape, position)
+                if distance <= 7 / scale:
+                    self.drag = Drag('point', x, y, scale, indices, vertex=vertex)
+                    return
+        self.selected_node = None
         for index in reversed(range(len(self.project.shapes))):
             shape = self.project.shapes[index]
-            if shape.visible and shape.kind in editor_model.POINT_EDIT_KINDS and editor_model.hit(shape, (x, y), 5 / scale):
+            editable = path_edit.editable(shape) or shape.kind in editor_model.POINT_EDIT_KINDS
+            if shape.visible and editable and editor_model.hit(shape, position, 5 / scale):
                 self.set_selection((index,))
                 break
+        self.refresh_tool_hint()
+        self.canvas.queue_draw()
 
     def draw_shape(self, drag, x, y, *, final=False, shift=False, alt=False):
         start = drag.points[0]
@@ -1625,6 +1651,21 @@ class DesignWorkspace:
         if drag.mode == 'marquee':
             self.marquee = geometry.Rect(min(drag.x, x), min(drag.y, y),
                                          abs(x - drag.x), abs(y - drag.y))
+        elif drag.mode == 'node':
+            index = drag.indices[0]
+            outline, kind, point, side = drag.node
+            anchor = outline.points[point] if kind == 'point' else outline.handles[point][side]
+            target = self.grid_point(anchor[0] + dx / drag.scale, anchor[1] + dy / drag.scale)
+            moved = (path_edit.move_point(outline, point, target) if kind == 'point'
+                     else path_edit.move_handle(outline, point, side, target))
+            try:
+                edited = path_edit.to_shape(moved, base.shapes[index])
+            except ValueError as error:
+                self.draft = None
+                if final:
+                    self.show_message(str(error), level='warning')
+            else:
+                self.draft = replace(base, shapes=base.shapes[:index] + (edited,) + base.shapes[index + 1:])
         elif drag.mode == 'point':
             index = drag.indices[0]
             shape = base.shapes[index]
@@ -1699,6 +1740,9 @@ class DesignWorkspace:
         if self.draft is not None:
             if self.drawing:
                 indices = (len(self.draft.shapes) - 1,)
+            if self.drag.node:
+                index = self.drag.indices[0]
+                self.selected_node = (self.draft.shapes[index], self.drag.node[2])
             self.history.commit(self.draft)
             self.cancel_drag()
             self.refresh_objects(indices)
@@ -1713,9 +1757,9 @@ class DesignWorkspace:
         self.drawing = False
         self.select_shape()
 
-    def active_keyboard_node(self, shape):
-        if self.keyboard_node and self.keyboard_node[0] is shape:
-            return self.keyboard_node[1]
+    def active_node(self, shape):
+        if self.selected_node and self.selected_node[0] is shape:
+            return self.selected_node[1]
         return None
 
     def point_key(self, indices, key, arrows):
@@ -1729,11 +1773,11 @@ class DesignWorkspace:
         if not path_edit.editable(shape):
             return False
         outline = path_edit.nodes(shape)
-        current = self.active_keyboard_node(shape)
+        current = self.active_node(shape)
         if cycle:
             direction = 1 if key == Gdk.KEY_bracketright else -1
             current = path_edit.step_point(current, len(outline.points), direction)
-            self.keyboard_node = (shape, current)
+            self.selected_node = (shape, current)
         elif current is None:
             return not delete
         else:
@@ -1749,7 +1793,7 @@ class DesignWorkspace:
             except ValueError as error:
                 self.show_message(str(error), level='warning')
                 return True
-            self.keyboard_node = (edited, current)
+            self.selected_node = (edited, current)
             self.commit(shapes[:index] + (edited,) + shapes[index + 1:], indices)
             outline = path_edit.nodes(edited)
         self.canvas.reveal_point(outline.points[current])
@@ -1771,7 +1815,7 @@ class DesignWorkspace:
             else:
                 self.set_selection(())
                 self.tool.set_selected(0)
-        elif self.drag is not None and self.drag.mode in ('rotate', 'scale'):
+        elif self.drag is not None and self.drag.mode in ('rotate', 'scale', 'node'):
             return True
         elif self.active_tool == 'Point Edit' and not (state & (
                 Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK | Gdk.ModifierType.SHIFT_MASK

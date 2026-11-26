@@ -172,7 +172,8 @@ class DesignCanvas(Gtk.DrawingArea):
         for i, shape in enumerate(project.shapes):
             if shape.visible:
                 self.draw_shape(cr, shape, i in indices, scale)
-        if indices and not editor.drawing:
+        point_edit = mode == 'Point Edit' and len(indices) == 1
+        if indices and not editor.drawing and not point_edit:
             box = editor_model.bounds(project.shapes[i] for i in indices)
             cr.rectangle(box.x, box.y, box.w, box.h)
             cr.set_source_rgba(0.16, 0.36, 0.73, 0.85)
@@ -187,22 +188,16 @@ class DesignCanvas(Gtk.DrawingArea):
                 if mode in ROTATE_MODES:
                     self.draw_rotation_handle(cr, drag.rotation if drag and drag.rotation else handle,
                                               drag.angle if drag else 0, scale)
-        if editor.active_tool == 'Point Edit' and len(indices) == 1:
+        if point_edit:
             shape = project.shapes[indices[0]]
-            if shape.visible and (shape.kind in editor_model.POINT_EDIT_KINDS or path_edit.editable(shape)):
-                chosen = editor.active_keyboard_node(shape)
-                if chosen is not None:
-                    outline = path_edit.nodes(shape)
-                    self.draw_vertices(cr, outline.points, scale)
-                    cr.arc(*outline.points[chosen], 5 / scale, 0, math.tau)
-                    cr.set_source_rgb(1, 1, 1)
-                    cr.fill_preserve()
-                    cr.set_source_rgb(0.1, 0.28, 0.63)
-                    cr.set_line_width(2 / scale)
-                    cr.stroke()
-                elif shape.kind in editor_model.POINT_EDIT_KINDS:
-                    for path in shape.paths():
-                        self.draw_vertices(cr, path.points, scale)
+            if path_edit.editable(shape):
+                outline = path_edit.nodes(shape)
+                drag = editor.drag
+                chosen = drag.node[2] if drag and drag.node else editor.active_node(shape)
+                self.draw_nodes(cr, outline, chosen, scale)
+            elif shape.visible and shape.kind in editor_model.POINT_EDIT_KINDS:
+                for path in shape.paths():
+                    self.draw_vertices(cr, path.points, scale)
         if editor.polygon:
             points = editor.polygon
             cr.move_to(*points[0])
@@ -320,6 +315,32 @@ class DesignCanvas(Gtk.DrawingArea):
                 cr.move_to(a, b)
                 cr.line_to(c, d)
         cr.stroke()
+
+    @staticmethod
+    def draw_nodes(cr, outline, chosen, scale):
+        blue = (0.20, 0.42, 0.80)
+        for index in path_edit.adjacent_points(outline, chosen):
+            if not outline.handles or not outline.handles[index]:
+                continue
+            point = outline.points[index]
+            for handle in outline.handles[index][:2]:
+                if handle == point:
+                    continue
+                cr.move_to(*point)
+                cr.line_to(*handle)
+                cr.set_source_rgb(*blue)
+                cr.set_line_width(1 / scale)
+                cr.stroke()
+                cr.arc(*handle, 3 / scale, 0, math.tau)
+                cr.fill()
+        DesignCanvas.draw_vertices(cr, outline.points, scale)
+        if chosen is not None:
+            cr.arc(*outline.points[chosen], 5 / scale, 0, math.tau)
+            cr.set_source_rgb(1, 1, 1)
+            cr.fill_preserve()
+            cr.set_source_rgb(*blue)
+            cr.set_line_width(2 / scale)
+            cr.stroke()
 
     @staticmethod
     def draw_vertices(cr, points, scale):
