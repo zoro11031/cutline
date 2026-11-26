@@ -351,7 +351,7 @@ class DesignWorkspace:
         self.property_position = self.object_position = 270
         self.dock = dock = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL, position=270, width_request=252,
                          css_classes=['scc-design-sidebar'],
-                         resize_start_child=False, resize_end_child=True,
+                         resize_start_child=True, resize_end_child=True,
                          shrink_start_child=False, shrink_end_child=False)
         dock.set_start_child(properties)
         dock.set_end_child(self.objects_panel())

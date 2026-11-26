@@ -1243,7 +1243,7 @@ class Design(QWidget):
         self.sidebar.addWidget(self.build_dock())
         self.align_properties.setMenu(self.align_button.menu())
         self.sidebar.addWidget(self.objects_pane())
-        self.sidebar.setStretchFactor(0, 0)
+        self.sidebar.setStretchFactor(0, 1)
         self.sidebar.setStretchFactor(1, 1)
         self.sidebar.setSizes([270, 330])
         panes.addWidget(self.sidebar)
