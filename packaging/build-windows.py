@@ -153,7 +153,7 @@ def runtime_member(name):
             and path.suffix.lower() not in {".exe", ".lib", ".pyi"})
 
 
-def build(cache, output):
+def build(cache, output, payload_only=False):
     wheel_dir = cache / "windows-wheels"
     lock = json.loads((ROOT / "packaging/windows-dependencies.json").read_text())
     with TemporaryDirectory(prefix="cutline-requirements-", dir=cache) as folder:
@@ -203,6 +203,9 @@ def build(cache, output):
         }, indent=2) + "\n")
         version = re.search(r'^__version__ = "(.*?)"', (ROOT / "cutline/__init__.py").read_text(),
                             re.M).group(1)
+        if payload_only:
+            shutil.make_archive(str(output / "cutline-windows-payload"), "zip", app)
+            return
         filename = f"Cutline-{version}-Windows-x86_64-Setup.exe"
         # Publish the completed installer only after makensis succeeds.
         with TemporaryDirectory(prefix="windows-setup-", dir=output) as folder:
@@ -219,9 +222,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cache", type=Path, default=ROOT / "out/windows-cache")
     parser.add_argument("--output", type=Path, default=ROOT / "out/packages")
+    parser.add_argument("--payload-only", action="store_true", help="Prepare the shared runtime for Inno Setup.")
     args = parser.parse_args()
-    if not shutil.which("makensis"):
+    if not args.payload_only and not shutil.which("makensis"):
         parser.error("Install NSIS (makensis) to build the Windows installer.")
     for directory in (args.cache, args.output):
         directory.mkdir(parents=True, exist_ok=True)
-    build(args.cache.resolve(), args.output.resolve())
+    build(args.cache.resolve(), args.output.resolve(), args.payload_only)

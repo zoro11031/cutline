@@ -1,0 +1,97 @@
+name: Windows Inno Setup preview
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/windows-inno.yml
+      - packaging/windows-installer.iss
+      - packaging/build-windows.py
+      - packaging/windows-dependencies.json
+      - cutline/windows_update.py
+
+jobs:
+  payload:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y zstd librsvg2-bin python3-pil
+      - run: python3 packaging/build-windows.py --payload-only
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-payload
+          path: out/packages/cutline-windows-payload.zip
+
+  installer:
+    needs: payload
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-payload
+      - name: Build the preview installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tool = Join-Path $PWD 'inno.exe'
+          Invoke-WebRequest 'https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-7.1.1-x64.exe' -OutFile $tool
+          if ((Get-FileHash $tool).Hash -ne '8a5a6711c3766a6e5fb74f280ba0e3551e719ce94538d901fdbd1f8f9920b3f0') { throw 'Inno Setup checksum mismatch' }
+          $compiler = Join-Path $PWD 'inno'
+          $process = Start-Process $tool -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER /DIR=`"$compiler`"" -Wait -PassThru
+          if ($process.ExitCode) { throw "Compiler setup failed: $($process.ExitCode)" }
+          Expand-Archive cutline-windows-payload.zip payload
+          $version = [regex]::Match((Get-Content cutline/__init__.py -Raw), '__version__ = "([^"]+)"').Groups[1].Value
+          & "$compiler\ISCC.exe" "/DPayload=$PWD\payload" "/DVersion=$version" "/O$PWD\preview" packaging/windows-installer.iss
+          if ($LASTEXITCODE) { throw 'ISCC failed' }
+      - name: Verify fresh setup and NSIS migration
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = (Get-ChildItem preview\*-Setup.exe).FullName
+          $default = Join-Path $env:LOCALAPPDATA 'Programs\Cutline'
+          $custom = Join-Path $env:LOCALAPPDATA 'Cutline Custom Install'
+          $old = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Cutline'
+          $new = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Cutline.Inno_is1'
+          $env:CUTLINE_CONFIG = Join-Path $env:LOCALAPPDATA 'Cutline-test-settings'
+          New-Item -ItemType Directory -Force $env:CUTLINE_CONFIG | Out-Null
+          $settings = Join-Path $env:CUTLINE_CONFIG 'sentinel.txt'
+          Set-Content $settings 'preserve this'
+          function Run-Installer($file, $flags) {
+            $watch = [Diagnostics.Stopwatch]::StartNew()
+            $process = Start-Process $file -ArgumentList $flags -Wait -PassThru
+            if ($process.ExitCode) { throw "Setup failed: $($process.ExitCode)" }
+            Write-Host "$file installed in $($watch.Elapsed.TotalSeconds) seconds"
+          }
+          function Check-Install($directory) {
+            if ((Get-ItemProperty $new).InstallLocation.TrimEnd('\') -ne $directory) { throw 'Wrong Inno install location' }
+            if (Test-Path $old) { throw 'Legacy uninstall entry still exists' }
+            & "$directory\app\python.exe" "$directory\app\launcher.py" cut --dry-run
+            if ($LASTEXITCODE) { throw 'Cut dry run failed' }
+            & "$directory\app\python.exe" -c "from PySide6.QtWidgets import QApplication; from cutline import windows_update; app = QApplication([]); assert windows_update.installed()"
+            if ($LASTEXITCODE) { throw 'Qt startup or updater detection failed' }
+            if ((Get-Content $settings) -ne 'preserve this') { throw 'Settings were changed' }
+            $uninstall = (Get-ItemProperty $new).UninstallString.Trim('"')
+            Run-Installer $uninstall '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+          }
+          $flags = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+          Run-Installer $setup $flags
+          Check-Install $default
+          foreach ($case in @(
+            @{ Version = '0.3.0'; Folder = $default; Args = '/S'; Hash = '3f7c404a60514d77ac0c70640d984f4dad1470cbeb72049adae581bd5908b96a' },
+            @{ Version = '0.3.1'; Folder = $custom; Args = "/S /D=$custom"; Hash = '0f26641b66fb08bae81c4aeef5173bb7598e978ebf5615d5947ccd5fe3ab3ce3' }
+          )) {
+            $name = "Cutline-$($case.Version)-Windows-x86_64-Setup.exe"
+            $legacy = Join-Path $PWD $name
+            Invoke-WebRequest "https://github.com/zoro11031/cutline/releases/download/v$($case.Version)/$name" -OutFile $legacy
+            if ((Get-FileHash $legacy).Hash -ne $case.Hash) { throw 'Legacy setup checksum mismatch' }
+            Run-Installer $legacy $case.Args
+            Run-Installer $setup $flags
+            if (Test-Path (Join-Path $case.Folder 'app.inno-previous')) { throw 'Legacy app backup was left behind' }
+            Check-Install $case.Folder
+          }
+          Get-ChildItem preview\*-Setup.exe | Select-Object Name, Length
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-inno-preview
+          path: preview/*-Setup.exe

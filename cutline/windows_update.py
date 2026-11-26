@@ -123,11 +123,14 @@ def installed():
         return False
     import winreg
 
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                            r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Cutline",
-                            access=winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as key:
-            location, _ = winreg.QueryValueEx(key, "InstallLocation")
-        return (Path(location) / "app").resolve() == Path(__file__).resolve().parents[1]
-    except (OSError, TypeError, ValueError):
-        return False
+    root = r"Software\Microsoft\Windows\CurrentVersion\Uninstall"
+    for name in ("Cutline.Inno_is1", "Cutline"):
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, root + "\\" + name,
+                                access=winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as key:
+                location, _ = winreg.QueryValueEx(key, "InstallLocation")
+            if (Path(location) / "app").resolve() == Path(__file__).resolve().parents[1]:
+                return True
+        except (OSError, TypeError, ValueError):
+            continue
+    return False

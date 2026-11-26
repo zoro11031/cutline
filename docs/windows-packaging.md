@@ -19,3 +19,8 @@ updating the existing EXE-based in-app updater. Benchmark MSI and EXE with
 the same payload before attributing size or speed differences to the
 installer format. [WiX Toolset](https://www.firegiant.com/wixtoolset/) ·
 [WiX MajorUpgrade](https://docs.firegiant.com/wix/schema/wxs/majorupgrade/)
+
+The Inno Setup preview workflow compiles the same offline payload with
+LZMA2 and tests fresh setup and migration from the released default and
+custom NSIS installs. Download the preview from its workflow artifacts.
+The release workflow still publishes the NSIS installer.
