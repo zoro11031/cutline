@@ -65,6 +65,19 @@ _CUT_SETTINGS_CSS = """
     background: alpha(@window_fg_color, 0.10);
     box-shadow: none;
 }
+.scc-design-commands, .scc-design-sidebar {
+    border: 1px solid alpha(@window_fg_color, 0.18);
+    border-radius: 6px;
+    background: @view_bg_color;
+}
+.scc-design-options { border-top: 1px solid alpha(@window_fg_color, 0.18); }
+.scc-design-commands entry { min-height: 23px; padding: 0 4px; }
+.scc-design .boxed-list row:selected { background: alpha(#435aa2, 0.38); color: @view_fg_color; }
+.scc-design headerbar togglebutton:checked, .scc-design-rail togglebutton:checked {
+    background: #435aa2; color: white;
+}
+.scc-object-visibility:checked { background: transparent; }
+.scc-object-visibility { padding: 1px 4px; min-height: 24px; min-width: 22px; }
 .scc-notice {
     border: 1px solid @accent_bg_color;
     border-radius: 6px;

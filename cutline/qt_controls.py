@@ -24,8 +24,10 @@ QFrame#workspaceBar {
     border-radius: 9px;
 }
 QFrame#workspaceTools { border-bottom: 1px solid palette(midlight); }
-QFrame#designRibbon { background: palette(base); border: 1px solid palette(midlight); border-radius: 6px; }
-QFrame#designToolOptions { background: palette(base); border: 1px solid palette(midlight); border-radius: 6px; }
+QFrame#designCommands, QSplitter#designSidebar {
+    background: palette(base); border: 1px solid palette(midlight); border-radius: 3px;
+}
+QFrame#designToolOptions { border-top: 1px solid palette(midlight); }
 QToolButton[role="designRibbon"] {
     background: palette(button); border: 1px solid palette(midlight);
     border-radius: 5px; padding: 2px 6px; min-height: 22px;
@@ -40,7 +42,7 @@ QLabel[role="saveBadge"] {
 QLabel[role="saveBadge"][dirty="true"] { font-weight: 600; color: palette(highlight); }
 QFrame#designNotice { background: palette(alternate-base); border: 1px solid palette(highlight); border-radius: 5px; }
 QFrame#designNotice[level="warning"] { border-color: @destructive; }
-QFrame#designObjectsPane { border-left: 1px solid palette(midlight); border-top: 1px solid palette(midlight); }
+QFrame#designObjectsPane { border-top: 1px solid palette(midlight); }
 QScrollArea[role="settings"], QWidget[role="settingsPage"] { background: palette(window); }
 QTabWidget[role="settings"]::pane { border: 0; border-top: 1px solid palette(midlight); }
 QTabWidget[role="settings"] QTabBar::tab {
@@ -75,6 +77,10 @@ QPushButton[role="workspaceTab"]:hover, QPushButton[role="workspaceTab"]:focus {
 QPushButton[role="workspaceTab"][active="true"] {
     background: palette(highlight); color: @accent_text; border-color: palette(highlight);
 }
+QFrame[designHeader="true"] QPushButton[role="workspaceTab"][active="true"] {
+    background: @design_tool_active; color: white; border-color: @design_tool_active;
+}
+
 QPushButton[role="workspaceTool"], QToolButton[role="workspaceTool"] {
     background: palette(button); border: 1px solid palette(midlight);
     border-radius: 5px; padding: 4px 8px;
@@ -90,15 +96,14 @@ QToolButton[role="designTool"] {
     background: transparent; border: 2px solid transparent; border-radius: 6px;
 }
 QToolButton[role="designTool"]:hover { background: palette(alternate-base); }
-QToolButton[role="designTool"]:checked, QToolButton[role="designTool"]:pressed { background: palette(highlight); }
+QToolButton[role="designTool"]:checked, QToolButton[role="designTool"]:pressed { background: @design_tool_active; }
 QToolButton[role="designTool"]:focus { border-color: palette(button-text); }
 QToolButton[role="designTool"]::menu-indicator { image: none; }
-QFrame#designDocument { border: 1px solid palette(midlight); border-radius: 6px; }
+QFrame#designDocument { border: 1px solid palette(midlight); }
 QTabBar[role="document"]::tab {
     padding: 5px 14px; border: 0; border-bottom: 2px solid palette(highlight); background: palette(base);
 }
 QLabel[role="panelTitle"] { font-weight: 600; padding: 2px 0 4px 2px; }
-QFrame#designDock { border-left: 1px solid palette(midlight); }
 QLabel[role="dockSection"] { font-size: 11px; font-weight: 600; padding-top: 3px; }
 QWidget[role="dockBody"] QAbstractSpinBox, QWidget[role="dockBody"] QComboBox,
 QWidget[role="dockBody"] QLineEdit, QWidget[role="dockBody"] QPushButton { min-height: 22px; }
@@ -106,7 +111,7 @@ QWidget[role="dockBody"] QPushButton { padding: 2px 8px; }
 QListWidget[role="designObjects"] { border: 0; border-radius: 5px; }
 QListWidget[role="designObjects"]::item { padding: 4px 8px; border-radius: 4px; }
 QListWidget[role="designObjects"]::item:selected {
-    background: palette(highlight); color: @accent_text;
+    background: @design_selection; color: palette(text);
 }
 QPushButton[role="holder"]:checked {
     background: palette(highlight); color: @accent_text; border-radius: 5px;
@@ -236,7 +241,13 @@ def workspace_style(palette):
     destructive = QColor("#c0392b") if window.lightnessF() > 0.5 else QColor("#e05c54")
     destructive_text = _legible(palette.color(active, role.HighlightedText), destructive)
     destructive_edge = destructive.darker(125) if window.lightnessF() > 0.5 else destructive.lighter(115)
+    surface = palette.color(active, role.Base)
+    indigo = QColor("#435aa2")
+    selection = QColor.fromRgbF(*(a * 0.72 + b * 0.28
+                                  for a, b in zip(surface.getRgbF()[:3], indigo.getRgbF()[:3])))
     return (_WORKSPACE_STYLE.replace("@accent_text", accent.name())
+            .replace("@design_selection", selection.name())
+            .replace("@design_tool_active", indigo.name())
             .replace("@destructive_text", destructive_text.name())
             .replace("@destructive_edge", destructive_edge.name())
             .replace("@destructive", destructive.name())
@@ -343,13 +354,16 @@ def workspace_tools(parent):
     return surface, layout
 
 
-def workspace_header(parent, design, send, *, active):
+def workspace_header(parent, design, send, *, active, document=None):
     header, top = bar(parent, (6, 4, 8, 4))
     menu = QMenuBar(header)
     menu.setObjectName("workspaceMenu")
     menu.setNativeMenuBar(False)
     top.addWidget(menu)
-    top.addStretch(1)
+    if document is None:
+        top.addStretch(1)
+    else:
+        top.addWidget(document, 1)
     switch = QWidget(header)
     row = QHBoxLayout(switch)
     row.setContentsMargins(0, 0, 0, 0)
@@ -729,7 +743,7 @@ class DesignIconButton(QToolButton):
         painter = QStylePainter(self)
         painter.drawComplexControl(QStyle.ComplexControl.CC_ToolButton, option)
         palette = option.palette
-        color = (_legible(palette.highlightedText().color(), palette.highlight().color())
+        color = (_legible(QColor("white"), QColor("#435aa2"))
                  if self.isChecked() or self.isDown() else palette.buttonText().color())
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         scale = min(1.0, (self.width() - 6) / 24)
@@ -906,14 +920,28 @@ class PanelDock(QFrame):
         self.setObjectName("designDock")
         self.panels = {}
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(6, 6, 6, 0)
         layout.setSpacing(4)
         self.picker = QComboBox()
         self.picker.setAccessibleName("Design panel")
-        layout.addWidget(self.picker)
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(4)
+        header.addWidget(self.picker, 1)
+        self.disclosure = QToolButton(checkable=True, checked=True, arrowType=Qt.ArrowType.DownArrow)
+        self.disclosure.setAccessibleName("Show properties")
+        self.disclosure.setToolTip("Collapse or expand properties")
+        self.disclosure.toggled.connect(self.show_properties)
+        header.addWidget(self.disclosure)
+        layout.addLayout(header)
         self.pages = QStackedWidget()
         layout.addWidget(self.pages, 1)
         self.picker.currentIndexChanged.connect(self.switch_panel)
+
+    def show_properties(self, expanded):
+        self.pages.setVisible(expanded)
+        self.disclosure.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self.setMaximumHeight(16777215 if expanded else self.layout().minimumSize().height())
 
     def add(self, key, title, icon):
         panel = DockPanel(title)
@@ -931,6 +959,7 @@ class PanelDock(QFrame):
         self.changed.emit()
 
     def open(self, key):
+        self.disclosure.setChecked(True)
         self.picker.setCurrentIndex(self.picker.findData(key))
 
     def shown(self):

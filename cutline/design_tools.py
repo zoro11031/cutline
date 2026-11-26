@@ -25,6 +25,9 @@ TURN_LEFT = (((8, 4), (4, 8), (9, 10)),
              ((4, 8), (8, 5), (13, 4), (17, 6), (20, 10), (20, 15), (17, 19), (12, 20), (8, 18)))
 TURN_RIGHT = tuple(tuple((24 - x, y) for x, y in stroke) for stroke in TURN_LEFT)
 TRANSFORM_MODES = ("Transform", "Rotate", "Scale")
+TRANSFORM_FIELDS = (("x", "X", "X (mm)"), ("y", "Y", "Y (mm)"),
+                    ("width", "W", "Width (mm)"), ("height", "H", "Height (mm)"),
+                    ("rotation", "°", "Rotation (degrees)"))
 ROTATE_MODES = ("Transform", "Rotate")
 SCALE_MODES = ("Transform", "Scale")
 
@@ -76,6 +79,20 @@ TOOLS = tuple(tool for _title, group in TOOL_GROUPS for tool in group)
 TOOL_NAMES = tuple(tool.name for tool in TOOLS)
 
 COMMAND_ICONS = {
+    "new": Tool("New Design", "Ctrl+N", "Start a blank design.",
+                (((6, 3), (14, 3), (18, 7), (18, 21), (6, 21), (6, 3)),
+                 ((14, 3), (14, 7), (18, 7)), ((9, 13), (15, 13)), ((12, 10), (12, 16)))),
+    "open": Tool("Open Design", "Ctrl+O", "Open a saved design or artwork.",
+                 (((3, 18), (3, 6), (9, 6), (11, 8), (20, 8), (20, 10)),
+                  ((3, 18), (7, 11), (22, 11), (18, 18), (3, 18)))),
+    "lock_ratio": Tool("Lock aspect ratio", "", "Keep width and height proportional.",
+                       (((8, 14), (6, 16), (6, 19), (9, 20), (14, 15), (14, 12)),
+                        ((10, 12), (10, 9), (15, 4), (18, 5), (18, 8), (16, 10)),
+                        ((9, 15), (15, 9)))),
+    "visibility": Tool("Object visibility", "", "Show or hide this object.",
+                        (((2, 12), (5, 9), (9, 7), (15, 7), (19, 9), (22, 12),
+                          (19, 15), (15, 17), (9, 17), (5, 15), (2, 12)),
+                         ((12, 10), (14, 12), (12, 14), (10, 12), (12, 10)))),
     "save": Tool("Save", "", "Save the design.",
                  (((4, 4), (17, 4), (20, 7), (20, 20), (4, 20), (4, 4)),
                   ((8, 4), (8, 10), (16, 10), (16, 4)),
@@ -202,6 +219,8 @@ GTK_TOOL_GROUPS = (
     *TOOL_GROUPS[:3],
     ("Shape tools", (*TOOL_GROUPS[3][1], REGULAR_POLYGON_TOOL)),
     ("Path tools", (_tool("Polygon"), CURVE_TOOL, ARC_TOOL, _tool("Freehand"), SMOOTH_FREEHAND_TOOL)),
+    ("Type", (Tool("Type", "Y", TYPE_TOOL.hint, TYPE_TOOL.strokes),)),
+    ("View tools", (HAND_TOOL, ZOOM_TOOL)),
 )
 GTK_TOOLS = tuple(tool for _, group in GTK_TOOL_GROUPS for tool in group)
 GTK_TOOL_NAMES = tuple(tool.name for tool in GTK_TOOLS)

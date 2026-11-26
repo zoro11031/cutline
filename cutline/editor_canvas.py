@@ -108,6 +108,23 @@ class DesignCanvas(Gtk.DrawingArea):
         self.pan = self.pan_start[0] + x, self.pan_start[1] + y
         self.queue_draw()
 
+    def fit_selection(self):
+        indices = self.editor.selected_indices()
+        if not indices:
+            return
+        box = editor_model.bounds(self.editor.project.shapes[i] for i in indices)
+        width, height = self.get_width(), self.get_height()
+        _, _, scale = self.viewport(width, height)
+        margin = max(4.0, box.w * 0.08, box.h * 0.08)
+        desired = min((width - 36) / (box.w + 2 * margin), (height - 36) / (box.h + 2 * margin))
+        self.zoom = max(0.5, min(8.0, self.zoom * desired / scale))
+        self.pan = (0.0, 0.0)
+        left, top, scale = self.viewport(width, height)
+        self.pan = (width / 2 - left - (box.x + box.w / 2) * scale,
+                    height / 2 - top - (box.y + box.h / 2) * scale)
+        self.editor.zoom_readout.set_label(f'{self.zoom:.0%}')
+        self.queue_draw()
+
     def reveal_point(self, point):
         width, height = self.get_width(), self.get_height()
         if min(width, height) < 48:
@@ -137,7 +154,7 @@ class DesignCanvas(Gtk.DrawingArea):
 
         mat = editor.mat_size if editor.show_mat.get_active() else None
         if mat:
-            self.draw_mat(cr, *mat, scale)
+            self.draw_mat(cr, *mat, scale, editor.show_mat_grid.get_active())
         cr.set_source_rgb(1, 1, 1)
         cr.rectangle(0, 0, w, h)
         cr.fill_preserve()
@@ -255,7 +272,7 @@ class DesignCanvas(Gtk.DrawingArea):
         cr.restore()
 
     @staticmethod
-    def draw_mat(cr, width, height, scale):
+    def draw_mat(cr, width, height, scale, show_grid=True):
         pad = 15
         cr.set_source_rgb(0.61, 0.65, 0.68)
         cr.rectangle(-pad, -pad, width + 2 * pad, height + 2 * pad)
@@ -264,7 +281,9 @@ class DesignCanvas(Gtk.DrawingArea):
         cr.set_line_width(1 / scale)
         cr.rectangle(0, 0, width, height)
         cr.stroke()
-        _grid(cr, width, height, max(25.4, 4/scale))
+        if show_grid:
+            cr.set_source_rgb(0.55, 0.59, 0.62)
+            _grid(cr, width, height, max(25.4, 4/scale))
         draw_feed_arrow(cr, width, (0.32, 0.37, 0.41))
 
     @staticmethod

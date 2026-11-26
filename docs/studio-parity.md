@@ -32,6 +32,13 @@ nodes and Bézier handles and add a point on the outline. The next GTK
 point-editing slice is the node commands and joining open endpoints.
 Studio3 export still needs complete files checked in Studio.
 
+The redesigned workspace puts document actions and tool options above the
+canvas, with a drawing rail and independently collapsible Properties and
+Objects panels. Paper and mat grids have separate toggles. Object visibility
+and reorder edits enter the undo history. Qt offers a nine-point origin for
+relative and pointer rotation. The current project model stores flat groups
+and generated object names.
+
 ## Design: drawing and editing
 
 Coverage in these two sections refers to both Qt and GTK unless a row
@@ -54,7 +61,7 @@ either frontend is partial.
 | Eraser | Qt, with a size | 🟡 |
 | Eyedropper | Qt Eyedropper copies cut action, line and fill | 🟡 |
 | Measure | Qt measures and scales to a known length | 🟡 |
-| Pan and zoom | Both zoom and pan; Qt also has Hand and Zoom tools and Space to pan | 🟡 |
+| Pan and zoom | Both have Hand and Zoom tools and fit-to-selection. Qt also has Space to pan | 🟡 |
 | Undo, redo, cut, copy, paste, paste in front, duplicate | Both | ✅ |
 | Select All and Select Same | Both, Select Same by line or fill colour | ✅ |
 | Basic shapes library (hearts, stars, arrows…) | Keyboard-accessible Add Shape in Qt and GTK covers the basic drawing tools | 🟡 |
@@ -74,13 +81,13 @@ either frontend is partial.
 | Offset and internal offset | Both expose offset; Qt adds a separate Internal Offset action | 🟡 |
 | Trace: threshold, high pass, outer edge, detach | Both offer Trace and Bleed and show when sticker export can proceed. Qt adds trace-area preview and trace styles | 🟡 |
 | Nesting | Qt nests to the cut area or a selected border with rotation and padding | 🟡 |
-| Text Style: fonts, size, bold, italic, spacing, justification | Qt has the Text Style panel; GTK edits text in a dialog with font and size | 🟡 |
+| Text Style: fonts, size, bold, italic, spacing, justification | Qt has the Text Style panel; GTK has a Type tool with contextual font, size, and alignment and edits text in a dialog | 🟡 |
 | Text on a path | Qt has Text to Path and Release Path | 🟡 |
 | Text warp | — | ❌ |
 | Line and fill colour | Line and Fill panel | ✅ |
 | Pattern and gradient fills | — | ❌ |
 | Grid and snap | Both have grid and snapping; Qt adds rulers, guides and crosshairs | 🟡 |
-| Layers | The Objects panel lists objects; there are no layers | 🟡 |
+| Layers | Objects supports visibility, selection, grouping, drag reordering, and context menus. Object groups appear in the list. Full layer hierarchies remain partial. | 🟡 |
 | Image effects (brightness, colour) | — | ❌ |
 | Sketch and Rhinestone | — | ❌ |
 | Emboss | — | ❌ |

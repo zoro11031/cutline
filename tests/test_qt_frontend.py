@@ -1987,6 +1987,30 @@ class TestQtDesignEditor(unittest.TestCase):
     def click(self, canvas, point):
         QTest.mouseClick(canvas.viewport(), Qt.MouseButton.LeftButton, pos=canvas.mapFromScene(QPointF(*point)))
 
+    def test_workspace_context_geometry_visibility_and_order_keep_project_history(self):
+        shapes = (editor_model.Shape("Rectangle", 20, 20, 25, 15),
+                  editor_model.Shape("Ellipse", 70, 35, 20, 10))
+        design = self.editor(editor_model.Project(216, 279, shapes))
+        design.resize(720, 520)
+        design.show()
+        self.app.processEvents()
+        self.assertGreater(design.context_fields["x"].lineEdit().width(), 10)
+        design.context_fields["x"].setValue(28)
+        self.assertEqual(design.project.shapes[0].x, 28)
+        self.assertEqual(design.fields["x"].value(), 28)
+        design.objects.item(0).setCheckState(Qt.CheckState.Unchecked)
+        self.assertFalse(design.project.shapes[0].visible)
+        self.assertEqual(len(design.project.artwork().paths), 1)
+        design.reorder_objects(2)
+        self.assertEqual([shape.kind for shape in design.project.shapes], ["Ellipse", "Rectangle"])
+        design.undo()
+        self.assertEqual([shape.kind for shape in design.project.shapes], ["Rectangle", "Ellipse"])
+        design.dock.disclosure.setChecked(False)
+        self.assertFalse(design.dock.pages.isVisible())
+        self.assertTrue(design.objects.isVisible())
+        design.dock.open("transform")
+        self.assertTrue(design.dock.pages.isVisible())
+
     def test_design_ribbon_fits_and_preserves_selection_during_resize(self):
         from PySide6.QtGui import QFont
 
@@ -2097,12 +2121,12 @@ class TestQtDesignEditor(unittest.TestCase):
         menus = {action.text().replace("&", ""): action.menu() for action in design.menu_bar.actions()}
         show = next(action.menu() for action in menus["View"].actions() if action.text() == "Show")
         self.assertEqual([action.text() for action in show.actions()],
-                         ["Grid", "Rulers", "Crosshairs", "Cutting Mat", "Cut Border", "Print Border"])
+                         ["Paper Grid", "Mat Grid", "Rulers", "Crosshairs", "Cutting Mat", "Cut Border", "Print Border"])
         self.assertIn(design.snap, menus["View"].actions())
         with mock.patch.object(design.canvas, "redraw") as redraw:
-            design.show_grid.setChecked(False)
+            design.show_grid.setChecked(True)
         self.assertEqual(redraw.call_count, 1)
-        self.assertFalse(design.grid_check.isChecked(), "the Grid panel follows View → Show → Grid")
+        self.assertTrue(design.grid_check.isChecked(), "the Grid panel follows View → Show → Paper Grid")
         grid = next(action for action in menus["View"].actions() if action.text() == "Grid…")
         grid.trigger()
         self.assertIn("grid", design.dock.shown())
@@ -2235,7 +2259,7 @@ class TestQtDesignEditor(unittest.TestCase):
         design.undo()
         self.assertEqual(design.project.shapes, (shape,))
         QTest.keyClick(canvas, Qt.Key.Key_F9)
-        self.assertTrue(design.dock.isHidden())
+        self.assertFalse(design.dock.isVisibleTo(design))
         self.assertTrue(palette.isHidden())
         QTest.keyClick(canvas, Qt.Key.Key_F9)
         self.assertTrue(design.dock.isVisibleTo(design))
@@ -2359,7 +2383,7 @@ class TestQtDesignEditor(unittest.TestCase):
         # Double-clicking a shape enters Point Editing.
         QTest.mouseDClick(canvas.viewport(), Qt.MouseButton.LeftButton, pos=canvas.mapFromScene(QPointF(70, 40)))
         self.assertEqual(design.tool.currentData(), "Point Edit")
-        self.assertTrue(design.point_options.isVisibleTo(design))
+        self.assertTrue(design.point_options.isVisibleTo(design) or design.adaptive_points.overflow.isVisible())
         # Clicking the outline adds a point; clicking inside does not.
         self.click(canvas, (70, 70))
         self.assertEqual(design.project.shapes[0].kind, "Rectangle")
@@ -2611,6 +2635,7 @@ class TestQtDesignEditor(unittest.TestCase):
         design.show()
         self.app.processEvents()
         lines = lambda: sum(1 for item in design.canvas.scene().items() if item.type() == 6)  # noqa: E731
+        design.show_grid.setChecked(True)
         square = lines()
         design.grid_divisions.setValue(2)
         self.assertGreater(lines(), square, "divisions add minor lines")

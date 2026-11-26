@@ -593,7 +593,7 @@ class TestDesignWorkspace(unittest.TestCase):
         design = win.design
         project = compound_project()
         design.commit(project.shapes, (0,))
-        design.text_button.emit('clicked')
+        design.view.activate_action('design.text', None)
         dialog = win.get_visible_dialog()
         self.assertIsNotNone(dialog)
         text = dialog.get_child().get_content().get_first_child().get_child()
@@ -609,8 +609,7 @@ class TestDesignWorkspace(unittest.TestCase):
         add = next(widget for widget in children(dialog) if isinstance(widget, gui.Gtk.Button) and
                    widget.get_label() == 'Add')
         add.emit('clicked')
-        self.assertEqual(design.text_button.get_tooltip_text(), 'Edit Text…')
-        self.assertIsInstance(design.text_button.get_child(), gui.Gtk.DrawingArea)
+        self.assertTrue(design.edit_text_ribbon_button.get_visible())
         self.assertEqual(design.project.shapes[1].text.value, 'O')
         design.commit((design.project.shapes[0], replace(design.project.shapes[1], x=110, y=40)), (1,))
         with tempfile.TemporaryDirectory() as tmp:
@@ -880,7 +879,7 @@ class TestDesignWorkspace(unittest.TestCase):
         palette = design.tool
         for button, name in ((design.save_button, 'Save'), (design.undo_button, 'Undo'),
                              (design.redo_button, 'Redo'),
-                             (design.text_button, 'Add Text…'), (design.trace_button, 'Trace and Bleed…')):
+                             (design.trace_button, 'Trace and Bleed…')):
             self.assertTrue(button.get_tooltip_text().startswith(name))
             self.assertIsInstance(button.get_child(), gui.Gtk.DrawingArea)
         self.assertEqual(design.add_button.get_child().get_last_child().get_label(), 'Add Shape')
@@ -953,6 +952,27 @@ class TestDesignWorkspace(unittest.TestCase):
                 self.assertEqual(design.project, opened)
                 self.assertTrue(design.notice_bar.get_visible())
 
+    def test_workspace_context_geometry_and_object_order_are_undoable(self):
+        win = self.make_window()
+        win.draw_in_design_btn.emit('clicked')
+        design = win.design
+        shapes = (editor_model.Shape('Rectangle', 20, 20, 25, 15),
+                  editor_model.Shape('Ellipse', 70, 35, 20, 10))
+        design.commit(shapes, (0,))
+        entry, _ = design.context_fields['x']
+        entry.set_text('28')
+        entry.emit('activate')
+        self.assertEqual(design.project.shapes[0].x, 28)
+        self.assertEqual(design.fields['x'].get_value(), 28)
+        design.objects.get_row_at_index(0).get_child().get_first_child().set_active(False)
+        self.assertFalse(design.project.shapes[0].visible)
+        self.assertEqual(len(design.project.artwork().paths), 1)
+        row = design.objects.get_row_at_index(1).get_child()
+        self.assertTrue(design.drop_objects(row, 0, 10))
+        self.assertEqual([shape.kind for shape in design.project.shapes], ['Ellipse', 'Rectangle'])
+        design.change_history(design.history.undo)
+        self.assertEqual([shape.kind for shape in design.project.shapes], ['Rectangle', 'Ellipse'])
+
     def test_numeric_transform_moves_and_scales_selection_as_one_box(self):
         win = self.make_window()
         win.draw_in_design_btn.emit('clicked')
@@ -1017,7 +1037,7 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertTrue(palette.menus['Transform tools'].get_visible())
         palette.choices['Scale'].emit('clicked')
         self.assertEqual(design.active_tool, 'Scale')
-        self.assertTrue(design.quick_transforms.get_visible())
+        self.assertTrue(design.context_transform.get_visible())
         self.assertFalse(design.option_snap.get_visible())
         self.assertEqual(design.panel_switcher.get_selected(), 1)
         palette.slots['Select'].emit('clicked')

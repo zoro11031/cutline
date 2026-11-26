@@ -1,17 +1,18 @@
 """Full-window GTK design workspace and shape inspector."""
 
 from dataclasses import dataclass, replace
+import locale
 import math
 from pathlib import Path
 import threading
 
 import cairo
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
 from . import design_text, editor_model, geometry, graphtec, importer, path_edit, regmarks, sticker_assets, sticker_print, sticker_trace, template
 from .design_tools import (ALIGNMENT_ROWS, CLICK_PATH_TOOLS, COMMAND_ICONS, OBJECT_ICONS, ROTATE_MODES, SCALE_MODES,
                            GTK_TOOL_GROUPS as TOOL_GROUPS, GTK_TOOL_KEYS as TOOL_KEYS, GTK_TOOL_NAMES as TOOL_NAMES,
-                           GTK_TOOLS as TOOLS, TRANSFORM_ICONS, TRANSFORM_MODES,
+                           GTK_TOOLS as TOOLS, TRANSFORM_FIELDS, TRANSFORM_ICONS, TRANSFORM_MODES,
                            RotationHandle, contextual_hint, rotation_handle, scale_from_corner)
 from .editor_canvas import DesignCanvas, draw_strokes
 from .editor_model import (ACTIONS, ALIGNMENTS,
@@ -31,6 +32,7 @@ class Drag:
     points: list | None = None
     vertex: tuple[int, int] | None = None
     node: tuple[path_edit.Nodes, str, int, int | None] | None = None
+    start_pan: tuple[float, float] | None = None
     rotation: RotationHandle | None = None
     angle: float = 0
     scale_anchor: tuple[float, float] | None = None
@@ -221,9 +223,14 @@ class DesignWorkspace:
         self.shortcuts = shortcuts = Gtk.ShortcutController(scope=Gtk.ShortcutScope.MANAGED)
         self.view.add_controller(shortcuts)
 
-        self.tools_bar = toolbar = workspace_tools(margin_start=12, margin_end=12, margin_bottom=8)
-        self.view.add_top_bar(toolbar)
+        self.commands = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, margin_start=8, margin_end=8,
+                                margin_bottom=6, css_classes=['scc-design-commands'])
+        self.view.add_top_bar(self.commands)
+        self.tools_bar = toolbar = workspace_tools(margin_start=6, margin_end=6, margin_top=3, margin_bottom=3)
+        self.commands.append(toolbar)
         history_tools = Gtk.Box(spacing=2)
+        self.icon_button(history_tools, 'new', self.new_project)
+        self.icon_button(history_tools, 'open', self.open_project)
         self.save_button = self.icon_button(history_tools, 'save', self.save)
         self.save_button.set_tooltip_text('Save (Ctrl+S)\nSave the design.')
         self.undo_button = self.icon_button(history_tools, 'undo', lambda *_: self.change_history(self.history.undo))
@@ -238,8 +245,6 @@ class DesignWorkspace:
         artwork.append(self.import_button)
         self.add_button = ribbon_button(COMMAND_ICONS['shape'], 'Add Shape', self.add_shape)
         artwork.append(self.add_button)
-        self.place_image_button = self.icon_button(artwork, 'image', lambda *_: self.place_sticker())
-        self.text_button = self.icon_button(artwork, 'text', lambda *_: self.text_dialog())
         toolbar.append(artwork)
         self.selection_separator = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL, margin_top=6, margin_bottom=6,
                                                  visible=False)
@@ -291,27 +296,32 @@ class DesignWorkspace:
                                                      lambda *_: self.text_dialog(), tip='Edit the selected text')
         self.selection_tools.append(self.edit_text_ribbon_button)
         toolbar.append(self.selection_tools)
-        title_space = Gtk.Overlay(hexpand=True, child=Gtk.Box())
-        self.document_title = Gtk.Label(xalign=1, ellipsize=Pango.EllipsizeMode.MIDDLE, css_classes=["heading"])
-        title_space.add_overlay(self.document_title)
-        title_space.set_measure_overlay(self.document_title, False)
-        toolbar.append(title_space)
+        document = Gtk.Box(spacing=6)
+        self.document_title = Gtk.Label(width_chars=1, max_width_chars=28,
+                                        ellipsize=Pango.EllipsizeMode.MIDDLE, css_classes=['heading'])
+        document.append(self.document_title)
         self.save_state = Gtk.Label(css_classes=['caption', 'dim-label'], visible=False)
-        toolbar.append(self.save_state)
+        document.append(self.save_state)
+        header.set_title_widget(document)
         fit_button = design_icon_button(COMMAND_ICONS['fit'])
         fit_button.connect('clicked', self.fit)
         zoom, self.zoom_readout = zoom_controls(lambda factor: self.canvas.zoom_by(factor),
                                                lambda: self.fit(None), fit_button=fit_button)
         self.tools = TOOL_NAMES
         self.tool = GtkToolStrip(changed=self.tool_changed)
+        self.tool.add_css_class('scc-design-rail')
+        self.place_image_button = design_icon_button(COMMAND_ICONS['image'])
+        self.place_image_button.set_halign(Gtk.Align.START)
+        self.place_image_button.connect('clicked', lambda *_: self.place_sticker())
+        self.tool.insert_child_after(self.place_image_button, self.tool.slots['Type'].get_parent())
         self.clipboard = ()
         self.options_bar = self.tool_options_bar()
-        self.view.add_top_bar(self.options_bar)
+        self.commands.append(self.options_bar)
         self.exporting_stickers = False
 
         self.canvas = DesignCanvas(self)
         self.canvas.set_cursor_from_name('default')
-        properties = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, height_request=125)
+        properties = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.inspector = Gtk.Stack(vexpand=True)
         panels = (('Page Setup', self.page_panel), ('Transform', self.transform_panel),
                   ('Replicate', self.replicate_panel), ('Line and Fill', self.style_panel))
@@ -323,15 +333,24 @@ class DesignWorkspace:
         self.option_snap.connect('toggled', lambda widget: self.snap.set_active(widget.get_active()))
         self.snap.connect('toggled', lambda widget: self.option_snap.set_active(widget.get_active()))
         self.panel_switcher = switcher = Gtk.DropDown.new_from_strings([label for label, _ in panels])
-        switcher.set_margin_start(12)
-        switcher.set_margin_end(12)
-        switcher.set_margin_top(8)
+        switcher.set_hexpand(True)
+        switcher.update_property([Gtk.AccessibleProperty.LABEL], ['Design panel'])
         switcher.connect('notify::selected', lambda widget, *_: self.inspector.set_visible_child_name(
             panels[widget.get_selected()][0]))
-        properties.append(switcher)
+        property_header = Gtk.Box(spacing=4, margin_start=8, margin_end=8, margin_top=6)
+        property_header.append(switcher)
+        self.property_disclosure = collapse = Gtk.ToggleButton(
+            icon_name='pan-down-symbolic', active=True, tooltip_text='Show properties')
+        collapse.update_property([Gtk.AccessibleProperty.LABEL], ['Show properties'])
+        collapse.connect('toggled', lambda button: self.toggle_inspector_section(
+            button, self.inspector, property_header, properties=True))
+        property_header.append(collapse)
+        properties.append(property_header)
         properties.append(self.inspector)
-        self.dock = dock = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL, wide_handle=True, position=340, width_request=252,
-                         resize_start_child=True, resize_end_child=True,
+        self.property_position = self.object_position = 270
+        self.dock = dock = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL, position=270, width_request=252,
+                         css_classes=['scc-design-sidebar'],
+                         resize_start_child=False, resize_end_child=True,
                          shrink_start_child=False, shrink_end_child=False)
         dock.set_start_child(properties)
         dock.set_end_child(self.objects_panel())
@@ -374,24 +393,72 @@ class DesignWorkspace:
         header.pack_start(self.menu_bar)
         protect_settings_wheel(self.view)
         self.view.add_css_class('scc-workspace')
-        self.refresh_objects((0,))
+        self.view.add_css_class('scc-design')
+        self.refresh_objects((0,) if project.shapes else ())
+        self.panel_switcher.set_selected(1 if project.shapes else 0)
         self.tool_changed()
 
+    def open_panel(self, index):
+        self.property_disclosure.set_active(True)
+        self.panel_switcher.set_selected(index)
+
+    def toggle_inspector_section(self, button, contents, header, *, properties):
+        expanded = button.get_active()
+        button.set_icon_name('pan-down-symbolic' if expanded else 'pan-end-symbolic')
+        position = 'property_position' if properties else 'object_position'
+        if not expanded:
+            setattr(self, position, self.dock.get_position())
+        contents.set_visible(expanded)
+        if expanded:
+            self.dock.set_position(getattr(self, position))
+        elif properties:
+            self.dock.set_position(header.get_height() + 12)
+        else:
+            self.dock.set_position(self.dock.get_height() - header.get_height() - 12)
+
     def tool_options_bar(self):
-        frame = Gtk.Frame(margin_start=12, margin_end=12, margin_bottom=8)
+        frame = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, css_classes=['scc-design-options'])
         frame.update_property([Gtk.AccessibleProperty.LABEL], ['Tool options'])
         row = Gtk.Box(spacing=5, margin_start=8, margin_end=8)
-        frame.set_child(row)
+        frame.append(row)
         row.append(self.tool.active_label)
         row.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL, margin_top=6, margin_bottom=6))
         self.option_snap = design_icon_button(COMMAND_ICONS['snap'], toggle=True)
         row.append(self.option_snap)
-        self.quick_transforms = Gtk.Box(spacing=2, visible=False)
-        self.quick_transform_buttons = {
-            name: self.icon_button(self.quick_transforms, icon, lambda _button, op=name: self.transform_objects(op))
-            for name, icon in TRANSFORM_ICONS.items()
-        }
-        row.append(self.quick_transforms)
+        self.context_transform = Gtk.Box(spacing=4)
+        self.context_fields = {}
+        for field, prefix, name in TRANSFORM_FIELDS:
+            entry = Gtk.Entry(width_chars=5, max_width_chars=7, input_purpose=Gtk.InputPurpose.NUMBER)
+            entry.update_property([Gtk.AccessibleProperty.LABEL], [name])
+            entry.set_tooltip_text(name)
+            entry.connect('activate', self.apply_context_field, field)
+            label = Gtk.Label(label=prefix, css_classes=['dim-label'])
+            self.context_transform.append(label)
+            self.context_transform.append(entry)
+            self.context_fields[field] = entry, label
+        row.append(self.context_transform)
+        self.context_type = Gtk.Box(spacing=6)
+        self.type_families = ()
+        self.type_font = Gtk.DropDown()
+        self.type_font.set_enable_search(True)
+        self.type_font.update_property([Gtk.AccessibleProperty.LABEL], ['Font'])
+        self.type_size = Gtk.SpinButton.new_with_range(1, 100, 0.5)
+        self.type_size.set_value(10)
+        self.type_size.set_width_chars(4)
+        self.type_size.update_property([Gtk.AccessibleProperty.LABEL], ['Text size (mm)'])
+        self.type_align = Gtk.DropDown.new_from_strings(['Left', 'Center', 'Right'])
+        self.type_align.update_property([Gtk.AccessibleProperty.LABEL], ['Text alignment'])
+        self.type_font.connect('notify::selected', self.apply_context_text)
+        self.type_size.connect('value-changed', self.apply_context_text)
+        self.type_align.connect('notify::selected', self.apply_context_text)
+        self.context_type.append(self.type_font)
+        self.context_type.append(self.type_size)
+        self.context_type.append(self.type_align)
+        row.append(self.context_type)
+
+        self.radius_option = Gtk.Box()
+        self.shape_radius = self.spin(self.radius_option, 'Radius (mm)', 0, 100, 3, step=0.5)
+        row.append(self.radius_option)
         self.sides_option = Gtk.Box(visible=False)
         self.sides = self.spin(self.sides_option, 'Sides', 3, 64, 5, step=1, digits=0)
         self.sides.set_width_chars(3)
@@ -406,6 +473,77 @@ class DesignWorkspace:
         row.append(self.tool_hint)
         return frame
 
+    def apply_context_field(self, entry, field):
+        try:
+            value = locale.atof(entry.get_text())
+            if not math.isfinite(value):
+                raise ValueError
+        except ValueError:
+            self.show_message('Enter a number.', level='warning')
+        else:
+            self.fields[field].set_value(value)
+        self.refresh_context_fields()
+
+    def refresh_context_fields(self):
+        has_selection = bool(self.selected_indices())
+        self.context_transform.set_visible(has_selection and
+                                           self.active_tool in ('Select', *TRANSFORM_MODES))
+        for key, (entry, label) in self.context_fields.items():
+            source = self.fields[key]
+            entry.set_visible(source.get_sensitive())
+            label.set_visible(source.get_sensitive())
+            entry.set_text(locale.format_string('%.3f', source.get_value()).rstrip('0').rstrip(
+                locale.localeconv()['decimal_point']))
+
+    def context_text_spec(self):
+        selection = self.selected_indices()
+        if len(selection) == 1:
+            shape = self.project.shapes[selection[0]]
+            if shape.text:
+                return selection[0], shape.text
+        return None, None
+
+    def apply_context_text(self, *_args):
+        if self.loading or not self.type_families:
+            return
+        index, spec = self.context_text_spec()
+        if spec is None:
+            return
+        family = self.type_font.get_selected()
+        if family >= len(self.type_families):
+            return
+        spec = replace(spec, family=self.type_families[family], size_mm=self.type_size.get_value(),
+                       align=('left', 'center', 'right')[self.type_align.get_selected()])
+        try:
+            shapes, selection = design_text.edit(self.project, spec, index)
+        except ValueError as error:
+            self.show_message(str(error), level='warning')
+        else:
+            self.commit(shapes, selection)
+
+    def refresh_context_type(self):
+        typing = self.active_tool == 'Type'
+        self.context_type.set_visible(typing)
+        if not typing:
+            return
+        _, spec = self.context_text_spec()
+        previous, self.loading = self.loading, True
+        try:
+            if not self.type_families:
+                families, family, _ = design_text.font_choices(spec)
+                self.type_families = families
+                self.type_font.set_model(Gtk.StringList.new(families))
+                self.type_font.set_selected(families.index(family))
+            if spec:
+                if spec.family in self.type_families:
+                    self.type_font.set_selected(self.type_families.index(spec.family))
+                self.type_size.set_value(spec.size_mm)
+                self.type_align.set_selected(('left', 'center', 'right').index(spec.align))
+        except ValueError as error:
+            self.show_message(str(error), level='warning')
+        finally:
+            self.loading = previous
+
     @staticmethod
     def icon_button(parent, icon, callback):
         button = design_icon_button(COMMAND_ICONS[icon] if isinstance(icon, str) else icon)
@@ -414,18 +552,21 @@ class DesignWorkspace:
         return button
 
     def objects_panel(self):
-        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, height_request=110,
-                        margin_start=12, margin_end=12, margin_bottom=6)
+        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4,
+                        margin_start=8, margin_end=8, margin_bottom=6)
         header = Gtk.Box(spacing=2)
+        collapse = Gtk.ToggleButton(icon_name='pan-down-symbolic', active=True, tooltip_text='Show objects')
+        collapse.update_property([Gtk.AccessibleProperty.LABEL], ['Show objects'])
+        header.append(collapse)
         header.append(Gtk.Label(label='Objects', xalign=0, hexpand=True, css_classes=['heading']))
-        self.duplicate = self.icon_button(header, 'duplicate', self.duplicate_shape)
-        self.remove = self.icon_button(header, 'delete', self.delete_shape)
         options = Gtk.MenuButton(icon_name='view-more-symbolic', tooltip_text='Object options',
                                  css_classes=['flat'])
         options.update_property([Gtk.AccessibleProperty.LABEL], ['Object options'])
         menu = Gtk.Popover()
         more_objects = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         for field, label, callback in (
+                ('duplicate', 'Duplicate', lambda: self.duplicate_shape(None)),
+                ('remove', 'Delete', lambda: self.delete_shape(None)),
                 ('group_button', 'Group', lambda: self.group_selected()),
                 ('ungroup_button', 'Ungroup', lambda: self.group_selected(release=True)),
                 ('forward', 'Bring Forward', lambda: self.reorder(1)),
@@ -447,10 +588,22 @@ class DesignWorkspace:
                                 margin_top=14, margin_bottom=14, margin_start=8, margin_end=8,
                                 wrap=True, justify=Gtk.Justification.CENTER, css_classes=['dim-label'])
         self.objects.set_placeholder(placeholder)
+        menu_items = Gio.Menu()
+        for label, action in (('Duplicate', 'duplicate'), ('Delete', 'delete'), ('Group', 'group'),
+                              ('Ungroup', 'ungroup'), ('Bring Forward', 'forward'),
+                              ('Send Backward', 'backward')):
+            menu_items.append(label, f'design.{action}')
+        self.object_context_items = menu_items
+        click = Gtk.GestureClick(button=3)
+        click.connect('pressed', self.open_object_context)
+        self.objects.add_controller(click)
         self.objects.connect('selected-rows-changed', self.select_shape)
         scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
         scroller.set_child(self.objects)
+        scroller.set_min_content_height(72)
         panel.append(scroller)
+        collapse.connect('toggled', lambda button: self.toggle_inspector_section(
+            button, scroller, header, properties=False))
         return panel
 
     @staticmethod
@@ -505,7 +658,8 @@ class DesignWorkspace:
         for spin in (self.mark_inset, self.mark_length, self.mark_thickness):
             spin.connect('value-changed', self.change_registration)
         self.heading(inspector, 'Canvas')
-        self.show_grid = self.view_toggle(inspector, 'Show Grid', True)
+        self.show_grid = self.view_toggle(inspector, 'Show Paper Grid')
+        self.show_mat_grid = self.view_toggle(inspector, 'Show Mat Grid', True)
         self.show_mat = self.view_toggle(inspector, 'Show Cutting Mat', True)
         self.show_cut_border = self.view_toggle(inspector, 'Show Cut Border', True)
         self.print_border = self.view_toggle(inspector, 'Show Print Border')
@@ -527,34 +681,33 @@ class DesignWorkspace:
 
     def transform_panel(self, inspector):
         inspector.set_spacing(5)
-        self.orientation_heading = Gtk.Label(label='Rotate and Flip', xalign=0,
-                                             css_classes=['heading'], margin_top=4)
-        inspector.append(self.orientation_heading)
+        self.heading(inspector, 'Transform · mm')
+        self.fields = {}
+        grid = Gtk.Grid(column_spacing=4, row_spacing=4, column_homogeneous=True)
+        inspector.append(grid)
+        for index, (field, prefix, label) in enumerate(TRANSFORM_FIELDS):
+            cell = Gtk.Box(spacing=3)
+            cell.append(Gtk.Label(label=prefix, css_classes=['dim-label']))
+            limit = 360 if field == 'rotation' else 1000
+            spin = Gtk.SpinButton.new_with_range(-limit, limit, 0.1)
+            spin.set_digits(3)
+            spin.set_numeric(True)
+            spin.set_width_chars(6)
+            spin.set_hexpand(True)
+            spin.update_property([Gtk.AccessibleProperty.LABEL], [label])
+            spin.set_tooltip_text(label)
+            spin.connect('value-changed', self.change_field, field)
+            cell.append(spin)
+            grid.attach(cell, index % 2, index // 2, 1, 1)
+            self.fields[field] = spin
+        self.lock_aspect = design_icon_button(COMMAND_ICONS['lock_ratio'], toggle=True)
+        grid.attach(self.lock_aspect, 1, 2, 1, 1)
         self.panel_transform_actions = row = Gtk.Box(spacing=4)
         inspector.append(row)
         self.transform_buttons = {
             action: self.icon_button(row, icon, lambda _button, command=action: self.transform_objects(command))
             for action, icon in TRANSFORM_ICONS.items()
         }
-        angle = self.spin(inspector, 'Angle (°)', -360, 360, 0, step=1, digits=3)
-        angle.set_width_chars(8)
-        angle.set_tooltip_text('Enter an exact angle. Positive angles rotate clockwise. '
-                               'Use Transform (T) to drag on the canvas.')
-        angle.connect('value-changed', self.change_field, 'rotation')
-        self.heading(inspector, 'Position and Size')
-        fields = (
-            ('x', 'X (mm)', -1000, 1000), ('y', 'Y (mm)', -1000, 1000),
-            ('width', 'Width (mm)', -1000, 1000), ('height', 'Height (mm)', -1000, 1000),
-        )
-        self.fields = {'rotation': angle}
-        for field, label, low, high in fields:
-            spin = self.spin(inspector, label, low, high, 0, digits=3)
-            spin.connect('value-changed', self.change_field, field)
-            self.fields[field] = spin
-        self.fields['x'].set_tooltip_text('Horizontal position of the object frame from the left edge of the page.')
-        self.fields['y'].set_tooltip_text('Vertical position of the object frame from the top edge of the page.')
-        self.lock_aspect = Gtk.CheckButton(label='Lock proportions')
-        inspector.append(self.lock_aspect)
 
         self.heading(inspector, 'Align and Space')
         self.alignment_buttons = {}
@@ -623,13 +776,16 @@ class DesignWorkspace:
         view.append_submenu('Zoom', zoom)
         command(zoom, 'Zoom In', 'zoom-in', lambda: self.canvas.zoom_by(1.25), '<Control>equal|<Control>plus')
         command(zoom, 'Zoom Out', 'zoom-out', lambda: self.canvas.zoom_by(0.8), '<Control>minus')
-        command(zoom, 'Fit', 'fit', lambda: self.fit(None), '<Control>0')
+        command(zoom, 'Fit Page', 'fit', lambda: self.fit(None), '<Control>0')
+        command(zoom, 'Fit Selection', 'fit-selection', self.canvas.fit_selection, '<Control><Shift>0')
         rotate = Gio.Menu()
         view.append_submenu('Rotate Page', rotate)
         command(rotate, 'Left', 'rotate-page-left', lambda: self.rotate_page(False))
         command(rotate, 'Right', 'rotate-page-right', lambda: self.rotate_page(True))
         for label, name, field in (
-                ('Show Grid', 'grid', self.show_grid), ('Snap to Grid', 'snap', self.snap),
+                ('Show Paper Grid', 'grid', self.show_grid), ('Show Mat Grid', 'mat-grid', self.show_mat_grid),
+                ('Show Cutting Mat', 'mat', self.show_mat), ('Show Rulers', 'rulers', self.show_rulers),
+                ('Snap to Grid', 'snap', self.snap),
                 ('Enable Smart Snapping', 'smart-snap', self.smart_snap),
                 ('Show Print Border', 'print-border', self.print_border),
                 ('Show Cut Border', 'cut-border', self.show_cut_border)):
@@ -643,7 +799,7 @@ class DesignWorkspace:
         panels = Gio.Menu()
         for label, name, index in (('Page Setup', 'page-setup', 0), ('Fill Color', 'fill', 3),
                                    ('Line Style', 'line', 3), ('Transform', 'transform', 1), ('Replicate', 'replicate', 2)):
-            command(panels, label, name, lambda panel=index: self.panel_switcher.set_selected(panel))
+            command(panels, label, name, lambda panel=index: self.open_panel(panel))
         colors = Gio.Menu()
         panels.append_submenu('Select by Color', colors)
         for label, field in (('Same Line Color', 'stroke'), ('Same Fill Color', 'fill')):
@@ -691,7 +847,7 @@ class DesignWorkspace:
         return Gtk.PopoverMenuBar.new_from_model(menus)
 
     def show_page_options(self, field):
-        self.panel_switcher.set_selected(0)
+        self.open_panel(0)
         self.page_advanced.set_expanded(True)
 
         def reveal():
@@ -705,7 +861,7 @@ class DesignWorkspace:
 
     def toggle_panels(self):
         show = not self.tool.get_visible()
-        for panel in (self.tool, self.rail_divider, self.tools_bar, self.options_bar, self.dock):
+        for panel in (self.tool, self.rail_divider, self.commands, self.dock):
             panel.set_visible(show)
         self.canvas.grab_focus()
 
@@ -795,7 +951,7 @@ class DesignWorkspace:
         else:
             self.commit(shapes, selected)
 
-    def text_dialog(self):
+    def text_dialog(self, at=None):
         selection = self.selected_indices()
         shape = self.project.shapes[selection[0]] if len(selection) == 1 else None
         spec = shape.text if shape else None
@@ -821,10 +977,12 @@ class DesignWorkspace:
         form.append(entry)
         fonts = Gtk.DropDown.new_from_strings(families)
         fonts.set_enable_search(True)
-        fonts.set_selected(families.index(family))
+        initial = (self.type_families[self.type_font.get_selected()]
+                   if not spec and self.active_tool == 'Type' and self.type_families else family)
+        fonts.set_selected(families.index(initial) if initial in families else families.index(family))
         fonts.update_property([Gtk.AccessibleProperty.LABEL], ['Font'])
         form.append(fonts)
-        size = self.spin(form, 'Size (mm)', 1, 100, spec.size_mm if spec else 10)
+        size = self.spin(form, 'Size (mm)', 1, 100, spec.size_mm if spec else self.type_size.get_value())
         status = Gtk.Label(label=notice, xalign=0, wrap=True)
         fonts.connect('notify::selected', lambda *_: status.set_text(''))
         form.append(status)
@@ -833,9 +991,14 @@ class DesignWorkspace:
         def apply(_button):
             buffer = value.get_buffer()
             text = buffer.get_text(*buffer.get_bounds(), False)
-            updated = editor_model.TextSpec(text, families[fonts.get_selected()], size.get_value())
+            updated = (replace(spec, value=text, family=families[fonts.get_selected()], size_mm=size.get_value())
+                       if spec else editor_model.TextSpec(text, families[fonts.get_selected()], size.get_value(),
+                            align=('left', 'center', 'right')[self.type_align.get_selected()]))
             try:
                 shapes, selected = design_text.edit(self.project, updated, selection[0] if spec else None)
+                if at is not None and not spec:
+                    placed = replace(shapes[-1], x=at[0], y=at[1])
+                    shapes = shapes[:-1] + (placed,)
             except ValueError as error:
                 status.set_text(str(error))
             else:
@@ -1060,19 +1223,68 @@ class DesignWorkspace:
         self.loading = previous
         self.select_shape()
 
+    def open_object_context(self, _gesture, _count, x, y):
+        row = self.objects.get_row_at_y(int(y))
+        if row is not None and not row.is_selected():
+            self.set_selection((row.get_index(),))
+        anchor = Gdk.Rectangle()
+        anchor.x, anchor.y, anchor.width, anchor.height = int(x), int(y), 1, 1
+        menu = Gtk.PopoverMenu.new_from_model(self.object_context_items)
+        menu.set_parent(self.objects)
+        menu.set_pointing_to(anchor)
+        menu.connect('closed', lambda widget: widget.unparent())
+        menu.popup()
+
+    def drop_objects(self, row, source_index, y):
+        target = row.get_parent().get_index() + (y >= row.get_height() / 2)
+        if not 0 <= source_index < len(self.project.shapes):
+            return False
+        selected = self.selected_indices()
+        if source_index not in selected:
+            selected = (source_index,)
+        shapes, selection = editor_model.reorder_objects(self.project.shapes, selected, target)
+        self.commit(shapes, selection)
+        return True
+
+    def set_object_visibility(self, index, visible):
+        shapes = self.project.shapes
+        updated = replace(shapes[index], visible=visible)
+        row = self.objects.get_row_at_index(index)
+        toggle = row.get_child().get_first_child()
+        was_focused = self.parent.get_focus() is toggle
+        self.commit(shapes[:index] + (updated,) + shapes[index + 1:], self.selected_indices())
+        if was_focused:
+            row = self.objects.get_row_at_index(index)
+            row.get_child().get_first_child().grab_focus()
+
     def refresh_objects(self, selection=()):
         self.loading = True
         self.refresh_page()
         while (row := self.objects.get_row_at_index(0)) is not None:
             self.objects.remove(row)
-        for i, obj in enumerate(self.project.shapes, 1):
+        for i, obj in enumerate(self.project.shapes):
             tooltip = obj.action if obj.group is None else f'{obj.action} · Group {obj.group}'
             tool = f' · Tool {obj.holder}' if obj.holder else ''
-            name = f'{i}. {editor_model.object_name(obj)}{tool}'
+            group = f' · Group {obj.group}' if obj.group is not None else ''
+            name = f'{editor_model.object_name(obj)}{tool}{group}'
             row = Gtk.Box(spacing=7, margin_top=2, margin_bottom=2, margin_start=8, margin_end=8,
                           tooltip_text=f'{name}\n{tooltip}')
+            visible = Gtk.ToggleButton(icon_name='view-reveal-symbolic' if obj.visible else 'view-conceal-symbolic',
+                                       active=obj.visible, css_classes=['flat', 'scc-object-visibility'])
+            visible.update_property([Gtk.AccessibleProperty.LABEL], [f'Visibility of {name}'])
+            visible.set_tooltip_text('Hide object' if obj.visible else 'Show object')
+            visible.connect('toggled', lambda button, index=i: self.set_object_visibility(index, button.get_active()))
+            row.append(visible)
             row.append(tool_image(OBJECT_ICONS.get(obj.kind, COMMAND_ICONS['path']), 18))
             row.append(Gtk.Label(label=name, xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END))
+            source = Gtk.DragSource(actions=Gdk.DragAction.MOVE)
+            source.connect('prepare', lambda _src, _x, _y, index=i:
+                           Gdk.ContentProvider.new_for_value(index))
+            row.add_controller(source)
+            target = Gtk.DropTarget.new(GObject.TYPE_INT, Gdk.DragAction.MOVE)
+            target.connect('drop', lambda action, value, _x, y, widget=row:
+                           bool(action.get_current_drop().get_drag()) and self.drop_objects(widget, value, y))
+            row.add_controller(target)
             self.objects.append(row)
         self.loading = False
         self.set_selection(selection)
@@ -1106,7 +1318,7 @@ class DesignWorkspace:
         self.status.set_text(editor_model.document_summary(p, count, len(self.selected_indices())))
         name = self.project_path.name if self.project_path else self.source_name or "Untitled"
         self.document_title.update_property([Gtk.AccessibleProperty.LABEL], [name])
-        self.document_title.set_text(name + (" *" if self.dirty else ""))
+        self.document_title.set_text(name)
         self.document_title.set_tooltip_text(f'{name} (unsaved changes)' if self.dirty else name)
         badge = editor_model.save_state_label(self.project_path, self.dirty)
         self.save_state.set_text(badge)
@@ -1149,6 +1361,8 @@ class DesignWorkspace:
             node_selected=obj is not None and self.active_node(obj) is not None,
         )
         self.tool_hint.set_label(hint)
+        self.tool_hint.set_visible(self.active_tool == 'Point Edit')
+        self.status.set_tooltip_text(hint)
         self.tool_hint.set_tooltip_text(f'{tool.tooltip}\n{hint}' if hint != tool.hint else tool.tooltip)
 
     def selection_presentation(self, picker, *_args):
@@ -1164,11 +1378,6 @@ class DesignWorkspace:
         indices = self.selected_indices()
         shapes = self.project.shapes
         obj = shapes[indices[0]] if len(indices) == 1 else None
-        text_label = 'Edit Text…' if obj and obj.text else 'Add Text…'
-        self.text_button.set_tooltip_text(text_label)
-        hint = 'Edit the selected text.' if obj and obj.text else COMMAND_ICONS['text'].hint
-        self.text_button.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION],
-                                         [text_label, hint])
         can_trace = bool(obj and obj.sticker)
         self.trace_button.set_sensitive(can_trace)
         self.menu_actions.lookup_action('trace-sticker').set_enabled(can_trace)
@@ -1244,7 +1453,7 @@ class DesignWorkspace:
             self.compact_selection.append_submenu('Align', align)
         self.trace_button.set_visible(can_trace)
         self.edit_text_ribbon_button.set_visible(bool(obj and obj.text))
-        for command in (*self.transform_buttons.values(), *self.quick_transform_buttons.values()):
+        for command in self.transform_buttons.values():
             command.set_sensitive(bool(indices))
         for option, command in self.alignment_buttons.items():
             space = option.startswith('Space ')
@@ -1260,6 +1469,8 @@ class DesignWorkspace:
         self.forward.set_sensitive(bool(indices) and indices[-1] + 1 < len(shapes))
         self.backward.set_sensitive(bool(indices) and indices[0] > 0)
         self.loading = False
+        self.refresh_context_fields()
+        self.refresh_context_type()
         self.refresh_status()
 
     def commit(self, shapes, selection):
@@ -1389,7 +1600,7 @@ class DesignWorkspace:
         self.commit(p.shapes + (shape,), (len(p.shapes),))
         if not self.dock.get_visible():
             self.toggle_panels()
-        self.panel_switcher.set_selected(1)
+        self.open_panel(1)
         self.fields['x'].grab_focus()
         self.fields['x'].select_region(0, -1)
 
@@ -1466,13 +1677,14 @@ class DesignWorkspace:
         tool = TOOLS[self.tool.get_selected()]
         transforming = tool.name in TRANSFORM_MODES
         select_cursor = tool.name in ('Select', 'Point Edit') or transforming
-        self.canvas.set_cursor_from_name('default' if select_cursor else 'crosshair')
+        self.canvas.set_cursor_from_name({'Hand': 'grab', 'Zoom': 'zoom-in', 'Type': 'text'}.get(
+            tool.name, 'default' if select_cursor else 'crosshair'))
         self.option_snap.set_visible(tool.name not in ('Rotate', 'Scale'))
-        self.quick_transforms.set_visible(transforming)
         self.sides_option.set_visible(tool.name == "Regular Polygon")
         self.close_polygon.set_visible(tool.name in CLICK_PATH_TOOLS)
-        self.panel_transform_actions.set_visible(not transforming)
-        self.orientation_heading.set_label('Rotation' if transforming else 'Rotate and Flip')
+        self.refresh_context_fields()
+        self.refresh_context_type()
+        self.radius_option.set_visible(tool.name == 'Rounded rectangle')
         self.refresh_tool_hint()
         if transforming:
             self.panel_switcher.set_selected(1)
@@ -1526,6 +1738,24 @@ class DesignWorkspace:
         left, top, scale = self.canvas.viewport(self.canvas.get_width(), self.canvas.get_height())
         x, y = (x-left)/scale, (y-top)/scale
         mode = self.active_tool
+        if mode == 'Hand':
+            self.drag = Drag('pan', x, y, scale, start_pan=self.canvas.pan)
+            return
+        if mode == 'Zoom':
+            state = gesture.get_current_event_state()
+            factor = 0.8 if state & Gdk.ModifierType.ALT_MASK else 1.25
+            self.canvas.zoom_by(factor, self.canvas.pointer)
+            return
+        if mode == 'Type':
+            for index in reversed(range(len(self.project.shapes))):
+                shape = self.project.shapes[index]
+                if shape.visible and shape.text and editor_model.hit(shape, (x, y), 5 / scale):
+                    self.set_selection((index,))
+                    self.text_dialog()
+                    return
+            self.set_selection(())
+            self.text_dialog(at=self.grid_point(x, y))
+            return
         if mode in ('Polygon', 'Curve'):
             gesture.set_state(Gtk.EventSequenceState.DENIED)
             return
@@ -1640,7 +1870,8 @@ class DesignWorkspace:
         w, h = abs(end[0] - start[0]), abs(end[1] - start[1])
         if min(w, h) < 0.1:
             return None
-        return Shape(drag.mode, min(start[0], end[0]), min(start[1], end[1]), w, h)
+        radius = self.shape_radius.get_value() if drag.mode == 'Rounded rectangle' else 3
+        return Shape(drag.mode, min(start[0], end[0]), min(start[1], end[1]), w, h, radius=radius)
 
     def drag_update(self, gesture, dx, dy, *, final=False):
         drag = self.drag
@@ -1648,7 +1879,9 @@ class DesignWorkspace:
             return
         x, y = drag.x + dx / drag.scale, drag.y + dy / drag.scale
         base = self.history.current
-        if drag.mode == 'marquee':
+        if drag.mode == 'pan':
+            self.canvas.pan = drag.start_pan[0] + dx, drag.start_pan[1] + dy
+        elif drag.mode == 'marquee':
             self.marquee = geometry.Rect(min(drag.x, x), min(drag.y, y),
                                          abs(x - drag.x), abs(y - drag.y))
         elif drag.mode == 'node':

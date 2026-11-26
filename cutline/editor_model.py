@@ -523,6 +523,17 @@ def _simplify_line(points, tolerance):
     return tuple(points[index] for index in sorted(keep))
 
 
+def reorder_objects(shapes, indices, destination):
+    """Insert selected objects at a boundary in the original list."""
+    selected = tuple(sorted(set(indices)))
+    moving = set(selected)
+    start = destination - sum(index < destination for index in selected)
+    rest = tuple(shape for i, shape in enumerate(shapes) if i not in moving)
+    start = min(len(rest), max(0, start))
+    ordered = rest[:start] + tuple(shapes[i] for i in selected) + rest[start:]
+    return ordered, tuple(range(start, start + len(selected)))
+
+
 def selected_units(shapes, indices):
     units = {}
     for index in indices:
