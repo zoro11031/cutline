@@ -23,7 +23,7 @@ sys.path.insert(0, str(ROOT))
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from cutline import cutters, design_text, editor_model, graphtec, qt_gui, template, transport  # noqa: E402
+from cutline import cutters, editor_model, graphtec, qt_gui, template, transport  # noqa: E402
 
 SCREENSHOTS_DIR = ROOT / "screenshots"
 SIZE = (1280, 800)
@@ -46,22 +46,6 @@ def _save(app, widget, name):
     print(f"Captured screenshots/{name}")
 
 
-def _gift_tags(project):
-    """A sheet of rounded gift tags, each with a hole and a name on it."""
-    shapes = []
-    names = ("Mira", "Theo", "June", "Arlo", "Wren", "Otis")
-    for i, name in enumerate(names):
-        x, y = 30 + (i % 3) * 78, 40 + (i // 3) * 72
-        shapes.append(editor_model.Shape("Rounded rectangle", x, y, 64, 56, radius=8))
-        shapes.append(editor_model.Shape("Ellipse", x + 28, y + 6, 8, 8, action="Cut"))
-        try:
-            text = design_text.shape(editor_model.TextSpec(name, "DejaVu Sans", 10, bold=True), 0, 0)
-        except ValueError:
-            continue
-        shapes.append(dataclasses.replace(text, x=x + (64 - text.width) / 2, y=y + 24))
-    return dataclasses.replace(project, shapes=tuple(shapes))
-
-
 def capture_all():
     SCREENSHOTS_DIR.mkdir(exist_ok=True)
     app = QApplication.instance() or QApplication([])
@@ -73,16 +57,16 @@ def capture_all():
             mock.patch.object(cutters, "wireless_choices", return_value={}), \
             mock.patch.object(qt_gui.Window, "check_device", simulated_status), \
             mock.patch.object(transport, "open_transport", side_effect=transport.NotFound("screenshot")):
-        # 1. Design, with a sheet of gift tags and the Text Style panel open.
+        # 1. Design, with the eight-up sheet and its first card selected.
         win = _window()
         with mock.patch.object(win, "message", side_effect=RuntimeError):
             win.open_design()
         design = win.design
-        design.replace_document(_gift_tags(design.project))
-        texts = [i for i, shape in enumerate(design.project.shapes) if shape.text]
-        if texts:
-            design.select(())
-            design.dock.open("text")
+        cards = tuple(editor_model.Shape("Rounded rectangle", c.x, c.y, c.w, c.h, radius=3)
+                      for c in win.job.grid.cards)
+        design.replace_document(dataclasses.replace(design.project, shapes=cards))
+        design.select((0,))
+        design.dock.open("transform")
         app.processEvents()
         design.canvas.fit()
         _save(app, win, "design-workspace.png")

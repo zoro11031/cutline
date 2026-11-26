@@ -14,7 +14,7 @@ own projects. It's a hobby project, and I'm sharing it so others can use it too.
 - Open a design you already have, including SVG, DXF, and Silhouette Studio
   files.
 
-![Gift tags in the Design workspace](screenshots/design-workspace.png)
+![Eight-card sheet with one card selected in Design](screenshots/design-workspace.png)
 
 ## Cut settings
 

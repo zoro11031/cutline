@@ -62,6 +62,51 @@ class ObjectsList(QListWidget):
         self.reordered.emit(destination)
 
 
+class CommandStrip(QFrame):
+    """Keep document and contextual actions together whenever both fit."""
+
+    def __init__(self, document, options):
+        super().__init__()
+        self.document, self.options = document, options
+        for bar_widget in (document, options):
+            bar_widget.setParent(self)
+        policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
+
+    def heightForWidth(self, width):
+        first, second = self.document.sizeHint(), self.options.sizeHint()
+        if first.width() + second.width() <= width:
+            return max(first.height(), second.height())
+        return first.height() + second.height()
+
+    def sizeHint(self):
+        return QSize(self.minimumSizeHint().width(), self.heightForWidth(self.width()))
+
+    def minimumSizeHint(self):
+        return self.document.minimumSizeHint().expandedTo(self.options.minimumSizeHint())
+
+    def arrange(self):
+        width = self.width()
+        first, second = self.document.sizeHint(), self.options.sizeHint()
+        if first.width() + second.width() <= width:
+            self.document.setGeometry(0, 0, first.width(), self.height())
+            self.options.setGeometry(first.width(), 0, width - first.width(), self.height())
+        else:
+            self.document.setGeometry(0, 0, width, first.height())
+            self.options.setGeometry(0, first.height(), width, second.height())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.arrange()
+
+    def event(self, event):
+        if event.type() == QEvent.Type.LayoutRequest and hasattr(self, 'options'):
+            self.updateGeometry()
+            self.arrange()
+        return super().event(event)
+
+
 class ElidedLabel(QLabel):
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -1212,15 +1257,10 @@ class Design(QWidget):
         self.canvas = Canvas(self)
         self.canvas.setMinimumWidth(220)
         self.view_options()
-        self.commands = QFrame()
-        self.commands.setObjectName("designCommands")
-        command_rows = QVBoxLayout(self.commands)
-        command_rows.setContentsMargins(0, 0, 0, 0)
-        command_rows.setSpacing(0)
         self.tools_bar = self.command_ribbon(new, open_file)
         self.options_bar = self.tool_options_bar()
-        command_rows.addWidget(self.tools_bar)
-        command_rows.addWidget(self.options_bar)
+        self.commands = CommandStrip(self.tools_bar, self.options_bar)
+        self.commands.setObjectName("designCommands")
         body.addWidget(self.commands)
 
         workspace = QHBoxLayout()

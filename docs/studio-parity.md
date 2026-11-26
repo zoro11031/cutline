@@ -35,9 +35,9 @@ available in both toolboxes. GTK groups it with Hand and Zoom and shows the
 length, angle, and Scale to Length action in the contextual toolbar.
 Studio3 export still needs complete files checked in Studio.
 
-The redesigned workspace puts document actions and tool options above the
-canvas, with a drawing rail and independently collapsible Properties and
-Objects panels. Paper and mat grids have separate toggles. Object visibility
+Document actions and tool options share a row when they fit and wrap at compact widths.
+The canvas sits between the drawing rail and the independently collapsible
+Properties and Objects panels. Paper and mat grids have separate toggles. Object visibility
 and reorder edits enter the undo history. Qt offers a nine-point origin for
 relative and pointer rotation. The current project model stores flat groups
 and generated object names.

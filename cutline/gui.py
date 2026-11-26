@@ -66,11 +66,11 @@ _CUT_SETTINGS_CSS = """
     box-shadow: none;
 }
 .scc-design-commands, .scc-design-sidebar {
-    border: 1px solid alpha(@window_fg_color, 0.18);
-    border-radius: 6px;
-    background: @view_bg_color;
+    border: 0;
+    border-radius: 0;
+    background: @window_bg_color;
 }
-.scc-design-options { border-top: 1px solid alpha(@window_fg_color, 0.18); }
+.scc-design-options { border: 0; }
 .scc-design-commands entry { min-height: 23px; padding: 0 4px; }
 .scc-design .boxed-list row:selected { background: alpha(#435aa2, 0.38); color: @view_fg_color; }
 .scc-design headerbar togglebutton:checked, .scc-design-rail togglebutton:checked {

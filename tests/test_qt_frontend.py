@@ -2196,6 +2196,7 @@ class TestQtDesignEditor(unittest.TestCase):
         design.commit_shapes((editor_model.Shape("Rectangle", 20, 20, 40, 30),
                               editor_model.Shape("Ellipse", 80, 20, 30, 30)), (0, 1))
         self.assertTrue(design.selection_tools.isVisibleTo(design))
+        self.app.processEvents()
         self.assertTrue(design.group_ribbon_button.isVisibleTo(design))
         self.assertTrue(design.align_button.isVisibleTo(design))
         self.assertEqual(design.save_state.text(), "Unsaved")

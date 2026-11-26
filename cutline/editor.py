@@ -225,8 +225,11 @@ class DesignWorkspace:
         self.shortcuts = shortcuts = Gtk.ShortcutController(scope=Gtk.ShortcutScope.MANAGED)
         self.view.add_controller(shortcuts)
 
-        self.commands = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, margin_start=8, margin_end=8,
-                                margin_bottom=6, css_classes=['scc-design-commands'])
+        command_style = dict(margin_start=4, margin_end=4, margin_bottom=2, css_classes=['scc-design-commands'])
+        if hasattr(Adw, 'WrapBox'):
+            self.commands = Adw.WrapBox(wrap_policy=Adw.WrapPolicy.NATURAL, **command_style)
+        else:
+            self.commands = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, **command_style)
         self.view.add_top_bar(self.commands)
         self.tools_bar = toolbar = workspace_tools(margin_start=6, margin_end=6, margin_top=3, margin_bottom=3)
         self.commands.append(toolbar)

@@ -25,9 +25,9 @@ QFrame#workspaceBar {
 }
 QFrame#workspaceTools { border-bottom: 1px solid palette(midlight); }
 QFrame#designCommands, QSplitter#designSidebar {
-    background: palette(base); border: 1px solid palette(midlight); border-radius: 3px;
+    background: palette(window); border: 0; border-radius: 0;
 }
-QFrame#designToolOptions { border-top: 1px solid palette(midlight); }
+QFrame#workspaceBar[designHeader="true"], QFrame#designToolOptions { background: palette(window); border: 0; }
 QToolButton[role="designRibbon"] {
     background: palette(button); border: 1px solid palette(midlight);
     border-radius: 5px; padding: 2px 6px; min-height: 22px;
