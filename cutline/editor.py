@@ -206,6 +206,7 @@ class DesignWorkspace:
         self.source_name = None
         self.on_review = on_review
         self.loading = False
+        self.space_pan = False
         self.drag = None
         self.draft = None
         self.marquee = None
@@ -1755,9 +1756,7 @@ class DesignWorkspace:
         self.refresh_measurement()
         tool = TOOLS[self.tool.get_selected()]
         transforming = tool.name in TRANSFORM_MODES
-        select_cursor = tool.name in ('Select', 'Point Edit') or transforming
-        self.canvas.set_cursor_from_name({'Hand': 'grab', 'Zoom': 'zoom-in', 'Type': 'text'}.get(
-            tool.name, 'default' if select_cursor else 'crosshair'))
+        self.refresh_cursor()
         self.option_snap.set_visible(tool.name not in ('Rotate', 'Scale', 'Hand', 'Zoom', 'Measure'))
         self.sides_option.set_visible(tool.name == "Regular Polygon")
         self.close_polygon.set_visible(tool.name in CLICK_PATH_TOOLS)
@@ -1768,8 +1767,25 @@ class DesignWorkspace:
         if transforming:
             self.panel_switcher.set_selected(1)
 
+    def refresh_cursor(self):
+        if self.space_pan:
+            self.canvas.set_cursor_from_name('grab')
+            return
+        select_cursor = self.active_tool in ('Select', 'Point Edit') or self.active_tool in TRANSFORM_MODES
+        self.canvas.set_cursor_from_name({'Hand': 'grab', 'Zoom': 'zoom-in', 'Type': 'text'}.get(
+            self.active_tool, 'default' if select_cursor else 'crosshair'))
+
+    def release_pan(self):
+        if self.space_pan:
+            self.space_pan = False
+            self.refresh_cursor()
+
+    def canvas_key_released(self, _controller, key, _code, _state):
+        if key == Gdk.KEY_space:
+            self.release_pan()
+
     def pick_polygon_point(self, _gesture, presses, x, y):
-        if self.active_tool not in ('Polygon', 'Curve'):
+        if self.space_pan or self.active_tool not in ('Polygon', 'Curve'):
             return
         self.canvas.grab_focus()
         left, top, scale = self.canvas.viewport(self.canvas.get_width(), self.canvas.get_height())
@@ -1816,7 +1832,7 @@ class DesignWorkspace:
         self.canvas.grab_focus()
         left, top, scale = self.canvas.viewport(self.canvas.get_width(), self.canvas.get_height())
         x, y = (x-left)/scale, (y-top)/scale
-        mode = self.active_tool
+        mode = 'Hand' if self.space_pan else self.active_tool
         if mode == 'Measure':
             self.measurement = ((x, y), (x, y))
             self.drag = Drag('measure', x, y, scale)
@@ -2179,6 +2195,11 @@ class DesignWorkspace:
         return True
 
     def canvas_key(self, _controller, key, _code, state):
+        if key == Gdk.KEY_space and not (state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK)):
+            if self.drag is None:
+                self.space_pan = True
+                self.refresh_cursor()
+            return True
         ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
         indices = self.selected_indices()
         arrows = {Gdk.KEY_Left: (-1, 0), Gdk.KEY_Right: (1, 0),

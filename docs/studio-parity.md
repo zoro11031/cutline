@@ -15,7 +15,7 @@ verified commands (such as path ordering, weed paths, test cuts, action
 filtering, and end position) count as working; options whose protocol
 commands are not yet confirmed on hardware stay partial.
 
-**Parity: 67.3%** (39 ✅, 31 🟡, 11 ❌ across 81 features; ✅ counts 1, 🟡 counts ½).
+**Parity: 67.9%** (40 ✅, 30 🟡, 11 ❌ across 81 features; ✅ counts 1, 🟡 counts ½).
 
 ## Design walkthrough
 
@@ -64,7 +64,7 @@ either frontend is partial.
 | Eraser | Qt, with a size | 🟡 |
 | Eyedropper | Qt Eyedropper copies cut action, line and fill | 🟡 |
 | Measure | Both measure and scale to a known length | ✅ |
-| Pan and zoom | Both have Hand and Zoom tools and fit-to-selection. Qt also has Space to pan | 🟡 |
+| Pan and zoom | Both have Hand and Zoom tools, fit-to-selection, and temporary Space-drag panning | ✅ |
 | Undo, redo, cut, copy, paste, paste in front, duplicate | Both | ✅ |
 | Select All and Select Same | Both, Select Same by line or fill colour | ✅ |
 | Basic shapes library (hearts, stars, arrows…) | Keyboard-accessible Add Shape in Qt and GTK covers the basic drawing tools | 🟡 |
