@@ -10,6 +10,7 @@ Silhouette Studio was worked out. To install and use Cutline, start with the
 | [How Silhouette Studio was studied](studying-studio.md) | The rules, the sources, the Windows guest, and what Studio itself does. |
 | [Status and open questions](status.md) | What is verified, what is untested, and the experiments still to run. |
 | [Silhouette Studio parity](studio-parity.md) | Studio's features beside Cutline's, each marked working, partial or missing. |
+| [Windows packaging](windows-packaging.md) | Offline installer, locked dependencies, and upgrade compatibility. |
 
 Every finding is dated (all in 2026) and says how it was established. A claim
 about bytes is verified by decoding the bytes; a claim about what a cutter

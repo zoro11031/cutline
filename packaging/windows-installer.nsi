@@ -45,7 +45,7 @@ VIAddVersionKey "LegalCopyright" "${APP_PUBLISHER}"
 !define MUI_FINISHPAGE_SHOWREADME_TEXT "Open Start Here notes"
 !define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED
 
-!insertmacro MUI_PAGE_WELCOME
+!define MUI_COMPONENTSPAGE_TEXT_TOP "Install Cutline for your Windows account. Python, Qt, and cutter support are included. Choose where you want shortcuts."
 !insertmacro MUI_PAGE_LICENSE "${LICENSE_FILE}"
 !insertmacro MUI_PAGE_COMPONENTS
 !define MUI_PAGE_CUSTOMFUNCTION_PRE KeepExistingInstallDir
@@ -136,7 +136,7 @@ Section "Cutline (required)" SecCore
   Abort "Could not replace the Cutline app files. Close Cutline and run Setup again."
   install_registered:
 
-  ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
+  SectionGetSize 0 $0 ; required application section, in KiB
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "${APP_NAME}"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayVersion" "${APP_VERSION}"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "Publisher" "${APP_PUBLISHER}"

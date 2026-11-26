@@ -23,19 +23,7 @@ from zipfile import ZipFile
 from install import ROOT
 
 PYTHON = "3.13.13"
-QT = "6.12.0"
 MSYS2 = "https://repo.msys2.org/mingw/ucrt64/"
-MSYS2_PREFIX = "mingw-w64-ucrt-x86_64-"
-NATIVE = ("cairo", "pango", "geos", "poppler", "libusb")
-WINRT = ("runtime", "windows-devices-bluetooth",
-         "windows-devices-bluetooth-advertisement",
-         "windows-devices-bluetooth-genericattributeprofile",
-         "windows-devices-enumeration", "windows-devices-radios",
-         "windows-foundation", "windows-foundation-collections",
-         "windows-storage-streams")
-WHEELS = (f"PySide6-Essentials=={QT}", f"shiboken6=={QT}",
-          "Pillow==13.0.0", "pyusb==1.3.1", "bleak==3.1.0", "typing-extensions==4.16.0",
-          *(f"winrt-{item}==3.2.1" for item in WINRT))
 POPPLER_PROGRAMS = {"pdfinfo.exe", "pdftoppm.exe"}
 
 
@@ -53,41 +41,6 @@ def download(cache, url, expected=None):
 def sha256(path):
     with path.open("rb") as file:
         return hashlib.file_digest(file, "sha256").hexdigest()
-
-
-def descriptor_index(db):
-    data = subprocess.check_output(["zstd", "-dc", db])
-    index = {}
-    with tarfile.open(fileobj=io.BytesIO(data)) as archive:
-        for member in archive:
-            if not member.name.endswith("/desc"):
-                continue
-            raw = archive.extractfile(member).read().decode().strip()
-            fields = {header.strip("%"): values.splitlines()
-                      for block in raw.split("\n\n")
-                      for header, _, values in (block.partition("\n"),)}
-            index[fields["NAME"][0]] = fields
-    return index
-
-
-def native_packages(cache, names=NATIVE):
-    index = descriptor_index(download(cache, MSYS2 + "ucrt64.db"))
-    todo = [MSYS2_PREFIX + name for name in names]
-    found = {}
-    while todo:
-        name = todo.pop()
-        if name in found:
-            continue
-        fields = index.get(name)
-        if fields is None:
-            fields = next((package for package in index.values()
-                           if name in (re.split("[<>=]", item)[0]
-                                       for item in package.get("PROVIDES", []))), None)
-        if fields is None:
-            raise ValueError(f"Unable to find the Windows dependency {name}")
-        found[name] = fields
-        todo.extend(re.split("[<>=]", item)[0] for item in fields.get("DEPENDS", []))
-    return {fields["FILENAME"][0]: fields["SHA256SUM"][0] for fields in found.values()}
 
 
 def wanted(path):
@@ -186,14 +139,38 @@ def build_ico(svg_path, ico_path):
     return ico_path
 
 
+def runtime_member(name):
+    """Cutline uses Qt Widgets. Omit Qt development tools and QML sources."""
+    path = Path(name)
+    if not path.is_relative_to("PySide6") or "license" in name.lower():
+        return True
+    relative = path.relative_to("PySide6")
+    if not relative.parts:
+        return True
+    if path.suffix == ".pyd" and path.stem.startswith("Qt"):
+        return path.stem in {"QtCore", "QtGui", "QtWidgets"}
+    return (relative.parts[0] not in {"include", "typesystems", "metatypes", "qml", "scripts"}
+            and path.suffix.lower() not in {".exe", ".lib", ".pyi"})
+
+
 def build(cache, output):
     wheel_dir = cache / "windows-wheels"
-    subprocess.run([*pip_command(), "download", "--dest", wheel_dir,
-                    "--platform", "win_amd64", "--python-version", "3.13",
-                    "--implementation", "cp", "--only-binary=:all:", "--no-deps",
-                    *WHEELS], check=True)
-    python_zip = download(cache, f"https://www.python.org/ftp/python/{PYTHON}/python-{PYTHON}-embed-amd64.zip")
-    packages = native_packages(cache)
+    lock = json.loads((ROOT / "packaging/windows-dependencies.json").read_text())
+    with TemporaryDirectory(prefix="cutline-requirements-", dir=cache) as folder:
+        requirements = Path(folder) / "requirements.txt"
+        lines = []
+        for filename, digest in lock["pypi_wheels"].items():
+            package, version, _ = filename.split("-", 2)
+            lines.append(f"{package}=={version} --hash=sha256:{digest}")
+        requirements.write_text("\n".join(lines) + "\n")
+        subprocess.run([*pip_command(), "download", "--dest", wheel_dir,
+                        "--platform", "win_amd64", "--python-version", "3.13",
+                        "--implementation", "cp", "--only-binary=:all:", "--no-deps",
+                        "--require-hashes", "-r", requirements], check=True)
+    python_name = f"python-{PYTHON}-embed-amd64.zip"
+    python_zip = download(cache, f"https://www.python.org/ftp/python/{PYTHON}/{python_name}",
+                          lock["python"][python_name])
+    packages = lock["msys2_ucrt64_packages"]
     with ThreadPoolExecutor(max_workers=8) as pool:
         archives = list(pool.map(lambda item: download(cache, MSYS2 + item[0], item[1]), packages.items()))
     with TemporaryDirectory(prefix="cutline-windows-") as stage:
@@ -203,10 +180,12 @@ def build(cache, output):
         with ZipFile(python_zip) as embedded:
             embedded.extractall(app)
         (app / "python313._pth").write_text("python313.zip\n.\nLib/site-packages\n")
-        wheels = sorted(wheel_dir.glob("*.whl"))
+        wheels = [wheel_dir / name for name in lock["pypi_wheels"]]
         for source in wheels:
+            if sha256(source) != lock["pypi_wheels"][source.name]:
+                raise ValueError(f"Checksum mismatch for {source.name}")
             with ZipFile(source) as wheel:
-                wheel.extractall(app / "Lib/site-packages")
+                wheel.extractall(app / "Lib/site-packages", filter(runtime_member, wheel.namelist()))
         for archive in archives:
             unpack_native(archive, app / "native")
         shutil.copytree(ROOT / "cutline", app / "cutline", ignore=shutil.ignore_patterns("__pycache__"))
