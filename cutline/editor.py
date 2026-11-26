@@ -13,7 +13,7 @@ from . import design_text, editor_model, geometry, graphtec, importer, path_edit
 from .design_tools import (ALIGNMENT_ROWS, CLICK_PATH_TOOLS, COMMAND_ICONS, OBJECT_ICONS, ROTATE_MODES, SCALE_MODES,
                            GTK_TOOL_GROUPS as TOOL_GROUPS, GTK_TOOL_KEYS as TOOL_KEYS, GTK_TOOL_NAMES as TOOL_NAMES,
                            GTK_TOOLS as TOOLS, TRANSFORM_FIELDS, TRANSFORM_ICONS, TRANSFORM_MODES,
-                           RotationHandle, contextual_hint, rotation_handle, scale_from_corner)
+                           RotationHandle, contextual_hint, rotation_handle, scale_from_corner, segment_measurement)
 from .editor_canvas import DesignCanvas, draw_strokes
 from .editor_model import (ACTIONS, ALIGNMENTS,
                            History, Registration, Shape,
@@ -102,7 +102,7 @@ class GtkToolStrip(Gtk.Box):
 
     def __init__(self, *, changed):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=2,
-                         margin_start=6, margin_end=6)
+                         margin_start=3, margin_end=3)
         self.update_property([Gtk.AccessibleProperty.LABEL], ["Design toolbox"])
         self.slots = {}
         self.menus = {}
@@ -153,7 +153,7 @@ class GtkToolStrip(Gtk.Box):
             self.choices[tool.name] = command
             choices.append(command)
         arrow = Gtk.MenuButton(icon_name="pan-end-symbolic", direction=Gtk.ArrowType.RIGHT,
-                               css_classes=["flat"], tooltip_text=title)
+                               css_classes=["flat", "scc-tool-flyout"], tooltip_text=title)
         arrow.update_property([Gtk.AccessibleProperty.LABEL], [title])
         arrow.set_popover(menu)
         self.menu_buttons[title] = arrow
@@ -213,6 +213,7 @@ class DesignWorkspace:
         self.custom_page = False
         self.polygon = []
         self.selected_node = None
+        self.measurement = None
         self.cutter = cutter or graphtec.device_by_name("Silhouette Cameo 4")
         self.last_registration = project.registration or Registration.from_marks(
             regmarks.marks(project.width, project.height))
@@ -467,11 +468,72 @@ class DesignWorkspace:
         self.close_polygon = self.button(row, 'Close Shape', lambda *_: self.finish_polygon(closed=True))
         self.close_polygon.set_visible(False)
         self.close_polygon.set_tooltip_text('Close the outline. Double-click or Enter stops with it open.')
+        self.measure_options = Gtk.Box(spacing=6, visible=False)
+        self.measure_label = Gtk.Label(label='Drag to measure', xalign=0)
+        self.measure_label.update_property([Gtk.AccessibleProperty.LABEL], ['Measurement'])
+        self.measure_options.append(self.measure_label)
+        self.scale_to_button = self.button(self.measure_options, 'Scale to Length…', self.scale_to_length)
+        self.scale_to_button.set_tooltip_text('Scale the selected objects to match a known length.')
+        row.append(self.measure_options)
+        self.point_menu_items = Gio.Menu()
+        self.point_menu = Gtk.MenuButton(label='Point Actions', menu_model=self.point_menu_items,
+                                         visible=False)
+        row.append(self.point_menu)
         self.tool_hint = Gtk.Label(label=TOOLS[0].hint, xalign=0, hexpand=True,
                                    css_classes=['dim-label', 'caption'], ellipsize=Pango.EllipsizeMode.END)
         self.tool_hint.set_tooltip_text(TOOLS[0].hint)
         row.append(self.tool_hint)
         return frame
+
+    def refresh_measurement(self):
+        if self.measurement is None:
+            self.measure_label.set_text('Drag to measure')
+            self.scale_to_button.set_sensitive(False)
+            return
+        length, angle = segment_measurement(*self.measurement)
+        self.measure_label.set_text(f'{length:.2f} mm at {round(angle, 1) + 0.0:.1f}°')
+        self.scale_to_button.set_sensitive(length > 0.05 and bool(self.selected_indices()))
+
+    def scale_to_length(self, _button):
+        if not self.scale_to_button.get_sensitive():
+            return
+        start, end = self.measurement
+        measured, _ = segment_measurement(start, end)
+        alert = Adw.AlertDialog(heading='Scale to Length', body='Enter the real length of the measured distance.')
+        field = Gtk.SpinButton.new_with_range(0.1, 1000, 0.1)
+        field.set_value(measured)
+        field.set_digits(2)
+        field.update_property([Gtk.AccessibleProperty.LABEL], ['Length (mm)'])
+        row = Gtk.Box(spacing=6)
+        row.append(field)
+        row.append(Gtk.Label(label='mm'))
+        alert.set_extra_child(row)
+        alert.add_response('cancel', 'Cancel')
+        alert.add_response('scale', 'Scale')
+        alert.set_close_response('cancel')
+        alert.set_default_response('scale')
+
+        def apply(_alert, response):
+            if response != 'scale':
+                return
+            selection = self.selected_indices()
+            if not selection:
+                return
+            field.update()
+            length = field.get_value()
+            factor = length / measured
+            try:
+                shapes = editor_model.scale_selection(self.project.shapes, selection, start, factor)
+            except ValueError as error:
+                self.show_message(str(error), level='warning')
+                return
+            self.measurement = (start, (start[0] + (end[0] - start[0]) * factor,
+                                        start[1] + (end[1] - start[1]) * factor))
+            self.commit(shapes, selection)
+            self.show_message(f'Scaled selection to {length:g} mm.')
+
+        alert.connect('response', apply)
+        alert.present(self.parent)
 
     def apply_context_field(self, entry, field):
         try:
@@ -830,6 +892,12 @@ class DesignWorkspace:
         for label, slot in (('Use Current Settings', None), ('Tool Holder 1', 1), ('Tool Holder 2', 2)):
             command(holders, label, f'holder-{slot}', lambda holder=slot: self.change_properties(holder=holder))
         self.menu_actions.lookup_action('holder-2').set_enabled(self.cutter.two_tools)
+        for index, label in enumerate(path_edit.POINT_ACTIONS):
+            name = f'point-action-{index}'
+            self.point_menu_items.append(label, f'design.{name}')
+            action = Gio.SimpleAction.new(name, None)
+            action.connect('activate', lambda *_args, option=label: self.point_action(option))
+            self.menu_actions.add_action(action)
         command(objects, 'Convert to Path', 'convert', self.convert_selection)
         command(objects, 'Simplify', 'simplify', lambda: self.convert_selection(True), '<Control>j')
         modify = Gio.Menu()
@@ -1361,7 +1429,14 @@ class DesignWorkspace:
             node_selected=obj is not None and self.active_node(obj) is not None,
         )
         self.tool_hint.set_label(hint)
-        self.tool_hint.set_visible(self.active_tool == 'Point Edit')
+        point_edit = self.active_tool == 'Point Edit'
+        self.tool_hint.set_visible(point_edit)
+        self.point_menu.set_visible(point_edit)
+        chosen = point_edit and obj is not None and self.active_node(obj) is not None
+        for index, action in enumerate(path_edit.POINT_ACTIONS):
+            enabled = (point_edit and obj is not None and path_edit.editable(obj)
+                       if action == 'Simplify' else chosen)
+            self.menu_actions.lookup_action(f'point-action-{index}').set_enabled(enabled)
         self.status.set_tooltip_text(hint)
         self.tool_hint.set_tooltip_text(f'{tool.tooltip}\n{hint}' if hint != tool.hint else tool.tooltip)
 
@@ -1469,6 +1544,7 @@ class DesignWorkspace:
         self.forward.set_sensitive(bool(indices) and indices[-1] + 1 < len(shapes))
         self.backward.set_sensitive(bool(indices) and indices[0] > 0)
         self.loading = False
+        self.refresh_measurement()
         self.refresh_context_fields()
         self.refresh_context_type()
         self.refresh_status()
@@ -1674,12 +1750,15 @@ class DesignWorkspace:
         self.selected_node = None
         self.polygon.clear()
         self.cancel_drag()
+        self.measurement = None
+        self.measure_options.set_visible(self.active_tool == 'Measure')
+        self.refresh_measurement()
         tool = TOOLS[self.tool.get_selected()]
         transforming = tool.name in TRANSFORM_MODES
         select_cursor = tool.name in ('Select', 'Point Edit') or transforming
         self.canvas.set_cursor_from_name({'Hand': 'grab', 'Zoom': 'zoom-in', 'Type': 'text'}.get(
             tool.name, 'default' if select_cursor else 'crosshair'))
-        self.option_snap.set_visible(tool.name not in ('Rotate', 'Scale'))
+        self.option_snap.set_visible(tool.name not in ('Rotate', 'Scale', 'Hand', 'Zoom', 'Measure'))
         self.sides_option.set_visible(tool.name == "Regular Polygon")
         self.close_polygon.set_visible(tool.name in CLICK_PATH_TOOLS)
         self.refresh_context_fields()
@@ -1738,6 +1817,12 @@ class DesignWorkspace:
         left, top, scale = self.canvas.viewport(self.canvas.get_width(), self.canvas.get_height())
         x, y = (x-left)/scale, (y-top)/scale
         mode = self.active_tool
+        if mode == 'Measure':
+            self.measurement = ((x, y), (x, y))
+            self.drag = Drag('measure', x, y, scale)
+            self.refresh_measurement()
+            self.canvas.queue_draw()
+            return
         if mode == 'Hand':
             self.drag = Drag('pan', x, y, scale, start_pan=self.canvas.pan)
             return
@@ -1879,7 +1964,10 @@ class DesignWorkspace:
             return
         x, y = drag.x + dx / drag.scale, drag.y + dy / drag.scale
         base = self.history.current
-        if drag.mode == 'pan':
+        if drag.mode == 'measure':
+            self.measurement = ((drag.x, drag.y), (x, y))
+            self.refresh_measurement()
+        elif drag.mode == 'pan':
             self.canvas.pan = drag.start_pan[0] + dx, drag.start_pan[1] + dy
         elif drag.mode == 'marquee':
             self.marquee = geometry.Rect(min(drag.x, x), min(drag.y, y),
@@ -1891,6 +1979,11 @@ class DesignWorkspace:
             target = self.grid_point(anchor[0] + dx / drag.scale, anchor[1] + dy / drag.scale)
             moved = (path_edit.move_point(outline, point, target) if kind == 'point'
                      else path_edit.move_handle(outline, point, side, target))
+            if final and kind == 'point' and point in (0, len(outline.points) - 1):
+                joined = path_edit.join_ends(moved, 6 / drag.scale)
+                if joined is not None:
+                    moved = joined
+                    drag.node = (outline, kind, 0, side)
             try:
                 edited = path_edit.to_shape(moved, base.shapes[index])
             except ValueError as error:
@@ -1995,6 +2088,57 @@ class DesignWorkspace:
             return self.selected_node[1]
         return None
 
+    def point_context(self, _gesture, _count, x, y):
+        if self.active_tool != 'Point Edit':
+            return
+        indices = self.selected_indices()
+        if len(indices) != 1:
+            return
+        shape = self.project.shapes[indices[0]]
+        if not path_edit.editable(shape):
+            return
+        left, top, scale = self.canvas.viewport(self.canvas.get_width(), self.canvas.get_height())
+        point = ((x - left) / scale, (y - top) / scale)
+        outline = path_edit.nodes(shape)
+        distance, _, index, _ = path_edit.nearest_node(outline, point, handle_indices=())
+        if distance > 7 / scale:
+            return
+        self.selected_node = (shape, index)
+        self.refresh_tool_hint()
+        self.canvas.queue_draw()
+        anchor = Gdk.Rectangle()
+        anchor.x, anchor.y, anchor.width, anchor.height = int(x), int(y), 1, 1
+        menu = Gtk.PopoverMenu.new_from_model(self.point_menu_items)
+        menu.set_parent(self.canvas)
+        menu.set_pointing_to(anchor)
+        menu.connect('closed', lambda widget: widget.unparent())
+        menu.popup()
+
+    def point_action(self, action):
+        if self.active_tool != 'Point Edit' or self.drag is not None:
+            return
+        indices = self.selected_indices()
+        if len(indices) != 1:
+            return
+        index = indices[0]
+        shapes = self.project.shapes
+        shape = shapes[index]
+        if not path_edit.editable(shape):
+            return
+        if action == 'Simplify':
+            self.convert_selection(True)
+            return
+        point = self.active_node(shape)
+        if point is None:
+            return
+        try:
+            pieces, chosen = path_edit.edit_point(shape, path_edit.nodes(shape), point, action)
+        except ValueError as error:
+            self.show_message(str(error), level='warning')
+            return
+        self.selected_node = (pieces[0], chosen)
+        self.commit(shapes[:index] + pieces + shapes[index + 1:], indices)
+
     def point_key(self, indices, key, arrows):
         cycle = key in (Gdk.KEY_bracketleft, Gdk.KEY_bracketright)
         delete = key in (Gdk.KEY_Delete, Gdk.KEY_BackSpace)
@@ -2043,7 +2187,11 @@ class DesignWorkspace:
             in_progress = bool(self.drag is not None or self.polygon)
             self.cancel_drag()
             self.polygon.clear()
-            if in_progress:
+            if self.measurement is not None:
+                self.measurement = None
+                self.refresh_measurement()
+                self.canvas.queue_draw()
+            elif in_progress:
                 self.canvas.queue_draw()
             else:
                 self.set_selection(())
@@ -2171,6 +2319,7 @@ class DesignWorkspace:
 
     def replace_document(self, project, path=None, source=None):
         self.cancel_drag()
+        self.measurement = None
         self.polygon.clear()
         self.notice_bar.set_visible(False)
         self.notice_label.set_text('')

@@ -68,6 +68,9 @@ class DesignCanvas(Gtk.DrawingArea):
         points = Gtk.GestureClick(button=1)
         points.connect('pressed', editor.pick_polygon_point)
         self.add_controller(points)
+        context = Gtk.GestureClick(button=3)
+        context.connect('pressed', editor.point_context)
+        self.add_controller(context)
         pan = Gtk.GestureDrag(button=2)
         pan.connect('drag-begin', lambda *_: setattr(self, 'pan_start', self.pan))
         pan.connect('drag-update', self.pan_update)
@@ -215,6 +218,17 @@ class DesignCanvas(Gtk.DrawingArea):
             elif shape.visible and shape.kind in editor_model.POINT_EDIT_KINDS:
                 for path in shape.paths():
                     self.draw_vertices(cr, path.points, scale)
+        if editor.measurement:
+            start, end = editor.measurement
+            cr.save()
+            cr.set_source_rgb(0.16, 0.36, 0.73)
+            cr.set_line_width(1.5 / scale)
+            cr.set_dash([5 / scale, 3 / scale])
+            cr.move_to(*start)
+            cr.line_to(*end)
+            cr.stroke()
+            cr.restore()
+            self.draw_vertices(cr, (start, end), scale)
         if editor.polygon:
             points = editor.polygon
             cr.move_to(*points[0])

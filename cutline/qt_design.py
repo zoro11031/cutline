@@ -21,7 +21,7 @@ from . import (design_text, editor_model as model, geometry, graphtec, importer,
                sticker_print, sticker_trace, template)
 from .design_tools import (ALIGNMENT_ROWS, CLICK_PATH_TOOLS, COMMAND_ICONS, DRAWING_TOOLS, OBJECT_ICONS, PANEL_ICONS,
                            TRANSFORM_FIELDS, TRANSFORM_ICONS, TURN_RIGHT, WORKSPACE_KEYS, WORKSPACE_TOOLS, contextual_hint,
-                           rotation_handle, scale_from_corner)
+                           rotation_handle, scale_from_corner, segment_measurement)
 from .qt_canvas import SheetView, ZoomControls, draw_contours, draw_feed_arrow, draw_marks, draw_paper, draw_path, pen, rect
 from .qt_controls import (ColorSwatch, DesignIconButton, DockPanel, PanelDock, Tasks, ToolStrip, bar, button, design_divider, design_icon,
                           icon_outline, ribbon_button, set_choices, styled_label, workspace_header, workspace_layout)
@@ -3045,8 +3045,7 @@ class Design(QWidget):
     def measurement(self):
         if not self.canvas.measure:
             return None
-        (x1, y1), (x2, y2) = self.canvas.measure
-        return math.hypot(x2 - x1, y2 - y1), math.degrees(math.atan2(-(y2 - y1), x2 - x1))
+        return segment_measurement(*self.canvas.measure)
 
     def measured(self):
         found = self.measurement()
@@ -3083,7 +3082,7 @@ class Design(QWidget):
     CURSORS = {"Select": None, "Point Edit": None, "Type": Qt.CursorShape.IBeamCursor,
                "Hand": Qt.CursorShape.OpenHandCursor, "Zoom": Qt.CursorShape.PointingHandCursor,
                "Eyedropper": Qt.CursorShape.PointingHandCursor}
-    POINT_ACTIONS = ("Delete Point", "Break Path", "Corner", "Smooth", "Make Flat", "Make Curve", "Simplify")
+    POINT_ACTIONS = path_edit.POINT_ACTIONS
 
     def change_cursor(self):
         cursor = self.CURSORS.get(self.tool.currentData(), Qt.CursorShape.CrossCursor)
@@ -3107,22 +3106,14 @@ class Design(QWidget):
             return
         index, nodes = found
         shape = self.project.shapes[index]
-        operations = {"Corner": path_edit.corner, "Smooth": path_edit.smooth, "Make Flat": path_edit.make_flat,
-                      "Make Curve": path_edit.make_curve, "Delete Point": path_edit.delete_point}
         try:
-            if name == "Break Path":
-                pieces = [path_edit.to_shape(part, shape) for part in path_edit.break_path(nodes, i)]
-            else:
-                pieces = [path_edit.to_shape(operations[name](nodes, i), shape)]
+            pieces, chosen = path_edit.edit_point(shape, nodes, i, name)
         except ValueError as error:
             self.message(str(error))
             return
         shapes = self.project.shapes
-        self.commit_shapes(shapes[:index] + tuple(pieces) + shapes[index + 1:], (index,))
-        if name == "Delete Point":
-            self.canvas.node_point = max(0, i - 1)
-        elif name == "Break Path":
-            self.canvas.node_point = 0
+        self.commit_shapes(shapes[:index] + pieces + shapes[index + 1:], (index,))
+        self.canvas.node_point = chosen
         self.canvas.redraw()
 
     def transfer_properties(self, source):
@@ -3266,6 +3257,7 @@ class Design(QWidget):
         cue = "Use [ or ] to select. Arrows move."
         self.tool_hint.setMinimumWidth(self.tool_hint.fontMetrics().horizontalAdvance(cue) + 24 if point_edit else 0)
         self.measure_options.setVisible(tool.name == "Measure")
+        self.option_snap.setVisible(tool.name not in ("Hand", "Zoom", "Measure"))
         self.canvas.measure = None
         self.measured()
         self.refresh_tool_hint()

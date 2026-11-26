@@ -1214,6 +1214,69 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertEqual(len(design.project.shapes), 6)
         self.assertNotIn('<Control>v', self.shortcuts(design.shortcuts))
 
+    def test_point_actions_follow_the_selected_node_and_join_open_ends(self):
+        from cutline import path_edit
+
+        win = self.make_window()
+        win.draw_in_design_btn.emit('clicked')
+        design = win.design
+        shape = editor_model.Shape('Rectangle', 20, 25, 30, 20, action='Score')
+        design.commit((shape,), (0,))
+        design.tool.set_selected(design.tools.index('Point Edit'))
+        self.assertTrue(design.point_menu.get_visible())
+        break_path = design.menu_actions.lookup_action('point-action-1')
+        self.assertFalse(break_path.get_enabled())
+        design.begin_point_edit(20, 25, 4)
+        design.drag_end(None, 0, 0)
+        self.assertTrue(break_path.get_enabled())
+        break_path.activate(None)
+        opened = design.project.shapes[0]
+        self.assertFalse(path_edit.nodes(opened).closed)
+        self.assertEqual(opened.action, 'Score')
+        design.change_history(design.history.undo)
+        self.assertEqual(design.project.shapes, (shape,))
+
+        outline = path_edit.Nodes(((20, 25), (50, 25), (50, 45), (20, 45)), (), False)
+        path = path_edit.to_shape(outline, shape)
+        design.commit((path,), (0,))
+        depth = len(design.history.past)
+        design.begin_point_edit(20, 45, 4)
+        design.drag_end(None, 0, -78)
+        self.assertTrue(path_edit.nodes(design.project.shapes[0]).closed)
+        self.assertEqual(len(design.history.past), depth + 1)
+        design.change_history(design.history.undo)
+        self.assertEqual(design.project.shapes, (path,))
+
+    def test_measure_tool_keeps_measurement_out_of_history_until_scaling(self):
+        from gi.repository import Gdk
+
+        win = self.make_window()
+        win.present()
+        win.draw_in_design_btn.emit('clicked')
+        design = win.design
+        shape = editor_model.Shape('Rectangle', 20, 25, 30, 20)
+        design.commit((shape,), (0,))
+        depth = len(design.history.past)
+        self.assertTrue(design.canvas_key(None, Gdk.KEY_m, 0, Gdk.ModifierType(0)))
+        self.assertTrue(design.measure_options.get_visible())
+        self.assertFalse(design.scale_to_button.get_sensitive())
+        with mock.patch.object(design.canvas, 'viewport', return_value=(0, 0, 2)):
+            design.drag_begin(None, 40, 50)
+            design.drag_end(None, 20, 0)
+        self.assertIn('10.00 mm', design.measure_label.get_text())
+        self.assertEqual(len(design.history.past), depth)
+        self.assertTrue(design.scale_to_button.get_sensitive())
+        design.scale_to_button.emit('clicked')
+        dialog = win.get_visible_dialog()
+        dialog.get_extra_child().get_first_child().set_value(20)
+        dialog.emit('response', 'scale')
+        dialog.force_close()
+        scaled = design.project.shapes[0]
+        self.assertEqual((scaled.x, scaled.y, scaled.width, scaled.height), (20, 25, 60, 40))
+        self.assertEqual(len(design.history.past), depth + 1)
+        design.change_history(design.history.undo)
+        self.assertEqual(design.project.shapes, (shape,))
+
     def test_pointer_point_edit_moves_a_handle_and_inserts_one_undoable_node(self):
         from cutline import path_edit
 

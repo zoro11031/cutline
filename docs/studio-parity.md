@@ -15,7 +15,7 @@ verified commands (such as path ordering, weed paths, test cuts, action
 filtering, and end position) count as working; options whose protocol
 commands are not yet confirmed on hardware stay partial.
 
-**Parity: 66.7%** (38 ✅, 32 🟡, 11 ❌ across 81 features; ✅ counts 1, 🟡 counts ½).
+**Parity: 67.3%** (39 ✅, 31 🟡, 11 ❌ across 81 features; ✅ counts 1, 🟡 counts ½).
 
 ## Design walkthrough
 
@@ -28,8 +28,11 @@ Compact, wide, light, dark, and larger-text captures included 720 × 520.
 Both frontends can now select and nudge individual points from the keyboard.
 With one outline selected, choose Point Edit, press [ or ] to select a
 point, and use the arrow keys to move it. Both frontends also let you drag
-nodes and Bézier handles and add a point on the outline. The next GTK
-point-editing slice is the node commands and joining open endpoints.
+nodes and Bézier handles and add a point on the outline. The GTK
+Point Actions menu and node context menu now use the same commands as Qt.
+Dragging open ends together closes the path in either frontend. Measure is
+available in both toolboxes. GTK groups it with Hand and Zoom and shows the
+length, angle, and Scale to Length action in the contextual toolbar.
 Studio3 export still needs complete files checked in Studio.
 
 The redesigned workspace puts document actions and tool options above the
@@ -48,7 +51,7 @@ either frontend is partial.
 | Silhouette Studio | Cutline | |
 |---|---|---|
 | Select, move, scale and rotate | Both have selection and transforms; Qt has side stretch and on-canvas corner radius | 🟡 |
-| Point editing | Both support keyboard node edits, pointer insertion, and Bézier handle drags. Qt also has the node toolbar and joins open ends. | 🟡 |
+| Point editing | Both support keyboard and pointer node edits, Bézier handles, node commands, and joining open ends. Release compound paths before editing individual points. | 🟡 |
 | Line | Both draw lines; Qt has Shift angle constraints | 🟡 |
 | Rectangle and rounded rectangle | Both draw rectangles and rounded rectangles; Qt has Shift and Alt modifiers | 🟡 |
 | Ellipse | Both draw ellipses; Qt can constrain circles with Shift | 🟡 |
@@ -60,7 +63,7 @@ either frontend is partial.
 | Knife | Qt | 🟡 |
 | Eraser | Qt, with a size | 🟡 |
 | Eyedropper | Qt Eyedropper copies cut action, line and fill | 🟡 |
-| Measure | Qt measures and scales to a known length | 🟡 |
+| Measure | Both measure and scale to a known length | ✅ |
 | Pan and zoom | Both have Hand and Zoom tools and fit-to-selection. Qt also has Space to pan | 🟡 |
 | Undo, redo, cut, copy, paste, paste in front, duplicate | Both | ✅ |
 | Select All and Select Same | Both, Select Same by line or fill colour | ✅ |

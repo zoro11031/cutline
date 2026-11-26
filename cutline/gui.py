@@ -76,6 +76,7 @@ _CUT_SETTINGS_CSS = """
 .scc-design headerbar togglebutton:checked, .scc-design-rail togglebutton:checked {
     background: #435aa2; color: white;
 }
+.scc-design-rail .scc-tool-flyout > button { min-width: 16px; padding: 0; }
 .scc-object-visibility:checked { background: transparent; }
 .scc-object-visibility { padding: 1px 4px; min-height: 24px; min-width: 22px; }
 .scc-notice {

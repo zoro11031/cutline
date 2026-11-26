@@ -220,7 +220,7 @@ GTK_TOOL_GROUPS = (
     ("Shape tools", (*TOOL_GROUPS[3][1], REGULAR_POLYGON_TOOL)),
     ("Path tools", (_tool("Polygon"), CURVE_TOOL, ARC_TOOL, _tool("Freehand"), SMOOTH_FREEHAND_TOOL)),
     ("Type", (Tool("Type", "Y", TYPE_TOOL.hint, TYPE_TOOL.strokes),)),
-    ("View tools", (HAND_TOOL, ZOOM_TOOL)),
+    ("View tools", (HAND_TOOL, ZOOM_TOOL, MEASURE_TOOL)),
 )
 GTK_TOOLS = tuple(tool for _, group in GTK_TOOL_GROUPS for tool in group)
 GTK_TOOL_NAMES = tuple(tool.name for tool in GTK_TOOLS)
@@ -365,6 +365,11 @@ PANEL_ICONS = {
                     (((4, 8), (12, 4), (20, 8), (12, 12), (4, 8)), ((4, 12), (12, 16), (20, 12)),
                      ((4, 16), (12, 20), (20, 16)))),
 }
+
+
+def segment_measurement(start, end):
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    return math.hypot(dx, dy), math.degrees(math.atan2(-dy, dx))
 
 
 def contextual_hint(tool, *, shape_count, selected_count, is_sticker=False, is_text=False,

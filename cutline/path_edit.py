@@ -329,6 +329,26 @@ def corner(nodes, i):
     return _with(nodes, handles=handles)
 
 
+_POINT_OPERATIONS = {
+    "Delete Point": delete_point,
+    "Break Path": break_path,
+    "Corner": corner,
+    "Smooth": smooth,
+    "Make Flat": make_flat,
+    "Make Curve": make_curve,
+}
+POINT_ACTIONS = (*_POINT_OPERATIONS, "Simplify")
+
+
+def edit_point(shape, outline, index, action):
+    """Apply a toolbar command and return the replacement shapes and active point."""
+    result = _POINT_OPERATIONS[action](outline, index)
+    if action == "Break Path":
+        return tuple(to_shape(part, shape) for part in result), 0
+    selected = max(0, index - 1) if action == "Delete Point" else index
+    return (to_shape(result, shape),), selected
+
+
 def adjacent_points(outline, index):
     if index is None:
         return ()
