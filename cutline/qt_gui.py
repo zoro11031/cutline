@@ -578,13 +578,16 @@ class Window(QMainWindow):
         self.guide_status = guide.note()
         self.guide_retry = button("Didn’t Cut — Retry", self.retry_guide_spot)
         self.guide_retry.setToolTip("The blade did not cut this spot. Unlock it and try again.")
-        self.guide_confirm_pass = button("Pass Finished — Count It", self.confirm_guide_pass)
+        self.guide_confirm_pass = button("Pass Finished — Count It", self.accept_unconfirmed_guide_pass)
         self.guide_confirm_pass.setToolTip("The last pass finished cleanly. Add it to this spot’s pass count and continue.")
         self.guide_recovery = AdaptiveActions((self.guide_retry, self.guide_confirm_pass))
         guide.addRow(self.guide_recovery)
         self.guide_recovery.hide()
         self.guide_form = guide
         guide.addRow("Cut with", self.guide_slot_choice)
+        self.guide_batch_passes = guide.number("Passes to cut", 1, 1, starting_guide.MAX_JOB_PASSES, 1, 0,
+                                               self.on_guide_batch_changed)
+        self.guide_batch_passes.setToolTip("How many passes to cut in one run on this spot.")
         self.guide_next = button("Next Spot", self.next_guide_spot)
         self.guide_next.setToolTip("Move to untouched stock.")
         self.guide_use = button("Use Tested Settings…", self.use_guide_settings)
@@ -2317,8 +2320,16 @@ class Window(QMainWindow):
         state = self.guide
         if self.tuning:
             self.sync_guide_slot()
-        for field in (self.guide_apply, self.guide_next, self.guide_reset, self.guide_slot_choice):
+        for field in (self.guide_apply, self.guide_next, self.guide_reset, self.guide_slot_choice,
+                      self.guide_batch_passes):
             field.setEnabled(not self.settings_locked())
+        max_batch = max(1, state.remaining_passes)
+        if state.batch_passes > max_batch:
+            state.batch_passes = max_batch
+        blocked = self.guide_batch_passes.blockSignals(True)
+        self.guide_batch_passes.setMaximum(max_batch)
+        self.guide_batch_passes.setValue(state.batch_passes)
+        self.guide_batch_passes.blockSignals(blocked)
         self.guide_next.setEnabled(not self.settings_locked() and (
             state.placement is None or any(number != state.spot for number in state.fresh_spots())))
         used = state.current_spot
@@ -2341,6 +2352,10 @@ class Window(QMainWindow):
         self.guide_retry.setEnabled(not self.settings_locked() and state.can_retry_spot)
         self.guide_confirm_pass.setVisible(state.can_confirm_pass)
         self.guide_confirm_pass.setEnabled(not self.settings_locked() and state.can_confirm_pass)
+        if state.trial and state.trial.passes > 1:
+            self.guide_confirm_pass.setText(f"Batch Finished — Count {state.trial.passes}")
+        else:
+            self.guide_confirm_pass.setText("Pass Finished — Count It")
         self.guide_registration.setEnabled(not self.settings_locked() and not (state.spots or state.sheet_exported))
         self.guide_marked_sheet.setEnabled(not self.settings_locked() and state.registered)
         self.guide_send.setText(state.pass_label(self.job_options()))
@@ -2511,7 +2526,16 @@ class Window(QMainWindow):
         self.update_tuning_preview()
         self.message(f"Spot {self.guide.spot} unlocked to retry.")
 
-    def confirm_guide_pass(self):
+    def on_guide_batch_changed(self):
+        if self.settings_locked():
+            return
+        try:
+            self.guide.set_batch_passes(int(self.guide_batch_passes.value()))
+        except ValueError as error:
+            self.message(str(error))
+        self.update_guide()
+
+    def accept_unconfirmed_guide_pass(self):
         if self.settings_locked():
             return
         try:
@@ -2611,7 +2635,8 @@ class Window(QMainWindow):
             self.update_enabled_fields()
             self.refresh_send()
             if self.persist_guide():
-                self.message(str(error) if error else "Pass complete.")
+                done_msg = "Pass complete." if trial.passes == 1 else f"{trial.passes} passes complete."
+                self.message(str(error) if error else done_msg)
 
         self.tasks.run(work, done)
 

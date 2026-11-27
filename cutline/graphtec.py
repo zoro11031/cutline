@@ -402,7 +402,7 @@ class Step:
     wait_ready: bool = False    # finish a standalone movement before the next step
 
 
-MAX_PASSES = 20
+MAX_PASSES = 50
 MAX_LIGHT_PASSES = MAX_PASSES - 1
 
 

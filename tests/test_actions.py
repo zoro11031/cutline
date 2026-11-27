@@ -277,11 +277,11 @@ class TestStagedPasses(unittest.TestCase):
         self.assertEqual(preset.cut_settings(), settings)
         self.assertEqual(presets.Preset("Old", "", "measured", dict(force=20)).cut_settings().light_passes, 0)
 
-    def test_max_passes_supports_up_to_twenty_including_staged(self):
-        self.assertEqual(graphtec.MAX_PASSES, 20)
-        self.assertEqual(graphtec.MAX_LIGHT_PASSES, 19)
-        clamped = graphtec.CutSettings(passes=25, light_passes=25).clamped(graphtec.device_by_name("Silhouette Cameo 4"))
-        self.assertEqual((clamped.passes, clamped.light_passes), (20, 19))
-        checked = self.staged(passes=20, blade_options=dict(light_passes=19, light_force=10))
+    def test_max_passes_supports_up_to_fifty_including_staged(self):
+        self.assertEqual(graphtec.MAX_PASSES, 50)
+        self.assertEqual(graphtec.MAX_LIGHT_PASSES, 49)
+        clamped = graphtec.CutSettings(passes=60, light_passes=60).clamped(graphtec.device_by_name("Silhouette Cameo 4"))
+        self.assertEqual((clamped.passes, clamped.light_passes), (50, 49))
+        checked = self.staged(passes=50, blade_options=dict(light_passes=49, light_force=10))
         self.assertEqual(checked.blocked, [])
-        self.assertEqual([group.settings.passes for group in checked.action_groups], [19, 1])
+        self.assertEqual([group.settings.passes for group in checked.action_groups], [49, 1])

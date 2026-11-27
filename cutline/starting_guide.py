@@ -177,13 +177,18 @@ class Trial:
     def settings(self):
         return self.sheet.cells[0].settings
 
+    @property
+    def passes(self):
+        return self.settings.passes
+
     def describe(self):
         location = self.sheet.cells[0].rect
         settings = self.settings
         depth = f"Depth {settings.depth}" if settings.depth is not None else "Depth set on the tool"
+        batch = f"{settings.passes} passes · " if settings.passes > 1 else ""
         return (f"{testcut.TEST_SHAPES[self.sheet.shape]} · {self.sheet.size_mm:g} mm\n"
                 f"X {location.x:g} mm, Y {location.y:g} mm\n"
-                f"Force {settings.force} · Speed {settings.speed} · {depth} · Holder {settings.holder}")
+                f"{batch}Force {settings.force} · Speed {settings.speed} · {depth} · Holder {settings.holder}")
 
 
 class Guide:
@@ -192,9 +197,19 @@ class Guide:
         self.registered = False
         self.shape = "square"
         self.size_mm = testcut.DEFAULT_SIZE_MM
+        self.batch_passes = 1
         self.resume_error = ""
         self.reset()
         self.restore()
+
+    @property
+    def remaining_passes(self):
+        return max(0, MAX_JOB_PASSES - self.completed)
+
+    def set_batch_passes(self, count):
+        if type(count) is not int or count < 1 or count > MAX_JOB_PASSES:
+            raise ValueError(f"Choose between 1 and {MAX_JOB_PASSES} passes per cut.")
+        self.batch_passes = count
 
     def reset(self):
         self.placement = None
@@ -232,7 +247,7 @@ class Guide:
 
     @property
     def can_confirm_pass(self):
-        return bool(self.uncertain and self.trial is not None and self.completed < MAX_JOB_PASSES)
+        return bool(self.uncertain and self.trial is not None and self.completed + self.trial.passes <= MAX_JOB_PASSES)
 
     @property
     def sheet_status(self):
@@ -351,7 +366,7 @@ class Guide:
         self.select_spot(next((number for number in fresh if number > self.spot), fresh[0]))
 
     def settings_differ(self, options):
-        """Compare the effective settings for one test pass on the selected spot."""
+        """Compare the effective force/speed/depth/blade settings on the selected spot."""
         if not self.completed or self.trial is None:
             return False
         device = graphtec.device_by_name(options["cutter"])
@@ -359,17 +374,17 @@ class Guide:
             settings = self._pass_settings(device, options, self.trial.sheet.shape)
         except ValueError:
             return True
-        return settings != self.trial.settings
+        return settings != replace(self.trial.settings, passes=1)
 
     @staticmethod
-    def _pass_settings(device, options, shape):
-        # One pass at a time: staging belongs to the cut job, never to a test pass.
+    def _pass_settings(device, options, shape, passes=1):
+        # Staging belongs to the cut job, never to a test batch.
         blade = dict(options["blade_options"], track_enhancing=False, light_passes=0, light_force=None,
                      light_speed=None)
         if not blade.get("blade_diameter_mm"):
             raise ValueError("Choose a blade setting for the material test.")
         settings = graphtec.CutSettings(force=options["force"], speed=options["speed"],
-                                        depth=options["depth"], passes=1, **blade)
+                                        depth=options["depth"], passes=passes, **blade)
         return testcut.settings_for_shape(settings, shape).clamped(device)
 
     def inspect(self, outcome):
@@ -412,25 +427,32 @@ class Guide:
             return "The cutter changed. Return to the original cutter or start a fresh spot."
         return ""
 
-    def prepare(self, connection, options, job, shape=None):
+    def prepare(self, connection, options, job, shape=None, passes=None):
         reason = self.refusal(connection, options["cutter"])
         if reason:
             raise ValueError(reason)
+        batch = self.batch_passes if passes is None else passes
+        if type(batch) is not int or batch < 1:
+            raise ValueError("Choose at least one pass to cut.")
+        if self.completed + batch > MAX_JOB_PASSES:
+            left = self.remaining_passes
+            raise ValueError(f"Spot {self.spot} has {left} {'pass' if left == 1 else 'passes'} left "
+                             f"(max {MAX_JOB_PASSES}).")
         if self.trial:
             if options["blade_options"].get("holder", 1) != self.trial.settings.holder:
                 raise ValueError("Switch back to the tested tool holder or use a fresh spot.")
             track = options["blade_options"].get("track_enhancing", False)
-            if not self.settings_differ(options):
+            if not self.settings_differ(options) and self.trial.passes == batch:
                 return replace(self.trial, track_enhancing=track) if track != self.trial.track_enhancing else self.trial
             device = graphtec.device_by_name(options["cutter"])
             shape = self.trial.sheet.shape
-            settings = self._pass_settings(device, options, shape)
+            settings = self._pass_settings(device, options, shape, passes=batch)
             rect = self.trial.sheet.cells[0].rect
             return self.build_trial(device, settings, self.trial.placement, _connection_key(connection),
                                     shape, track, rect)
         device = graphtec.device_by_name(options["cutter"])
         shape = shape or self.shape
-        settings = self._pass_settings(device, options, shape)
+        settings = self._pass_settings(device, options, shape, passes=batch)
         placement = self.placement or self.make_placement(job, options)
         rect = self.fresh_spots(placement).get(self.spot)
         if rect is None:
@@ -441,7 +463,7 @@ class Guide:
     def build_trial(self, device, settings, placement, connection, shape, track, rect):
         marks = placement.marks
         margin = marks.inset_mm + marks.length_mm + testcut.DEFAULT_GAP_MM if marks else testcut.DEFAULT_MARGIN_MM
-        sheet = testcut.build(device, replace(settings, passes=1, track_enhancing=False),
+        sheet = testcut.build(device, replace(settings, track_enhancing=False),
                               spot=self.spot, spot_rect=rect, size_mm=rect.w, margin_mm=margin, from_bottom=True,
                               sheet_w_mm=placement.width, sheet_h_mm=placement.height,
                               registration=False, offset_mm=placement.offset, shape=shape,
@@ -474,17 +496,23 @@ class Guide:
 
     def is_repeat(self, trial):
         """The same cut again on a spot already cut, which needs no second
-        confirmation. Any change of settings is a new cut and is confirmed."""
+        confirmation. Any change of settings or batch size is confirmed."""
         return bool(self.completed and self.trial is not None and not self.interrupted
                     and trial.settings == self.trial.settings)
 
-    def pass_label(self, options):
-        if self.completed and not self.interrupted and not self.settings_differ(options):
-            return "Repeat One Pass"
-        return "Cut One Pass…"
+    def pass_label(self, options, passes=None):
+        count = self.batch_passes if passes is None else passes
+        same = (self.completed and self.trial is not None and not self.interrupted
+                and not self.settings_differ(options) and self.trial.passes == count)
+        if count == 1:
+            return "Repeat One Pass" if same else "Cut One Pass…"
+        return f"Repeat {count} Passes" if same else f"Cut {count} Passes…"
 
     def confirm_title(self, trial):
-        return "Cut With Changed Settings?" if self.completed and not self.is_repeat(trial) else "Send One Test Pass?"
+        if self.completed and self.trial is not None and replace(trial.settings, passes=1) != replace(
+                self.trial.settings, passes=1):
+            return "Cut With Changed Settings?"
+        return "Send One Test Pass?" if trial.passes == 1 else f"Send {trial.passes} Test Passes?"
 
     def prompt(self, trial):
         if trial.placement.registered:
@@ -497,18 +525,21 @@ class Guide:
                       f"covering {spot.x:g}–{spot.x2:g} mm from the left and {spot.y:g}–{spot.y2:g} mm "
                       "from the top of the cutting grid. A full sheet works too.")
         change = ""
-        if self.completed and self.trial is not None and trial.settings != self.trial.settings:
+        if self.completed and self.trial is not None and replace(trial.settings, passes=1) != replace(
+                self.trial.settings, passes=1):
             change = (f"This spot was last cut at {PassSettings.of(self.trial.settings).label}. "
-                      f"This pass uses {PassSettings.of(trial.settings).label}.\n\n")
+                      f"This {'pass uses' if trial.passes == 1 else f'batch ({trial.passes} passes) uses'} "
+                      f"{PassSettings.of(trial.settings).label}.\n\n")
         return (f"{change}{trial.sheet.device.name} · {trial.describe()}\n\n{action}\n"
                 "The cutter returns to the origin after this test.")
 
     def record(self, trial, error=None, name=""):
         if error is None:
+            count = trial.passes
             self.trial = trial
             self.placement = trial.placement
-            self.completed += 1
-            self.pass_log += (PassSettings.of(trial.settings, name),)
+            self.completed += count
+            self.pass_log += (PassSettings.of(trial.settings, name),) * count
             self.spot_trials[self.spot] = self._trial_document(trial)
             self._unconfirmed_pass_name = ""
             self.outcome = ""
@@ -537,13 +568,14 @@ class Guide:
                 self.trial = saved_trial
 
     def confirm_unconfirmed_pass(self):
-        """Operator confirmed the unconfirmed pass finished cleanly: count it and unlock."""
+        """Operator confirmed the unconfirmed pass or batch finished cleanly: count it and unlock."""
         if not self.can_confirm_pass:
             raise ValueError("There is no unconfirmed pass to count on this spot.")
+        count = self.trial.passes
         self.interrupted = False
         self.uncertain = False
-        self.completed += 1
-        self.pass_log += (PassSettings.of(self.trial.settings, self._unconfirmed_pass_name),)
+        self.completed += count
+        self.pass_log += (PassSettings.of(self.trial.settings, self._unconfirmed_pass_name),) * count
         self.spot_trials[self.spot] = self._trial_document(self.trial)
         self._unconfirmed_pass_name = ""
         self.outcome = ""

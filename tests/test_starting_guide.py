@@ -618,3 +618,40 @@ class TestPassLog(unittest.TestCase):
             self.assertEqual(reopened.pass_log[0].name, "A")
             self.assertTrue(reopened.can_cut)
 
+    def test_batch_passes_cut_multiple_passes_per_run_and_stage_cleanly(self):
+        self.guide.set_batch_passes(4)
+        self.assertEqual(self.guide.pass_label(self.options), "Cut 4 Passes…")
+        batch_a = self.guide.prepare(("auto", None), self.options, None)
+        self.assertEqual(batch_a.passes, 4)
+        self.assertIn("4 passes · Force 10", batch_a.describe())
+        self.assertEqual(self.guide.confirm_title(batch_a), "Send 4 Test Passes?")
+        self.guide.record(batch_a, name="A")
+        self.assertEqual(self.guide.completed, 4)
+        self.assertEqual(len(self.guide.pass_log), 4)
+        self.assertEqual(self.guide.pass_label(self.options), "Repeat 4 Passes")
+
+        # Switching to Cut Settings B with a batch of 6 produces staged light/full settings
+        self.options["force"] = 25
+        self.guide.set_batch_passes(6)
+        batch_b = self.guide.prepare(("auto", None), self.options, None)
+        self.assertEqual(batch_b.passes, 6)
+        self.assertEqual(self.guide.confirm_title(batch_b), "Cut With Changed Settings?")
+        self.guide.record(batch_b, name="B")
+        self.assertEqual(self.guide.completed, 10)
+        settings = self.guide.tested_settings
+        self.assertEqual((settings.passes, settings.light_passes, settings.light_force, settings.force),
+                         (10, 4, 10, 25))
+
+        # Unconfirmed batch counts the whole batch when operator confirms it
+        self.guide.set_batch_passes(3)
+        batch_c = self.guide.prepare(("auto", None), self.options, None)
+        self.guide.record(batch_c, starting_guide.PassUnconfirmed("drop"), name="B")
+        self.assertTrue(self.guide.can_confirm_pass)
+        self.guide.confirm_unconfirmed_pass()
+        self.assertEqual(self.guide.completed, 13)
+
+        # Cannot exceed MAX_JOB_PASSES (50)
+        self.guide.set_batch_passes(40)
+        with self.assertRaisesRegex(ValueError, "37 passes left"):
+            self.guide.prepare(("auto", None), self.options, None)
+

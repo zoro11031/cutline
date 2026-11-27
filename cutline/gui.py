@@ -1585,6 +1585,10 @@ class Window(Adw.ApplicationWindow):
         self.guide_slot_choice.set_tooltip_text("Which cut settings the next pass uses.")
         self.guide_slot_choice.connect("notify::selected", lambda *_: self.use_guide_slot())
         guide.add(self.guide_slot_choice)
+        self.guide_batch_passes = _spin("Passes to cut", 1, starting_guide.MAX_JOB_PASSES, 1, 1, 0)
+        self.guide_batch_passes.set_tooltip_text("How many passes to cut in one run on this spot.")
+        self.guide_batch_passes_id = self.guide_batch_passes.connect("notify::value", self.on_guide_batch_changed)
+        guide.add(self.guide_batch_passes)
         self.guide_next = self.guide_button(guide, "Next Spot", self.on_guide_next)
         self.guide_use, self.guide_apply = self.guide_buttons(
             guide, ("Use Tested Settings…", self.on_guide_use), ("Use Starting Settings", self.on_guide_start))
@@ -3123,9 +3127,16 @@ class Window(Adw.ApplicationWindow):
 
     def update_guide(self):
         busy = self._sending
-        for field in (self.guide_apply, self.guide_next, self.guide_reset, self.guide_slot_choice):
+        for field in (self.guide_apply, self.guide_next, self.guide_reset, self.guide_slot_choice,
+                      self.guide_batch_passes):
             field.set_sensitive(not busy)
         state = self.guide
+        max_batch = max(1, state.remaining_passes)
+        if state.batch_passes > max_batch:
+            state.batch_passes = max_batch
+        with self.guide_batch_passes.handler_block(self.guide_batch_passes_id):
+            self.guide_batch_passes.get_adjustment().set_upper(max_batch)
+            self.guide_batch_passes.set_value(state.batch_passes)
         if self.tuning:
             self.sync_guide_slot()
         self.guide_next.set_sensitive(not busy and (
@@ -3148,6 +3159,10 @@ class Window(Adw.ApplicationWindow):
         self.guide_retry.set_sensitive(not busy and state.can_retry_spot)
         self.guide_confirm_pass.set_visible(state.can_confirm_pass)
         self.guide_confirm_pass.set_sensitive(not busy and state.can_confirm_pass)
+        if state.trial and state.trial.passes > 1:
+            self.guide_confirm_pass.set_label(f"Batch Finished — Count {state.trial.passes}")
+        else:
+            self.guide_confirm_pass.set_label("Pass Finished — Count It")
         self.guide_registration.set_sensitive(not busy and not (state.spots or state.sheet_exported))
         self.guide_marked_sheet.set_sensitive(not busy and state.registered)
         if self.tuning:
@@ -3271,6 +3286,15 @@ class Window(Adw.ApplicationWindow):
         self.persist_guide()
         self.update_guide()
         self.update_tuning_preview()
+
+    def on_guide_batch_changed(self, row, _param=None):
+        if self._sending:
+            return
+        try:
+            self.guide.set_batch_passes(int(row.get_value()))
+        except ValueError as error:
+            self.toast(str(error))
+        self.update_guide()
 
     def on_guide_retry(self, *_args):
         if self._sending:
@@ -3407,7 +3431,8 @@ class Window(Adw.ApplicationWindow):
             self.guide.record(trial, error, name)
             self._send_done()
             if self.persist_guide():
-                self.toast(str(error) if error else "Pass complete.")
+                done_msg = "Pass complete." if trial.passes == 1 else f"{trial.passes} passes complete."
+                self.toast(str(error) if error else done_msg)
 
         def work():
             try:

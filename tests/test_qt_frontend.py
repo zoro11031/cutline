@@ -949,6 +949,43 @@ class TestQtFrontend(unittest.TestCase):
             self.assertEqual(window.job.settings.force, 21)
             self.assertEqual(window.job.settings.holder, 2)
 
+    def test_material_guide_batch_passes_and_unconfirmed_recovery_buttons(self):
+        from cutline import starting_guide
+
+        window = self.window
+        window.show()
+        window.send_workspace.click()
+        window.material_guide.click()
+        self.app.processEvents()
+
+        # Batch count updates the send button label and upper limit tracks remaining passes (50 max).
+        self.assertEqual(window.guide_batch_passes.maximum(), 50)
+        window.guide_batch_passes.setValue(4)
+        self.assertEqual(window.guide.batch_passes, 4)
+        self.assertEqual(window.guide_send.text(), "Cut 4 Passes…")
+
+        # Unconfirmed batch exposes Retry and Count buttons; clicking Count actually records all 4 passes.
+        trial = window.guide.prepare(("auto", None), window.job_options(), window.job)
+        window.guide.record(trial, starting_guide.PassUnconfirmed("dropped"), name="A")
+        window.update_guide()
+        self.assertTrue(window.guide_retry.isVisible())
+        self.assertTrue(window.guide_confirm_pass.isVisible())
+        self.assertEqual(window.guide_confirm_pass.text(), "Batch Finished — Count 4")
+        window.guide_confirm_pass.click()
+        self.assertEqual(window.guide.completed, 4)
+        self.assertFalse(window.guide.uncertain)
+        self.assertEqual(window.guide_batch_passes.maximum(), 46)
+
+        # Next unconfirmed pass can be unlocked with Retry without changing the 4 completed passes.
+        window.guide_batch_passes.setValue(1)
+        trial2 = window.guide.prepare(("auto", None), window.job_options(), window.job)
+        window.guide.record(trial2, starting_guide.PassUnconfirmed("dropped"), name="A")
+        window.update_guide()
+        self.assertEqual(window.guide_confirm_pass.text(), "Pass Finished — Count It")
+        window.guide_retry.click()
+        self.assertEqual(window.guide.completed, 4)
+        self.assertTrue(window.guide.can_cut)
+
     def test_advanced_controls_and_tool_profiles_are_independent(self):
         window = self.window
         window.show()
