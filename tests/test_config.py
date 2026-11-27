@@ -300,3 +300,30 @@ class TestDesignUiPersistence(unittest.TestCase):
             self.assertFalse(loaded["rulers"])
             self.assertFalse(loaded["guides"])
 
+
+class TestTestedPresetsPersistence(unittest.TestCase):
+    def test_tested_presets_round_trip_and_respect_measured_origin(self):
+        from cutline import presets
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(config, "CONFIG_DIR", Path(folder)):
+            self.assertEqual(config.tested_presets(), set())
+            guide_preset = presets.get(presets.STARTING_NAME)
+            measured_preset = presets.Preset("Measured Stock", "Tested", "measured", {"force": 20})
+            self.assertFalse(config.is_preset_tested(guide_preset))
+            self.assertTrue(config.is_preset_tested(measured_preset))
+
+            config.set_presets_tested([presets.STARTING_NAME, "Custom Cardstock", "  "], True)
+            self.assertEqual(config.tested_presets(), {presets.STARTING_NAME, "Custom Cardstock"})
+            self.assertTrue(config.is_preset_tested(guide_preset))
+            self.assertEqual(
+                config.load_settings()["tested_presets"],
+                sorted([presets.STARTING_NAME, "Custom Cardstock"]),
+            )
+
+            config.set_preset_tested(presets.STARTING_NAME, False)
+            self.assertFalse(config.is_preset_tested(guide_preset))
+            self.assertEqual(config.tested_presets(), {"Custom Cardstock"})
+
+            config.set_preset_tested("Custom Cardstock", False)
+            self.assertEqual(config.tested_presets(), set())
+            self.assertNotIn("tested_presets", config.load_settings())
+

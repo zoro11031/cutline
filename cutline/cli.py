@@ -921,9 +921,11 @@ def _cut(args, link, options):
         say("\nDry run: everything checks out, nothing sent.", style="bold")
         return 0
 
+    known_tested = config.tested_presets()
     used_presets = (dict.fromkeys(group.preset.name for group in j.action_groups
-                                  if group.preset.origin != "measured")
-                    if j.action_groups else {j.preset.name: None} if j.preset.origin != "measured" else {})
+                                  if not config.is_preset_tested(group.preset, known_tested))
+                    if j.action_groups
+                    else {j.preset.name: None} if not config.is_preset_tested(j.preset, known_tested) else {})
     for name in used_presets:
         warn(f"The {name} preset needs a hardware test on this stock.")
 

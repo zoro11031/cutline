@@ -12,7 +12,7 @@ import zipfile
 
 from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
 from PySide6.QtGui import QIcon, QKeySequence
-from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QInputDialog, QMenu,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QInputDialog, QMenu,
                                QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
                                QSizePolicy, QSplitter, QStackedWidget, QStyle, QTabWidget, QToolButton, QVBoxLayout,
                                QWidget)
@@ -496,6 +496,10 @@ class Window(QMainWindow):
         # choice, and saving the tuned values sits after the values.
         self.material_note = settings.note()
         self.material_note.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.tested_preset_check = settings.check("Tested on this stock", changed=self.toggle_preset_tested)
+        self.tested_preset_row = (self.tested_preset_check.parentWidget()
+                                  if hasattr(self.tested_preset_check, "caption")
+                                  else self.tested_preset_check)
         for key, label, low, high, step, decimals in BLADE_NUMBERS:
             if key in QUICK_NUMBERS:
                 self.blade[key] = settings.number(label, low, low, high, step, decimals, self.rebuild,
@@ -785,12 +789,30 @@ class Window(QMainWindow):
         cutter, name = self.choice("cutter"), self.choice("preset")
         preset = getattr(self, "materials", {}).get(name)
         self.material_note.setText((preset.note or preset.description) if preset else "")
+        measured = preset is not None and preset.origin == "measured"
+        with self.editing():
+            self.tested_preset_check.setChecked(config.is_preset_tested(preset))
+        self.tested_preset_check.setEnabled(preset is not None and not measured and not self.settings_locked())
+        tip = ("Saved from Dial In a Material." if measured
+               else "Silence the hardware-test warning for this material preset.")
+        self.tested_preset_check.setToolTip(tip)
+        if hasattr(self.tested_preset_check, "caption"):
+            self.tested_preset_check.caption.setToolTip(tip)
         action = presets.removal_action(name, cutter) if preset else ""
         self.delete_preset_btn.setText(f"Revert ‘{name}’ to Default" if action == "restore"
                                        else f"Delete ‘{name}’")
         self.delete_preset_btn.setEnabled(bool(action) and not self.settings_locked())
         self.delete_preset_btn.setToolTip("" if action else "Built-in presets cannot be deleted.")
         self.save_preset_btn.setToolTip(f"Save the current values to ‘{name}’.")
+
+    def toggle_preset_tested(self):
+        if self.loading:
+            return
+        preset = getattr(self, "materials", {}).get(self.choice("preset"))
+        if preset is None or preset.origin == "measured":
+            return
+        config.set_preset_tested(preset.name, self.tested_preset_check.isChecked())
+        self.update_material_details()
 
     def material_buttons(self):
         return (self.save_preset_btn, self.save_new_preset_btn, self.delete_preset_btn,
@@ -825,6 +847,8 @@ class Window(QMainWindow):
         if not presets.delete_preset(name, cutter):
             self.message(f"Could not remove ‘{name}’.")
             return
+        if not restore:
+            config.set_preset_tested(name, False)
         self.holder_state.drafts = {slot: (preset, settings) for slot, (preset, settings)
                                     in self.holder_state.drafts.items() if preset.name != name}
         self.refresh_preset_choices()
@@ -1125,6 +1149,7 @@ class Window(QMainWindow):
             self.use_generated.setEnabled(False)
             for c in self.material_buttons():
                 c.setEnabled(False)
+            self.tested_preset_check.setEnabled(False)
             return
         for c in self.blade.values():
             c.setEnabled(True)
@@ -1498,6 +1523,7 @@ class Window(QMainWindow):
         self.send_advanced.disclosure.setVisible(not self.tuning)
         self.send_advanced.setVisible(not self.tuning and self.send_advanced.disclosure.isChecked())
         self.settings_box.setVisible(True)
+        self.tested_preset_row.setVisible(not self.tuning)
         self.preset_actions.setVisible(not self.tuning)
         self.guide_page.setVisible(self.tuning)
         self.update_stages(rebuild=False)
@@ -1574,13 +1600,18 @@ class Window(QMainWindow):
                     f"{display_job.device.name} · {len(display_job.paths)} paths · "
                     + ("Registration on" if display_job.registration else "Registration off")))
 
-    def confirm(self, title, prompt, *, confirm_label=None, destructive=False, details=None):
+    def confirm(self, title, prompt, *, confirm_label=None, destructive=False, details=None,
+                checkbox_label=None, on_checked=None):
         if confirm_label:
             box = QMessageBox(self)
             box.setWindowTitle(title)
             box.setText(prompt)
             if details:
                 box.setDetailedText(details)
+            checkbox = None
+            if checkbox_label:
+                checkbox = QCheckBox(checkbox_label, box)
+                box.setCheckBox(checkbox)
             btn = box.addButton(
                 confirm_label,
                 QMessageBox.ButtonRole.DestructiveRole if destructive else QMessageBox.ButtonRole.AcceptRole,
@@ -1589,7 +1620,10 @@ class Window(QMainWindow):
             box.setDefaultButton(cancel)
             box.setIcon(QMessageBox.Icon.Warning if destructive else QMessageBox.Icon.Information)
             box.exec()
-            return box.clickedButton() == btn
+            accepted = box.clickedButton() == btn
+            if accepted and checkbox is not None and checkbox.isChecked() and on_checked is not None:
+                on_checked()
+            return accepted
         return QMessageBox.question(self, title, prompt, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                     QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes
 
@@ -2198,13 +2232,19 @@ class Window(QMainWindow):
         conf = confirmation.build_send_confirmation(
             plan, connection, scan_only=scan_only, bundle=self.bundle, artwork=self.artwork
         )
-        if self.confirm(
-            conf.title,
-            conf.summary,
+        confirm_kwargs = dict(
             confirm_label=conf.confirm_label,
             destructive=conf.destructive,
             details=conf.details,
-        ):
+        )
+        if conf.untested_presets:
+            def mark_tested():
+                config.set_presets_tested(conf.untested_presets, True)
+                self.update_material_details()
+
+            confirm_kwargs["checkbox_label"] = "I have tested these settings on this stock (don’t warn again)"
+            confirm_kwargs["on_checked"] = mark_tested
+        if self.confirm(conf.title, conf.summary, **confirm_kwargs):
             self.start_send(plan, connection, scan_only=scan_only)
 
     def confirm_corner_test(self):

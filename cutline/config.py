@@ -146,6 +146,46 @@ def template_dir() -> pathlib.Path:
     return TEMPLATE_DIR
 
 
+def tested_presets() -> set[str]:
+    """Return preset names the user has confirmed as tested on this stock."""
+    raw = load_settings().get("tested_presets")
+    if not isinstance(raw, list):
+        return set()
+    return {item.strip() for item in raw if isinstance(item, str) and item.strip()}
+
+
+def set_presets_tested(names, tested: bool = True) -> pathlib.Path:
+    """Persist one or more preset names as user-tested (or clear them) in settings.json."""
+    cleaned = [name.strip() for name in names if isinstance(name, str) and name.strip()]
+    current = tested_presets()
+    if tested:
+        current.update(cleaned)
+    else:
+        current.difference_update(cleaned)
+    data = load_settings()
+    if current:
+        data["tested_presets"] = sorted(current)
+    else:
+        data.pop("tested_presets", None)
+    return save_settings(data)
+
+
+def set_preset_tested(name: str, tested: bool = True) -> pathlib.Path:
+    """Persist a single preset name as user-tested (or clear it) in settings.json."""
+    return set_presets_tested((name,), tested=tested)
+
+
+def is_preset_tested(preset, tested: set[str] | frozenset[str] | None = None) -> bool:
+    """True when a preset is measured or explicitly marked tested by the user."""
+    if preset is None:
+        return False
+    if getattr(preset, "origin", None) == "measured":
+        return True
+    known = tested_presets() if tested is None else tested
+    name = getattr(preset, "name", preset)
+    return isinstance(name, str) and name in known
+
+
 DESIGN_UI_DEFAULTS = {
     "sidebar_width": 300,
     "sidebar_width_user": False,

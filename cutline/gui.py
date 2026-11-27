@@ -1004,6 +1004,7 @@ class Window(Adw.ApplicationWindow):
             self.send_groups.set_visible(False)
             self.registration_group.set_visible(False)
             self.cut_settings.set_visible(True)
+            self.preset_tested_row.set_visible(False)
             self.preset_actions.set_visible(False)
             self.send_advanced.set_visible(False)
             self.guide_view.set_visible(True)
@@ -1012,6 +1013,7 @@ class Window(Adw.ApplicationWindow):
             self.send_groups.set_visible(self._active_send_mode() != "simple")
             self.registration_group.set_visible(True)
             self.cut_settings.set_visible(True)
+            self.preset_tested_row.set_visible(True)
             self.preset_actions.set_visible(True)
             self.send_advanced.set_visible(True)
             self.guide_view.set_visible(False)
@@ -1699,6 +1701,14 @@ class Window(Adw.ApplicationWindow):
         self.material_note = Gtk.Label(xalign=0, wrap=True, css_classes=["dim-label", "caption"],
                                        margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
         group.add(Adw.PreferencesRow(child=self.material_note, activatable=False, selectable=False))
+        self.r_preset_tested = Gtk.CheckButton(
+            label="Tested on this stock",
+            margin_top=2, margin_bottom=6, margin_start=12, margin_end=12,
+        )
+        self.r_preset_tested.set_tooltip_text("Silence the hardware-test warning for this material preset.")
+        self.preset_tested_id = self.r_preset_tested.connect("notify::active", self.on_toggle_preset_tested)
+        self.preset_tested_row = Adw.PreferencesRow(child=self.r_preset_tested, activatable=False, selectable=False)
+        group.add(self.preset_tested_row)
         self.send_sliders, self.send_rows = {}, {}
         for field, title, low, high, value in (
                 ("force", "Force", 1, 40, 30), ("speed", "Speed", 1, 30, 3),
@@ -2317,13 +2327,7 @@ class Window(Adw.ApplicationWindow):
             passes = "pass" if j.settings.passes == 1 else "passes"
             caption = f"{j.preset.name} · {j.settings.passes} {passes}"
         self.summary_material.set_label(caption)
-        mask_hint_text = j.cover_note()
-        self.summary_note.set_label(
-            j.blocked[0] if j.blocked else
-            'Open Sheet to see which marks failed the PDF check.' if failed_pdf else
-            j.warnings[0] if j.warnings else
-            mask_hint_text if mask_hint_text else
-            'Test these material settings on an offcut.' if j.preset.origin == 'derived' else '')
+        self._update_summary_note(j)
 
         lines = [f"{label}: {value}" for label, value in j.summary()]
         lines.append("")
@@ -2984,15 +2988,47 @@ class Window(Adw.ApplicationWindow):
         if active.factory_id or active.name != selected:
             self.on_preset()
 
+    def _update_summary_note(self, j=None):
+        j = self.job if j is None else j
+        if j is None:
+            return
+        failed_pdf = self.pdf_bundle and self.sheet_report is not None and not self.bundle_checked
+        mask_hint_text = j.cover_note()
+        self.summary_note.set_label(
+            j.blocked[0] if j.blocked else
+            'Open Sheet to see which marks failed the PDF check.' if failed_pdf else
+            j.warnings[0] if j.warnings else
+            mask_hint_text if mask_hint_text else
+            'Test these material settings on an offcut.'
+            if j.preset.origin == 'derived' and not config.is_preset_tested(j.preset) else '')
+
     def _on_select_material_preset(self, *_args):
         name, cutter = self._text(self.r_preset), self._text(self.r_cutter)
         preset = getattr(self, "_materials", {}).get(name)
         self.material_note.set_label((preset.note or preset.description) if preset else "")
+        measured = preset is not None and preset.origin == "measured"
+        with self.r_preset_tested.handler_block(self.preset_tested_id):
+            self.r_preset_tested.set_active(config.is_preset_tested(preset))
+        self.r_preset_tested.set_sensitive(preset is not None and not measured and not (self._job_locked or self._sending))
+        self.r_preset_tested.set_tooltip_text(
+            "Saved from Dial In a Material." if measured
+            else "Silence the hardware-test warning for this material preset."
+        )
         action = presets.removal_action(name, cutter) if preset else ""
         self.delete_preset_btn.set_label(f"Revert ‘{name}’ to Default" if action == "restore" else f"Delete ‘{name}’")
         self.delete_preset_btn.set_sensitive(bool(action) and not (self._job_locked or self._sending))
         self.delete_preset_btn.set_tooltip_text(None if action else "Built-in presets cannot be deleted.")
         self.save_preset_btn.set_tooltip_text(f"Save the current values to ‘{name}’.")
+
+    def on_toggle_preset_tested(self, *_args):
+        if self._suppress:
+            return
+        preset = getattr(self, "_materials", {}).get(self._text(self.r_preset))
+        if preset is None or preset.origin == "measured":
+            return
+        config.set_preset_tested(preset.name, self.r_preset_tested.get_active())
+        self._on_select_material_preset()
+        self._update_summary_note()
 
     def material_buttons(self):
         return (self.save_preset_btn, self.save_new_preset_btn, self.delete_preset_btn,
@@ -3022,6 +3058,8 @@ class Window(Adw.ApplicationWindow):
             if not presets.delete_preset(name, cutter):
                 self.toast(f"Could not remove ‘{name}’.")
                 return
+            if not restore:
+                config.set_preset_tested(name, False)
             self.holder_state.drafts = {slot: (preset, settings) for slot, (preset, settings)
                                         in self.holder_state.drafts.items() if preset.name != name}
             self.refresh_preset_choices()
@@ -3999,7 +4037,17 @@ class Window(Adw.ApplicationWindow):
         exp = Gtk.Expander(label="Details")
         label = Gtk.Label(label=conf.details, wrap=True, xalign=0)
         exp.set_child(label)
-        dialog.set_extra_child(exp)
+        tested_check = None
+        if conf.untested_presets:
+            tested_check = Gtk.CheckButton(
+                label="I have tested these settings on this stock (don’t warn again)"
+            )
+            extra = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            extra.append(tested_check)
+            extra.append(exp)
+            dialog.set_extra_child(extra)
+        else:
+            dialog.set_extra_child(exp)
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("cut", conf.confirm_label)
         dialog.set_response_appearance(
@@ -4008,12 +4056,18 @@ class Window(Adw.ApplicationWindow):
         )
         dialog.set_default_response("cancel")
         dialog.set_close_response("cancel")
-        dialog.connect("response", self._cut_response, j, connection, scan_only)
+        dialog.connect("response", self._cut_response, j, connection, scan_only, None,
+                       tested_check, conf.untested_presets)
         dialog.present(self)
 
-    def _cut_response(self, _dialog, response, j, connection=("auto", None), scan_only=False, corner=None):
+    def _cut_response(self, _dialog, response, j, connection=("auto", None), scan_only=False, corner=None,
+                      tested_check=None, untested_presets=()):
         if response != "cut":
             return
+        if tested_check is not None and tested_check.get_active() and untested_presets:
+            config.set_presets_tested(untested_presets, True)
+            self._on_select_material_preset()
+            self._update_summary_note(j)
         if design_review_pending(self):
             self.toast('The design has edits Send has not used. Open Design, then switch to Send.')
             return

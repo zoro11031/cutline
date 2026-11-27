@@ -2598,6 +2598,72 @@ class TestDesignWorkspace(unittest.TestCase):
             self.assertEqual(design.fields['x'].get_digits(), 3)
             self.assertIsInstance(design.lock_aspect, gui.Gtk.Switch)
 
+    def test_tested_preset_checkbox_in_gtk_cut_settings_and_send_dialog(self):
+        win = self.make_window()
+        win.r_skip.set_text("4")
+        # A derived user preset initially shows the offcut summary hint and unchecked toggle.
+        presets.save_blade_settings(presets.STARTING_NAME, new_name="Derived Cardstock",
+                                    force=26, speed=4, depth=6, passes=2)
+        win.refresh_preset_choices("Derived Cardstock")
+        win._load_materials()
+        win.on_preset()
+        win.rebuild()
+        self.assertFalse(win.r_preset_tested.get_active())
+        self.assertTrue(win.r_preset_tested.get_sensitive())
+        self.assertIn("offcut", win.summary_note.get_label())
+
+        win.r_preset_tested.set_active(True)
+        self.assertIn("Derived Cardstock", config.tested_presets())
+        self.assertEqual(win.summary_note.get_label(), "")
+        self.assertEqual(gui.confirmation.build_send_confirmation(win.job, ("auto", None)).untested_presets, ())
+
+        win.r_preset_tested.set_active(False)
+        self.assertNotIn("Derived Cardstock", config.tested_presets())
+        self.assertIn("offcut", win.summary_note.get_label())
+
+        # Send dialog shows the checkbox when untested, and persists it only on Cut (not Cancel).
+        presented = []
+        with mock.patch.object(gui.Adw.AlertDialog, "present", lambda dlg, _parent: presented.append(dlg)), \
+             mock.patch.object(win, "wireless_ready", return_value=True), \
+             mock.patch.object(win, "_connection", return_value=("auto", "/dev/usb/lp0", None)), \
+             mock.patch.object(gui.cutters, "usb_refusal", return_value=""):
+            win.on_cut()
+        self.assertEqual(len(presented), 1)
+        extra = presented[0].get_extra_child()
+        self.assertIsInstance(extra, gui.Gtk.Box)
+        check = extra.get_first_child()
+        self.assertIsInstance(check, gui.Gtk.CheckButton)
+        check.set_active(True)
+
+        # Cancel leaves preset untested.
+        win._cut_response(presented[0], "cancel", win.job, ("auto", "/dev/usb/lp0", None), False, None,
+                          check, ("Derived Cardstock",))
+        self.assertNotIn("Derived Cardstock", config.tested_presets())
+
+        # Confirming Cut marks it tested and clears the summary note.
+        with mock.patch.object(win, "wireless_ready", return_value=True), \
+             mock.patch.object(win, "_connection", return_value=("auto", "/dev/usb/lp0", None)), \
+             mock.patch.object(gui.cutters, "usb_refusal", return_value=""), \
+             mock.patch.object(gui.threading, "Thread") as thread_cls:
+            win._cut_response(presented[0], "cut", win.job, ("auto", "/dev/usb/lp0", None), False, None,
+                              check, ("Derived Cardstock",))
+        thread_cls.assert_called_once()
+        self.assertIn("Derived Cardstock", config.tested_presets())
+        self.assertTrue(win.r_preset_tested.get_active())
+        self.assertEqual(win.summary_note.get_label(), "")
+
+        # Measured presets are checked and insensitive.
+        win.lock_job_controls(False)
+        win._sending = False
+        win.active_job = None
+        presets.save_tested_settings("Measured Gtk Stock", gui.graphtec.CutSettings(force=22, speed=5, depth=5, passes=2),
+                                     win._text(win.r_cutter))
+        win.refresh_preset_choices("Measured Gtk Stock")
+        win._load_materials()
+        win.on_preset()
+        self.assertTrue(win.r_preset_tested.get_active())
+        self.assertFalse(win.r_preset_tested.get_sensitive())
+
 
 @unittest.skipUnless(gui is not None, 'PyGObject is not installed')
 class TestOpenDialogs(unittest.TestCase):

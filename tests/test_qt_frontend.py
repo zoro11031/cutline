@@ -2052,6 +2052,77 @@ class TestQtFrontend(unittest.TestCase):
         self.assertEqual(window.workspaces.currentIndex(), 0)
         self.assertEqual(len(window.job.paths), 2)
 
+    def test_tested_preset_checkbox_in_cut_settings_and_send_confirmation(self):
+        window = self.window
+        window.tabs.setCurrentIndex(window.tab("Send"))
+        self.assertFalse(window.tested_preset_check.isChecked())
+        self.assertTrue(window.tested_preset_check.isEnabled())
+
+        # Toggling in Cut Settings persists and silences the warning; untoggling restores it.
+        window.tested_preset_check.setChecked(True)
+        self.assertIn(presets.STARTING_NAME, qt_gui.config.tested_presets())
+        silenced = qt_gui.confirmation.build_send_confirmation(window.job, ("auto", "/dev/usb/lp0"))
+        self.assertEqual(silenced.untested_presets, ())
+        window.tested_preset_check.setChecked(False)
+        self.assertNotIn(presets.STARTING_NAME, qt_gui.config.tested_presets())
+
+        # Measured presets appear checked and disabled.
+        presets.save_tested_settings("Measured Cardstock", qt_gui.graphtec.CutSettings(force=24, speed=4, depth=6, passes=3),
+                                     window.choice("cutter"))
+        window.refresh_preset_choices("Measured Cardstock")
+        window.load_materials()
+        self.assertTrue(window.tested_preset_check.isChecked())
+        self.assertFalse(window.tested_preset_check.isEnabled())
+
+        # Back to the untested starting preset: Cancel with checkbox checked does not persist; Cut does.
+        window.select("preset", presets.STARTING_NAME)
+        self.assertFalse(window.tested_preset_check.isChecked())
+        self.assertTrue(window.tested_preset_check.isEnabled())
+
+        def fake_exec(check_box_state, click_cut):
+            def runner(box):
+                cb = box.checkBox()
+                self.assertIsNotNone(cb)
+                cb.setChecked(check_box_state)
+                for btn in box.buttons():
+                    if click_cut and btn.text() == "Cut":
+                        box.setClickedButton(btn) if hasattr(box, "setClickedButton") else btn.click()
+                        return 0
+                    if not click_cut and btn.text() != "Cut":
+                        btn.click()
+                        return 0
+                return 0
+            return runner
+
+        with mock.patch.object(window, "send_refusal", return_value=""), \
+             mock.patch.object(window, "connection", return_value=("auto", "/dev/usb/lp0", None)), \
+             mock.patch.object(window, "start_send") as send:
+            with mock.patch.object(qt_gui.QMessageBox, "exec", fake_exec(True, False)):
+                window.confirm_send()
+            send.assert_not_called()
+            self.assertNotIn(presets.STARTING_NAME, qt_gui.config.tested_presets())
+
+            with mock.patch.object(qt_gui.QMessageBox, "exec", fake_exec(True, True)):
+                window.confirm_send()
+            send.assert_called_once()
+            self.assertIn(presets.STARTING_NAME, qt_gui.config.tested_presets())
+            self.assertTrue(window.tested_preset_check.isChecked())
+
+            # Next send confirmation no longer shows the untested checkbox or warning.
+            saw_checkbox = []
+            def inspect_second_exec(box):
+                saw_checkbox.append((box.checkBox(), box.text()))
+                for btn in box.buttons():
+                    if btn.text() != "Cut":
+                        btn.click()
+                        return 0
+                return 0
+            with mock.patch.object(qt_gui.QMessageBox, "exec", inspect_second_exec):
+                window.confirm_send()
+            self.assertEqual(len(saw_checkbox), 1)
+            self.assertIsNone(saw_checkbox[0][0])
+            self.assertNotIn("hardware test", saw_checkbox[0][1])
+
 
 @unittest.skipIf(qt_gui is None, "Install PySide6 to run Qt frontend tests")
 class TestQtDesignEditor(unittest.TestCase):

@@ -19,6 +19,7 @@ class SendConfirmation:
     connection: str | None
     confirm_label: str
     destructive: bool
+    untested_presets: tuple[str, ...] = ()
 
     @property
     def summary(self) -> str:
@@ -48,6 +49,7 @@ class SendConfirmation:
         return "\n\n".join(blocks)
 
 
+from . import config
 from .bluetooth import BLUETOOTH_MODES
 
 
@@ -73,6 +75,7 @@ def build_send_confirmation(
     scan_only: bool = False,
     bundle=None,
     artwork=None,
+    tested_presets=None,
 ) -> SendConfirmation:
     title = "Test registration?" if scan_only else "Send this cut?"
     lead = (
@@ -87,7 +90,16 @@ def build_send_confirmation(
 
     # 1. Warnings first
     used = [group.preset for group in plan.action_groups] or [plan.preset]
-    if not scan_only and any(preset.origin != "measured" for preset in used):
+    known_tested = config.tested_presets() if tested_presets is None else set(tested_presets)
+    untested = (
+        tuple(dict.fromkeys(
+            preset.name for preset in used
+            if not config.is_preset_tested(preset, known_tested)
+        ))
+        if not scan_only
+        else ()
+    )
+    if untested:
         warnings.append("The selected settings need a hardware test on this stock.")
 
     if plan.registration:
@@ -137,4 +149,5 @@ def build_send_confirmation(
         connection=conn_text,
         confirm_label=confirm_label,
         destructive=destructive,
+        untested_presets=untested,
     )
