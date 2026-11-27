@@ -744,7 +744,10 @@ class Window(QMainWindow):
             with self.editing():
                 self.select("preset", selected.name)
         self.update_material_details()
-        self.set_blade_settings(for_holder(selected.cut_settings(), slot))
+        settings = for_holder(selected.cut_settings(), slot)
+        if settings.light_passes == 0:
+            self._saved_stages.pop(slot, None)
+        self.set_blade_settings(settings)
         if self.settings.get("last_preset") != selected.name:
             self.settings["last_preset"] = selected.name
             self.save_settings("last_preset", selected.name)
@@ -774,6 +777,12 @@ class Window(QMainWindow):
         self.update_material_details()
 
     def set_blade_settings(self, settings):
+        if settings.light_passes > 0:
+            self._saved_stages[settings.holder] = (
+                settings.light_passes,
+                -1 if settings.light_force is None else settings.light_force,
+                -1 if settings.light_speed is None else settings.light_speed,
+            )
         with self.editing():
             for key, *_ in BLADE_NUMBERS:
                 value = getattr(settings, key)
@@ -1212,6 +1221,7 @@ class Window(QMainWindow):
 
     def add_stage_controls(self, form):
         """Staged passes, under Passes: a box that opens the light pass settings."""
+        self._saved_stages = {}
         self.stage_toggle = form.check("Lighter first passes", changed=self.toggle_stages)
         self.stage_toggle.setToolTip("Cut the first passes lighter, then finish at Force and Speed. "
                                      "Useful when a full first pass lifts a laminated edge.")
@@ -1327,17 +1337,32 @@ class Window(QMainWindow):
         return widget
 
     def toggle_stages(self):
-        """Turning staging on starts at one light pass, and makes room for a
-        full pass after it; turning it off clears the light passes."""
+        """Turning staging on restores the last light-pass settings (or starts
+        at one light pass) and makes room for a full pass after it; turning it
+        off pauses staging without losing those values."""
         if self.loading:
             return
         on = self.stage_toggle.isChecked()
+        holder = self.blade["holder"].value()
         with self.editing():
             if on:
-                self.blade["light_passes"].setValue(max(1, self.blade["light_passes"].value()))
+                saved = self._saved_stages.get(holder)
+                if saved is not None:
+                    light_passes, light_force, light_speed = saved
+                    self.blade["light_passes"].setValue(max(1, light_passes))
+                    self.blade["light_force"].setValue(light_force)
+                    self.blade["light_speed"].setValue(light_speed)
+                else:
+                    self.blade["light_passes"].setValue(max(1, self.blade["light_passes"].value()))
                 if self.blade["passes"].value() <= self.blade["light_passes"].value():
                     self.blade["passes"].setValue(self.blade["light_passes"].value() + 1)
             else:
+                if self.blade["light_passes"].value() > 0:
+                    self._saved_stages[holder] = (
+                        self.blade["light_passes"].value(),
+                        self.blade["light_force"].value(),
+                        self.blade["light_speed"].value(),
+                    )
                 self.blade["light_passes"].setValue(0)
         self.update_stages()
 
@@ -1347,6 +1372,10 @@ class Window(QMainWindow):
         if not hasattr(self, "stage_note"):
             return
         count = self.blade["light_passes"].value()
+        light_force = self.blade["light_force"].value()
+        light_speed = self.blade["light_speed"].value()
+        if count > 0 and not self.loading:
+            self._saved_stages[self.blade["holder"].value()] = (count, light_force, light_speed)
         blocked = self.stage_toggle.blockSignals(True)
         self.stage_toggle.setChecked(count > 0)
         self.stage_toggle.blockSignals(blocked)
@@ -1363,8 +1392,6 @@ class Window(QMainWindow):
             form.setRowVisible(self._row_of(self.blade[key]), count > 0 and not testing)
         form.setRowVisible(self.stage_note, count > 0 and not testing)
         total, force, speed = (self.blade[key].value() for key in ("passes", "force", "speed"))
-        light_force = self.blade["light_force"].value()
-        light_speed = self.blade["light_speed"].value()
         self.stage_note.setText(actions.stage_note(count, total, force, speed,
                                                    None if light_force < 0 else light_force,
                                                    None if light_speed < 0 else light_speed))

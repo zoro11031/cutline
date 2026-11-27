@@ -1597,6 +1597,17 @@ class TestDesignWorkspace(unittest.TestCase):
         win.r_stage.set_enable_expansion(False)
         self.assertEqual(win._blade_options()["light_passes"], 0)
         self.assertEqual(win.job.action_groups, ())
+        # Re-enabling keeps the user's configured light passes, force, and speed intact.
+        win.r_passes.set_value(8)
+        win.stage_fields["light_passes"].set_value(3)
+        win.r_stage.set_enable_expansion(True)
+        options = win._blade_options()
+        self.assertEqual((options["light_passes"], options["light_force"], options["light_speed"]), (3, 10, 3))
+        win.r_stage.set_enable_expansion(False)
+        self.assertEqual(win._blade_options()["light_passes"], 0)
+        win.r_stage.set_enable_expansion(True)
+        options = win._blade_options()
+        self.assertEqual((options["light_passes"], options["light_force"], options["light_speed"]), (3, 10, 3))
 
     def test_the_material_test_compares_two_settings_and_hides_pass_counts(self):
         win = self.make_window()

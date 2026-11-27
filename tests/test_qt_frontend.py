@@ -865,6 +865,33 @@ class TestQtFrontend(unittest.TestCase):
         self.assertEqual(window.job.action_groups, ())
         self.assertFalse(window.stage_toggle.isChecked())
 
+        # Unchecking Lighter first passes and re-checking it restores light passes, force, and speed.
+        blade["passes"].setValue(10)
+        blade["light_passes"].setValue(4)
+        blade["light_force"].setValue(12)
+        blade["light_speed"].setValue(4)
+        window.stage_toggle.setChecked(False)
+        self.assertEqual(blade["light_passes"].value(), 0)
+        self.assertEqual(window.job.action_groups, ())
+        window.stage_toggle.setChecked(True)
+        self.assertEqual(
+            (blade["light_passes"].value(), blade["light_force"].value(), blade["light_speed"].value()),
+            (4, 12, 4),
+        )
+        self.assertEqual(
+            [(g.settings.passes, g.settings.force, g.settings.speed) for g in window.job.action_groups],
+            [(4, 12, 4), (6, 20, 5)],
+        )
+
+        # Switching to an unstaged preset resets the remembered staging so it starts fresh.
+        window.select("preset", "300 gsm cardstock")
+        self.assertFalse(window.stage_toggle.isChecked())
+        window.stage_toggle.setChecked(True)
+        self.assertEqual(
+            (blade["light_passes"].value(), blade["light_force"].value(), blade["light_speed"].value()),
+            (1, -1, -1),
+        )
+
     def test_wide_workspace_keeps_the_settings_pane_readable_and_resizable(self):
         window = self.window
         window.resize(1800, 900)
