@@ -2702,7 +2702,7 @@ class Window(QMainWindow):
 
     def changeEvent(self, event):
         super().changeEvent(event)
-        if event.type() == QEvent.Type.PaletteChange and hasattr(self, "preview"):
+        if event.type() in (QEvent.Type.PaletteChange, QEvent.Type.ApplicationFontChange) and hasattr(self, "preview"):
             self.workspaces.setStyleSheet("")
             self.workspaces.setPalette(self.palette())
             self.workspaces.setStyleSheet(workspace_style(self.palette()))
@@ -2735,6 +2735,7 @@ class Window(QMainWindow):
 
 def main(argv=None):
     _set_windows_app_id()
+    QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication([sys.argv[0], *(argv or [])])
     app.setApplicationName("Cutline")
     app.setDesktopFileName(APP_ID)

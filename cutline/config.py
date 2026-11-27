@@ -148,8 +148,10 @@ def template_dir() -> pathlib.Path:
 
 DESIGN_UI_DEFAULTS = {
     "sidebar_width": 300,
+    "sidebar_width_user": False,
     "sidebar_collapsed": False,
-    "properties_ratio": 0.52,
+    "properties_ratio": 0.45,
+    "sidebar_split_user": False,
     "active_panel": "transform",
     "units": "mm",
     "rulers": True,
@@ -180,7 +182,8 @@ def load_design_ui() -> dict:
         state["active_panel"] = raw["active_panel"]
     if raw.get("units") in ("mm", "in"):
         state["units"] = raw["units"]
-    for key in ("sidebar_collapsed", "rulers", "grid", "guides", "mat", "mat_grid",
+    for key in ("sidebar_width_user", "sidebar_collapsed", "sidebar_split_user",
+                "rulers", "grid", "guides", "mat", "mat_grid",
                 "cut_border", "print_border", "snap", "smart_snap"):
         if isinstance(raw.get(key), bool):
             state[key] = raw[key]

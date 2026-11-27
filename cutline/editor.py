@@ -391,12 +391,15 @@ class DesignWorkspace:
             button, self.inspector, property_header, properties=True))
         property_header.append(collapse)
         properties.append(property_header)
+        properties.append(Gtk.Separator())
         properties.append(self.inspector)
-        self.property_position = self.object_position = round(600 * self._ui_state['properties_ratio'])
+        self._user_split = self._ui_state['sidebar_split_user']
+        default_pos = round(600 * self._ui_state['properties_ratio']) if self._user_split else 340
+        self.property_position = self.object_position = default_pos
         self.dock = dock = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL, position=self.property_position,
                          width_request=self._saved_sidebar_width,
                          css_classes=['scc-design-sidebar'],
-                         resize_start_child=True, resize_end_child=True,
+                         resize_start_child=False, resize_end_child=True,
                          shrink_start_child=False, shrink_end_child=False)
         dock.set_start_child(properties)
         dock.set_end_child(self.objects_panel())
@@ -461,9 +464,12 @@ class DesignWorkspace:
             pass
 
     def _on_dock_split(self, *_args):
+        if self._restoring_ui:
+            return
         height = self.dock.get_height()
         if height > 100 and self.dock.get_visible():
-            self._persist_ui(properties_ratio=self.dock.get_position() / height)
+            self._user_split = True
+            self._persist_ui(properties_ratio=self.dock.get_position() / height, sidebar_split_user=True)
 
     def _sync_panel_rail(self):
         for idx, (key, _label, _build) in enumerate(self._panels):
@@ -519,6 +525,14 @@ class DesignWorkspace:
         if persist:
             self._persist_ui(units=unit)
 
+    def toggle_page_focus(self):
+        hide_mat = self.show_mat.get_active()
+        self.show_mat.set_active(not hide_mat)
+        if hide_mat:
+            self.canvas.fit_page()
+        else:
+            self.fit(None)
+
     def _to_unit(self, mm):
         return mm / 25.4 if self.unit == 'in' else mm
 
@@ -547,11 +561,13 @@ class DesignWorkspace:
         self.context_transform = Gtk.Box(spacing=6)
         self.context_fields = {}
         for field, prefix, name in TRANSFORM_FIELDS:
+            if field in ('width', 'rotation'):
+                self.context_transform.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
             entry = Gtk.Entry(width_chars=7, max_width_chars=9, input_purpose=Gtk.InputPurpose.NUMBER)
             entry.update_property([Gtk.AccessibleProperty.LABEL], [name])
             entry.set_tooltip_text(name)
             entry.connect('activate', self.apply_context_field, field)
-            label = Gtk.Label(label=prefix, css_classes=['dim-label'])
+            label = Gtk.Label(label='↻' if field == 'rotation' else prefix, css_classes=['dim-label'])
             self.context_transform.append(label)
             self.context_transform.append(entry)
             self.context_fields[field] = entry, label
@@ -601,16 +617,17 @@ class DesignWorkspace:
         self.point_menu = Gtk.MenuButton(label='Point Actions', menu_model=self.point_menu_items,
                                          visible=False)
         row.append(self.point_menu)
-        self.tool_hint = Gtk.Label(label=TOOLS[0].hint, xalign=0, hexpand=True,
-                                   css_classes=['dim-label', 'caption'], ellipsize=Pango.EllipsizeMode.END)
-        self.tool_hint.set_tooltip_text(TOOLS[0].hint)
-        row.append(self.tool_hint)
-        self.option_snap = design_icon_button(COMMAND_ICONS['snap'], toggle=True, size=32, icon_size=18)
+        row.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
+        self.option_snap = design_icon_button(COMMAND_ICONS['snap'], toggle=True, size=30, icon_size=16)
         row.append(self.option_snap)
         self.unit_button = Gtk.Button(label=self.unit, tooltip_text='Switch display units between mm and inches')
         self.unit_button.update_property([Gtk.AccessibleProperty.LABEL], ['Measurement units'])
         self.unit_button.connect('clicked', lambda *_: self.set_unit('in' if self.unit == 'mm' else 'mm'))
         row.append(self.unit_button)
+        self.tool_hint = Gtk.Label(label=TOOLS[0].hint, xalign=1, hexpand=True,
+                                   css_classes=['dim-label', 'caption'], ellipsize=Pango.EllipsizeMode.END)
+        self.tool_hint.set_tooltip_text(TOOLS[0].hint)
+        row.append(self.tool_hint)
         return frame
 
     def refresh_measurement(self):
@@ -755,18 +772,6 @@ class DesignWorkspace:
         self.add_button.update_property([Gtk.AccessibleProperty.LABEL], ['Add Shape'])
         self.add_button.connect('clicked', self.add_shape)
         header.append(self.add_button)
-        self.objects_dup_btn = design_icon_button(COMMAND_ICONS['duplicate'], size=28, icon_size=15)
-        self.objects_dup_btn.set_tooltip_text('Duplicate (Ctrl+D)')
-        self.objects_dup_btn.connect('clicked', self.duplicate_shape)
-        header.append(self.objects_dup_btn)
-        self.objects_grp_btn = design_icon_button(COMMAND_ICONS['group'], size=28, icon_size=15)
-        self.objects_grp_btn.set_tooltip_text('Group (Ctrl+G)')
-        self.objects_grp_btn.connect('clicked', lambda *_: self.group_selected())
-        header.append(self.objects_grp_btn)
-        self.objects_del_btn = design_icon_button(COMMAND_ICONS['delete'], size=28, icon_size=15)
-        self.objects_del_btn.set_tooltip_text('Delete (Delete)')
-        self.objects_del_btn.connect('clicked', self.delete_shape)
-        header.append(self.objects_del_btn)
         options = Gtk.MenuButton(icon_name='view-more-symbolic', tooltip_text='Object options',
                                  css_classes=['flat'])
         options.update_property([Gtk.AccessibleProperty.LABEL], ['Object options'])
@@ -902,43 +907,63 @@ class DesignWorkspace:
     def transform_panel(self, inspector):
         inspector.set_spacing(8)
         self.fields = {}
-        grid = Gtk.Grid(column_spacing=8, row_spacing=8, css_classes=['scc-transform-grid'])
-        inspector.append(grid)
-        for index, (field, prefix, label) in enumerate(TRANSFORM_FIELDS):
-            cell = Gtk.Box(spacing=4, hexpand=True)
-            cell.append(Gtk.Label(label='Rotation' if field == 'rotation' else prefix, css_classes=['dim-label']))
-            limit = 360 if field == 'rotation' else 1000
-            spin = Gtk.SpinButton.new_with_range(-limit, limit, 0.1)
-            spin.set_digits(2)
+
+        def _make_spin(field, label, *, rotation=False):
+            limit = 360 if rotation else 1000
+            spin = Gtk.SpinButton.new_with_range(-limit, limit, 1 if rotation else 0.1)
+            spin.set_digits(3)
             spin.set_numeric(True)
-            spin.set_width_chars(6)
+            spin.set_width_chars(7)
             spin.set_hexpand(True)
             spin.update_property([Gtk.AccessibleProperty.LABEL], [label])
             spin.set_tooltip_text(label)
             spin.connect('value-changed', self.change_field, field)
-            cell.append(spin)
-            if field == 'rotation':
-                grid.attach(cell, 0, 2, 3, 1)
-            else:
-                grid.attach(cell, index % 2, index // 2, 1, 1)
             self.fields[field] = spin
-        self.lock_aspect = design_icon_button(COMMAND_ICONS['lock_ratio'], toggle=True, size=30, icon_size=16)
-        grid.attach(self.lock_aspect, 2, 1, 1, 1)
+            return spin
 
-        origin_row = Gtk.Box(spacing=12, margin_top=2, margin_bottom=2)
-        origin_row.append(Gtk.Label(label='Transform origin', xalign=0, hexpand=True))
-        self.origin_grid = self.build_origin_grid()
-        origin_row.append(self.origin_grid)
-        inspector.append(origin_row)
+        def _pair_section(title, specs):
+            inspector.append(Gtk.Label(label=title, xalign=0, css_classes=['dim-label', 'caption']))
+            row = Gtk.Grid(column_spacing=8, row_spacing=6, css_classes=['scc-transform-grid'])
+            for col_idx, (field, short, label) in enumerate(specs):
+                cell = Gtk.Box(spacing=6, hexpand=True)
+                cell.append(Gtk.Label(label=short, css_classes=['dim-label']))
+                cell.append(_make_spin(field, label))
+                row.attach(cell, col_idx, 0, 1, 1)
+            inspector.append(row)
 
-        self.panel_transform_actions = row = Gtk.Box(spacing=6)
-        inspector.append(row)
+        _pair_section('Position', (('x', 'X', 'X (mm)'), ('y', 'Y', 'Y (mm)')))
+        _pair_section('Dimensions', (('width', 'W', 'Width (mm)'), ('height', 'H', 'Height (mm)')))
+
+        lock_row = Gtk.Box(spacing=8, margin_top=2, margin_bottom=2)
+        lock_row.append(Gtk.Label(label='Lock aspect ratio', xalign=0, hexpand=True))
+        self.lock_aspect = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self.lock_aspect.update_property([Gtk.AccessibleProperty.LABEL], ['Lock aspect ratio'])
+        self.lock_aspect.set_tooltip_text('Keep width and height proportional.')
+        lock_row.append(self.lock_aspect)
+        inspector.append(lock_row)
+
+        rot_ref = Gtk.Box(spacing=12, margin_top=4, margin_bottom=2)
+        rot_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, hexpand=True)
+        rot_col.append(Gtk.Label(label='Rotation', xalign=0, css_classes=['dim-label', 'caption']))
+        rot_col.append(_make_spin('rotation', 'Rotation (degrees)', rotation=True))
+        self.panel_transform_actions = row = Gtk.Box(spacing=4, margin_top=2)
+        rot_col.append(row)
         self.transform_buttons = {
             action: self.icon_button(row, icon, lambda _button, command=action: self.transform_objects(command))
             for action, icon in TRANSFORM_ICONS.items()
         }
         for widget in self.transform_buttons.values():
             widget.set_size_request(32, 32)
+        rot_ref.append(rot_col)
+
+        ref_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        ref_col.append(Gtk.Label(label='Reference point', xalign=0, css_classes=['dim-label', 'caption']))
+        self.origin_grid = self.build_origin_grid()
+        ref_col.append(self.origin_grid)
+        rot_ref.append(ref_col)
+        inspector.append(rot_ref)
+
+        inspector.append(Gtk.Separator(margin_top=2, margin_bottom=2))
 
         self.heading(inspector, 'Align and Space')
         self.alignment_buttons = {}
@@ -950,7 +975,7 @@ class DesignWorkspace:
                 btn.set_size_request(32, 32)
                 self.alignment_buttons[icon.name] = btn
 
-        advanced, _ = disclosure(inspector, 'More Transform Options')
+        advanced, _ = disclosure(inspector, 'Advanced transformation')
         self.flips = {}
         for field, label in (('flip_x', 'Flip local X'), ('flip_y', 'Flip local Y'),
                              ('visible', 'Visible')):
@@ -962,8 +987,21 @@ class DesignWorkspace:
         self.fields['radius'].connect('value-changed', self.change_field, 'radius')
 
     def build_origin_grid(self):
-        grid = Gtk.Grid(column_spacing=4, row_spacing=4)
-        grid.update_property([Gtk.AccessibleProperty.LABEL], ['Transform origin'])
+        overlay = Gtk.Overlay()
+        overlay.set_size_request(60, 60)
+        overlay.update_property([Gtk.AccessibleProperty.LABEL], ['Reference point'])
+        frame = Gtk.DrawingArea(content_width=60, content_height=60)
+
+        def _draw_outline(_area, cr, width, height):
+            inset = 10.0
+            cr.set_source_rgba(0.55, 0.58, 0.64, 0.55)
+            cr.set_line_width(1.25)
+            cr.rectangle(inset, inset, width - 2 * inset, height - 2 * inset)
+            cr.stroke()
+
+        frame.set_draw_func(_draw_outline)
+        overlay.set_child(frame)
+        grid = Gtk.Grid(column_spacing=2, row_spacing=2, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
         self.origin_cells = {}
         self._active_origin = (0.5, 0.5)
         for row, vertical in enumerate(('Top', 'Middle', 'Bottom')):
@@ -971,14 +1009,15 @@ class DesignWorkspace:
                 key = (column / 2, row / 2)
                 label = f'{vertical} {horizontal}'
                 cell = Gtk.Button(tooltip_text=label, css_classes=['flat', 'scc-origin-cell'])
-                cell.set_size_request(16, 16)
+                cell.set_size_request(18, 18)
                 cell.update_property([Gtk.AccessibleProperty.LABEL], [label])
                 if key == self._active_origin:
                     cell.add_css_class('active')
                 cell.connect('clicked', lambda _b, point=key: self.set_rotation_origin(*point))
                 grid.attach(cell, column, row, 1, 1)
                 self.origin_cells[key] = cell
-        return grid
+        overlay.add_overlay(grid)
+        return overlay
 
     def set_rotation_centre(self, on):
         if on:
@@ -1059,6 +1098,7 @@ class DesignWorkspace:
         command(zoom, 'Fit to Mat', 'fit-mat', self.canvas.fit_mat, '<Control><Alt>0')
         command(zoom, 'Fit to Selection', 'fit-selection', self.canvas.fit_selection, '<Control><Shift>0')
         command(zoom, 'Fit All', 'fit', lambda: self.fit(None))
+        command(view, 'Page Focus', 'page-focus', self.toggle_page_focus, '<Control><Shift>p')
         rotate = Gio.Menu()
         view.append_submenu('Rotate Page', rotate)
         command(rotate, 'Left', 'rotate-page-left', lambda: self.rotate_page(False))
@@ -1936,8 +1976,7 @@ class DesignWorkspace:
             self.rotation_centre = None
         self.menu_actions.lookup_action('rename-object').set_enabled(len(indices) == 1)
         self.menu_actions.lookup_action('toggle-lock').set_enabled(bool(indices))
-        for btn in (self.duplicate, self.remove, self.duplicate_ribbon_button, self.delete_ribbon_button,
-                    self.objects_dup_btn, self.objects_del_btn):
+        for btn in (self.duplicate, self.remove, self.duplicate_ribbon_button, self.delete_ribbon_button):
             btn.set_sensitive(bool(indices))
         for name in ('cut', 'copy', 'duplicate', 'delete'):
             self.menu_actions.lookup_action(name).set_enabled(bool(indices))
@@ -1947,7 +1986,6 @@ class DesignWorkspace:
         can_group = (len(indices) >= 2 and
                      (shapes[indices[0]].group is None or len({shapes[i].group for i in indices}) > 1))
         self.group_button.set_sensitive(can_group)
-        self.objects_grp_btn.set_sensitive(can_group)
         self.ungroup_button.set_sensitive(any(shapes[i].group is not None for i in indices))
         units = len(editor_model.selected_units(shapes, indices))
         any_grouped = any(shapes[i].group is not None for i in indices)

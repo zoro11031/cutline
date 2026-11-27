@@ -102,7 +102,7 @@ _CUT_SETTINGS_CSS = """
     box-shadow: none;
 }
 .scc-design .scc-objects-list row {
-    min-height: 30px;
+    min-height: 32px;
     padding: 0;
     border-radius: 4px;
 }
@@ -119,18 +119,19 @@ _CUT_SETTINGS_CSS = """
 }
 .scc-design-rail .scc-tool-flyout > button { min-width: 14px; padding: 0; }
 .scc-transform-grid spinbutton { min-height: 30px; min-width: 0; }
-.scc-transform-grid spinbutton > text { min-width: 48px; padding: 0 4px; }
+.scc-transform-grid spinbutton > text { min-width: 56px; padding: 0 4px; }
 .scc-transform-grid spinbutton > button { min-width: 18px; min-height: 26px; padding: 0 2px; }
 .scc-origin-cell {
-    min-width: 16px;
-    min-height: 16px;
+    min-width: 9px;
+    min-height: 9px;
     padding: 0;
-    border-radius: 2px;
-    background: alpha(@window_fg_color, 0.18);
+    margin: 5px;
+    border-radius: 1px;
+    background: alpha(@window_fg_color, 0.45);
 }
 .scc-object-visibility:checked, .scc-object-lock:checked { background: transparent; }
-.scc-object-visibility, .scc-object-lock { padding: 2px 4px; min-height: 24px; min-width: 24px; }
-.scc-object-lock { opacity: 0.32; }
+.scc-object-visibility, .scc-object-lock { padding: 2px 4px; min-height: 26px; min-width: 26px; }
+.scc-object-lock { opacity: 0.34; }
 .scc-object-lock:hover { opacity: 0.85; }
 .scc-object-lock.locked { opacity: 1.0; color: @cutline_accent; }
 .scc-notice {

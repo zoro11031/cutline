@@ -2117,8 +2117,8 @@ class TestQtDesignEditor(unittest.TestCase):
         design.select(())
         self.app.processEvents()
         dock = design.dock
-        self.assertEqual(list(dock.panels), ["page", "transform", "align", "replicate", "modify", "offset",
-                                             "nesting", "trace", "text", "line", "grid"])
+        self.assertEqual(list(dock.panels), ["page", "grid", "transform", "align", "replicate", "modify", "offset",
+                                             "trace", "nesting", "text", "line"])
         self.assertEqual(dock.shown(), ["transform"])
         self.assertEqual(dock.heading.text(), "Transform")
         self.assertTrue(design.objects.isVisibleTo(design), "Objects stays visible alongside the inspector")
@@ -3098,3 +3098,65 @@ class TestQtDesignEditor(unittest.TestCase):
         self.assertEqual(reopened.unit, "in")
         self.assertEqual(reopened.dock.current_key(), "offset")
         self.assertFalse(reopened.sidebar.isVisible())
+
+    def test_third_pass_toolbar_compactness_splitter_behavior_page_focus_and_precision(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QKeyEvent
+        from cutline import config, qt_design
+
+        shapes = (
+            editor_model.Shape("Rounded rectangle", 11.853, 19.304, 62.992, 87.969, radius=3.0),
+            editor_model.Shape("Rectangle", 90.0, 19.304, 63.0, 88.0, action="None"),
+        )
+        design = self.editor(editor_model.Project(279.4, 215.9, shapes))
+        design.resize(1920, 1080)
+        design.show()
+        design.select((0,))
+        self.app.processEvents()
+
+        # Contextual transformation controls stay compact and adjacent even on 1920px wide screens.
+        x_box = design.context_fields["x"].geometry()
+        rot_box = design.context_fields["rotation"].geometry()
+        self.assertLess(rot_box.right() - x_box.left(), 620)
+        self.assertEqual(design.fields["x"].decimals(), 3)
+        self.assertEqual(design.context_fields["x"].decimals(), 3)
+
+        # Aspect ratio lock switch in Transform stays synced with toolbar lock button.
+        design.lock_ratio.setChecked(True)
+        self.assertTrue(design.context_lock_ratio.isChecked())
+        design.context_lock_ratio.setChecked(False)
+        self.assertFalse(design.lock_ratio.isChecked())
+
+        # Content-driven default split hugs Transform without huge empty space, and respects manual override.
+        sizes = design.sidebar.sizes()
+        self.assertLess(sizes[0], 500)
+        self.assertGreater(sizes[1], 400)
+        design.sidebar.setSizes([310, sizes[0] + sizes[1] - 310])
+        design._on_sidebar_split()
+        self.assertTrue(config.load_design_ui()["sidebar_split_user"])
+        pinned = design.sidebar.sizes()[0]
+        design.dock.open("align")
+        self.app.processEvents()
+        self.assertEqual(design.sidebar.sizes()[0], pinned)
+
+        # Page Focus hides cutting mat view without changing physical project.mat or registration.
+        orig_mat = design.project.mat
+        design.page_focus.setChecked(True)
+        self.assertFalse(design.show_mat.isChecked())
+        self.assertEqual(design.project.mat, orig_mat)
+        design.page_focus.setChecked(False)
+        self.assertTrue(design.show_mat.isChecked())
+
+        # Panel rail supports Up/Down keyboard focus navigation.
+        first_btn = design.dock.rail.buttons["page"]
+        first_btn.setFocus()
+        self.app.processEvents()
+        down = QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Down, Qt.KeyboardModifier.NoModifier)
+        design.dock.rail.keyPressEvent(down)
+        self.assertTrue(design.dock.rail.buttons["grid"].hasFocus())
+
+        # Objects metadata preserves distinct cut action alongside visibility and lock.
+        meta_none = design.objects.item(1).data(qt_design.OBJECT_META_ROLE)
+        self.assertEqual(meta_none["action"], "None")
+        self.assertTrue(meta_none["visible"])
+        self.assertFalse(meta_none["locked"])

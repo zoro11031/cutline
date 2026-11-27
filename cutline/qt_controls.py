@@ -13,10 +13,32 @@ from PySide6.QtWidgets import (QAbstractScrollArea, QAbstractSpinBox, QApplicati
 from .design_tools import PANEL_GROUPS, WORKSPACE_TOOL_GROUPS as TOOL_GROUPS, WORKSPACE_TOOL_NAMES as TOOL_NAMES, \
     WORKSPACE_TOOLS as TOOLS
 
+# Shared sizing and spacing tokens (logical pixels; scaled by Qt HiDPI and OS fonts).
+UI_TOKENS = {
+    "spacing_xs": 4,
+    "spacing_sm": 8,
+    "spacing_md": 12,
+    "spacing_lg": 16,
+    "primary_tool": 38,
+    "primary_icon": 22,
+    "toolbar_btn": 34,
+    "toolbar_icon": 19,
+    "panel_tab": 36,
+    "panel_icon": 20,
+    "secondary_btn": 32,
+    "secondary_icon": 17,
+    "input_height": 30,
+    "object_row_height": 32,
+    "tool_rail_width": 48,
+    "panel_rail_width": 46,
+}
+
 _WORKSPACE_STYLE = """
 QWidget#workspace { background: @panel; }
-QLabel[role="title"] { font-size: 16px; font-weight: 650; }
+QLabel[role="title"] { font-size: @title_pt; font-weight: 650; }
 QLabel[role="heading"] { font-weight: 650; }
+QLabel[role="caption"] { font-size: @caption_pt; color: @muted_text; }
+QLabel[role="fieldLabel"] { font-size: @field_label_pt; color: @muted_text; font-weight: 500; }
 QLabel[role="metric"] { padding: 4px 8px; }
 QFrame#workspaceBar {
     background: @chrome;
@@ -212,6 +234,42 @@ QToolButton[role="designTool"]:focus {
     border: 2px solid @accent;
 }
 QToolButton[role="designTool"]::menu-indicator { image: none; }
+QToolButton[role="toolbarToggle"] {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+}
+QToolButton[role="toolbarToggle"]:hover {
+    background: @hover_surface;
+    border-color: @hairline;
+}
+QToolButton[role="toolbarToggle"]:checked {
+    background: @design_selection;
+    border-color: @accent;
+}
+QToolButton[role="toolbarToggle"]:focus {
+    border: 2px solid @accent;
+}
+QToolButton[role="panelAction"] {
+    background: @input_bg;
+    border: 1px solid @hairline;
+    border-radius: 4px;
+}
+QToolButton[role="panelAction"]:hover {
+    background: @hover_surface;
+    border-color: @accent;
+}
+QToolButton[role="panelAction"]:checked, QToolButton[role="panelAction"]:pressed {
+    background: @design_selection;
+    border-color: @accent;
+}
+QToolButton[role="panelAction"]:focus {
+    border: 2px solid @accent;
+}
+QToolButton[role="panelAction"]:disabled {
+    background: @disabled_button;
+    border-color: @hairline;
+}
 QToolButton[role="panelTab"] {
     background: transparent;
     border: 1px solid transparent;
@@ -232,7 +290,9 @@ QToolButton[role="panelHeaderAction"] {
     background: transparent;
     border: 1px solid transparent;
     border-radius: 4px;
-    padding: 2px;
+    padding: 2px 4px;
+    font-size: @panel_title_pt;
+    font-weight: 650;
 }
 QToolButton[role="panelHeaderAction"]:hover {
     background: @hover_surface;
@@ -248,8 +308,8 @@ QTabBar[role="document"]::tab {
     border-bottom: 2px solid @accent;
     background: @chrome;
 }
-QLabel[role="panelTitle"] { font-weight: 650; padding: 2px 0; }
-QLabel[role="dockSection"] { font-weight: 600; padding-top: 8px; padding-bottom: 2px; color: @muted_text; }
+QLabel[role="panelTitle"] { font-size: @panel_title_pt; font-weight: 650; padding: 2px 0; }
+QLabel[role="dockSection"] { font-size: @section_pt; font-weight: 600; padding-top: 3px; padding-bottom: 1px; color: @muted_text; }
 QWidget[role="dockBody"] QAbstractSpinBox, QWidget[role="dockBody"] QComboBox,
 QWidget[role="dockBody"] QLineEdit, QWidget[role="dockBody"] QPushButton,
 QFrame#designCommands QAbstractSpinBox, QFrame#designCommands QComboBox,
@@ -372,16 +432,18 @@ QPushButton[role="destructive"]:disabled {
 QLabel[role="warning"] { color: @destructive; font-weight: 600; }
 QPlainTextEdit[role="diagnostics"] { font-family: monospace; }
 QToolButton[role="disclosure"] {
-    border: 1px solid @hairline;
+    border: 1px solid transparent;
     border-radius: 4px;
-    padding: 5px 10px;
+    padding: 4px 6px;
     min-height: 28px;
-    background: @input_bg;
-    font-weight: 600;
+    background: transparent;
+    color: @muted_text;
+    font-weight: 500;
 }
 QToolButton[role="disclosure"]:hover, QToolButton[role="disclosure"]:focus {
-    border-color: @accent;
+    border-color: @hairline;
     background: @hover_surface;
+    color: palette(window-text);
 }
 QSlider[role="cutSlider"]::groove:horizontal {
     height: 4px;
@@ -464,13 +526,22 @@ def _card_surface(base, text):
     return QColor.fromRgbF(*(a + (b - a) * step for a, b in zip(base.getRgbF()[:3], text.getRgbF()[:3])))
 
 
-def workspace_style(palette):
+def workspace_style(palette, base_pt=None):
     active, role = QPalette.ColorGroup.Active, QPalette.ColorRole
     window = palette.color(active, role.Window)
     base = palette.color(active, role.Base)
     text = palette.color(active, role.WindowText)
     button = palette.color(active, role.Button)
     dark = window.lightnessF() <= 0.5
+
+    if base_pt is None:
+        app = QApplication.instance()
+        pt = app.font().pointSizeF() if app is not None else 10.0
+    else:
+        pt = float(base_pt)
+    if pt <= 0:
+        pt = 10.0
+    pt = max(9.0, pt)
 
     label = _legible(palette.color(active, role.ButtonText), button)
     subdued = _mix(button, label, 0.72)
@@ -487,7 +558,7 @@ def workspace_style(palette):
     input_bg = _mix(window, QColor("#000000"), 0.20) if dark else base
     hover_surface = _mix(window, text, 0.10 if dark else 0.06)
     hairline = _mix(window, text, 0.16 if dark else 0.18)
-    muted_text = _mix(window, text, 0.70)
+    muted_text = _mix(window, text, 0.68)
     selection = _mix(panel, accent, 0.34 if dark else 0.20)
 
     destructive = QColor("#c0392b") if not dark else QColor("#e05c54")
@@ -495,6 +566,11 @@ def workspace_style(palette):
     destructive_edge = destructive.darker(125) if not dark else destructive.lighter(115)
 
     return (_WORKSPACE_STYLE
+            .replace("@title_pt", f"{pt * 1.25:.1f}pt")
+            .replace("@panel_title_pt", f"{pt * 1.12:.1f}pt")
+            .replace("@section_pt", f"{max(8.5, pt * 0.90):.1f}pt")
+            .replace("@caption_pt", f"{max(8.5, pt * 0.90):.1f}pt")
+            .replace("@field_label_pt", f"{max(8.5, pt * 0.95):.1f}pt")
             .replace("@accent_hover", accent_hover.name())
             .replace("@accent_text", accent_text.name())
             .replace("@accent_label", accent_label.name())
@@ -944,8 +1020,9 @@ def icon_outline(strokes):
 
 
 def design_icon(tool, color, size=18):
-    pixmap = QPixmap(size * 2, size * 2)
-    pixmap.setDevicePixelRatio(2)
+    dpr = 3
+    pixmap = QPixmap(size * dpr, size * dpr)
+    pixmap.setDevicePixelRatio(dpr)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -1024,7 +1101,7 @@ class DesignIconButton(QToolButton):
         palette = option.palette
         if not self.isEnabled():
             color = _mix(palette.button().color(), palette.buttonText().color(), 0.45)
-        elif self.isChecked() or self.isDown():
+        elif (self.isChecked() or self.isDown()) and self.property("role") not in ("toolbarToggle", "panelAction"):
             color = _legible(QColor("white"), accent_color(palette))
         else:
             color = palette.buttonText().color()
@@ -1211,64 +1288,149 @@ class DockPanel(QFrame):
         return holder
 
 
+class ToggleSwitch(QCheckBox):
+    """Restrained native-styled pill switch with full QCheckBox keyboard/a11y behavior."""
+
+    def __init__(self, label="", parent=None):
+        super().__init__(parent)
+        if label:
+            self.setAccessibleName(label)
+            self.setToolTip(label)
+        self.setFixedSize(38, 22)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def hitButton(self, pos):
+        return self.rect().contains(pos)
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pal = self.palette()
+        window = pal.window().color()
+        text = pal.windowText().color()
+        dark = window.lightnessF() <= 0.5
+        accent = accent_color(pal)
+        track = QRectF(2, 2, self.width() - 4, self.height() - 4)
+        radius = track.height() / 2.0
+        if not self.isEnabled():
+            bg = _mix(window, text, 0.14)
+            knob = _mix(window, text, 0.42)
+        elif self.isChecked():
+            bg = accent
+            knob = QColor("white")
+        else:
+            bg = _mix(window, text, 0.24 if dark else 0.22)
+            knob = _mix(window, text, 0.85) if dark else QColor("white")
+        painter.setPen(QPen(accent, 1.5) if self.hasFocus() else Qt.PenStyle.NoPen)
+        painter.setBrush(bg)
+        painter.drawRoundedRect(track, radius, radius)
+        knob_d = track.height() - 4
+        knob_x = track.right() - knob_d - 2 if self.isChecked() else track.left() + 2
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(knob)
+        painter.drawEllipse(QRectF(knob_x, track.top() + 2, knob_d, knob_d))
+        painter.end()
+
+
+class _AnchorPointButton(QToolButton):
+    """One selectable anchor node inside OriginGrid with a generous hit target."""
+
+    def __init__(self, label, parent=None):
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setFixedSize(20, 20)
+        self.setAccessibleName(label)
+        self.setToolTip(label)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pal = self.palette()
+        window = pal.window().color()
+        text = pal.windowText().color()
+        dark = window.lightnessF() <= 0.5
+        accent = accent_color(pal)
+        active = self.isChecked()
+        hovered = self.underMouse() and self.isEnabled()
+        if active:
+            fill = accent
+            edge = accent.lighter(120) if dark else accent.darker(115)
+            side = 9.0
+        elif hovered:
+            fill = _mix(window, accent, 0.6)
+            edge = accent
+            side = 8.5
+        else:
+            fill = _mix(window, text, 0.52 if dark else 0.45)
+            edge = _mix(window, text, 0.30 if dark else 0.35)
+            side = 7.5
+        if not self.isEnabled():
+            fill = _mix(window, text, 0.24)
+            edge = fill
+        cx, cy = self.width() / 2.0, self.height() / 2.0
+        box = QRectF(cx - side / 2.0, cy - side / 2.0, side, side)
+        if self.hasFocus():
+            painter.setPen(QPen(accent, 1.5))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(box.adjusted(-2.5, -2.5, 2.5, 2.5), 2, 2)
+        painter.setPen(QPen(edge, 1.0))
+        painter.setBrush(fill)
+        painter.drawRect(box)
+        painter.end()
+
+
 class OriginGrid(QWidget):
-    """Interactive 3x3 visual 9-point transform origin selector."""
+    """Conventional 9-point bounding-box reference point selector."""
 
     picked = Signal(float, float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setAccessibleName("Transform origin")
-        self.setToolTip("Choose the 9-point anchor for rotation and transforms")
+        self.setAccessibleName("Reference point")
+        self.setToolTip("Choose the 9-point bounding-box reference point for rotation and transforms")
         self._active = (0.5, 0.5)
         self.buttons = {}
+        self.setFixedSize(64, 64)
         grid = QGridLayout(self)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(4)
+        grid.setContentsMargins(2, 2, 2, 2)
+        grid.setSpacing(1)
         for row, vertical in enumerate(("Top", "Middle", "Bottom")):
             for col, horizontal in enumerate(("left", "center", "right")):
                 key = (col / 2, row / 2)
-                cell = QToolButton()
-                cell.setCheckable(True)
-                cell.setFixedSize(16, 16)
                 label = f"{vertical} {horizontal}"
-                cell.setAccessibleName(label)
-                cell.setToolTip(label)
-                cell.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+                cell = _AnchorPointButton(label, self)
                 cell.clicked.connect(lambda _checked=False, point=key: self.select(*point, emit=True))
-                grid.addWidget(cell, row, col)
+                grid.addWidget(cell, row, col, Qt.AlignmentFlag.AlignCenter)
                 self.buttons[key] = cell
         self.select(0.5, 0.5, emit=False)
 
     def select(self, x, y, *, emit=False):
         self._active = (x, y)
-        self._apply_styles()
+        for point, cell in self.buttons.items():
+            cell.setChecked(point == self._active)
+            cell.update()
+        self.update()
         if emit:
             self.picked.emit(x, y)
 
     def active_origin(self):
         return self._active
 
-    def _apply_styles(self):
-        palette = self.palette()
-        accent = accent_color(palette)
-        dark = palette.window().color().lightnessF() <= 0.5
-        idle = _mix(palette.window().color(), palette.windowText().color(), 0.22 if dark else 0.16)
-        hover = _mix(idle, accent, 0.5)
-        for point, cell in self.buttons.items():
-            checked = point == self._active
-            cell.setChecked(checked)
-            bg = accent.name() if checked else idle.name()
-            cell.setStyleSheet(
-                f"QToolButton {{ background: {bg}; border: 0; border-radius: 2px; }}"
-                f"QToolButton:hover {{ background: {accent.name() if checked else hover.name()}; }}"
-                f"QToolButton:focus {{ border: 1px solid {palette.windowText().color().name()}; }}"
-            )
-
-    def changeEvent(self, event):
-        super().changeEvent(event)
-        if event.type() in (QEvent.Type.PaletteChange, QEvent.Type.StyleChange, QEvent.Type.ApplicationPaletteChange):
-            self._apply_styles()
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        tl = self.buttons[(0.0, 0.0)].geometry().center()
+        br = self.buttons[(1.0, 1.0)].geometry().center()
+        pal = self.palette()
+        line = _mix(pal.window().color(), pal.windowText().color(), 0.34)
+        if not self.isEnabled():
+            line.setAlphaF(0.35)
+        painter.setPen(QPen(line, 1.25))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(QRectF(tl.x(), tl.y(), br.x() - tl.x(), br.y() - tl.y()))
+        painter.end()
 
 
 class PanelRail(QFrame):
@@ -1282,9 +1444,10 @@ class PanelRail(QFrame):
         self.setAccessibleName("Design panels")
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         self.rail_layout = QVBoxLayout(self)
-        self.rail_layout.setContentsMargins(4, 8, 4, 8)
+        self.rail_layout.setContentsMargins(5, 8, 5, 8)
         self.rail_layout.setSpacing(4)
         self.buttons = {}
+        self._order = []
         self._group_for = {key: idx for idx, group in enumerate(PANEL_GROUPS) for key in group}
         self._last_group = None
         self._stretch_added = False
@@ -1299,15 +1462,41 @@ class PanelRail(QFrame):
             divider = design_divider()
             self.rail_layout.addWidget(divider)
         self._last_group = group
-        widget = DesignIconButton(icon, checkable=True, size=36, icon_size=20, role="panelTab")
+        widget = DesignIconButton(icon, checkable=True, size=UI_TOKENS["panel_tab"],
+                                  icon_size=UI_TOKENS["panel_icon"], role="panelTab")
         widget.setAccessibleName(title)
         widget.setToolTip(f"{title}\n{icon.hint}" if icon.hint else title)
         widget.clicked.connect(lambda _checked=False, name=key: self.panel_clicked.emit(name))
         self.buttons[key] = widget
+        self._order.append(key)
         self.rail_layout.addWidget(widget)
         self.rail_layout.addStretch(1)
         self._stretch_added = True
         return widget
+
+    def keyPressEvent(self, event):
+        focused = QApplication.focusWidget()
+        if focused in self.buttons.values():
+            keys = self._order
+            idx = next((i for i, k in enumerate(keys) if self.buttons[k] is focused), -1)
+            if idx >= 0:
+                if event.key() == Qt.Key.Key_Down:
+                    self.buttons[keys[(idx + 1) % len(keys)]].setFocus()
+                    event.accept()
+                    return
+                if event.key() == Qt.Key.Key_Up:
+                    self.buttons[keys[(idx - 1) % len(keys)]].setFocus()
+                    event.accept()
+                    return
+                if event.key() == Qt.Key.Key_Home:
+                    self.buttons[keys[0]].setFocus()
+                    event.accept()
+                    return
+                if event.key() == Qt.Key.Key_End:
+                    self.buttons[keys[-1]].setFocus()
+                    event.accept()
+                    return
+        super().keyPressEvent(event)
 
     def set_active(self, key, *, sidebar_open=True):
         for name, widget in self.buttons.items():
@@ -1350,10 +1539,24 @@ class PanelDock(QFrame):
         self.disclosure.setToolTip("Collapse or expand properties")
         self.disclosure.toggled.connect(self.show_properties)
         header.addWidget(self.disclosure)
+        self._header_frame = header_frame
         layout.addWidget(header_frame)
+        layout.addWidget(design_divider())
 
         self.pages = QStackedWidget()
         layout.addWidget(self.pages, 1)
+
+    def preferred_content_height(self):
+        """Natural vertical height needed by the active properties panel without dead void."""
+        header_h = max(40, self._header_frame.sizeHint().height()) + 2
+        if not self.pages.isVisible():
+            return header_h
+        page = self.pages.currentWidget()
+        panel = page.widget() if isinstance(page, QScrollArea) else None
+        if panel is None:
+            return header_h + 240
+        panel.layout().activate()
+        return header_h + panel.sizeHint().height() + 6
 
     def show_properties(self, expanded):
         self.pages.setVisible(expanded)

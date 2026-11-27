@@ -21,8 +21,9 @@ class Tool:
 
 
 RECTANGLE, ROUNDED_RECTANGLE, ELLIPSE, LINE = KINDS
-TURN_LEFT = (((8, 4), (4, 8), (9, 10)),
-             ((4, 8), (8, 5), (13, 4), (17, 6), (20, 10), (20, 15), (17, 19), (12, 20), (8, 18)))
+TURN_LEFT = (((8, 5), (4.5, 8.5), (9, 10.5)),
+             ((4.8, 8.5), (7.5, 6), (11.5, 5), (15.5, 6.2), (18.5, 9), (19.5, 13),
+              (18.2, 16.8), (15, 19.2), (11, 19.5), (7.5, 18)))
 TURN_RIGHT = tuple(tuple((24 - x, y) for x, y in stroke) for stroke in TURN_LEFT)
 TRANSFORM_MODES = ("Transform", "Rotate", "Scale")
 TRANSFORM_FIELDS = (("x", "X", "X (mm)"), ("y", "Y", "Y (mm)"),
@@ -108,6 +109,10 @@ COMMAND_ICONS = {
                 (((4, 5), (20, 5), (20, 20), (4, 20), (4, 5)),
                  ((12, 2), (10, 4.5), (14, 4.5), (12, 2)),
                  ((9, 5), (9, 20)), ((15, 5), (15, 20)), ((4, 10), (20, 10)), ((4, 15), (20, 15)))),
+    "grid": Tool("Paper Grid", "", "Show or hide the page grid.",
+                 (((4, 4), (20, 4), (20, 20), (4, 20), (4, 4)),
+                  ((9.3, 4), (9.3, 20)), ((14.7, 4), (14.7, 20)),
+                  ((4, 9.3), (20, 9.3)), ((4, 14.7), (20, 14.7)))),
     "save": Tool("Save", "", "Save the design.",
                  (((4, 4), (17, 4), (20, 7), (20, 20), (4, 20), (4, 4)),
                   ((8, 4), (8, 10), (16, 10), (16, 4)),
@@ -259,8 +264,7 @@ DRAG_SHAPE_TOOLS = (*KINDS, "Regular Polygon", "Arc")
 OBJECT_ICONS = {tool.name: tool for tool in TOOLS if tool.name in (*KINDS, "Polygon")}
 OBJECT_ICONS.update(Path=COMMAND_ICONS["path"], Compound=COMMAND_ICONS["group"],
                     Text=COMMAND_ICONS["text"], Sticker=COMMAND_ICONS["image"])
-FLIP = (((12, 3), (12, 21)), ((8, 6), (3, 12), (8, 18), (8, 6)),
-        ((16, 6), (21, 12), (16, 18), (16, 6)))
+FLIP = (((4, 12), (20, 12)), ((8, 8), (4, 12), (8, 16)), ((16, 8), (20, 12), (16, 16)))
 TRANSFORM_ICONS = {
     "left": Tool("Rotate 90° counterclockwise", "", "Rotate the selected objects around their shared center.", TURN_LEFT),
     "right": Tool("Rotate 90° clockwise", "", "Rotate the selected objects around their shared center.", TURN_RIGHT),
@@ -366,44 +370,62 @@ def _box(x1, y1, x2, y2):
     return ((x1, y1), (x2, y1), (x2, y2), (x1, y2), (x1, y1))
 
 
+def _circle(cx, cy, r, steps=16):
+    return tuple((round(cx + r * math.cos(2 * math.pi * i / steps), 2),
+                  round(cy + r * math.sin(2 * math.pi * i / steps), 2)) for i in range(steps + 1))
+
+
 PANEL_ICONS = {
     "page": Tool("Page Setup", "", "Page size, cutting mat and registration marks.",
-                 (((6, 3), (15, 3), (19, 7), (19, 21), (6, 21), (6, 3)), ((15, 3), (15, 7), (19, 7)))),
-    "transform": Tool("Transform", "", "Move, rotate, scale and shear the selection.",
-                      (_box(5, 5, 19, 19), ((3, 12), (9, 12)), ((15, 12), (21, 12)), ((12, 3), (12, 9)),
-                       ((12, 15), (12, 21)))),
+                 (((5.5, 3), (14.5, 3), (18.5, 7), (18.5, 21), (5.5, 21), (5.5, 3)),
+                  ((14.5, 3), (14.5, 7), (18.5, 7)),
+                  ((8.5, 11.5), (15.5, 11.5)), ((8.5, 15.5), (13.5, 15.5)))),
+    "grid": Tool("Grid & Guides", "", "Grid, snapping, rulers and crosshairs.",
+                 (_box(4, 4, 20, 20), ((9.3, 4), (9.3, 20)), ((14.7, 4), (14.7, 20)),
+                  ((4, 9.3), (20, 9.3)), ((4, 14.7), (20, 14.7)))),
+    "transform": Tool("Transform", "", "Position, dimensions, rotation, reference point and shear.",
+                      (_box(6, 6, 18, 18),
+                       _box(3.5, 3.5, 6.5, 6.5), _box(17.5, 3.5, 20.5, 6.5),
+                       _box(3.5, 17.5, 6.5, 20.5), _box(17.5, 17.5, 20.5, 20.5),
+                       ((10, 12), (14, 12)), ((12, 10), (12, 14)))),
     "align": Tool("Align", "", "Align and space selected objects.",
-                  (((4, 3), (4, 21)), _box(7, 6, 17, 10), _box(7, 14, 20, 18))),
+                  (((4, 3.5), (4, 20.5)), _box(7.5, 6, 16.5, 10), _box(7.5, 14, 20, 18))),
     "replicate": Tool("Replicate", "", "Copies in rows, columns, rotations or a full page.",
-                      (_box(3, 3, 10, 10), _box(14, 3, 21, 10), _box(3, 14, 10, 21), _box(14, 14, 21, 21))),
+                      (_box(3.5, 3.5, 10, 10), _box(14, 3.5, 20.5, 10),
+                       _box(3.5, 14, 10, 20.5), _box(14, 14, 20.5, 20.5))),
     "modify": Tool("Modify", "", "Weld, subtract, intersect, divide and crop overlapping shapes.",
-                   (_box(3, 3, 14, 14), _box(10, 10, 21, 21))),
+                   (_box(3.5, 3.5, 14, 14), _circle(15, 15, 5.8))),
     "offset": Tool("Offset", "", "Outline or inset a shape at a distance.",
-                   (_box(8, 8, 16, 16), _box(4, 4, 20, 20))),
+                   (_box(8, 8, 16, 16), _box(3.5, 3.5, 20.5, 20.5),
+                    ((3.5, 3.5), (6, 6)), ((20.5, 3.5), (18, 6)),
+                    ((3.5, 20.5), (6, 18)), ((20.5, 20.5), (18, 18)))),
     "trace": Tool("Trace", "", "Make cut lines from a placed image.",
                   (((4, 9), (4, 4), (9, 4)), ((15, 4), (20, 4), (20, 9)), ((20, 15), (20, 20), (15, 20)),
-                   ((9, 20), (4, 20), (4, 15)), ((8, 16), (11, 9), (14, 13), (16, 11), (17, 16), (8, 16)))),
-    "text": Tool("Text Style", "", "Font, size, spacing and alignment of text.",
-                 (((5, 5), (19, 5)), ((12, 5), (12, 19)), ((8, 19), (16, 19)))),
-    "line": Tool("Line and Fill", "", "Cut action, line color and style, and fill.",
-                 (((4, 20), (20, 4)), _box(12, 13, 20, 21))),
-    "grid": Tool("Grid", "", "Grid, snapping, rulers and crosshairs.",
-                 (_box(3, 3, 21, 21), ((9, 3), (9, 21)), ((15, 3), (15, 21)), ((3, 9), (21, 9)), ((3, 15), (21, 15)))),
+                   ((9, 20), (4, 20), (4, 15)), ((7.5, 16), (11, 9), (14, 13), (16.5, 11), (17.5, 16), (7.5, 16)))),
     "nesting": Tool("Nesting", "", "Pack shapes into the cut area or a border to save material.",
-                    (_box(3, 3, 21, 21), _box(5, 5, 12, 10), _box(13, 5, 19, 13), _box(5, 12, 11, 19),
-                     _box(13, 15, 19, 19))),
+                    (_box(3, 3, 21, 21),
+                     _box(5, 5, 10.5, 14), _box(12.5, 5, 19, 9),
+                     _box(12.5, 11, 19, 14), _box(5, 16, 19, 19))),
+    "text": Tool("Text Style", "", "Font, size, spacing and alignment of text.",
+                 (((5, 5), (19, 5)), ((5, 5), (5, 7.5)), ((19, 5), (19, 7.5)),
+                  ((12, 5), (12, 19)), ((8.5, 19), (15.5, 19)))),
+    "line": Tool("Line and Fill", "", "Cut action, line color and style, and fill.",
+                 (((4, 19.5), (19.5, 4)), ((4, 13.5), (13.5, 4)), _circle(16.5, 16.5, 4))),
     "objects": Tool("Objects", "", "Every object in the design, front to back.",
                     (((4, 8), (12, 4), (20, 8), (12, 12), (4, 8)), ((4, 12), (12, 16), (20, 12)),
                      ((4, 16), (12, 20), (20, 16)))),
 }
 
-# Logical grouping for the persistent far-right icon panel switcher.
+# Logical grouping for the persistent far-right icon panel switcher:
+# 1. Document and page setup
+# 2. Transformation, alignment, and replication
+# 3. Geometry, path modification, offset, trace, and nesting
+# 4. Text and appearance
 PANEL_GROUPS = (
-    ("page",),
+    ("page", "grid"),
     ("transform", "align", "replicate"),
-    ("modify", "offset", "nesting"),
-    ("trace", "text", "line"),
-    ("grid",),
+    ("modify", "offset", "trace", "nesting"),
+    ("text", "line"),
 )
 
 

@@ -2585,10 +2585,18 @@ class TestDesignWorkspace(unittest.TestCase):
             self.assertTrue(saved['sidebar_collapsed'])
             self.assertEqual(saved['active_panel'], 'transform')
 
-            # Distinct fit actions execute cleanly.
+            # Distinct fit actions and Page Focus execute cleanly without changing physical mat.
             design.canvas.fit_mat()
             design.canvas.fit_page()
             design.canvas.fit_selection()
+            orig_mat = design.project.mat
+            design.toggle_page_focus()
+            self.assertFalse(design.show_mat.get_active())
+            self.assertEqual(design.project.mat, orig_mat)
+            design.toggle_page_focus()
+            self.assertTrue(design.show_mat.get_active())
+            self.assertEqual(design.fields['x'].get_digits(), 3)
+            self.assertIsInstance(design.lock_aspect, gui.Gtk.Switch)
 
 
 @unittest.skipUnless(gui is not None, 'PyGObject is not installed')

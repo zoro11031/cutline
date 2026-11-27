@@ -90,7 +90,7 @@ class DesignCanvas(Gtk.DrawingArea):
         scroll.connect('scroll', self.scroll_zoom)
         self.add_controller(scroll)
 
-    RULER_BAND = 22
+    RULER_BAND = 24
 
     def track_pointer(self, _motion, x, y):
         self.pointer = (x, y)
@@ -386,15 +386,32 @@ class DesignCanvas(Gtk.DrawingArea):
 
     def draw_rulers(self, cr, view_w, view_h, origin_x, origin_y, scale, dark, unit='mm'):
         band = self.RULER_BAND
-        bg = (0.15, 0.16, 0.19) if dark else (0.93, 0.94, 0.96)
-        tick = (0.78, 0.80, 0.84, 0.55) if dark else (0.18, 0.20, 0.24, 0.55)
-        label_ink = (0.85, 0.87, 0.90, 0.80) if dark else (0.15, 0.17, 0.21, 0.82)
-        hair = (0.85, 0.87, 0.90, 0.18) if dark else (0.15, 0.17, 0.21, 0.18)
+        bg = (0.17, 0.19, 0.22) if dark else (0.94, 0.95, 0.97)
+        page_bg = (0.21, 0.24, 0.28) if dark else (0.89, 0.91, 0.94)
+        major_ink = (0.86, 0.88, 0.92, 0.76) if dark else (0.14, 0.16, 0.20, 0.76)
+        half_ink = (0.86, 0.88, 0.92, 0.46) if dark else (0.14, 0.16, 0.20, 0.46)
+        minor_ink = (0.86, 0.88, 0.92, 0.26) if dark else (0.14, 0.16, 0.20, 0.26)
+        label_ink = (0.90, 0.92, 0.95, 0.88) if dark else (0.12, 0.14, 0.18, 0.88)
+        hair = (0.85, 0.87, 0.90, 0.22) if dark else (0.15, 0.17, 0.21, 0.22)
         cr.save()
         cr.set_source_rgb(*bg)
         cr.rectangle(0, 0, view_w, band)
         cr.rectangle(0, 0, band, view_h)
         cr.fill()
+
+        project = self.editor.project
+        px0 = max(band, origin_x)
+        px1 = min(view_w, origin_x + project.width * scale)
+        if px1 > px0:
+            cr.set_source_rgb(*page_bg)
+            cr.rectangle(px0, 0, px1 - px0, band)
+            cr.fill()
+        py0 = max(band, origin_y)
+        py1 = min(view_h, origin_y + project.height * scale)
+        if py1 > py0:
+            cr.set_source_rgb(*page_bg)
+            cr.rectangle(0, py0, band, py1 - py0)
+            cr.fill()
 
         unit_mm = 25.4 if unit == 'in' else 1.0
         px_per_unit = scale * unit_mm
@@ -405,10 +422,10 @@ class DesignCanvas(Gtk.DrawingArea):
             steps = (1, 2, 5, 10, 20, 50, 100, 200)
             labels = (5, 10, 20, 50, 100, 200, 500)
         step = next((s for s in steps if s * px_per_unit >= 7), steps[-1])
-        label_every = next((s for s in labels if s * px_per_unit >= 44 and abs((s / step) - round(s / step)) < 1e-6),
+        label_every = next((s for s in labels if s * px_per_unit >= 48 and abs((s / step) - round(s / step)) < 1e-6),
                            labels[-1])
         ratio = max(1, round(label_every / step))
-        cr.set_font_size(9.5)
+        cr.set_font_size(10.0)
         cr.set_line_width(1.0)
 
         left = (band - origin_x) / px_per_unit
@@ -420,13 +437,13 @@ class DesignCanvas(Gtk.DrawingArea):
                 continue
             major = idx % ratio == 0
             half = ratio % 2 == 0 and idx % (ratio // 2) == 0
-            cr.set_source_rgba(*tick)
+            cr.set_source_rgba(*(major_ink if major else half_ink if half else minor_ink))
             cr.move_to(px, band)
-            cr.line_to(px, band - (9 if major else 6 if half else 4))
+            cr.line_to(px, band - (10 if major else 6 if half else 3))
             cr.stroke()
             if major:
                 cr.set_source_rgba(*label_ink)
-                cr.move_to(px + 2.5, 10.5)
+                cr.move_to(px + 3.0, 12.0)
                 cr.show_text(f'{value:g}')
 
         top = (band - origin_y) / px_per_unit
@@ -438,14 +455,14 @@ class DesignCanvas(Gtk.DrawingArea):
                 continue
             major = idx % ratio == 0
             half = ratio % 2 == 0 and idx % (ratio // 2) == 0
-            cr.set_source_rgba(*tick)
+            cr.set_source_rgba(*(major_ink if major else half_ink if half else minor_ink))
             cr.move_to(band, py)
-            cr.line_to(band - (9 if major else 6 if half else 4), py)
+            cr.line_to(band - (10 if major else 6 if half else 3), py)
             cr.stroke()
             if major:
                 cr.save()
                 cr.set_source_rgba(*label_ink)
-                cr.translate(10.5, py - 2.5)
+                cr.translate(12.0, py - 3.0)
                 cr.rotate(-math.pi / 2)
                 cr.move_to(0, 0)
                 cr.show_text(f'{value:g}')
