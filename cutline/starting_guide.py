@@ -44,7 +44,7 @@ ADVICE = {
                "blade is taking too much in one pass. If it caught in the mat, reduce blade exposure.",
     "mat": "Reduce blade depth one step on a fresh spot. If the cut still gouges the mat, lower force or use fewer passes.",
 }
-MAX_JOB_PASSES = 10
+MAX_JOB_PASSES = graphtec.MAX_PASSES
 SAMPLE_SIZES = {15.0: "Small (15 mm)", 30.0: "Medium (30 mm)", 50.0: "Large (50 mm)",
                 88.0: "Extra large (88 mm)"}
 
@@ -367,7 +367,7 @@ class Guide:
 
     def advice(self):
         if self.outcome == "holding" and self.completed >= MAX_JOB_PASSES:
-            return "This job supports up to 10 passes. Try a different setting on a fresh spot."
+            return f"This job supports up to {MAX_JOB_PASSES} passes. Try a different setting on a fresh spot."
         return ADVICE.get(self.outcome, "")
 
     def invalidate(self):

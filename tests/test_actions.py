@@ -276,3 +276,12 @@ class TestStagedPasses(unittest.TestCase):
         preset = presets.Preset("Staged", "", "measured", __import__("dataclasses").asdict(settings))
         self.assertEqual(preset.cut_settings(), settings)
         self.assertEqual(presets.Preset("Old", "", "measured", dict(force=20)).cut_settings().light_passes, 0)
+
+    def test_max_passes_supports_up_to_twenty_including_staged(self):
+        self.assertEqual(graphtec.MAX_PASSES, 20)
+        self.assertEqual(graphtec.MAX_LIGHT_PASSES, 19)
+        clamped = graphtec.CutSettings(passes=25, light_passes=25).clamped(graphtec.device_by_name("Silhouette Cameo 4"))
+        self.assertEqual((clamped.passes, clamped.light_passes), (20, 19))
+        checked = self.staged(passes=20, blade_options=dict(light_passes=19, light_force=10))
+        self.assertEqual(checked.blocked, [])
+        self.assertEqual([group.settings.passes for group in checked.action_groups], [19, 1])

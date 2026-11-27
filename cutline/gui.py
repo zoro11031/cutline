@@ -1689,7 +1689,7 @@ class Window(Adw.ApplicationWindow):
         self.send_sliders, self.send_rows = {}, {}
         for field, title, low, high, value in (
                 ("force", "Force", 1, 40, 30), ("speed", "Speed", 1, 30, 3),
-                ("passes", "Passes", 1, 10, 3), ("depth", "Blade Depth", -1, 10, 7),
+                ("passes", "Passes", 1, graphtec.MAX_PASSES, 3), ("depth", "Blade Depth", -1, 10, 7),
                 ("acceleration", "Acceleration", -1, 3, -1)):
             row, precision, slider = self._slider_row(field, title, low, high, value, self.on_changed)
             group.add(row)
@@ -2038,7 +2038,7 @@ class Window(Adw.ApplicationWindow):
         self.r_stage.set_tooltip_text("Cut the first passes lighter, then finish at Force and Speed. "
                                       "Useful when a full first pass lifts a laminated edge.")
         self.stage_fields = {}
-        for field, title, low, high in (("light_passes", "Light passes", 1, 9),
+        for field, title, low, high in (("light_passes", "Light passes", 1, graphtec.MAX_LIGHT_PASSES),
                                         ("light_force", "Light force", -1, 40),
                                         ("light_speed", "Light speed", -1, 30)):
             row, precision, _ = self._slider_row(field, title, low, high, 1 if low > 0 else -1,

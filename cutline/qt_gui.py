@@ -37,13 +37,13 @@ DEVICES = {device.name: device.name.removeprefix("Silhouette ") for device in gr
 # Qt widgets use the same field names and units as the job builder.
 BLADE_NUMBERS = (
     ("force", "Force", 1, 40, 1, 0), ("speed", "Speed", 1, 30, 1, 0),
-    ("passes", "Passes", 1, 10, 1, 0), ("depth", "Blade Depth", -1, 10, 1, 0),
+    ("passes", "Passes", 1, graphtec.MAX_PASSES, 1, 0), ("depth", "Blade Depth", -1, 10, 1, 0),
     ("holder", "Tool Holder", 1, 2, 1, 0), ("acceleration", "Acceleration", -1, 3, 1, 0),
     ("blade_diameter_mm", "Tool Offset (mm)", 0, 2.3, 0.05, 2),
     ("corner_start_mm", "Start Extension (mm)", 0, 0.9, 0.1, 1),
     ("corner_end_mm", "End Extension (mm)", 0, 0.9, 0.1, 1),
     ("overcut_mm", "Seam Overcut (mm)", 0, 1000, 0.1, 2),
-    ("light_passes", "Light passes", 0, 9, 1, 0),
+    ("light_passes", "Light passes", 0, graphtec.MAX_LIGHT_PASSES, 1, 0),
     ("light_force", "Light force", -1, 40, 1, 0),
     ("light_speed", "Light speed", -1, 30, 1, 0),
 )

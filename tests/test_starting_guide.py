@@ -151,7 +151,7 @@ class TestStartingGuide(unittest.TestCase):
         for _ in range(1, starting_guide.MAX_JOB_PASSES):
             self.guide.record(trial)
         self.assertFalse(self.guide.can_cut)
-        with self.assertRaisesRegex(ValueError, "10 passes"):
+        with self.assertRaisesRegex(ValueError, f"{starting_guide.MAX_JOB_PASSES} passes"):
             self.prepare()
         self.assertEqual(self.guide.tested_settings.passes, starting_guide.MAX_JOB_PASSES)
 

@@ -402,6 +402,10 @@ class Step:
     wait_ready: bool = False    # finish a standalone movement before the next step
 
 
+MAX_PASSES = 20
+MAX_LIGHT_PASSES = MAX_PASSES - 1
+
+
 @dataclasses.dataclass
 class CutSettings:
     """Blade settings for one pass.
@@ -456,8 +460,8 @@ class CutSettings:
             out.depth = None
         elif out.depth is not None:
             out.depth = max(0, min(out.depth, 10))
-        out.passes = max(1, min(self.passes, 10))
-        out.light_passes = max(0, min(self.light_passes, 9))
+        out.passes = max(1, min(self.passes, MAX_PASSES))
+        out.light_passes = max(0, min(self.light_passes, MAX_LIGHT_PASSES))
         if (self.path_order not in toolpath.PATH_ORDERS
                 or self.pass_order not in toolpath.PASS_ORDERS):
             raise ValueError("Unknown path or pass order.")
