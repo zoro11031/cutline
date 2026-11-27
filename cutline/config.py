@@ -186,6 +186,36 @@ def is_preset_tested(preset, tested: set[str] | frozenset[str] | None = None) ->
     return isinstance(name, str) and name in known
 
 
+def known_wireless_cutters() -> set[tuple[str, str]]:
+    """Return (mode, identifier) pairs for wireless cutters verified before."""
+    raw = load_settings().get("known_wireless_cutters")
+    if not isinstance(raw, list):
+        return set()
+    found = set()
+    for item in raw:
+        if (isinstance(item, (list, tuple)) and len(item) == 2
+                and isinstance(item[0], str) and isinstance(item[1], str)):
+            mode, identifier = item[0].strip(), item[1].strip()
+            if mode and identifier:
+                found.add((mode, identifier))
+    return found
+
+
+def remember_wireless_cutter(mode: str, identifier: str) -> pathlib.Path | None:
+    """Record a verified wireless cutter endpoint in settings.json."""
+    mode = (mode or "").strip()
+    identifier = (identifier or "").strip()
+    if not mode or not identifier:
+        return None
+    current = known_wireless_cutters()
+    if any(m == mode and i.casefold() == identifier.casefold() for m, i in current):
+        return None
+    current.add((mode, identifier))
+    data = load_settings()
+    data["known_wireless_cutters"] = [[m, i] for m, i in sorted(current)]
+    return save_settings(data)
+
+
 DESIGN_UI_DEFAULTS = {
     "sidebar_width": 300,
     "sidebar_width_user": False,

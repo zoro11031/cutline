@@ -464,6 +464,7 @@ class Window(QMainWindow):
         self.search_pending = False
         self.preferred_endpoint = None
         self.verified_wireless = None
+        self._startup_wireless_autoconnect = True
         self.detected = cutter.choice("Selected cutter", {"": "Select a cutter"}, changed=self.select_detected)
         self.connection_status = cutter.note("Cutter status not checked.")
         # Offered only while no cutter is available, as in Silhouette Studio.
@@ -1928,6 +1929,8 @@ class Window(QMainWindow):
     def refresh_usb(self):
         if self.busy or self.link.currentData() != "auto":
             return
+        if cutters.usb_choices():
+            self._startup_wireless_autoconnect = False
         self._refresh_cutter_list()
         self._update_scan_ui()
         if self.search_pending and not self.wireless_scanning and not self.busy:
@@ -1981,6 +1984,19 @@ class Window(QMainWindow):
             self.wireless_choices.setdefault(selected, last_label)
         self.refresh_usb()
         self._update_scan_ui()
+        startup = self._startup_wireless_autoconnect
+        self._startup_wireless_autoconnect = False
+        if (startup and not error and not self.busy and self.active_job is None
+                and self.link.currentData() == "auto"):
+            choices = {**cutters.usb_choices(), **self.wireless_choices}
+            auto = cutters.startup_wireless_choice(
+                choices, config.known_wireless_cutters(),
+                preferred=self.preferred_endpoint or self.detected.currentData() or None,
+            )
+            if auto is not None:
+                self.preferred_endpoint = auto
+                self.check_device(pending="Connecting…", endpoint=auto)
+                return
         if cutters.wireless_endpoint(self.detected.currentData()):
             self.check_device()
 
@@ -2006,6 +2022,8 @@ class Window(QMainWindow):
 
     def change_connection(self):
         mode = self.link.currentData()
+        if not self.loading:
+            self._startup_wireless_autoconnect = False
         self.preferred_endpoint = None
         self.verified_wireless = None
         self.advanced_connection_form.setRowVisible(self.identifier, mode != "auto")
@@ -2120,6 +2138,7 @@ class Window(QMainWindow):
         self.tasks.run(work, done)
 
     def select_detected(self):
+        self._startup_wireless_autoconnect = False
         mode = self.link.currentData()
         item = self.detected.currentData() or None
         if mode == "auto":
@@ -2219,6 +2238,11 @@ class Window(QMainWindow):
             if original == self.connection():
                 if connection[0] in bluetooth.BLUETOOTH_MODES:
                     self.verified_wireless = None if error else connection
+                    if not error:
+                        try:
+                            config.remember_wireless_cutter(connection[0], connection[1])
+                        except OSError:
+                            pass
                     wireless = endpoint or self.detected.currentData()
                     if error and automatic and cutters.wireless_endpoint(wireless):
                         self.wireless_choices.pop(wireless, None)

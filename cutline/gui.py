@@ -1508,6 +1508,7 @@ class Window(Adw.ApplicationWindow):
         self._search_pending = False
         self.preferred_endpoint = None
         self.verified_wireless = None
+        self._startup_wireless_autoconnect = True
         self.endpoint_changed_id = self.r_bluetooth.connect("notify::selected", self.select_detected)
         g2.add(self.r_bluetooth)
         self.connection_status = Adw.ActionRow(title="Cutter status")
@@ -3566,6 +3567,8 @@ class Window(Adw.ApplicationWindow):
     def refresh_usb(self):
         if self._sending or self._connection_mode() != "auto":
             return False
+        if cutters.usb_choices():
+            self._startup_wireless_autoconnect = False
         self._refresh_cutter_list()
         self._update_scan_ui()
         if self._search_pending and not self._wireless_scanning and not self._checking_status:
@@ -3630,6 +3633,19 @@ class Window(Adw.ApplicationWindow):
             self._wireless_choices.setdefault(selected, last_label)
         self.refresh_usb()
         self._update_scan_ui()
+        startup = self._startup_wireless_autoconnect
+        self._startup_wireless_autoconnect = False
+        if (startup and not self._sending and not self._checking_status
+                and self.active_job is None and self._connection_mode() == "auto"):
+            available = {**cutters.usb_choices(), **self._wireless_choices}
+            auto = cutters.startup_wireless_choice(
+                available, config.known_wireless_cutters(),
+                preferred=self.preferred_endpoint or self._automatic_endpoint(),
+            )
+            if auto is not None:
+                self.preferred_endpoint = auto
+                self.on_refresh_status(pending="Connecting…", endpoint=auto)
+                return False
         if cutters.wireless_endpoint(self._automatic_endpoint()):
             self.on_refresh_status()
         return False
@@ -3664,6 +3680,8 @@ class Window(Adw.ApplicationWindow):
 
     def on_connection_changed(self, *_args):
         mode = self._connection_mode()
+        if not self._suppress:
+            self._startup_wireless_autoconnect = False
         self.preferred_endpoint = None
         self.verified_wireless = None
         self._bluetooth_devices = []
@@ -3731,6 +3749,7 @@ class Window(Adw.ApplicationWindow):
     def select_detected(self, *_args):
         if self._checking_status:
             return
+        self._startup_wireless_autoconnect = False
         if self._connection_mode() == "auto":
             endpoint = self._automatic_endpoint()
             if endpoint == self.preferred_endpoint:
@@ -3921,6 +3940,11 @@ class Window(Adw.ApplicationWindow):
                 return
             if mode in bluetooth.BLUETOOTH_MODES:
                 self.verified_wireless = connection if device is not None else None
+                if device is not None:
+                    try:
+                        config.remember_wireless_cutter(connection[0], connection[1])
+                    except OSError:
+                        pass
                 wireless = endpoint or self._automatic_endpoint()
                 if device is None and automatic and cutters.wireless_endpoint(wireless):
                     self._wireless_choices.pop(wireless, None)

@@ -313,3 +313,16 @@ def detected_choice(choices, preferred):
         if auto_model(endpoint, label):
             return endpoint
     return None
+
+
+def startup_wireless_choice(choices, known_wireless, *, preferred=None):
+    """Return the sole available previously-used wireless cutter when no USB
+    or other cutter is present, else None."""
+    if preferred is not None or len(choices) != 1:
+        return None
+    endpoint = next(iter(choices))
+    if not wireless_endpoint(endpoint) or unpaired(endpoint):
+        return None
+    mode, identifier = endpoint
+    known = {(m, i.casefold()) for m, i in known_wireless}
+    return endpoint if (mode, identifier.casefold()) in known else None

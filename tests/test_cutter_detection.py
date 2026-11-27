@@ -170,6 +170,27 @@ class TestExactEndpoint(unittest.TestCase):
         self.assertIn("Bluetooth", cutters.NO_CUTTER_TEXT)
         self.assertTrue(cutters.SCANNING_TEXT.endswith("…"))
 
+    def test_startup_wireless_choice_requires_single_known_paired_cutter_and_no_usb(self):
+        classic = ("bluetooth", "AA:BB:CC:00:11:22")
+        second = ("ble", "C0:00:00:00:00:01")
+        usb = (1, 2)
+        known = {("bluetooth", "aa:bb:cc:00:11:22")}
+        sole = {classic: "CAMEO 4-1234 · Bluetooth Classic · AA:BB:CC:00:11:22"}
+
+        # Sole available, paired, previously-used Bluetooth cutter auto-connects.
+        self.assertEqual(cutters.startup_wireless_choice(sole, known), classic)
+        # Never used before -> do not auto-connect.
+        self.assertIsNone(cutters.startup_wireless_choice(sole, set()))
+        # Unpaired cutter -> do not auto-connect.
+        with mock.patch.object(cutters, "unpaired", return_value=True):
+            self.assertIsNone(cutters.startup_wireless_choice(sole, known))
+        # USB cutter also present -> do not auto-connect to Bluetooth.
+        self.assertIsNone(cutters.startup_wireless_choice({**sole, usb: "Silhouette Cameo 4 · USB 1:2"}, known))
+        # Another Bluetooth cutter also present -> do not auto-connect.
+        self.assertIsNone(cutters.startup_wireless_choice({**sole, second: "CAMEO 5 · Bluetooth LE · C0"}, known))
+        # Explicit preferred choice already set -> do not override.
+        self.assertIsNone(cutters.startup_wireless_choice(sole, known, preferred=usb))
+
 
 class TestFactorySnapshot(unittest.TestCase):
     def test_model_override_keeps_the_family_variant_for_the_other_holder(self):

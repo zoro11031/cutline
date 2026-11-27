@@ -327,3 +327,24 @@ class TestTestedPresetsPersistence(unittest.TestCase):
             self.assertEqual(config.tested_presets(), set())
             self.assertNotIn("tested_presets", config.load_settings())
 
+
+class TestKnownWirelessCuttersPersistence(unittest.TestCase):
+    def test_known_wireless_cutters_round_trip_and_deduplicate_case_insensitively(self):
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(config, "CONFIG_DIR", Path(folder)):
+            self.assertEqual(config.known_wireless_cutters(), set())
+            self.assertIsNone(config.remember_wireless_cutter("", "AA:BB:CC:00:11:22"))
+            self.assertIsNone(config.remember_wireless_cutter("bluetooth", "  "))
+
+            saved = config.remember_wireless_cutter("bluetooth", "AA:BB:CC:00:11:22")
+            self.assertIsNotNone(saved)
+            self.assertEqual(config.known_wireless_cutters(), {("bluetooth", "AA:BB:CC:00:11:22")})
+            # Same endpoint with different case does not duplicate or rewrite.
+            self.assertIsNone(config.remember_wireless_cutter("bluetooth", "aa:bb:cc:00:11:22"))
+            self.assertEqual(len(config.known_wireless_cutters()), 1)
+
+            config.remember_wireless_cutter("ble", "C0:00:00:00:00:01")
+            self.assertEqual(
+                config.known_wireless_cutters(),
+                {("bluetooth", "AA:BB:CC:00:11:22"), ("ble", "C0:00:00:00:00:01")},
+            )
+

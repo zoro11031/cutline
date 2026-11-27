@@ -2675,6 +2675,82 @@ class TestDesignWorkspace(unittest.TestCase):
         self.assertTrue(win.r_preset_tested.get_active())
         self.assertFalse(win.r_preset_tested.get_sensitive())
 
+    def test_gtk_startup_auto_connects_sole_known_bluetooth_cutter_only_when_no_usb(self):
+        classic = ("bluetooth", "AA:BB:CC:00:11:22")
+        other = ("ble", "C0:00:00:00:00:01")
+        listing = {classic: "CAMEO 4-1234 · Bluetooth Classic · AA:BB:CC:00:11:22"}
+        device = graphtec.device_by_name("Silhouette Cameo 4")
+        app = self.make_window().get_application()
+
+        def fresh_window(usb_records):
+            with mock.patch.object(gui.transport, "usb_endpoints", return_value=usb_records), \
+                 mock.patch.object(cutters, "wireless_choices", return_value={}):
+                w = gui.Window(app)
+                self.addCleanup(w.destroy)
+                with mock.patch.object(w, "on_refresh_status"):
+                    w.refresh_usb()
+                return w
+
+        with tempfile.TemporaryDirectory() as folder, \
+             mock.patch.object(config, "CONFIG_DIR", Path(folder)), \
+             mock.patch.object(gui.transport, "open_transport", side_effect=gui.transport.NotFound("offline")), \
+             mock.patch.object(cutters, "wireless_choices", return_value={}):
+            # 1. Unknown cutter on startup does not auto-connect; verified connection remembers it.
+            with mock.patch.object(gui.transport, "usb_endpoints", return_value=[]):
+                first = fresh_window([])
+                with mock.patch.object(first, "on_refresh_status") as refresh:
+                    first._wireless_done(listing)
+                refresh.assert_not_called()
+                self.assertNotIn(classic, config.known_wireless_cutters())
+
+                fake_link = mock.MagicMock(device=device)
+                fake_link.__enter__.return_value = fake_link
+                fake_link.status_and_tools.return_value = ("ready", ())
+                fake_link.firmware_version.return_value = "1.15"
+                with mock.patch.object(cutters, "open_link", return_value=fake_link), \
+                     mock.patch.object(gui.threading, "Thread", side_effect=lambda target, daemon=True: types.SimpleNamespace(start=target)), \
+                     mock.patch.object(gui.GLib, "idle_add", side_effect=lambda fn, *a: fn(*a)):
+                    first.r_bluetooth.set_selected(1)
+                self.assertIn(classic, config.known_wireless_cutters())
+
+            # 2. Next startup with no USB and only that known Bluetooth cutter auto-connects.
+            with mock.patch.object(gui.transport, "usb_endpoints", return_value=[]):
+                second = fresh_window([])
+                fake_link = mock.MagicMock(device=device)
+                fake_link.__enter__.return_value = fake_link
+                fake_link.status_and_tools.return_value = ("ready", ())
+                fake_link.firmware_version.return_value = "1.15"
+                with mock.patch.object(cutters, "open_link", return_value=fake_link), \
+                     mock.patch.object(gui.threading, "Thread", side_effect=lambda target, daemon=True: types.SimpleNamespace(start=target)), \
+                     mock.patch.object(gui.GLib, "idle_add", side_effect=lambda fn, *a: fn(*a)):
+                    second._wireless_done(listing)
+                self.assertEqual(second._automatic_endpoint(), classic)
+                self.assertEqual(second.verified_wireless, classic)
+                self.assertTrue(second.wireless_ready())
+
+            # 3. USB cutter present -> does not auto-connect to Bluetooth.
+            with mock.patch.object(gui.transport, "usb_endpoints", return_value=[(device, "", (1, 2))]):
+                with_usb = fresh_window([(device, "", (1, 2))])
+                with mock.patch.object(with_usb, "on_refresh_status") as refresh:
+                    with_usb._wireless_done(listing)
+                refresh.assert_not_called()
+                self.assertEqual(with_usb._automatic_endpoint(), (1, 2))
+
+            # 4. Multiple Bluetooth cutters -> does not auto-connect.
+            with mock.patch.object(gui.transport, "usb_endpoints", return_value=[]):
+                two_bt = fresh_window([])
+                with mock.patch.object(two_bt, "on_refresh_status") as refresh:
+                    two_bt._wireless_done({**listing, other: "CAMEO 5 · Bluetooth LE · C0:00:00:00:00:01"})
+                refresh.assert_not_called()
+
+            # 5. Later refresh after empty startup does not auto-connect.
+            with mock.patch.object(gui.transport, "usb_endpoints", return_value=[]):
+                later = fresh_window([])
+                with mock.patch.object(later, "on_refresh_status") as refresh:
+                    later._wireless_done({})
+                    later._wireless_done(listing)
+                refresh.assert_not_called()
+
 
 @unittest.skipUnless(gui is not None, 'PyGObject is not installed')
 class TestOpenDialogs(unittest.TestCase):

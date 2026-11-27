@@ -2150,6 +2150,77 @@ class TestQtFrontend(unittest.TestCase):
             self.assertIsNone(saw_checkbox[0][0])
             self.assertNotIn("hardware test", saw_checkbox[0][1])
 
+    def test_startup_auto_connects_sole_known_bluetooth_cutter_only_when_no_usb(self):
+        classic = ("bluetooth", "AA:BB:CC:00:11:22")
+        other = ("ble", "C0:00:00:00:00:01")
+        listing = {classic: "CAMEO 4-1234 · Bluetooth Classic · AA:BB:CC:00:11:22"}
+        device = qt_gui.graphtec.device_by_name("Silhouette Cameo 4")
+
+        # 1. Unknown cutter on startup does not auto-connect; once verified manually, it is remembered.
+        with mock.patch.object(transport, "usb_endpoints", return_value=[]):
+            first = qt_gui.Window()
+            self.addCleanup(first.deleteLater)
+            with mock.patch.object(first, "check_device") as check:
+                first.refresh_usb()
+                first._wireless_done(listing, None)
+            check.assert_not_called()
+            self.assertNotIn(classic, qt_gui.config.known_wireless_cutters())
+
+            # Simulate verifying the Bluetooth cutter via check_device -> remembers it in config.
+            def run_sync(work, done):
+                done((device, "Silhouette Cameo 4 · ready · 1.15", ()), None)
+
+            with mock.patch.object(first.tasks, "run", side_effect=run_sync):
+                first.detected.setCurrentIndex(first.detected.findData(classic))
+            self.assertIn(classic, qt_gui.config.known_wireless_cutters())
+
+        # 2. Next startup with no USB and only that known Bluetooth cutter auto-connects and enables Send.
+        with mock.patch.object(transport, "usb_endpoints", return_value=[]):
+            second = qt_gui.Window()
+            self.addCleanup(second.deleteLater)
+            calls = []
+            def run_sync(work, done):
+                calls.append(True)
+                done((device, "Silhouette Cameo 4 · ready · 1.15", ()), None)
+
+            with mock.patch.object(second.tasks, "run", side_effect=run_sync):
+                second.refresh_usb()
+                second._wireless_done(listing, None)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(second.detected.currentData(), classic)
+            self.assertEqual(second.verified_wireless, (*classic, None))
+            self.assertTrue(second.send_button.isEnabled())
+
+        # 3. Startup with a USB cutter present does NOT auto-connect to Bluetooth.
+        with mock.patch.object(transport, "usb_endpoints", return_value=[(device, "", (1, 2))]):
+            with_usb = qt_gui.Window()
+            self.addCleanup(with_usb.deleteLater)
+            with mock.patch.object(with_usb, "check_device") as check:
+                with_usb.refresh_usb()
+                check.reset_mock()
+                with_usb._wireless_done(listing, None)
+            check.assert_not_called()
+            self.assertEqual(with_usb.detected.currentData(), (1, 2))
+
+        # 4. Startup with two Bluetooth cutters present does NOT auto-connect.
+        with mock.patch.object(transport, "usb_endpoints", return_value=[]):
+            two_bt = qt_gui.Window()
+            self.addCleanup(two_bt.deleteLater)
+            with mock.patch.object(two_bt, "check_device") as check:
+                two_bt.refresh_usb()
+                two_bt._wireless_done({**listing, other: "CAMEO 5 · Bluetooth LE · C0:00:00:00:00:01"}, None)
+            check.assert_not_called()
+
+        # 5. Only runs on initial startup, not on later background refreshes after startup found nothing.
+        with mock.patch.object(transport, "usb_endpoints", return_value=[]):
+            later = qt_gui.Window()
+            self.addCleanup(later.deleteLater)
+            with mock.patch.object(later, "check_device") as check:
+                later.refresh_usb()
+                later._wireless_done({}, None)
+                later._wireless_done(listing, None)
+            check.assert_not_called()
+
 
 @unittest.skipIf(qt_gui is None, "Install PySide6 to run Qt frontend tests")
 class TestQtDesignEditor(unittest.TestCase):
