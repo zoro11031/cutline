@@ -576,6 +576,14 @@ class Window(QMainWindow):
         self.guide_spot_selector.setToolTip("Or click a spot in the preview.")
         self.add_guide_slots(guide)
         self.guide_status = guide.note()
+        self.guide_retry = button("Didn’t Cut — Retry", self.retry_guide_spot)
+        self.guide_retry.setToolTip("The blade did not cut this spot. Unlock it and try again.")
+        self.guide_confirm_pass = button("Pass Finished — Count It", self.confirm_guide_pass)
+        self.guide_confirm_pass.setToolTip("The last pass finished cleanly. Add it to this spot’s pass count and continue.")
+        self.guide_recovery = AdaptiveActions((self.guide_retry, self.guide_confirm_pass))
+        guide.addRow(self.guide_recovery)
+        self.guide_recovery.hide()
+        self.guide_form = guide
         guide.addRow("Cut with", self.guide_slot_choice)
         self.guide_next = button("Next Spot", self.next_guide_spot)
         self.guide_next.setToolTip("Move to untouched stock.")
@@ -2327,6 +2335,12 @@ class Window(QMainWindow):
         self.guide_use.setEnabled(not self.settings_locked() and state.tested_settings is not None)
         self.guide_use.setToolTip(state.mixed_reason or "Copy what this spot was cut with into Cut Settings, "
                                                        "and optionally save it as a material.")
+        show_recovery = state.can_retry_spot or state.can_confirm_pass
+        self.guide_form.setRowVisible(self.guide_recovery, show_recovery)
+        self.guide_retry.setVisible(state.can_retry_spot)
+        self.guide_retry.setEnabled(not self.settings_locked() and state.can_retry_spot)
+        self.guide_confirm_pass.setVisible(state.can_confirm_pass)
+        self.guide_confirm_pass.setEnabled(not self.settings_locked() and state.can_confirm_pass)
         self.guide_registration.setEnabled(not self.settings_locked() and not (state.spots or state.sheet_exported))
         self.guide_marked_sheet.setEnabled(not self.settings_locked() and state.registered)
         self.guide_send.setText(state.pass_label(self.job_options()))
@@ -2483,6 +2497,33 @@ class Window(QMainWindow):
         self.persist_guide()
         self.update_guide()
         self.update_tuning_preview()
+
+    def retry_guide_spot(self):
+        if self.settings_locked():
+            return
+        try:
+            self.guide.retry_spot()
+        except ValueError as error:
+            self.message(str(error))
+            return
+        self.persist_guide()
+        self.update_guide()
+        self.update_tuning_preview()
+        self.message(f"Spot {self.guide.spot} unlocked to retry.")
+
+    def confirm_guide_pass(self):
+        if self.settings_locked():
+            return
+        try:
+            self.guide.confirm_unconfirmed_pass()
+        except ValueError as error:
+            self.message(str(error))
+            return
+        self.persist_guide()
+        self.update_guide()
+        self.update_tuning_preview()
+        count = "pass" if self.guide.completed == 1 else "passes"
+        self.message(f"Spot {self.guide.spot} confirmed at {self.guide.completed} {count}.")
 
     def reset_guide(self):
         if not self.settings_locked() and self.confirm("Start a New Test Sheet?", "Load a fresh test sheet to start at the first spot."):

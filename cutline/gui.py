@@ -1572,6 +1572,15 @@ class Window(Adw.ApplicationWindow):
         self.guide_status = Adw.ActionRow(title="Spot 1")
         self.guide_status.set_subtitle_lines(0)
         guide.add(self.guide_status)
+        self.guide_retry, self.guide_confirm_pass = self.guide_buttons(
+            guide,
+            ("Didn’t Cut — Retry", self.on_guide_retry),
+            ("Pass Finished — Count It", self.on_guide_confirm_pass),
+        )
+        self.guide_retry.set_tooltip_text("The blade did not cut this spot. Unlock it and try again.")
+        self.guide_confirm_pass.set_tooltip_text("The last pass finished cleanly. Add it to this spot’s pass count and continue.")
+        self.guide_recovery_row = self.guide_retry.get_parent()
+        self.guide_recovery_row.set_visible(False)
         self.guide_slot_choice = _combo("Cut with", ["Cut Settings A", "Cut Settings B"])
         self.guide_slot_choice.set_tooltip_text("Which cut settings the next pass uses.")
         self.guide_slot_choice.connect("notify::selected", lambda *_: self.use_guide_slot())
@@ -3133,6 +3142,12 @@ class Window(Adw.ApplicationWindow):
         connected = starting_guide.has_cutter_endpoint(self._connection())
         self.guide_send.set_sensitive(not busy and not self._checking_status and self.wireless_ready() and connected and state.can_cut)
         self.guide_use.set_sensitive(not busy and state.tested_settings is not None)
+        show_recovery = state.can_retry_spot or state.can_confirm_pass
+        self.guide_recovery_row.set_visible(show_recovery)
+        self.guide_retry.set_visible(state.can_retry_spot)
+        self.guide_retry.set_sensitive(not busy and state.can_retry_spot)
+        self.guide_confirm_pass.set_visible(state.can_confirm_pass)
+        self.guide_confirm_pass.set_sensitive(not busy and state.can_confirm_pass)
         self.guide_registration.set_sensitive(not busy and not (state.spots or state.sheet_exported))
         self.guide_marked_sheet.set_sensitive(not busy and state.registered)
         if self.tuning:
@@ -3256,6 +3271,33 @@ class Window(Adw.ApplicationWindow):
         self.persist_guide()
         self.update_guide()
         self.update_tuning_preview()
+
+    def on_guide_retry(self, *_args):
+        if self._sending:
+            return
+        try:
+            self.guide.retry_spot()
+        except ValueError as error:
+            self.toast(str(error))
+            return
+        self.persist_guide()
+        self.update_guide()
+        self.update_tuning_preview()
+        self.toast(f"Spot {self.guide.spot} unlocked to retry.")
+
+    def on_guide_confirm_pass(self, *_args):
+        if self._sending:
+            return
+        try:
+            self.guide.confirm_unconfirmed_pass()
+        except ValueError as error:
+            self.toast(str(error))
+            return
+        self.persist_guide()
+        self.update_guide()
+        self.update_tuning_preview()
+        count = "pass" if self.guide.completed == 1 else "passes"
+        self.toast(f"Spot {self.guide.spot} confirmed at {self.guide.completed} {count}.")
 
     def on_guide_reset(self, *_args):
         dialog = Adw.AlertDialog(heading="Start a New Test Sheet?",

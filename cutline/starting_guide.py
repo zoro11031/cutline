@@ -212,6 +212,7 @@ class Guide:
         self.pass_log = ()
         self.interrupted = False
         self.uncertain = False
+        self._unconfirmed_pass_name = ""
         self.outcome = ""
 
     @property
@@ -224,6 +225,14 @@ class Guide:
         return (not self.interrupted and self.completed < MAX_JOB_PASSES
                 and (not self.completed or self.trial is not None)
                 and (self.trial is not None or self.placement is None or self.spot in self.fresh_spots()))
+
+    @property
+    def can_retry_spot(self):
+        return bool(self.uncertain and (self.completed == 0 or self.trial is not None))
+
+    @property
+    def can_confirm_pass(self):
+        return bool(self.uncertain and self.trial is not None and self.completed < MAX_JOB_PASSES)
 
     @property
     def sheet_status(self):
@@ -316,11 +325,12 @@ class Guide:
             self.pass_log = existing.log
             self.uncertain = existing.uncertain
             self.interrupted = existing.uncertain or (not self.registered and existing.passes > 0)
+            self._unconfirmed_pass_name = ""
             self.outcome = ""
             self.history = tuple(s for s in self.history if s.number != spot)
             saved = self.spot_trials.get(spot)
             self.trial = None
-            if saved and self.registered:
+            if saved and (self.registered or existing.uncertain):
                 try:
                     self.trial = self._restore_trial(saved)
                 except (ValueError, TypeError, KeyError, IndexError, AttributeError, OverflowError):
@@ -500,12 +510,43 @@ class Guide:
             self.completed += 1
             self.pass_log += (PassSettings.of(trial.settings, name),)
             self.spot_trials[self.spot] = self._trial_document(trial)
+            self._unconfirmed_pass_name = ""
             self.outcome = ""
         elif isinstance(error, PassUnconfirmed):
             self.trial = trial
             self.placement = trial.placement
+            self.spot_trials[self.spot] = self._trial_document(trial)
             self.invalidate()
             self.uncertain = True
+            self._unconfirmed_pass_name = name
+
+    def retry_spot(self):
+        """Operator confirmed the unconfirmed pass did not cut: unlock this spot to try again."""
+        if not self.can_retry_spot:
+            raise ValueError("This spot cannot be retried.")
+        saved_trial = self.trial
+        self.interrupted = False
+        self.uncertain = False
+        self._unconfirmed_pass_name = ""
+        self.outcome = ""
+        if self.completed == 0:
+            self.trial = None
+            self._saved_rect = None
+            self.spot_trials.pop(self.spot, None)
+            if self.placement is not None and self.spot not in self.fresh_spots():
+                self.trial = saved_trial
+
+    def confirm_unconfirmed_pass(self):
+        """Operator confirmed the unconfirmed pass finished cleanly: count it and unlock."""
+        if not self.can_confirm_pass:
+            raise ValueError("There is no unconfirmed pass to count on this spot.")
+        self.interrupted = False
+        self.uncertain = False
+        self.completed += 1
+        self.pass_log += (PassSettings.of(self.trial.settings, self._unconfirmed_pass_name),)
+        self.spot_trials[self.spot] = self._trial_document(self.trial)
+        self._unconfirmed_pass_name = ""
+        self.outcome = ""
 
     @property
     def tested_settings(self):
@@ -562,8 +603,8 @@ class Guide:
 
     def next_step(self):
         if self.interrupted:
-            return ("The last pass is uncertain. Use the next spot." if self.uncertain else
-                    "The sheet moved. Use the next spot.")
+            return ("The last pass could not be confirmed. Retry this spot, count the pass, or use the next spot."
+                    if self.uncertain else "The sheet moved. Use the next spot.")
         if self.completed >= MAX_JOB_PASSES:
             return f"The cut job supports up to {MAX_JOB_PASSES} passes."
         if self.trial:
@@ -603,6 +644,7 @@ class Guide:
         data = dict(version=1, spot=self.spot, completed=self.completed,
                     pass_log=[asdict(entry) for entry in self.pass_log],
                     interrupted=self.interrupted or pending is not None,
+                    unconfirmed_name=self._unconfirmed_pass_name if (self.uncertain or pending is not None) else "",
                     placement=asdict(placement), history=[asdict(spot) for spot in self.history],
                     spot_trials=self.spot_trials, shape=self.shape, size_mm=self.size_mm,
                     sheet_exported=self.sheet_exported)
@@ -640,6 +682,7 @@ class Guide:
             self.completed = data["completed"]
             self.interrupted = data["interrupted"]
             self.uncertain = self.interrupted
+            self._unconfirmed_pass_name = str(data.get("unconfirmed_name", "")) if self.uncertain else ""
             shape, size = data.get("shape", "square"), data.get("size_mm", testcut.DEFAULT_SIZE_MM)
             if shape not in testcut.TEST_SHAPES or size not in SAMPLE_SIZES:
                 raise ValueError("invalid sample settings")

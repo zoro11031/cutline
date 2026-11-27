@@ -563,3 +563,58 @@ class TestPassLog(unittest.TestCase):
         self.assertIn(f"{spot.x:g}–{spot.x2:g} mm from the left", prompt)
         self.assertNotIn("279.4 × 215.9", prompt)
 
+    def test_unconfirmed_pass_can_be_retried_or_confirmed_by_operator(self):
+        # Fresh spot interrupted at 0 passes -> retry returns it to untouched stock
+        first = self.guide.prepare(("auto", None), self.options, None)
+        self.guide.record(first, starting_guide.PassUnconfirmed("dropped"), name="A")
+        self.assertFalse(self.guide.can_cut)
+        self.assertTrue(self.guide.can_retry_spot)
+        self.assertTrue(self.guide.can_confirm_pass)
+        self.guide.retry_spot()
+        self.assertTrue(self.guide.can_cut)
+        self.assertFalse(self.guide.uncertain)
+        self.assertEqual(self.guide.completed, 0)
+        self.assertIsNone(self.guide.current_spot)
+
+        # Confirming an unconfirmed pass counts it and unlocks the spot
+        trial = self.guide.prepare(("auto", None), self.options, None)
+        self.guide.record(trial, starting_guide.PassUnconfirmed("timeout"), name="A")
+        self.guide.confirm_unconfirmed_pass()
+        self.assertTrue(self.guide.can_cut)
+        self.assertFalse(self.guide.uncertain)
+        self.assertEqual(self.guide.completed, 1)
+        self.assertEqual(self.guide.tested_settings.passes, 1)
+
+        # Second pass unconfirmed -> retry keeps the first confirmed pass intact
+        second = self.guide.prepare(("auto", None), self.options, None)
+        self.guide.record(second, starting_guide.PassUnconfirmed("timeout"), name="A")
+        self.assertFalse(self.guide.can_cut)
+        self.guide.retry_spot()
+        self.assertTrue(self.guide.can_cut)
+        self.assertEqual(self.guide.completed, 1)
+        self.assertEqual(self.guide.tested_settings.passes, 1)
+
+        # Refuses recovery actions when spot is not uncertain
+        with self.assertRaises(ValueError):
+            self.guide.retry_spot()
+        with self.assertRaises(ValueError):
+            self.guide.confirm_unconfirmed_pass()
+
+    def test_unconfirmed_pass_recovery_survives_restart(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "marked.json"
+            self.guide = starting_guide.Guide(path)
+            self.guide.registered = True
+            trial = self.guide.prepare(("auto", (1, 2)), self.options, None)
+            self.guide.record(trial, starting_guide.PassUnconfirmed("dropped"), name="A")
+            self.guide.persist()
+
+            reopened = starting_guide.Guide(path)
+            self.assertTrue(reopened.uncertain)
+            self.assertTrue(reopened.can_retry_spot)
+            self.assertTrue(reopened.can_confirm_pass)
+            reopened.confirm_unconfirmed_pass()
+            self.assertEqual(reopened.completed, 1)
+            self.assertEqual(reopened.pass_log[0].name, "A")
+            self.assertTrue(reopened.can_cut)
+
